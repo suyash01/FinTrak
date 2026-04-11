@@ -10,8 +10,7 @@ RUN go build -o main .
 FROM alpine:latest
 WORKDIR /app
 COPY --from=builder /app/main .
-# We can copy the .env but will override DATABASE_URL in docker-compose
-COPY .env .env 
+# We can provide configuration via environment variables (e.g., DATABASE_URL)
 
 EXPOSE 8080
 CMD ["./main"]
