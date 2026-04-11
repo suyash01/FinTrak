@@ -15,6 +15,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-net
 
   backend:
     container_name: backend
@@ -28,6 +31,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - backend-net
+      - frontend-net
 
   frontend:
     container_name: frontend
@@ -35,11 +48,13 @@ services:
     build:
       context: ./frontend
     ports:
-      - "5173:5173"
-    environment:
-      - VITE_API_URL=http://localhost:8080/api/v1
+      - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - frontend-net
 
   adminer:
     container_name: adminer
@@ -48,6 +63,14 @@ services:
       - "8081:8080"
     depends_on:
       - db
+    profiles:
+      - dev
+    networks:
+      - backend-net
+
+networks:
+  backend-net:
+  frontend-net:
 
 volumes:
   pgdata:

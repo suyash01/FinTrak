@@ -40,6 +40,11 @@ func main() {
 		AllowCredentials: true,
 	}))
 
+	// Health check endpoint for Docker/orchestrators
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
 	// API Routes
 	api := r.Group("/api/v1")
 	{

@@ -5,3 +5,5 @@ vendor
 main
 backend
 *.exe
+Dockerfile
+README.md

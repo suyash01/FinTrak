@@ -4,7 +4,14 @@ on:
   push:
     branches: [ "master" ]
     tags: [ "v*.*.*" ]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
   workflow_dispatch:
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY_GHCR: ghcr.io
@@ -20,10 +27,14 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '1.26'
-      - name: Run tests
+      - name: Verify go.mod is tidy
         run: |
           cd backend
           go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Run tests
+        run: |
+          cd backend
           go test -v ./...
 
   build-frontend:
@@ -39,7 +50,11 @@ jobs:
       - name: Install dependencies
         run: |
           cd frontend
-          npm install
+          npm ci
+      - name: Lint
+        run: |
+          cd frontend
+          npm run lint --if-present
       - name: Build
         run: |
           cd frontend
@@ -54,6 +69,12 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
       
       - name: Log into Docker Hub
         uses: docker/login-action@v4
@@ -85,8 +106,11 @@ jobs:
         with:
           context: ./backend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   publish-frontend:
     needs: build-frontend
@@ -97,6 +121,12 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
       
       - name: Log into Docker Hub
         uses: docker/login-action@v4
@@ -128,8 +158,11 @@ jobs:
         with:
           context: ./frontend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   create-release:
     needs: [publish-backend, publish-frontend]
