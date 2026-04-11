@@ -1,0 +1,51 @@
+services:
+  db:
+    container_name: postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fintrak
+      POSTGRES_USER: fintrak
+      POSTGRES_PASSWORD: fintrak
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U fintrak" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    container_name: backend
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://fintrak:fintrak@db:5432/fintrak?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    container_name: frontend
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080/api/v1
+    depends_on:
+      - backend
+
+  adminer:
+    container_name: adminer
+    image: adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
