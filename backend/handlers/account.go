@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
@@ -186,7 +187,14 @@ func ExportAccount(c *gin.Context) {
 	c.Writer.Header().Set("Content-Type", "text/csv")
 	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account_%s_export.csv"`, id.String()[:8]))
 
-	c.Writer.Write([]byte("Date,Description,Amount,Type,Tags,Notes\n"))
+	writer := csv.NewWriter(c.Writer)
+	defer writer.Flush()
+
+	// Write CSV Header
+	if err := writer.Write([]string{"Date", "Description", "Amount", "Type", "Tags", "Notes"}); err != nil {
+		log.Printf("Error writing CSV header: %v\n", err)
+		return
+	}
 
 	for rows.Next() {
 		var (
@@ -198,15 +206,22 @@ func ExportAccount(c *gin.Context) {
 			notes       string
 		)
 		if err := rows.Scan(&date, &description, &amount, &txnType, &tags, &notes); err != nil {
+			log.Printf("Error scanning row in ExportAccount: %v\n", err)
 			continue
 		}
 
-		descEscaped := strings.ReplaceAll(description, `"`, `""`)
-		notesEscaped := strings.ReplaceAll(notes, `"`, `""`)
-		tagsStr := strings.Join(tags, ";")
+		record := []string{
+			date.Format("2006-01-02"),
+			description,
+			fmt.Sprintf("%.2f", amount),
+			txnType,
+			strings.Join(tags, ";"),
+			notes,
+		}
 
-		line := fmt.Sprintf("%s,\"%s\",%.2f,%s,\"%s\",\"%s\"\n",
-			date.Format("2006-01-02"), descEscaped, amount, txnType, tagsStr, notesEscaped)
-		c.Writer.Write([]byte(line))
+		if err := writer.Write(record); err != nil {
+			log.Printf("Error writing CSV record: %v\n", err)
+			return
+		}
 	}
 }

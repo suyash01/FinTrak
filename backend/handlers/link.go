@@ -367,31 +367,35 @@ func GetTransferSuggestions(c *gin.Context) {
 			continue
 		}
 
-		// Calculate score based on amount match and date proximity
-		amountDiff := math.Abs(s.DebitTxn.Amount - s.CreditTxn.Amount)
-		dTime := s.DebitTxn.Date
-		cTime := s.CreditTxn.Date
-		daysDiff := math.Abs(float64(dTime.Sub(cTime).Hours() / 24))
-
-		s.Score = 100 - amountDiff*10 - daysDiff*5
-		if s.Score < 0 {
-			s.Score = 0
-		}
-
-		// Check for common transfer keywords
-		descLower := strings.ToLower(s.DebitTxn.Description + " " + s.CreditTxn.Description)
-		transferKeywords := []string{"transfer", "neft", "rtgs", "imps", "upi", "fund transfer", "self"}
-		for _, kw := range transferKeywords {
-			if strings.Contains(descLower, kw) {
-				s.Score = math.Min(100, s.Score+15)
-				break
-			}
-		}
-
+		s.Score = calculateTransferScore(s.DebitTxn, s.CreditTxn)
 		suggestions = append(suggestions, s)
 	}
 
 	c.JSON(http.StatusOK, suggestions)
+}
+
+func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
+	// Calculate score based on amount match and date proximity
+	amountDiff := math.Abs(debitTxn.Amount - creditTxn.Amount)
+	dTime := debitTxn.Date
+	cTime := creditTxn.Date
+	daysDiff := math.Abs(float64(dTime.Sub(cTime).Hours() / 24))
+
+	score := 100 - amountDiff*10 - daysDiff*5
+	if score < 0 {
+		score = 0
+	}
+
+	// Check for common transfer keywords
+	descLower := strings.ToLower(debitTxn.Description + " " + creditTxn.Description)
+	transferKeywords := []string{"transfer", "neft", "rtgs", "imps", "upi", "fund transfer", "self"}
+	for _, kw := range transferKeywords {
+		if strings.Contains(descLower, kw) {
+			score = math.Min(100, score+15)
+			break
+		}
+	}
+	return score
 }
 
 func GetCashbackSuggestions(c *gin.Context) {
