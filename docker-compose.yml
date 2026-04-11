@@ -18,6 +18,7 @@ services:
 
   backend:
     container_name: backend
+    image: suyash01/fintrak-backend:latest
     build:
       context: ./backend
     ports:
@@ -30,6 +31,7 @@ services:
 
   frontend:
     container_name: frontend
+    image: suyash01/fintrak-frontend:latest
     build:
       context: ./frontend
     ports:
