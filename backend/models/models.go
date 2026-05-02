@@ -99,10 +99,15 @@ type UpdateAccountRequest struct {
 }
 
 type UpdateTransactionRequest struct {
-	CategoryID *uuid.UUID `json:"categoryId"`
-	Tags       []string   `json:"tags"`
-	Notes      string     `json:"notes"`
-	PayeeID    *uuid.UUID `json:"payeeId"`
+	CategoryID  *uuid.UUID `json:"categoryId"`
+	Tags        []string   `json:"tags"`
+	Notes       string     `json:"notes"`
+	PayeeID     *uuid.UUID `json:"payeeId"`
+	Date        *string    `json:"date"`
+	Description *string    `json:"description"`
+	Amount      *float64   `json:"amount"`
+	Type        *string    `json:"type"`
+	AccountID   *uuid.UUID `json:"accountId"`
 }
 
 type BulkCategorizeRequest struct {

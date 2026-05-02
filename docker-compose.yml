@@ -30,6 +30,7 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgres://fintrak:fintrak@db:5432/fintrak?sslmode=disable
+      - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
     depends_on:
       db:
         condition: service_healthy

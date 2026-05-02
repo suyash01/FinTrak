@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
@@ -205,10 +206,118 @@ func UpdateTransaction(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Pool.Exec(c,
-		"UPDATE transactions SET category_id = $1, tags = $2, notes = $3, payee_id = $4 WHERE id = $5",
-		req.CategoryID, req.Tags, req.Notes, req.PayeeID, id,
-	)
+	// Build dynamic SET clauses
+	setClauses := []string{}
+	args := []interface{}{}
+	paramIdx := 1
+
+	// Always update metadata fields
+	setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", paramIdx))
+	args = append(args, req.CategoryID)
+	paramIdx++
+
+	setClauses = append(setClauses, fmt.Sprintf("tags = $%d", paramIdx))
+	args = append(args, req.Tags)
+	paramIdx++
+
+	setClauses = append(setClauses, fmt.Sprintf("notes = $%d", paramIdx))
+	args = append(args, req.Notes)
+	paramIdx++
+
+	setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
+	args = append(args, req.PayeeID)
+	paramIdx++
+
+	// Conditionally update core fields
+	coreChanged := false
+	if req.Date != nil {
+		setClauses = append(setClauses, fmt.Sprintf("date = $%d", paramIdx))
+		args = append(args, *req.Date)
+		paramIdx++
+		coreChanged = true
+	}
+	if req.Description != nil {
+		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIdx))
+		args = append(args, *req.Description)
+		paramIdx++
+		coreChanged = true
+	}
+	if req.Amount != nil {
+		setClauses = append(setClauses, fmt.Sprintf("amount = $%d", paramIdx))
+		args = append(args, *req.Amount)
+		paramIdx++
+		coreChanged = true
+	}
+	if req.Type != nil {
+		if *req.Type != "debit" && *req.Type != "credit" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 'debit' or 'credit'"})
+			return
+		}
+		setClauses = append(setClauses, fmt.Sprintf("type = $%d", paramIdx))
+		args = append(args, *req.Type)
+		paramIdx++
+		coreChanged = true
+	}
+	if req.AccountID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("account_id = $%d", paramIdx))
+		args = append(args, *req.AccountID)
+		paramIdx++
+		coreChanged = true
+	}
+
+	// If core fields changed, recalculate the dedup hash
+	if coreChanged {
+		// Fetch current values to compute new hash
+		var acctID uuid.UUID
+		var date time.Time
+		var desc, txnType string
+		var amount float64
+		err := db.Pool.QueryRow(c,
+			"SELECT account_id, date, description, amount, type FROM transactions WHERE id = $1", id,
+		).Scan(&acctID, &date, &desc, &amount, &txnType)
+		if err != nil {
+			log.Printf("Error fetching transaction for hash: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+
+		dateStr := date.Format("2006-01-02")
+
+		// Override with new values
+		if req.AccountID != nil {
+			acctID = *req.AccountID
+		}
+		if req.Date != nil {
+			if len(*req.Date) >= 10 {
+				dateStr = (*req.Date)[:10]
+			} else {
+				dateStr = *req.Date
+			}
+		}
+		if req.Description != nil {
+			desc = *req.Description
+		}
+		if req.Amount != nil {
+			amount = *req.Amount
+		}
+		if req.Type != nil {
+			txnType = *req.Type
+		}
+
+		hashStr := fmt.Sprintf("%s|%s|%s|%.2f|%s", acctID.String(), dateStr, desc, amount, txnType)
+		newHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashStr)))
+
+		setClauses = append(setClauses, fmt.Sprintf("hash = $%d", paramIdx))
+		args = append(args, newHash)
+		paramIdx++
+	}
+
+	// WHERE id = $N
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE transactions SET %s WHERE id = $%d",
+		strings.Join(setClauses, ", "), paramIdx)
+
+	_, err = db.Pool.Exec(c, query, args...)
 	if err != nil {
 		log.Printf("Error in UpdateTransaction: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

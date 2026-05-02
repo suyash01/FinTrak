@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
-import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check } from 'lucide-react';
+import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check, Pencil } from 'lucide-react';
 import LinkTransactionModal from './LinkTransactionModal';
+import EditTransactionModal from './EditTransactionModal';
 import api from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { useSettings } from '../../context/SettingsContext';
@@ -30,7 +31,7 @@ function EditableSelect({ value, options, onChange, placeholder, displayText, st
   );
 }
 
-const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected, toggleSelect, categoryOptions, payeeOptions, handleCategoryChange, handlePayeeChange, handleDelete, handleUnlink, setLinkingTxn }) {
+const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected, toggleSelect, categoryOptions, payeeOptions, handleCategoryChange, handlePayeeChange, handleDelete, handleUnlink, setLinkingTxn, setEditingTxn }) {
   return (
     <tr className={`transition-colors border-b border-slate-800 last:border-0 ${selected ? 'bg-cyan-500/10' : 'hover:bg-slate-800/30'}`}>
       <td className={`${compactLayout ? 'py-1.5 px-3' : 'py-3 px-4'}`}><input type="checkbox" className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500" checked={selected} onChange={() => toggleSelect(t.id)} /></td>
@@ -63,6 +64,13 @@ const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected
       </td>
       <td className={`${compactLayout ? 'py-1.5 px-3' : 'py-3 px-4'}`}>
         <div className="flex items-center gap-1">
+          <button
+            className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+            onClick={() => setEditingTxn(t)}
+            title="Edit transaction"
+          >
+            <Pencil size={14} />
+          </button>
           {!t.isLinked ? (
             <button
               className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
@@ -98,6 +106,7 @@ export default function Transactions() {
   const [payees, setPayees] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [linkingTxn, setLinkingTxn] = useState(null);
+  const [editingTxn, setEditingTxn] = useState(null);
   const { compactLayout, pageSize } = useSettings();
 
   // Refs to avoid closures in callbacks
@@ -386,6 +395,7 @@ export default function Transactions() {
                   handleDelete={handleDelete}
                   handleUnlink={handleUnlink}
                   setLinkingTxn={setLinkingTxn}
+                  setEditingTxn={setEditingTxn}
                 />
               ))}
             </tbody>
@@ -428,6 +438,19 @@ export default function Transactions() {
           onClose={() => setLinkingTxn(null)}
           onSuccess={() => {
             setLinkingTxn(null);
+            loadTransactions();
+          }}
+        />
+      )}
+      {editingTxn && (
+        <EditTransactionModal
+          transaction={editingTxn}
+          accounts={accounts}
+          categories={categories}
+          payees={payees}
+          onClose={() => setEditingTxn(null)}
+          onSaved={() => {
+            setEditingTxn(null);
             loadTransactions();
           }}
         />
