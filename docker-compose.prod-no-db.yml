@@ -1,0 +1,38 @@
+# Production Deployment (without Database)
+# Usage: docker compose -f docker-compose.prod-no-db.yml up -d
+#
+# Required environment variables (set in .env or export):
+#   DATABASE_URL - Full connection string to an external database
+
+services:
+  backend:
+    container_name: backend
+    image: suyash01/fintrak-backend:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  frontend:
+    container_name: frontend
+    image: suyash01/fintrak-frontend:latest
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:

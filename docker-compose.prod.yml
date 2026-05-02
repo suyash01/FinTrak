@@ -1,20 +1,26 @@
-# Local Development
-# Usage: docker compose up -d
+# Production Deployment (with Database)
+# Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# Required environment variables (set in .env or export):
+#   POSTGRES_DB       - Database name
+#   POSTGRES_USER     - Database user
+#   POSTGRES_PASSWORD - Database password
+#   DATABASE_URL      - Full connection string (e.g. postgres://user:pass@db:5432/dbname?sslmode=disable)
 
 services:
   db:
     container_name: postgres
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: fintrak
-      POSTGRES_USER: fintrak
-      POSTGRES_PASSWORD: fintrak
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U fintrak" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -24,12 +30,11 @@ services:
 
   backend:
     container_name: backend
-    build:
-      context: ./backend
+    image: suyash01/fintrak-backend:latest
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgres://fintrak:fintrak@db:5432/fintrak?sslmode=disable
+      - DATABASE_URL=${DATABASE_URL}
     depends_on:
       db:
         condition: service_healthy
@@ -46,8 +51,7 @@ services:
 
   frontend:
     container_name: frontend
-    build:
-      context: ./frontend
+    image: suyash01/fintrak-frontend:latest
     ports:
       - "3000:80"
     depends_on:
@@ -56,16 +60,6 @@ services:
     restart: unless-stopped
     networks:
       - frontend-net
-
-  adminer:
-    container_name: adminer
-    image: adminer
-    ports:
-      - "8081:8080"
-    depends_on:
-      - db
-    networks:
-      - backend-net
 
 networks:
   backend-net:
