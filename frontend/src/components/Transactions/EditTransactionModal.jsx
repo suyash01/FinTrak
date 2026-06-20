@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Save, Pencil, Calendar, DollarSign, FileText, Tag, User, Landmark, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 import api from '../../api/client';
-import { formatCurrency } from '../../utils/formatters';
 
 export default function EditTransactionModal({ transaction, accounts, categories, payees, onClose, onSaved }) {
   const [form, setForm] = useState({
@@ -108,7 +107,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
       onClick={handleBackdropClick}
     >
       <div
-        className={`w-full max-w-lg h-full bg-gradient-to-b from-slate-900 to-slate-950 border-l border-slate-700/50 shadow-2xl shadow-black/50 flex flex-col transition-transform duration-200 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`w-full max-w-lg h-full bg-linear-to-b from-slate-900 to-slate-950 border-l border-slate-700/50 shadow-2xl shadow-black/50 flex flex-col transition-transform duration-200 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {/* Header */}
         <div className="shrink-0 px-6 py-5 border-b border-slate-800/80 bg-slate-900/50">

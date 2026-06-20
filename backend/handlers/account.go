@@ -17,14 +17,15 @@ import (
 
 func GetAccounts(c *gin.Context) {
 	query := `
-		SELECT a.id, a.name, a.type, a.bank, a.currency, a.color,
+		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color,
 		COALESCE(SUM(CASE 
-			WHEN a.type = 'bank' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-			WHEN a.type = 'credit_card' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+			WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+			WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
 			ELSE 0 END), 0) as balance
 		FROM accounts a
+		JOIN account_types at ON a.account_type_id = at.id
 		LEFT JOIN transactions t ON a.id = t.account_id
-		GROUP BY a.id, a.name, a.type, a.bank, a.currency, a.color
+		GROUP BY a.id, a.name, a.account_type_id, at.name, a.bank, a.currency, a.color, a.created_at
 		ORDER BY a.created_at DESC`
 
 	rows, err := db.Pool.Query(c, query)
@@ -38,7 +39,7 @@ func GetAccounts(c *gin.Context) {
 	accounts := []models.Account{}
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Bank, &a.Currency, &a.Color, &a.Balance); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.Balance); err != nil {
 			log.Printf("Error in GetAccounts scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
@@ -66,14 +67,17 @@ func CreateAccount(c *gin.Context) {
 	var account models.Account
 	err := db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
-			`INSERT INTO accounts (name, type, bank, currency, color) VALUES ($1, $2, $3, $4, $5)
-			 RETURNING id, name, type, bank, currency, color`,
-			req.Name, req.Type, req.Bank, req.Currency, req.Color,
-		).Scan(&account.ID, &account.Name, &account.Type, &account.Bank, &account.Currency, &account.Color)
+			`INSERT INTO accounts (name, account_type_id, bank, currency, color) VALUES ($1, $2, $3, $4, $5)
+			 RETURNING id, name, account_type_id, bank, currency, color`,
+			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color)
 
 		if err != nil {
 			return err
 		}
+
+		// Fetch the account type name for the response
+		tx.QueryRow(c, "SELECT name FROM account_types WHERE id = $1", account.AccountTypeID).Scan(&account.AccountTypeName)
 
 		// Synchronize with Payees: Create a payee for the new account
 		_, err = tx.Exec(c,
@@ -132,17 +136,18 @@ func UpdateAccount(c *gin.Context) {
 	err = db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
 			`WITH updated AS (
-				UPDATE accounts SET name = $1, type = $2, bank = $3, currency = $4, color = $5, updated_at = NOW() 
-				WHERE id = $6 RETURNING id, name, type, bank, currency, color
+				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, updated_at = NOW() 
+				WHERE id = $6 RETURNING id, name, account_type_id, bank, currency, color
 			)
-			SELECT u.id, u.name, u.type, u.bank, u.currency, u.color,
+			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color,
 			COALESCE((SELECT SUM(CASE 
-				WHEN u.type = 'bank' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-				WHEN u.type = 'credit_card' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+				WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+				WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
 				ELSE 0 END) FROM transactions t WHERE t.account_id = u.id), 0) as balance
-			FROM updated u`,
-			req.Name, req.Type, req.Bank, req.Currency, req.Color, id,
-		).Scan(&account.ID, &account.Name, &account.Type, &account.Bank, &account.Currency, &account.Color, &account.Balance)
+			FROM updated u
+			JOIN account_types at ON u.account_type_id = at.id`,
+			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, id,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.Balance)
 
 		if err != nil {
 			return err

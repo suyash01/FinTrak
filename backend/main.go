@@ -21,6 +21,7 @@ func main() {
 	// Run migrations and seed
 	db.RunMigrations(cfg.DatabaseURL)
 	db.SeedCategories()
+	db.SeedAccountTypes()
 
 	// Setup Gin
 	r := gin.Default()
@@ -55,6 +56,13 @@ func main() {
 		accounts.PUT("/:id", handlers.UpdateAccount)
 		accounts.DELETE("/:id", handlers.DeleteAccount)
 		accounts.GET("/:id/export", handlers.ExportAccount)
+
+		// Account Types
+		accountTypes := api.Group("/account-types")
+		accountTypes.GET("", handlers.GetAccountTypes)
+		accountTypes.POST("", handlers.CreateAccountType)
+		accountTypes.PUT("/:id", handlers.UpdateAccountType)
+		accountTypes.DELETE("/:id", handlers.DeleteAccountType)
 
 		// Categories
 		api.GET("/categories", handlers.GetCategories)

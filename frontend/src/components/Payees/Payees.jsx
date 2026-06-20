@@ -203,7 +203,7 @@ export default function Payees() {
                   <option value="">No linked account</option>
                   {accounts.map(acc => (
                     <option key={acc.id} value={acc.id}>
-                      {acc.name} ({acc.bank || acc.type})
+                      {acc.name} ({acc.bank || acc.accountTypeName})
                     </option>
                   ))}
                 </select>

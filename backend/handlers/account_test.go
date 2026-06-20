@@ -34,11 +34,11 @@ func TestGetAccounts(t *testing.T) {
 	r.GET("/accounts", GetAccounts)
 
 	// Define expected data
-	rows := pgxmock.NewRows([]string{"id", "name", "type", "bank", "currency", "color", "balance"}).
-		AddRow(uuid.New(), "Savings", "bank", "HDFC", "INR", "#000000", 1000.50).
-		AddRow(uuid.New(), "Credit Card", "credit_card", "SBI", "INR", "#ff0000", 500.00)
+	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "balance"}).
+		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", 1000.50).
+		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", 500.00)
 
-	mock.ExpectQuery("SELECT a.id, a.name, a.type, a.bank, a.currency, a.color").
+	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
 		WillReturnRows(rows)
 
 	// Perform request
@@ -76,9 +76,9 @@ func TestCreateAccount(t *testing.T) {
 
 	accountID := uuid.New()
 	reqBody := models.CreateAccountRequest{
-		Name: "New Account",
-		Type: "bank",
-		Bank: "Axis",
+		Name:          "New Account",
+		AccountTypeID: "bank",
+		Bank:          "Axis",
 	}
 
 	// Expect Transaction
@@ -86,9 +86,14 @@ func TestCreateAccount(t *testing.T) {
 	
 	// Expect Insert Account
 	mock.ExpectQuery("INSERT INTO accounts").
-		WithArgs(reqBody.Name, reqBody.Type, reqBody.Bank, "INR", "#06b6d4").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "type", "bank", "currency", "color"}).
-			AddRow(accountID, reqBody.Name, reqBody.Type, reqBody.Bank, "INR", "#06b6d4"))
+		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4"))
+
+	// Expect Account Type Name Fetch
+	mock.ExpectQuery("SELECT name FROM account_types").
+		WithArgs(reqBody.AccountTypeID).
+		WillReturnRows(pgxmock.NewRows([]string{"name"}).AddRow("Bank Account"))
 
 	// Expect Insert/Update Payee
 	mock.ExpectExec("INSERT INTO payees").

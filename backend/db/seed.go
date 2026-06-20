@@ -65,3 +65,31 @@ func SeedCategories() {
 
 	fmt.Println("✓ Seeded default categories")
 }
+
+type SeedAccountType struct {
+	ID             string
+	Name           string
+	PositiveTxnType string
+}
+
+func SeedAccountTypes() {
+	ctx := context.Background()
+
+	accountTypes := []SeedAccountType{
+		{"bank", "Bank Account", "credit"},
+		{"credit_card", "Credit Card", "debit"},
+	}
+
+	for _, at := range accountTypes {
+		_, err := Pool.Exec(ctx,
+			`INSERT INTO account_types (id, name, positive_txn_type) VALUES ($1, $2, $3)
+			 ON CONFLICT (id) DO NOTHING`,
+			at.ID, at.Name, at.PositiveTxnType,
+		)
+		if err != nil {
+			log.Printf("Failed to seed account type %s: %v", at.ID, err)
+		}
+	}
+
+	fmt.Println("✓ Seeded default account types")
+}

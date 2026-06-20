@@ -6,14 +6,21 @@ import (
 	"github.com/google/uuid"
 )
 
+type AccountType struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	PositiveTxnType string `json:"positiveTxnType"`
+}
+
 type Account struct {
-	ID       uuid.UUID `json:"id"`
-	Name     string    `json:"name"`
-	Type     string    `json:"type"`
-	Bank     string    `json:"bank"`
-	Currency string    `json:"currency"`
-	Color    string    `json:"color"`
-	Balance  float64   `json:"balance"`
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	AccountTypeID   string    `json:"accountTypeId"`
+	AccountTypeName string    `json:"accountTypeName,omitempty"`
+	Bank            string    `json:"bank"`
+	Currency        string    `json:"currency"`
+	Color           string    `json:"color"`
+	Balance         float64   `json:"balance"`
 }
 
 type Payee struct {
@@ -83,19 +90,30 @@ type Link struct {
 // Request/Response types
 
 type CreateAccountRequest struct {
-	Name     string `json:"name" binding:"required"`
-	Type     string `json:"type" binding:"required"`
-	Bank     string `json:"bank"`
-	Currency string `json:"currency"`
-	Color    string `json:"color"`
+	Name          string `json:"name" binding:"required"`
+	AccountTypeID string `json:"accountTypeId" binding:"required"`
+	Bank          string `json:"bank"`
+	Currency      string `json:"currency"`
+	Color         string `json:"color"`
 }
 
 type UpdateAccountRequest struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Bank     string `json:"bank"`
-	Currency string `json:"currency"`
-	Color    string `json:"color"`
+	Name          string `json:"name"`
+	AccountTypeID string `json:"accountTypeId"`
+	Bank          string `json:"bank"`
+	Currency      string `json:"currency"`
+	Color         string `json:"color"`
+}
+
+type CreateAccountTypeRequest struct {
+	ID              string `json:"id" binding:"required"`
+	Name            string `json:"name" binding:"required"`
+	PositiveTxnType string `json:"positiveTxnType" binding:"required"`
+}
+
+type UpdateAccountTypeRequest struct {
+	Name            string `json:"name"`
+	PositiveTxnType string `json:"positiveTxnType"`
 }
 
 type UpdateTransactionRequest struct {

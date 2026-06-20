@@ -9,6 +9,9 @@ import Payees from './components/Payees/Payees';
 import Linking from './components/Linking/Linking';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 import './index.css';
+import { useState, useEffect } from 'react';
+import api from './api/client';
+import { Trash2, Edit2, Plus, X } from 'lucide-react';
 
 function Settings() {
   const { compactLayout, toggleCompactLayout, pageSize, setPageSize } = useSettings();
@@ -61,6 +64,12 @@ function Settings() {
           </div>
         </div>
 
+        {/* Account Types Management */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+          <h3 className="text-base font-semibold mb-4">Account Types</h3>
+          <AccountTypesManager />
+        </div>
+
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
           <h3 className="text-base font-semibold mb-4">About FinTrak</h3>
           <p className="text-slate-400 text-sm leading-relaxed">
@@ -73,6 +82,119 @@ function Settings() {
         </div>
       </div>
     </>
+  );
+}
+
+function AccountTypesManager() {
+  const [types, setTypes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [formData, setFormData] = useState({ id: '', name: '', positiveTxnType: 'credit' });
+
+  useEffect(() => {
+    fetchTypes();
+  }, []);
+
+  const fetchTypes = async () => {
+    try {
+      const data = await api.getAccountTypes();
+      setTypes(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      if (editingId) {
+        await api.updateAccountType(editingId, { name: formData.name, positiveTxnType: formData.positiveTxnType });
+      } else {
+        await api.createAccountType(formData);
+      }
+      setEditingId(null);
+      setFormData({ id: '', name: '', positiveTxnType: 'credit' });
+      fetchTypes();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this account type? This will fail if accounts use it.')) return;
+    try {
+      await api.deleteAccountType(id);
+      fetchTypes();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  if (loading) return <div className="text-sm text-slate-500">Loading...</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="divide-y divide-slate-800 border border-slate-800 rounded-lg overflow-hidden bg-slate-950">
+        {types.map((t) => (
+          <div key={t.id} className="p-3 flex justify-between items-center group hover:bg-slate-900 transition-colors">
+            {editingId === t.id ? (
+              <form onSubmit={handleSubmit} className="flex gap-2 w-full items-center">
+                <input required className="flex-1 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                <select className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.positiveTxnType} onChange={e => setFormData({ ...formData, positiveTxnType: e.target.value })}>
+                  <option value="credit">Credit is positive</option>
+                  <option value="debit">Debit is positive</option>
+                </select>
+                <button type="submit" className="text-cyan-500 hover:text-cyan-400 p-1"><Plus size={16} /></button>
+                <button type="button" onClick={() => setEditingId(null)} className="text-slate-500 hover:text-slate-300 p-1"><X size={16} /></button>
+              </form>
+            ) : (
+              <>
+                <div>
+                  <div className="font-medium text-sm text-slate-200">{t.name}</div>
+                  <div className="text-xs text-slate-500">ID: {t.id} • Positive: <span className="uppercase text-[10px] bg-slate-800 px-1 rounded">{t.positiveTxnType}</span></div>
+                </div>
+                <div className="flex opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => { setEditingId(t.id); setFormData(t); }} className="p-1.5 text-slate-400 hover:text-cyan-400"><Edit2 size={14} /></button>
+                  <button onClick={() => handleDelete(t.id)} className="p-1.5 text-slate-400 hover:text-red-400"><Trash2 size={14} /></button>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {!editingId && editingId !== 'new' && (
+        <button onClick={() => { setEditingId('new'); setFormData({ id: '', name: '', positiveTxnType: 'credit' }); }} className="text-sm text-cyan-500 hover:text-cyan-400 flex items-center gap-1 font-medium">
+          <Plus size={14} /> Add Account Type
+        </button>
+      )}
+
+      {editingId === 'new' && (
+        <form onSubmit={handleSubmit} className="p-3 border border-slate-800 rounded-lg bg-slate-950 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1">Type ID (Code)</label>
+            <input required placeholder="e.g. wallet, cash" className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.id} onChange={e => setFormData({ ...formData, id: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+            <input required placeholder="e.g. Mobile Wallet" className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1">Sign Convention</label>
+            <select className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.positiveTxnType} onChange={e => setFormData({ ...formData, positiveTxnType: e.target.value })}>
+              <option value="credit">Credit amounts increase balance</option>
+              <option value="debit">Debit amounts increase balance</option>
+            </select>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1 text-xs font-medium text-slate-400 hover:text-white">Cancel</button>
+            <button type="submit" className="px-3 py-1 text-xs font-medium bg-cyan-500 text-white rounded hover:bg-cyan-600">Create</button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 

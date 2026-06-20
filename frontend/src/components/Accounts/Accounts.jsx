@@ -6,14 +6,16 @@ import { useSettings } from '../../context/SettingsContext';
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
+  const [accountTypes, setAccountTypes] = useState([]);
   const [showNew, setShowNew] = useState(false);
-  const [newAcc, setNewAcc] = useState({ name: '', type: 'bank', bank: '', color: '#06b6d4' });
+  const [newAcc, setNewAcc] = useState({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
   const [editingId, setEditingId] = useState(null);
   const [editAcc, setEditAcc] = useState(null);
   const { compactLayout } = useSettings();
 
   useEffect(() => {
     api.getAccounts().then(setAccounts).catch(console.error);
+    api.getAccountTypes().then(setAccountTypes).catch(console.error);
   }, []);
 
   const handleCreate = async () => {
@@ -21,7 +23,7 @@ export default function Accounts() {
       const acc = await api.createAccount(newAcc);
       setAccounts((prev) => [acc, ...prev]);
       setShowNew(false);
-      setNewAcc({ name: '', type: 'bank', bank: '', color: '#06b6d4' });
+      setNewAcc({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
     } catch (err) {
       alert(err.message);
     }
@@ -50,11 +52,17 @@ export default function Accounts() {
 
   const startEdit = (acc) => {
     setEditingId(acc.id);
-    setEditAcc({ name: acc.name, type: acc.type, bank: acc.bank || '', color: acc.color, currency: acc.currency });
+    setEditAcc({ name: acc.name, accountTypeId: acc.accountTypeId, bank: acc.bank || '', color: acc.color, currency: acc.currency });
   };
 
   const handleExport = (id) => {
     window.open(`${import.meta.env.VITE_API_URL || 'http://localhost:8080/api'}/accounts/${id}/export`, '_blank');
+  };
+
+  const getTypeIcon = (accountTypeId, color, size) => {
+    return accountTypeId === 'credit_card'
+      ? <CreditCard size={size} style={{ color }} />
+      : <Building2 size={size} style={{ color }} />;
   };
 
   return (
@@ -83,9 +91,10 @@ export default function Accounts() {
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium text-slate-400">Type</label>
-                <select className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={newAcc.type} onChange={(e) => setNewAcc({ ...newAcc, type: e.target.value })}>
-                  <option value="bank">Bank Account</option>
-                  <option value="credit_card">Credit Card</option>
+                <select className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={newAcc.accountTypeId} onChange={(e) => setNewAcc({ ...newAcc, accountTypeId: e.target.value })}>
+                  {accountTypes.map((at) => (
+                    <option key={at.id} value={at.id}>{at.name}</option>
+                  ))}
                 </select>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -120,9 +129,10 @@ export default function Accounts() {
                     </div>
                     <div className="flex flex-col gap-3 mb-5 flex-1">
                       <input className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" placeholder="Name" value={editAcc.name} onChange={(e) => setEditAcc({ ...editAcc, name: e.target.value })} />
-                      <select className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={editAcc.type} onChange={(e) => setEditAcc({ ...editAcc, type: e.target.value })}>
-                        <option value="bank">Bank Account</option>
-                        <option value="credit_card">Credit Card</option>
+                      <select className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={editAcc.accountTypeId} onChange={(e) => setEditAcc({ ...editAcc, accountTypeId: e.target.value })}>
+                        {accountTypes.map((at) => (
+                          <option key={at.id} value={at.id}>{at.name}</option>
+                        ))}
                       </select>
                       <input className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" placeholder="Bank" value={editAcc.bank} onChange={(e) => setEditAcc({ ...editAcc, bank: e.target.value })} />
                       <input type="color" value={editAcc.color} onChange={(e) => setEditAcc({ ...editAcc, color: e.target.value })} className="w-full h-[42px] cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1" />
@@ -133,17 +143,17 @@ export default function Accounts() {
                   <div className="flex justify-between items-start h-full">
                     <div className="flex flex-col h-full flex-1">
                       <div className={`flex items-center gap-3 ${compactLayout ? 'mb-0.5' : 'mb-1'}`}>
-                        {acc.type === 'credit_card' ? <CreditCard size={compactLayout ? 18 : 20} style={{ color: acc.color }} /> : <Building2 size={compactLayout ? 18 : 20} style={{ color: acc.color }} />}
+                        {getTypeIcon(acc.accountTypeId, acc.color, compactLayout ? 18 : 20)}
                         <h3 className={`${compactLayout ? 'text-sm' : 'text-base'} font-semibold text-slate-100 truncate`}>{acc.name}</h3>
                       </div>
                       <div className={`${compactLayout ? 'text-[12px] mb-2' : 'text-[13px] mb-4'} text-slate-400 flex items-center gap-3`}>
-                        <span>{acc.type === 'credit_card' ? 'Credit Card' : 'Bank Account'}</span>
+                        <span>{acc.accountTypeName}</span>
                         {acc.bank && <><span className="w-1 h-1 rounded-full bg-slate-700"></span><span>{acc.bank}</span></>}
                       </div>
 
                       <div className={compactLayout ? 'mb-2' : 'mb-4'}>
                         <div className="text-[11px] uppercase tracking-wider text-slate-500 font-medium mb-1">
-                          {acc.type === 'credit_card' ? 'Outstanding' : 'Balance'}
+                          {acc.accountTypeId === 'credit_card' ? 'Outstanding' : 'Balance'}
                         </div>
                         <div className={`${compactLayout ? 'text-xl' : 'text-2xl'} font-bold text-slate-100 font-mono`}>
                           {formatCurrency(acc.balance, acc.currency)}

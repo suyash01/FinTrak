@@ -17,8 +17,9 @@ const DB_COLUMNS = [
 export default function Import() {
   const [step, setStep] = useState(1);
   const [accounts, setAccounts] = useState([]);
+  const [accountTypes, setAccountTypes] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('');
-  const [newAccount, setNewAccount] = useState({ name: '', type: 'bank', bank: '', color: '#06b6d4' });
+  const [newAccount, setNewAccount] = useState({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
   const [showNewAccount, setShowNewAccount] = useState(false);
   const [payees, setPayees] = useState([]);
 
@@ -37,6 +38,7 @@ export default function Import() {
 
   useEffect(() => {
     api.getAccounts().then(setAccounts).catch(console.error);
+    api.getAccountTypes().then(setAccountTypes).catch(console.error);
     api.getPayees().then(setPayees).catch(console.error);
   }, []);
 
@@ -47,7 +49,7 @@ export default function Import() {
       setAccounts((prev) => [acc, ...prev]);
       setSelectedAccount(acc.id);
       setShowNewAccount(false);
-      setNewAccount({ name: '', type: 'bank', bank: '', color: '#06b6d4' });
+      setNewAccount({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
     } catch (err) {
       alert(err.message);
     }
@@ -147,14 +149,19 @@ export default function Import() {
         let amount = 0;
         let type = 'debit';
 
+        // Determine sign convention from account type
+        const selAcct = accounts.find(a => a.id === selectedAccount);
+        const selType = accountTypes.find(at => at.id === selAcct?.accountTypeId);
+        const positiveTxnType = selType?.positiveTxnType || 'credit';
+
         if (amountMode === 'single' && amountCol) {
           const raw = parseAmount(row[amountCol]);
           if (raw < 0) {
             amount = Math.abs(raw);
-            type = 'debit';
+            type = positiveTxnType === 'credit' ? 'debit' : 'credit';
           } else {
             amount = raw;
-            type = 'credit';
+            type = positiveTxnType;
           }
         } else if (amountMode === 'separate') {
           const debitAmt = parseAmount(row[debitCol]);
@@ -318,7 +325,7 @@ export default function Import() {
                   <option value="">Choose an account...</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
-                      {a.name} ({a.bank || a.type})
+                      {a.name} ({a.accountTypeName}{a.bank ? `, ${a.bank}` : ''})
                     </option>
                   ))}
                 </select>
@@ -341,9 +348,10 @@ export default function Import() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium text-slate-400">Type</label>
-                    <select className="px-3.5 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={newAccount.type} onChange={(e) => setNewAccount({ ...newAccount, type: e.target.value })}>
-                      <option value="bank">Bank Account</option>
-                      <option value="credit_card">Credit Card</option>
+                    <select className="px-3.5 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" value={newAccount.accountTypeId} onChange={(e) => setNewAccount({ ...newAccount, accountTypeId: e.target.value })}>
+                      {accountTypes.map((at) => (
+                        <option key={at.id} value={at.id}>{at.name}</option>
+                      ))}
                     </select>
                   </div>
                 </div>

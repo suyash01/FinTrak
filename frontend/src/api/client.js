@@ -19,6 +19,12 @@ const api = {
   updateAccount: (id, data) => request(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteAccount: (id) => request(`/accounts/${id}`, { method: 'DELETE' }),
 
+  // Account Types
+  getAccountTypes: () => request('/account-types'),
+  createAccountType: (data) => request('/account-types', { method: 'POST', body: JSON.stringify(data) }),
+  updateAccountType: (id, data) => request(`/account-types/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteAccountType: (id) => request(`/account-types/${id}`, { method: 'DELETE' }),
+
   // Categories
   getCategories: () => request('/categories'),
   createCategory: (data) => request('/categories', { method: 'POST', body: JSON.stringify(data) }),
