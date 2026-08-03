@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   PieChart, Pie, Cell,
@@ -11,13 +11,43 @@ import { useSettings } from '../../context/SettingsContext';
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const { compactLayout } = useSettings();
 
-  useEffect(() => {
-    api.getDashboardSummary().then(setData).catch(console.error).finally(() => setLoading(false));
+  const loadSummary = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.getDashboardSummary();
+      setData(res);
+    } catch (err) {
+      setError(err.message || 'Failed to load dashboard');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    loadSummary();
+  }, [loadSummary]);
+
   if (loading) return <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto"><div className="flex flex-col items-center justify-center py-16 text-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500"></div></div></div>;
+
+  if (error) {
+    return (
+      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="px-5 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400 mb-4">{error}</div>
+          <button
+            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-colors"
+            onClick={loadSummary}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!data) return null;
 

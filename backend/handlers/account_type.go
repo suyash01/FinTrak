@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 )
 
 func GetAccountTypes(c *gin.Context) {
@@ -88,6 +90,10 @@ func UpdateAccountType(c *gin.Context) {
 	).Scan(&at.ID, &at.Name, &at.PositiveTxnType)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "account type not found"})
+			return
+		}
 		log.Printf("Error in UpdateAccountType: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
@@ -111,10 +117,15 @@ func DeleteAccountType(c *gin.Context) {
 		return
 	}
 
-	_, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
+	result, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
 	if err != nil {
 		log.Printf("Error in DeleteAccountType: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account type not found"})
 		return
 	}
 

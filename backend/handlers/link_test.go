@@ -21,13 +21,13 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "perfect match",
 			debitTxn: models.Transaction{
-				Amount: 1000,
-				Date:   now,
+				Amount:      1000,
+				Date:        now,
 				Description: "Transfer to Savings",
 			},
 			creditTxn: models.Transaction{
-				Amount: 1000,
-				Date:   now,
+				Amount:      1000,
+				Date:        now,
 				Description: "Transfer from Checking",
 			},
 			minScore: 95,
@@ -36,13 +36,13 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "date difference",
 			debitTxn: models.Transaction{
-				Amount: 1000,
-				Date:   now,
+				Amount:      1000,
+				Date:        now,
 				Description: "Rent",
 			},
 			creditTxn: models.Transaction{
-				Amount: 1000,
-				Date:   now.Add(48 * time.Hour), // 2 days later
+				Amount:      1000,
+				Date:        now.Add(48 * time.Hour), // 2 days later
 				Description: "Rent",
 			},
 			minScore: 80,
@@ -51,13 +51,13 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "keyword boost",
 			debitTxn: models.Transaction{
-				Amount: 500,
-				Date:   now,
+				Amount:      500,
+				Date:        now,
 				Description: "UPI-PAY-123",
 			},
 			creditTxn: models.Transaction{
-				Amount: 500,
-				Date:   now,
+				Amount:      500,
+				Date:        now,
 				Description: "UPI-REC-123",
 			},
 			minScore: 90,

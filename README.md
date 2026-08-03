@@ -13,7 +13,7 @@
     -   **Compact Layout**: High-density view for managing large volumes of transactions.
 -   **Account Synchronization**: Track multiple bank accounts, credit cards, and wallets.
 -   **Category & Payee Management**: Organize your spending with hierarchical categories and tracked payees.
--   **Smart Rules 엔진**: Automate categorization by creating rules based on transaction descriptions or payees.
+-   **Smart Rules Engine**: Automate categorization by creating rules based on transaction descriptions or payees.
 -   **Transaction Linking**:
     -   **Transfer Detection**: Link matching transactions between accounts to avoid double-counting.
     -   **Cashback & Refunds**: Link refunds or cashback to their original purchases.

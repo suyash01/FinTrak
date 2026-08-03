@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Papa from 'papaparse';
 import { Upload, ChevronRight, Check, ArrowRight, AlertCircle, FileSpreadsheet } from 'lucide-react';
 import api from '../../api/client';
-import { formatCurrency } from '../../utils/formatters';
+import { formatCurrency, formatDateOnly } from '../../utils/formatters';
 
 const DB_COLUMNS = [
   { key: 'skip', label: '— Skip this column —', required: false },
@@ -166,11 +166,12 @@ export default function Import() {
         } else if (amountMode === 'separate') {
           const debitAmt = parseAmount(row[debitCol]);
           const creditAmt = parseAmount(row[creditCol]);
-          if (debitAmt > 0) {
-            amount = debitAmt;
+          // Some statements export debits as negative numbers
+          if (debitAmt !== 0) {
+            amount = Math.abs(debitAmt);
             type = 'debit';
-          } else if (creditAmt > 0) {
-            amount = creditAmt;
+          } else if (creditAmt !== 0) {
+            amount = Math.abs(creditAmt);
             type = 'credit';
           } else {
             return null;
@@ -232,10 +233,10 @@ export default function Import() {
       return `${match[3]}-${m}-${match[1].padStart(2, '0')}`;
     }
 
-    // Fallback: try Date constructor
+    // Fallback: try Date constructor (parsed as local calendar date)
     const d = new Date(str);
     if (!isNaN(d.getTime())) {
-      return d.toISOString().split('T')[0];
+      return formatDateOnly(d);
     }
 
     return null;

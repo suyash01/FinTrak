@@ -19,11 +19,13 @@ export default function EditTransactionModal({ transaction, accounts, categories
   const [error, setError] = useState('');
   const [visible, setVisible] = useState(false);
   const backdropRef = useRef(null);
+  const closeTimerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
 
   useEffect(() => {
     if (transaction) {
-      const d = new Date(transaction.date);
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = String(transaction.date).split('T')[0];
       setForm({
         date: dateStr,
         description: transaction.description || '',
@@ -42,7 +44,8 @@ export default function EditTransactionModal({ transaction, accounts, categories
 
   const handleClose = () => {
     setVisible(false);
-    setTimeout(onClose, 200);
+    clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(onClose, 200);
   };
 
   const handleBackdropClick = (e) => {
@@ -131,7 +134,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+        <form id="edit-transaction-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
           <div className="px-6 py-5 space-y-6">
             {/* Error */}
             {error && (
@@ -344,8 +347,8 @@ export default function EditTransactionModal({ transaction, accounts, categories
             </button>
             <button
               type="submit"
+              form="edit-transaction-form"
               className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={handleSubmit}
               disabled={saving}
             >
               <Save size={14} />

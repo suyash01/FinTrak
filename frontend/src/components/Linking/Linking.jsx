@@ -1,28 +1,30 @@
-import { useState, useEffect } from 'react';
-import { ArrowRight, Trash2, Link2, Square, CheckSquare } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { ArrowRight, Trash2, Link2, Square, CheckSquare, AlertCircle } from 'lucide-react';
 import api from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 
 export default function Linking() {
   const [links, setLinks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [selected, setSelected] = useState(new Set());
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
-      const allLinks = await api.getLinks().catch(() => []);
+      const allLinks = await api.getLinks();
       setLinks(allLinks);
     } catch (err) {
-      console.error(err);
+      setError(err.message || 'Failed to load links');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleUnlink = async (linkId) => {
     if (!confirm('Remove this link?')) return;
@@ -98,6 +100,17 @@ export default function Linking() {
         {loading ? (
           <div className="flex justify-center items-center py-20">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500"></div>
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
+            <AlertCircle className="w-12 h-12 text-red-500 mb-4 opacity-70" />
+            <p className="text-red-400 text-sm mb-4">{error}</p>
+            <button
+              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-colors"
+              onClick={loadData}
+            >
+              Retry
+            </button>
           </div>
         ) : links.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 px-4 text-center">

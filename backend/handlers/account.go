@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+var errAccountNotFound = errors.New("account not found")
 
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
@@ -116,8 +119,25 @@ func DeleteAccount(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	_, err = db.Pool.Exec(c, "DELETE FROM accounts WHERE id = $1 AND user_id = $2", id, userID)
+	err = db.WithTx(c, func(tx pgx.Tx) error {
+		// Remove the account-linked payee to avoid orphaned payees
+		if _, err := tx.Exec(c, "DELETE FROM payees WHERE account_id = $1 AND user_id = $2", id, userID); err != nil {
+			return err
+		}
+		result, err := tx.Exec(c, "DELETE FROM accounts WHERE id = $1 AND user_id = $2", id, userID)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return errAccountNotFound
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, errAccountNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+			return
+		}
 		log.Printf("Error in DeleteAccount: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
@@ -174,6 +194,10 @@ func UpdateAccount(c *gin.Context) {
 	})
 
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+			return
+		}
 		log.Printf("Error in UpdateAccount: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return

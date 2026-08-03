@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Plus, Trash2, Play, X, Edit2 } from 'lucide-react';
 import api from '../../api/client';
 import { useSettings } from '../../context/SettingsContext';
@@ -15,6 +15,7 @@ export default function Categories() {
   const [newRule, setNewRule] = useState({ pattern: '', matchType: 'contains', categoryId: '', payeeId: '', priority: 0 });
   const [applyResult, setApplyResult] = useState(null);
   const { compactLayout } = useSettings();
+  const applyTimerRef = useRef(null);
 
   useEffect(() => {
     api.getCategories().then(setCategories).catch(console.error);
@@ -69,11 +70,14 @@ export default function Categories() {
     try {
       const result = await api.applyRules();
       setApplyResult(result);
-      setTimeout(() => setApplyResult(null), 3000);
+      clearTimeout(applyTimerRef.current);
+      applyTimerRef.current = setTimeout(() => setApplyResult(null), 3000);
     } catch (err) {
       alert(err.message);
     }
   };
+
+  useEffect(() => () => clearTimeout(applyTimerRef.current), []);
 
   const expenseCategories = categories.filter((c) => c.type === 'expense');
   const incomeCategories = categories.filter((c) => c.type === 'income');

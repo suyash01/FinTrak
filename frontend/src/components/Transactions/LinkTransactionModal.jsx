@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Search, X, Link2, ArrowRight, ArrowLeft, RotateCcw, Gift } from 'lucide-react';
 import api from '../../api/client';
-import { formatCurrency, formatDate } from '../../utils/formatters';
+import { formatCurrency, formatDate, formatDateOnly, parseDateOnly } from '../../utils/formatters';
 
 export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
   const [search, setSearch] = useState('');
@@ -22,14 +22,13 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
 
     // Set default date range: ±14 days from txn.date
     if (txn.date) {
-      const d = new Date(txn.date);
-      const from = new Date(d);
-      from.setDate(d.getDate() - 3);
-      const to = new Date(d);
-      to.setDate(d.getDate() + 3);
+      const from = parseDateOnly(txn.date);
+      const to = parseDateOnly(txn.date);
+      if (from) from.setDate(from.getDate() - 3);
+      if (to) to.setDate(to.getDate() + 3);
 
-      const df = from.toISOString().split('T')[0];
-      const dt = to.toISOString().split('T')[0];
+      const df = formatDateOnly(from);
+      const dt = formatDateOnly(to);
 
       setDateFrom(df);
       setDateTo(dt);
@@ -39,7 +38,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     } else {
       handleSearch();
     }
-  }, [txn.id]);
+  }, [txn.id, txn.date]);
 
   const handleSearch = async (dFrom = dateFrom, dTo = dateTo, mAmount = matchAmount, exclAccount = excludeSameAccount) => {
     setLoading(true);

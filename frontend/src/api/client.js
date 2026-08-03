@@ -3,6 +3,8 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1';
 const TOKEN_KEY = 'fintrak_token';
 const USER_KEY = 'fintrak_user';
 
+const REQUEST_TIMEOUT = 15000;
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -36,11 +38,33 @@ async function request(url, options = {}) {
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
+  // Combine a caller-provided abort signal with a request timeout
+  const controller = new AbortController();
+  const externalSignal = options.signal;
+  let timedOut = false;
+
+  const abort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', abort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT);
+
   let res;
   try {
-    res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    res = await fetch(`${API_BASE}${url}`, { ...options, signal: controller.signal, headers });
   } catch (err) {
+    if (err.name === 'AbortError') {
+      if (timedOut) throw new Error('Request timed out');
+      throw err;
+    }
     throw new Error('Network error: could not reach the API server');
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', abort);
   }
 
   if (res.status === 401 && url !== '/auth/login' && url !== '/auth/register') {
@@ -57,7 +81,9 @@ async function request(url, options = {}) {
     err.status = res.status;
     throw err;
   }
-  return res.json();
+
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 export async function downloadCSV(path) {
@@ -106,9 +132,9 @@ const api = {
   createCategory: (data) => request('/categories', { method: 'POST', body: JSON.stringify(data) }),
 
   // Transactions
-  getTransactions: (params = {}) => {
+  getTransactions: (params = {}, options = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return request(`/transactions?${qs}`);
+    return request(`/transactions?${qs}`, options);
   },
   updateTransaction: (id, data) =>
     request(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -138,12 +164,9 @@ const api = {
   // Links
   getLinks: (type) => request(`/links${type ? `?type=${type}` : ''}`),
   createLink: (data) => request('/links', { method: 'POST', body: JSON.stringify(data) }),
-  bulkCreateLinks: (data) => request('/links/bulk', { method: 'POST', body: JSON.stringify(data) }),
   deleteLink: (id) => request(`/links/${id}`, { method: 'DELETE' }),
   bulkDeleteLinks: (data) =>
     request('/links/bulk-delete', { method: 'POST', body: JSON.stringify(data) }),
-  getTransferSuggestions: () => request('/links/transfer-suggestions'),
-  getCashbackSuggestions: () => request('/links/cashback-suggestions'),
 
   // Dashboard
   getDashboardSummary: (params = {}) => {

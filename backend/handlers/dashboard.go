@@ -144,7 +144,7 @@ func GetDashboardSummary(c *gin.Context) {
 
 	// Recent transactions
 	recentQuery := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type,
-					t.category_id, t.tags, t.notes, t.payee, t.created_at,
+					t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
 					a.name as account_name,
 					COALESCE(c.name, '') as category_name,
 					COALESCE(c.icon, '') as category_icon,
@@ -152,6 +152,7 @@ func GetDashboardSummary(c *gin.Context) {
 					FROM transactions t
 					JOIN accounts a ON t.account_id = a.id
 					LEFT JOIN categories c ON t.category_id = c.id
+					LEFT JOIN payees p ON t.payee_id = p.id
 					WHERE t.user_id = $1
 					ORDER BY t.date DESC, t.created_at DESC
 					LIMIT 10`
@@ -166,7 +167,7 @@ func GetDashboardSummary(c *gin.Context) {
 	for recentRows.Next() {
 		var t models.Transaction
 		if err := recentRows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
-			&t.CategoryID, &t.Tags, &t.Notes, &t.Payee, &t.CreatedAt,
+			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor); err != nil {
 			log.Printf("Error in GetDashboardSummary scan (recent transactions): %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

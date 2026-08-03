@@ -112,6 +112,7 @@ export default function Transactions() {
   // Refs to avoid closures in callbacks
   const categoriesRef = useRef(categories);
   const payeesRef = useRef(payees);
+  const abortRef = useRef(null);
   useEffect(() => { categoriesRef.current = categories; }, [categories]);
   useEffect(() => { payeesRef.current = payees; }, [payees]);
 
@@ -138,20 +139,27 @@ export default function Transactions() {
   }, [pageSize]);
 
   const loadTransactions = useCallback(async () => {
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
+
     setLoading(true);
     try {
       const params = {};
       Object.entries(filters).forEach(([k, v]) => { if (v !== '' && v !== null && v !== undefined) params[k] = v; });
-      const res = await api.getTransactions(params);
-      setData(res);
+      const res = await api.getTransactions(params, { signal: controller.signal });
+      if (abortRef.current === controller) setData(res);
     } catch (err) {
-      console.error(err);
+      if (err.name !== 'AbortError') console.error(err);
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) setLoading(false);
     }
   }, [filters]);
 
-  useEffect(() => { loadTransactions(); }, [loadTransactions]);
+  useEffect(() => {
+    const timer = setTimeout(loadTransactions, 300);
+    return () => clearTimeout(timer);
+  }, [loadTransactions]);
   useEffect(() => {
     api.getAccounts().then(setAccounts).catch(console.error);
     api.getCategories().then(setCategories).catch(console.error);
@@ -169,6 +177,12 @@ export default function Transactions() {
       sortBy: col,
       sortOrder: f.sortBy === col && f.sortOrder === 'DESC' ? 'ASC' : 'DESC',
     }));
+    setSelected(new Set());
+  };
+
+  const goToPage = (page) => {
+    setFilters((f) => ({ ...f, page }));
+    setSelected(new Set());
   };
 
   const SortIcon = ({ col }) => {
@@ -300,7 +314,7 @@ export default function Transactions() {
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
         {/* Filters */}
-        <div className={`w-full ${compactLayout ? 'mb-3' : 'mb-5'}`}>
+        <div className={`relative w-full ${compactLayout ? 'mb-3' : 'mb-5'}`}>
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
           <input className={`pl-9 w-full px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all`} placeholder="Search descriptions..." value={filters.search} onChange={(e) => updateFilter('search', e.target.value)} />
         </div>
@@ -378,9 +392,9 @@ export default function Transactions() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="text-center p-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto"></div></td></tr>
+                <tr><td colSpan={8} className="text-center p-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto"></div></td></tr>
               ) : data.data.length === 0 ? (
-                <tr><td colSpan={7} className="text-center p-10 text-slate-500">No transactions found</td></tr>
+                <tr><td colSpan={8} className="text-center p-10 text-slate-500">No transactions found</td></tr>
               ) : data.data.map((t) => (
                 <TransactionRow
                   key={t.id}
@@ -409,7 +423,7 @@ export default function Transactions() {
               Page {data.page} of {data.pages} ({data.total} total)
             </div>
             <div className="flex gap-1.5">
-              <button className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400" disabled={data.page <= 1} onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}>Prev</button>
+              <button className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400" disabled={data.page <= 1} onClick={() => goToPage(data.page - 1)}>Prev</button>
               {Array.from({ length: Math.min(data.pages, 7) }, (_, i) => {
                 let pageNum;
                 if (data.pages <= 7) {
@@ -422,12 +436,12 @@ export default function Transactions() {
                   pageNum = data.page - 3 + i;
                 }
                 return (
-                  <button key={pageNum} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${data.page === pageNum ? 'bg-cyan-500 text-white' : 'hover:bg-slate-800 hover:text-slate-200 text-slate-400'}`} onClick={() => setFilters((f) => ({ ...f, page: pageNum }))}>
+                  <button key={pageNum} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${data.page === pageNum ? 'bg-cyan-500 text-white' : 'hover:bg-slate-800 hover:text-slate-200 text-slate-400'}`} onClick={() => goToPage(pageNum)}>
                     {pageNum}
                   </button>
                 );
               })}
-              <button className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400" disabled={data.page >= data.pages} onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}>Next</button>
+              <button className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400" disabled={data.page >= data.pages} onClick={() => goToPage(data.page + 1)}>Next</button>
             </div>
           </div>
         )}

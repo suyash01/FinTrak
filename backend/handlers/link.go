@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -103,11 +102,11 @@ func CreateLink(c *gin.Context) {
 		}
 
 		// Set Payee for both transactions
-		// Debit txn payee = Credit account name
-		// Credit txn payee = Debit account name
+		// Debit txn payee = Credit account's linked payee
+		// Credit txn payee = Debit account's linked payee
 		_, err = tx.Exec(c, `
 			UPDATE transactions t1
-			SET payee = a2.name
+			SET payee_id = (SELECT p.id FROM payees p WHERE p.account_id = a2.id)
 			FROM transactions t2
 			JOIN accounts a2 ON t2.account_id = a2.id
 			WHERE t1.id = $1 AND t2.id = $2 AND t1.user_id = $3`,
@@ -120,7 +119,7 @@ func CreateLink(c *gin.Context) {
 
 		_, err = tx.Exec(c, `
 			UPDATE transactions t1
-			SET payee = a2.name
+			SET payee_id = (SELECT p.id FROM payees p WHERE p.account_id = a2.id)
 			FROM transactions t2
 			JOIN accounts a2 ON t2.account_id = a2.id
 			WHERE t1.id = $1 AND t2.id = $2 AND t1.user_id = $3`,
@@ -182,7 +181,7 @@ func BulkCreateLinks(c *gin.Context) {
 			// Set Payee for both transactions
 			_, err = tx.Exec(c, `
 				UPDATE transactions t1
-				SET payee = a2.name
+				SET payee_id = (SELECT p.id FROM payees p WHERE p.account_id = a2.id)
 				FROM transactions t2
 				JOIN accounts a2 ON t2.account_id = a2.id
 				WHERE t1.id = $1 AND t2.id = $2 AND t1.user_id = $3`,
@@ -195,7 +194,7 @@ func BulkCreateLinks(c *gin.Context) {
 
 			_, err = tx.Exec(c, `
 				UPDATE transactions t1
-				SET payee = a2.name
+				SET payee_id = (SELECT p.id FROM payees p WHERE p.account_id = a2.id)
 				FROM transactions t2
 				JOIN accounts a2 ON t2.account_id = a2.id
 				WHERE t1.id = $1 AND t2.id = $2 AND t1.user_id = $3`,
@@ -250,7 +249,7 @@ func DeleteLink(c *gin.Context) {
 	// Clear category and payee for both transactions
 	_, err = tx.Exec(c, `
 		UPDATE transactions 
-		SET category_id = NULL, payee = '' 
+		SET category_id = NULL, payee_id = NULL 
 		WHERE id IN ($1, $2)`,
 		fromTxnID, toTxnID,
 	)
@@ -301,9 +300,16 @@ func BulkDeleteLinks(c *gin.Context) {
 	txnIDs := []uuid.UUID{}
 	for rows.Next() {
 		var fromID, toID uuid.UUID
-		if err := rows.Scan(&fromID, &toID); err == nil {
-			txnIDs = append(txnIDs, fromID, toID)
+		if err := rows.Scan(&fromID, &toID); err != nil {
+			log.Printf("Error scanning link row in BulkDeleteLinks: %v\n", err)
+			continue
 		}
+		txnIDs = append(txnIDs, fromID, toID)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating links in BulkDeleteLinks: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
 	}
 
 	// Delete links
@@ -316,7 +322,7 @@ func BulkDeleteLinks(c *gin.Context) {
 
 	// Reset category and payee for all affected transactions
 	if len(txnIDs) > 0 {
-		_, err = tx.Exec(c, "UPDATE transactions SET category_id = NULL, payee = '' WHERE id = ANY($1)", txnIDs)
+		_, err = tx.Exec(c, "UPDATE transactions SET category_id = NULL, payee_id = NULL WHERE id = ANY($1)", txnIDs)
 		if err != nil {
 			log.Printf("Error resetting transactions in BulkDeleteLinks: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -424,18 +430,17 @@ func GetCashbackSuggestions(c *gin.Context) {
 		JOIN accounts oa ON orig.account_id = oa.id
 		WHERE cb.type = 'credit'
 		  AND cb.user_id = $1
-		  AND (LOWER(cb.description) LIKE '%cashback%'
-		       OR LOWER(cb.description) LIKE '%cash back%'
-		       OR LOWER(cb.description) LIKE '%reward%'
-		       OR LOWER(cb.description) LIKE '%refund%')
+		  AND (cb.description ILIKE '%cashback%'
+		       OR cb.description ILIKE '%cash back%'
+		       OR cb.description ILIKE '%reward%'
+		       OR cb.description ILIKE '%refund%')
 		  AND NOT EXISTS (SELECT 1 FROM links WHERE type = 'cashback' AND to_txn_id = cb.id)
 		ORDER BY cb.date DESC
 		LIMIT 50
 	`, auth.GetUserID(c))
 	if err != nil {
-		// Fallback: if the complex query fails, return empty
-		fmt.Printf("Cashback query error: %v\n", err)
-		c.JSON(http.StatusOK, []models.TransferSuggestion{})
+		log.Printf("Error in GetCashbackSuggestions: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
 	defer rows.Close()
@@ -447,7 +452,9 @@ func GetCashbackSuggestions(c *gin.Context) {
 			&s.CreditTxn.ID, &s.CreditTxn.AccountID, &s.CreditTxn.Date, &s.CreditTxn.Description, &s.CreditTxn.Amount, &s.CreditTxn.Type, &s.CreditTxn.AccountName,
 			&s.DebitTxn.ID, &s.DebitTxn.AccountID, &s.DebitTxn.Date, &s.DebitTxn.Description, &s.DebitTxn.Amount, &s.DebitTxn.Type, &s.DebitTxn.AccountName,
 		); err != nil {
-			continue
+			log.Printf("Error in GetCashbackSuggestions scan: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
 		}
 		s.Score = 70
 		suggestions = append(suggestions, s)

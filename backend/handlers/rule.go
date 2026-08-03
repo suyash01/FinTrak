@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func GetRules(c *gin.Context) {
@@ -77,10 +79,15 @@ func DeleteRule(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	_, err = db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
+	result, err := db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteRule: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
 		return
 	}
 
@@ -108,6 +115,10 @@ func UpdateRule(c *gin.Context) {
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
+			return
+		}
 		log.Printf("Error in UpdateRule: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
@@ -120,28 +131,11 @@ func ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
 	// Get all rules
-	rows, err := db.Pool.Query(c, "SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
+	rules, err := loadRules(c, userID)
 	if err != nil {
 		log.Printf("Error in ApplyRules (getting rules): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
-	}
-	defer rows.Close()
-
-	type ruleEntry struct {
-		Pattern   string
-		MatchType string
-		CatID     uuid.UUID
-		PayeeID   *uuid.UUID
-	}
-	rules := []ruleEntry{}
-	for rows.Next() {
-		var r ruleEntry
-		if err := rows.Scan(&r.Pattern, &r.MatchType, &r.CatID, &r.PayeeID); err != nil {
-			log.Printf("Error in ApplyRules rules scan: %v\n", err)
-			continue
-		}
-		rules = append(rules, r)
 	}
 
 	// Find the "Uncategorized" category ID
@@ -212,6 +206,32 @@ func ApplyRules(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"updated": updated})
+}
+
+type ruleEntry struct {
+	Pattern   string
+	MatchType string
+	CatID     uuid.UUID
+	PayeeID   *uuid.UUID
+}
+
+func loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
+	rows, err := db.Pool.Query(c,
+		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rules := []ruleEntry{}
+	for rows.Next() {
+		var r ruleEntry
+		if err := rows.Scan(&r.Pattern, &r.MatchType, &r.CatID, &r.PayeeID); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
 }
 
 func matchRule(desc, pattern, matchType string) bool {

@@ -13,6 +13,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func GetTransactions(c *gin.Context) {
@@ -34,7 +35,7 @@ func GetTransactions(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
-	if limit < 0 {
+	if limit < 1 || limit > 200 {
 		limit = 50
 	}
 
@@ -211,24 +212,29 @@ func UpdateTransaction(c *gin.Context) {
 	args := []interface{}{}
 	paramIdx := 1
 
-	// Always update metadata fields
-	setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", paramIdx))
-	args = append(args, req.CategoryID)
-	paramIdx++
-
-	setClauses = append(setClauses, fmt.Sprintf("tags = $%d", paramIdx))
-	args = append(args, req.Tags)
-	paramIdx++
-
-	setClauses = append(setClauses, fmt.Sprintf("notes = $%d", paramIdx))
-	args = append(args, req.Notes)
-	paramIdx++
-
-	setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
-	args = append(args, req.PayeeID)
-	paramIdx++
-
-	// Conditionally update core fields
+	// Conditionally update fields based on presence in the request.
+	// CategoryID/PayeeID use a pointer-to-pointer so that an explicit
+	// `null` (clear the field) can be distinguished from an absent key.
+	if req.CategoryID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", paramIdx))
+		args = append(args, *req.CategoryID)
+		paramIdx++
+	}
+	if req.Tags != nil {
+		setClauses = append(setClauses, fmt.Sprintf("tags = $%d", paramIdx))
+		args = append(args, *req.Tags)
+		paramIdx++
+	}
+	if req.Notes != nil {
+		setClauses = append(setClauses, fmt.Sprintf("notes = $%d", paramIdx))
+		args = append(args, *req.Notes)
+		paramIdx++
+	}
+	if req.PayeeID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
+		args = append(args, *req.PayeeID)
+		paramIdx++
+	}
 	if req.Date != nil {
 		setClauses = append(setClauses, fmt.Sprintf("date = $%d", paramIdx))
 		args = append(args, *req.Date)
@@ -259,15 +265,25 @@ func UpdateTransaction(c *gin.Context) {
 		paramIdx++
 	}
 
+	if len(setClauses) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
+
 	// WHERE id = $N AND user_id = $N+1
 	args = append(args, id, auth.GetUserID(c))
 	query := fmt.Sprintf("UPDATE transactions SET %s WHERE id = $%d AND user_id = $%d",
 		strings.Join(setClauses, ", "), paramIdx, paramIdx+1)
 
-	_, err = db.Pool.Exec(c, query, args...)
+	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
 		log.Printf("Error in UpdateTransaction: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "transaction not found"})
 		return
 	}
 
@@ -281,13 +297,8 @@ func BulkCategorize(c *gin.Context) {
 		return
 	}
 
-	ids := make([]string, len(req.TransactionIDs))
-	for i, id := range req.TransactionIDs {
-		ids[i] = fmt.Sprintf("'%s'", id.String())
-	}
-
-	query := fmt.Sprintf("UPDATE transactions SET category_id = $1 WHERE id IN (%s) AND user_id = $2", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query, req.CategoryID, auth.GetUserID(c))
+	query := "UPDATE transactions SET category_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	result, err := db.Pool.Exec(c, query, req.CategoryID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkCategorize: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -304,13 +315,8 @@ func BulkUpdatePayee(c *gin.Context) {
 		return
 	}
 
-	ids := make([]string, len(req.TransactionIDs))
-	for i, id := range req.TransactionIDs {
-		ids[i] = fmt.Sprintf("'%s'", id.String())
-	}
-
-	query := fmt.Sprintf("UPDATE transactions SET payee_id = $1 WHERE id IN (%s) AND user_id = $2", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query, req.PayeeID, auth.GetUserID(c))
+	query := "UPDATE transactions SET payee_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdatePayee: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -327,13 +333,8 @@ func BulkDeleteTransactions(c *gin.Context) {
 		return
 	}
 
-	ids := make([]string, len(req.TransactionIDs))
-	for i, id := range req.TransactionIDs {
-		ids[i] = fmt.Sprintf("'%s'", id.String())
-	}
-
-	query := fmt.Sprintf("DELETE FROM transactions WHERE id IN (%s) AND user_id = $1", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query, auth.GetUserID(c))
+	query := "DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2"
+	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkDeleteTransactions: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -351,10 +352,15 @@ func DeleteTransaction(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	_, err = db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
+	result, err := db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteTransaction: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "transaction not found"})
 		return
 	}
 
@@ -368,31 +374,40 @@ func ImportTransactions(c *gin.Context) {
 		return
 	}
 
-	imported := 0
 	userID := auth.GetUserID(c)
 	log.Printf("Starting import of %d transactions for account %s\n", len(req.Transactions), req.AccountID)
 
+	// Load rules once and match in memory to avoid N+1 queries
+	rules, err := loadRules(c, userID)
+	if err != nil {
+		log.Printf("Error in ImportTransactions (getting rules): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	// Send all inserts in a single batch round trip
+	batch := &pgx.Batch{}
 	for _, t := range req.Transactions {
-		// Auto-categorize
-		var categoryID *uuid.UUID
-		var payeeID *uuid.UUID
-		categoryID, payeeID = autoCategorize(c, userID, t.Description)
+		categoryID, payeeID := autoCategorize(rules, t.Description)
 
 		// If rule gives no payee, try to find one by name from import
 		if payeeID == nil && t.PayeeID != nil {
 			payeeID = t.PayeeID
 		}
 
-		if categoryID != nil {
-			log.Printf("Auto-categorized transaction '%s' to category %s (PayeeID: %v)\n", t.Description, categoryID, payeeID)
-		}
-
-		_, err := db.Pool.Exec(c,
+		batch.Queue(
 			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID,
 		)
-		if err != nil {
+	}
+
+	br := db.Pool.SendBatch(c, batch)
+	defer br.Close()
+
+	imported := 0
+	for range req.Transactions {
+		if _, err := br.Exec(); err != nil {
 			log.Printf("Error in ImportTransactions: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error", "imported": imported})
 			return
@@ -407,38 +422,11 @@ func ImportTransactions(c *gin.Context) {
 	log.Printf("Import complete: %d imported out of %d total.\n", imported, len(req.Transactions))
 }
 
-func autoCategorize(c *gin.Context, userID uuid.UUID, description string) (*uuid.UUID, *uuid.UUID) {
-	rows, err := db.Pool.Query(c,
-		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
-	if err != nil {
-		return nil, nil
-	}
-	defer rows.Close()
-
-	descLower := strings.ToLower(description)
-
-	for rows.Next() {
-		var pattern, matchType string
-		var catID uuid.UUID
-		var payeeID *uuid.UUID
-		rows.Scan(&pattern, &matchType, &catID, &payeeID)
-
-		patternLower := strings.ToLower(pattern)
-		matched := false
-
-		switch matchType {
-		case "contains":
-			matched = strings.Contains(descLower, patternLower)
-		case "starts_with":
-			matched = strings.HasPrefix(descLower, patternLower)
-		case "exact":
-			matched = descLower == patternLower
-		}
-
-		if matched {
-			return &catID, payeeID
+func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UUID) {
+	for _, r := range rules {
+		if matchRule(description, r.Pattern, r.MatchType) {
+			return &r.CatID, r.PayeeID
 		}
 	}
-
 	return nil, nil
 }
