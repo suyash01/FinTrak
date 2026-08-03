@@ -67,6 +67,7 @@ export default function Linking() {
 
   const transferLinks = links.filter((l) => l.type === 'transfer');
   const cashbackLinks = links.filter((l) => l.type === 'cashback');
+  const refundLinks = links.filter((l) => l.type === 'refund');
 
   return (
     <>
@@ -173,6 +174,49 @@ export default function Linking() {
                 </h4>
                 <div className="space-y-3">
                   {cashbackLinks.map((l) => (
+                    <div 
+                      key={l.id} 
+                      className={`group bg-slate-900 border ${selected.has(l.id) ? 'border-cyan-500/50 bg-cyan-500/5' : 'border-slate-800'} rounded-xl p-4 flex items-center gap-4 transition-all hover:border-slate-700`}
+                    >
+                      <button 
+                        onClick={() => toggleSelect(l.id)}
+                        className={`shrink-0 transition-colors ${selected.has(l.id) ? 'text-cyan-500' : 'text-slate-600 group-hover:text-slate-400'}`}
+                      >
+                        {selected.has(l.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm text-slate-200 truncate">{l.fromTxn?.description}</div>
+                        <div className="text-xs text-slate-400 mt-1">
+                          {formatDate(l.fromTxn?.date)} · <span className="text-red-500 font-medium">−{formatCurrency(l.fromTxn?.amount || 0)}</span>
+                        </div>
+                      </div>
+                      <ArrowRight className="text-cyan-500 shrink-0 opacity-50" size={16} />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm text-slate-200 truncate">{l.toTxn?.description}</div>
+                        <div className="text-xs text-slate-400 mt-1">
+                          {formatDate(l.toTxn?.date)} · <span className="text-emerald-500 font-medium">+{formatCurrency(l.toTxn?.amount || 0)}</span>
+                        </div>
+                      </div>
+                      <button 
+                        className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100" 
+                        onClick={() => handleUnlink(l.id)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {refundLinks.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-amber-500"></div>
+                  Refunds ({refundLinks.length})
+                </h4>
+                <div className="space-y-3">
+                  {refundLinks.map((l) => (
                     <div 
                       key={l.id} 
                       className={`group bg-slate-900 border ${selected.has(l.id) ? 'border-cyan-500/50 bg-cyan-500/5' : 'border-slate-800'} rounded-xl p-4 flex items-center gap-4 transition-all hover:border-slate-700`}

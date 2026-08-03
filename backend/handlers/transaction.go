@@ -35,7 +35,8 @@ func GetTransactions(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 200 {
+	// limit of 0 means "no pagination" (return everything); cap at 200.
+	if limit < 0 || limit > 200 {
 		limit = 50
 	}
 
@@ -213,11 +214,15 @@ func UpdateTransaction(c *gin.Context) {
 	paramIdx := 1
 
 	// Conditionally update fields based on presence in the request.
-	// CategoryID/PayeeID use a pointer-to-pointer so that an explicit
-	// `null` (clear the field) can be distinguished from an absent key.
-	if req.CategoryID != nil {
+	// CategoryID/PayeeID use OptionalUUID so that an explicit `null`
+	// (clear the field) can be distinguished from an absent key.
+	if req.CategoryID.Set() {
 		setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", paramIdx))
-		args = append(args, *req.CategoryID)
+		if v := req.CategoryID.Value(); v != nil {
+			args = append(args, *v)
+		} else {
+			args = append(args, nil)
+		}
 		paramIdx++
 	}
 	if req.Tags != nil {
@@ -230,9 +235,13 @@ func UpdateTransaction(c *gin.Context) {
 		args = append(args, *req.Notes)
 		paramIdx++
 	}
-	if req.PayeeID != nil {
+	if req.PayeeID.Set() {
 		setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
-		args = append(args, *req.PayeeID)
+		if v := req.PayeeID.Value(); v != nil {
+			args = append(args, *v)
+		} else {
+			args = append(args, nil)
+		}
 		paramIdx++
 	}
 	if req.Date != nil {

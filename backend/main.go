@@ -24,6 +24,18 @@ func main() {
 	db.SeedAccountTypes()
 
 	// Setup Gin
+	r := setupRouter(cfg)
+
+	const Version = "0.1.0-alpha"
+
+	addr := fmt.Sprintf(":%s", cfg.Port)
+	log.Printf("🚀 FinTrak API v%s running on %s\n", Version, addr)
+	r.Run(addr)
+}
+
+// setupRouter builds the Gin router and registers all routes. It is extracted
+// from main so it can be exercised by unit tests.
+func setupRouter(cfg *config.Config) *gin.Engine {
 	r := gin.Default()
 
 	// Expose JWT secret to auth handlers via context
@@ -117,9 +129,5 @@ func main() {
 		api.GET("/dashboard/summary", handlers.GetDashboardSummary)
 	}
 
-	const Version = "0.1.0-alpha"
-
-	addr := fmt.Sprintf(":%s", cfg.Port)
-	log.Printf("🚀 FinTrak API v%s running on %s\n", Version, addr)
-	r.Run(addr)
+	return r
 }

@@ -20,9 +20,9 @@ func GetLinks(c *gin.Context) {
 			  ft.date, ft.description, ft.amount, ft.type, fa.name,
 			  tt.date, tt.description, tt.amount, tt.type, ta.name
 			  FROM links l
-			  JOIN transactions ft ON l.from_txn_id = ft.id
+			  JOIN transactions ft ON l.from_txn_id = ft.id AND ft.user_id = l.user_id
 			  JOIN accounts fa ON ft.account_id = fa.id
-			  JOIN transactions tt ON l.to_txn_id = tt.id
+			  JOIN transactions tt ON l.to_txn_id = tt.id AND tt.user_id = l.user_id
 			  JOIN accounts ta ON tt.account_id = ta.id
 			  WHERE l.user_id = $1`
 
@@ -75,8 +75,28 @@ func CreateLink(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
+	if req.Type != "transfer" && req.Type != "cashback" && req.Type != "refund" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid link type"})
+		return
+	}
+
+	// Verify both transactions belong to the requesting user before linking.
 	var link models.Link
 	userID := auth.GetUserID(c)
+	var owned int
+	if err := tx.QueryRow(c,
+		"SELECT COUNT(*) FROM transactions WHERE id = ANY($1) AND user_id = $2",
+		[]uuid.UUID{req.FromTxnID, req.ToTxnID}, userID,
+	).Scan(&owned); err != nil {
+		log.Printf("Error checking transaction ownership in CreateLink: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if owned != 2 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
+		return
+	}
+
 	err = tx.QueryRow(c,
 		`INSERT INTO links (user_id, type, from_txn_id, to_txn_id, notes) VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id, type, from_txn_id, to_txn_id, notes, created_at`,
@@ -157,6 +177,26 @@ func BulkCreateLinks(c *gin.Context) {
 	createdCount := 0
 	userID := auth.GetUserID(c)
 	for _, l := range req.Links {
+		if l.Type != "transfer" && l.Type != "cashback" && l.Type != "refund" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid link type"})
+			return
+		}
+
+		// Verify both transactions belong to the requesting user before linking.
+		var owned int
+		if err := tx.QueryRow(c,
+			"SELECT COUNT(*) FROM transactions WHERE id = ANY($1) AND user_id = $2",
+			[]uuid.UUID{l.FromTxnID, l.ToTxnID}, userID,
+		).Scan(&owned); err != nil {
+			log.Printf("Error checking transaction ownership in BulkCreateLinks: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		if owned != 2 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
+			return
+		}
+
 		_, err = tx.Exec(c,
 			`INSERT INTO links (user_id, type, from_txn_id, to_txn_id, notes) VALUES ($1, $2, $3, $4, $5)`,
 			userID, l.Type, l.FromTxnID, l.ToTxnID, l.Notes,
@@ -246,12 +286,18 @@ func DeleteLink(c *gin.Context) {
 		return
 	}
 
-	// Clear category and payee for both transactions
+	// Clear category and payee for both transactions, but only if no other
+	// link still references them (a txn may belong to multiple links).
 	_, err = tx.Exec(c, `
 		UPDATE transactions 
 		SET category_id = NULL, payee_id = NULL 
-		WHERE id IN ($1, $2)`,
-		fromTxnID, toTxnID,
+		WHERE id = ANY($1) AND user_id = $2
+		  AND NOT EXISTS (
+		      SELECT 1 FROM links l2 
+		      WHERE (l2.from_txn_id = transactions.id OR l2.to_txn_id = transactions.id)
+		        AND l2.id != $3
+		  )`,
+		[]uuid.UUID{fromTxnID, toTxnID}, auth.GetUserID(c), id,
 	)
 	if err != nil {
 		log.Printf("Error resetting transactions in DeleteLink: %v\n", err)
@@ -320,9 +366,18 @@ func BulkDeleteLinks(c *gin.Context) {
 		return
 	}
 
-	// Reset category and payee for all affected transactions
+	// Reset category and payee for all affected transactions that are no
+	// longer referenced by any remaining link.
 	if len(txnIDs) > 0 {
-		_, err = tx.Exec(c, "UPDATE transactions SET category_id = NULL, payee_id = NULL WHERE id = ANY($1)", txnIDs)
+		_, err = tx.Exec(c, `
+			UPDATE transactions SET category_id = NULL, payee_id = NULL 
+			WHERE id = ANY($1) AND user_id = $2
+			  AND NOT EXISTS (
+			      SELECT 1 FROM links l2 
+			      WHERE l2.from_txn_id = transactions.id OR l2.to_txn_id = transactions.id
+			  )`,
+			txnIDs, auth.GetUserID(c),
+		)
 		if err != nil {
 			log.Printf("Error resetting transactions in BulkDeleteLinks: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

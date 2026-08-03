@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,16 +137,48 @@ type UpdateAccountTypeRequest struct {
 	PositiveTxnType string `json:"positiveTxnType"`
 }
 
+// OptionalUUID distinguishes an absent JSON key from an explicit null so that a
+// null value can clear a column while an absent key leaves it untouched.
+type OptionalUUID struct {
+	present bool
+	value   *uuid.UUID
+}
+
+func (o *OptionalUUID) UnmarshalJSON(data []byte) error {
+	o.present = true
+	if string(data) == "null" {
+		o.value = nil
+		return nil
+	}
+	var u uuid.UUID
+	if err := json.Unmarshal(data, &u); err != nil {
+		return err
+	}
+	o.value = &u
+	return nil
+}
+
+// Set reports whether the key was present in the JSON body (including null).
+func (o *OptionalUUID) Set() bool { return o != nil && o.present }
+
+// Value returns the parsed UUID, or nil when the key was explicitly null.
+func (o *OptionalUUID) Value() *uuid.UUID {
+	if o == nil {
+		return nil
+	}
+	return o.value
+}
+
 type UpdateTransactionRequest struct {
-	CategoryID  **uuid.UUID `json:"categoryId"`
-	Tags        *[]string   `json:"tags"`
-	Notes       *string     `json:"notes"`
-	PayeeID     **uuid.UUID `json:"payeeId"`
-	Date        *string     `json:"date"`
-	Description *string     `json:"description"`
-	Amount      *float64    `json:"amount"`
-	Type        *string     `json:"type"`
-	AccountID   *uuid.UUID  `json:"accountId"`
+	CategoryID  OptionalUUID `json:"categoryId"`
+	Tags        *[]string    `json:"tags"`
+	Notes       *string      `json:"notes"`
+	PayeeID     OptionalUUID `json:"payeeId"`
+	Date        *string      `json:"date"`
+	Description *string      `json:"description"`
+	Amount      *float64     `json:"amount"`
+	Type        *string      `json:"type"`
+	AccountID   *uuid.UUID   `json:"accountId"`
 }
 
 type BulkCategorizeRequest struct {

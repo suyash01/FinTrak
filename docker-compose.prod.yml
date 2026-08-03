@@ -38,6 +38,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - JWT_SECRET=${JWT_SECRET}
+      - APP_ENV=production
     depends_on:
       db:
         condition: service_healthy

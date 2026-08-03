@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strings"
 
@@ -29,6 +30,9 @@ func Load() *Config {
 	}
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
+		if os.Getenv("APP_ENV") == "production" {
+			log.Fatal("JWT_SECRET must be set when APP_ENV=production")
+		}
 		jwtSecret = defaultJWTSecret
 	}
 
