@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Upload,
@@ -9,10 +9,20 @@ import {
   Wallet,
   Sparkles,
   Users,
+  LogOut,
 } from 'lucide-react';
 import packageJson from '../../../package.json';
+import { useAuth } from '../../context/AuthContext';
 
 export default function Sidebar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
   const navLinkClass = ({ isActive }) =>
     `flex items-center gap-3 py-2.5 px-3.5 rounded-lg no-underline text-sm font-medium cursor-pointer transition-all border ${isActive
       ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
@@ -58,9 +68,23 @@ export default function Sidebar() {
           <Settings className="w-[18px] h-[18px] shrink-0" /> Settings
         </NavLink>
       </nav>
-      <div className="p-4 flex items-center gap-2 border-t border-slate-800">
-        <Sparkles size={14} className="text-cyan-500" />
-        <span className="text-xs text-slate-500">FinTrak v{packageJson.version}</span>
+      <div className="p-4 border-t border-slate-800 space-y-3">
+        <div className="text-xs text-slate-400 truncate">
+          {user?.email}
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className="text-cyan-500" />
+            <span className="text-xs text-slate-500">FinTrak v{packageJson.version}</span>
+          </div>
+          <button
+            onClick={handleLogout}
+            title="Log out"
+            className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-800 transition-colors"
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
       </div>
     </aside>
   );

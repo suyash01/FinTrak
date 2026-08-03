@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,7 @@ import (
 )
 
 func GetAccounts(c *gin.Context) {
+	userID := auth.GetUserID(c)
 	query := `
 		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color,
 		COALESCE(SUM(CASE 
@@ -25,10 +27,11 @@ func GetAccounts(c *gin.Context) {
 		FROM accounts a
 		JOIN account_types at ON a.account_type_id = at.id
 		LEFT JOIN transactions t ON a.id = t.account_id
+		WHERE a.user_id = $1
 		GROUP BY a.id, a.name, a.account_type_id, at.name, a.bank, a.currency, a.color, a.created_at
 		ORDER BY a.created_at DESC`
 
-	rows, err := db.Pool.Query(c, query)
+	rows, err := db.Pool.Query(c, query, userID)
 	if err != nil {
 		log.Printf("Error in GetAccounts: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -65,11 +68,12 @@ func CreateAccount(c *gin.Context) {
 	}
 
 	var account models.Account
+	userID := auth.GetUserID(c)
 	err := db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
-			`INSERT INTO accounts (name, account_type_id, bank, currency, color) VALUES ($1, $2, $3, $4, $5)
+			`INSERT INTO accounts (user_id, name, account_type_id, bank, currency, color) VALUES ($1, $2, $3, $4, $5, $6)
 			 RETURNING id, name, account_type_id, bank, currency, color`,
-			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color,
+			userID, req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color,
 		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color)
 
 		if err != nil {
@@ -77,13 +81,15 @@ func CreateAccount(c *gin.Context) {
 		}
 
 		// Fetch the account type name for the response
-		tx.QueryRow(c, "SELECT name FROM account_types WHERE id = $1", account.AccountTypeID).Scan(&account.AccountTypeName)
+		if err := tx.QueryRow(c, "SELECT name FROM account_types WHERE id = $1", account.AccountTypeID).Scan(&account.AccountTypeName); err != nil {
+			return fmt.Errorf("failed to load account type name: %w", err)
+		}
 
 		// Synchronize with Payees: Create a payee for the new account
 		_, err = tx.Exec(c,
-			`INSERT INTO payees (name, account_id) VALUES ($1, $2)
+			`INSERT INTO payees (user_id, name, account_id) VALUES ($1, $2, $3)
 			 ON CONFLICT (account_id) DO UPDATE SET name = EXCLUDED.name`,
-			account.Name, account.ID,
+			userID, account.Name, account.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create linked payee: %w", err)
@@ -109,7 +115,8 @@ func DeleteAccount(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Pool.Exec(c, "DELETE FROM accounts WHERE id = $1", id)
+	userID := auth.GetUserID(c)
+	_, err = db.Pool.Exec(c, "DELETE FROM accounts WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteAccount: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -133,11 +140,12 @@ func UpdateAccount(c *gin.Context) {
 	}
 
 	var account models.Account
+	userID := auth.GetUserID(c)
 	err = db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
 			`WITH updated AS (
 				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, updated_at = NOW() 
-				WHERE id = $6 RETURNING id, name, account_type_id, bank, currency, color
+				WHERE id = $6 AND user_id = $7 RETURNING id, name, account_type_id, bank, currency, color
 			)
 			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color,
 			COALESCE((SELECT SUM(CASE 
@@ -146,7 +154,7 @@ func UpdateAccount(c *gin.Context) {
 				ELSE 0 END) FROM transactions t WHERE t.account_id = u.id), 0) as balance
 			FROM updated u
 			JOIN account_types at ON u.account_type_id = at.id`,
-			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, id,
+			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, id, userID,
 		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.Balance)
 
 		if err != nil {
@@ -181,7 +189,12 @@ func ExportAccount(c *gin.Context) {
 		return
 	}
 
-	rows, err := db.Pool.Query(c, "SELECT date, description, amount, type, tags, notes FROM transactions WHERE account_id = $1 ORDER BY date DESC", id)
+	rows, err := db.Pool.Query(c,
+		`SELECT t.date, t.description, t.amount, t.type, t.tags, t.notes
+		 FROM transactions t
+		 WHERE t.account_id = $1
+		   AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = t.account_id AND a.user_id = $2)
+		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in ExportAccount: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

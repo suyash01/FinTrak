@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -12,20 +13,21 @@ import (
 
 func GetDashboardSummary(c *gin.Context) {
 	ctx := c
+	userID := auth.GetUserID(c)
 	dateFrom := c.Query("dateFrom")
 	dateTo := c.Query("dateTo")
 
 	var summary models.DashboardSummary
 
 	// Total accounts
-	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM accounts").Scan(&summary.TotalAccounts); err != nil {
+	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
 		log.Printf("Error in GetDashboardSummary (total accounts): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
 
 	// Total transactions
-	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM transactions").Scan(&summary.TotalTransactions); err != nil {
+	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM transactions WHERE user_id = $1", userID).Scan(&summary.TotalTransactions); err != nil {
 		log.Printf("Error in GetDashboardSummary (total transactions): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
@@ -33,8 +35,8 @@ func GetDashboardSummary(c *gin.Context) {
 
 	// Income / Expense totals
 	dateFilter := ""
-	args := []any{}
-	paramIdx := 1
+	args := []any{userID}
+	paramIdx := 2
 	if dateFrom != "" {
 		dateFilter += fmt.Sprintf(" AND date >= $%d", paramIdx)
 		args = append(args, dateFrom)
@@ -46,14 +48,14 @@ func GetDashboardSummary(c *gin.Context) {
 		paramIdx++
 	}
 
-	incomeQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'credit'" + dateFilter
+	incomeQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'credit' AND user_id = $1" + dateFilter
 	if err := db.Pool.QueryRow(ctx, incomeQuery, args...).Scan(&summary.TotalIncome); err != nil {
 		log.Printf("Error in GetDashboardSummary (total income): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
 
-	expenseQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'debit'" + dateFilter
+	expenseQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'debit' AND user_id = $1" + dateFilter
 	if err := db.Pool.QueryRow(ctx, expenseQuery, args...).Scan(&summary.TotalExpense); err != nil {
 		log.Printf("Error in GetDashboardSummary (total expense): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -63,7 +65,8 @@ func GetDashboardSummary(c *gin.Context) {
 	// By category (expenses only)
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit'` + dateFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + dateFilter + `
+				 WHERE c.user_id = $1
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
@@ -89,7 +92,8 @@ func GetDashboardSummary(c *gin.Context) {
 	// By category (income only)
 	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit'` + dateFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1` + dateFilter + `
+				 WHERE c.user_id = $1
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
@@ -117,11 +121,11 @@ func GetDashboardSummary(c *gin.Context) {
 					 COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) as income,
 					 COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) as expense
 					 FROM transactions
-					 WHERE date >= NOW() - INTERVAL '12 months'
+					 WHERE user_id = $1 AND date >= NOW() - INTERVAL '12 months'
 					 GROUP BY TO_CHAR(date, 'YYYY-MM')
 					 ORDER BY month`
 
-	monthRows, err := db.Pool.Query(ctx, monthlyQuery)
+	monthRows, err := db.Pool.Query(ctx, monthlyQuery, userID)
 	if err != nil {
 		log.Printf("Error in GetDashboardSummary (monthly trend): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -148,10 +152,11 @@ func GetDashboardSummary(c *gin.Context) {
 					FROM transactions t
 					JOIN accounts a ON t.account_id = a.id
 					LEFT JOIN categories c ON t.category_id = c.id
+					WHERE t.user_id = $1
 					ORDER BY t.date DESC, t.created_at DESC
 					LIMIT 10`
 
-	recentRows, err := db.Pool.Query(ctx, recentQuery)
+	recentRows, err := db.Pool.Query(ctx, recentQuery, userID)
 	if err != nil {
 		log.Printf("Error in GetDashboardSummary (recent transactions): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

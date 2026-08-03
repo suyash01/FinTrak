@@ -90,11 +90,15 @@ The easiest way to get FinTrak running is using Docker Compose:
 
 The backend exposes a RESTful API under `/api/v1`:
 
+-   `POST /auth/register`: Create an account (returns a JWT).
+-   `POST /auth/login`: Sign in (returns a JWT).
 -   `GET /accounts`: List all financial accounts.
 -   `GET /transactions`: List transactions with support for search and filters.
 -   `POST /transactions/import`: Upload CSV files for processing.
 -   `POST /rules/apply`: Manually trigger categorization rules.
 -   `GET /dashboard/summary`: Retrieve aggregated data for charts.
+
+All endpoints except `/auth/register` and `/auth/login` require an `Authorization: Bearer <token>` header. Set the signing secret via the `JWT_SECRET` environment variable (a dev default is used when unset).
 
 ---
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,7 @@ import (
 )
 
 func GetTransactions(c *gin.Context) {
+	userID := auth.GetUserID(c)
 	accountID := c.Query("accountId")
 	categoryID := c.Query("categoryId")
 	search := c.Query("search")
@@ -65,12 +67,12 @@ func GetTransactions(c *gin.Context) {
 			  JOIN accounts a ON t.account_id = a.id
 			  LEFT JOIN categories c ON t.category_id = c.id
 			  LEFT JOIN payees p ON t.payee_id = p.id
-			  WHERE 1=1`
+			  WHERE t.user_id = $1`
 
-	countQuery := `SELECT COUNT(*) FROM transactions t WHERE 1=1`
-	args := []interface{}{}
-	countArgs := []interface{}{}
-	paramIdx := 1
+	countQuery := `SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1`
+	args := []interface{}{userID}
+	countArgs := []interface{}{userID}
+	paramIdx := 2
 
 	if accountID != "" {
 		query += fmt.Sprintf(" AND t.account_id = $%d", paramIdx)
@@ -273,7 +275,7 @@ func UpdateTransaction(c *gin.Context) {
 		var desc, txnType string
 		var amount float64
 		err := db.Pool.QueryRow(c,
-			"SELECT account_id, date, description, amount, type FROM transactions WHERE id = $1", id,
+			"SELECT account_id, date, description, amount, type FROM transactions WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c),
 		).Scan(&acctID, &date, &desc, &amount, &txnType)
 		if err != nil {
 			log.Printf("Error fetching transaction for hash: %v\n", err)
@@ -312,10 +314,10 @@ func UpdateTransaction(c *gin.Context) {
 		paramIdx++
 	}
 
-	// WHERE id = $N
-	args = append(args, id)
-	query := fmt.Sprintf("UPDATE transactions SET %s WHERE id = $%d",
-		strings.Join(setClauses, ", "), paramIdx)
+	// WHERE id = $N AND user_id = $N+1
+	args = append(args, id, auth.GetUserID(c))
+	query := fmt.Sprintf("UPDATE transactions SET %s WHERE id = $%d AND user_id = $%d",
+		strings.Join(setClauses, ", "), paramIdx, paramIdx+1)
 
 	_, err = db.Pool.Exec(c, query, args...)
 	if err != nil {
@@ -339,8 +341,8 @@ func BulkCategorize(c *gin.Context) {
 		ids[i] = fmt.Sprintf("'%s'", id.String())
 	}
 
-	query := fmt.Sprintf("UPDATE transactions SET category_id = $1 WHERE id IN (%s)", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query, req.CategoryID)
+	query := fmt.Sprintf("UPDATE transactions SET category_id = $1 WHERE id IN (%s) AND user_id = $2", strings.Join(ids, ","))
+	result, err := db.Pool.Exec(c, query, req.CategoryID, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkCategorize: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -362,8 +364,8 @@ func BulkUpdatePayee(c *gin.Context) {
 		ids[i] = fmt.Sprintf("'%s'", id.String())
 	}
 
-	query := fmt.Sprintf("UPDATE transactions SET payee_id = $1 WHERE id IN (%s)", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query, req.PayeeID)
+	query := fmt.Sprintf("UPDATE transactions SET payee_id = $1 WHERE id IN (%s) AND user_id = $2", strings.Join(ids, ","))
+	result, err := db.Pool.Exec(c, query, req.PayeeID, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdatePayee: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -385,8 +387,8 @@ func BulkDeleteTransactions(c *gin.Context) {
 		ids[i] = fmt.Sprintf("'%s'", id.String())
 	}
 
-	query := fmt.Sprintf("DELETE FROM transactions WHERE id IN (%s)", strings.Join(ids, ","))
-	result, err := db.Pool.Exec(c, query)
+	query := fmt.Sprintf("DELETE FROM transactions WHERE id IN (%s) AND user_id = $1", strings.Join(ids, ","))
+	result, err := db.Pool.Exec(c, query, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkDeleteTransactions: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -403,7 +405,8 @@ func DeleteTransaction(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1", id)
+	userID := auth.GetUserID(c)
+	_, err = db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteTransaction: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -422,6 +425,7 @@ func ImportTransactions(c *gin.Context) {
 
 	imported := 0
 	skipped := 0
+	userID := auth.GetUserID(c)
 	log.Printf("Starting import of %d transactions for account %s\n", len(req.Transactions), req.AccountID)
 
 	for _, t := range req.Transactions {
@@ -432,7 +436,7 @@ func ImportTransactions(c *gin.Context) {
 		// Auto-categorize
 		var categoryID *uuid.UUID
 		var payeeID *uuid.UUID
-		categoryID, payeeID = autoCategorize(c, t.Description)
+		categoryID, payeeID = autoCategorize(c, userID, t.Description)
 
 		// If rule gives no payee, try to find one by name from import
 		if payeeID == nil && t.PayeeID != nil {
@@ -444,9 +448,9 @@ func ImportTransactions(c *gin.Context) {
 		}
 
 		_, err := db.Pool.Exec(c,
-			`INSERT INTO transactions (account_id, date, description, amount, type, category_id, payee_id, hash)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			req.AccountID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID, hash,
+			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, hash)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID, hash,
 		)
 		if err != nil {
 			log.Printf("Error in ImportTransactions: %v\n", err)
@@ -464,9 +468,9 @@ func ImportTransactions(c *gin.Context) {
 	log.Printf("Import complete: %d imported, %d skipped out of %d total.\n", imported, skipped, len(req.Transactions))
 }
 
-func autoCategorize(c *gin.Context, description string) (*uuid.UUID, *uuid.UUID) {
+func autoCategorize(c *gin.Context, userID uuid.UUID, description string) (*uuid.UUID, *uuid.UUID) {
 	rows, err := db.Pool.Query(c,
-		"SELECT pattern, match_type, category_id, payee_id FROM rules ORDER BY priority DESC")
+		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
 	if err != nil {
 		return nil, nil
 	}

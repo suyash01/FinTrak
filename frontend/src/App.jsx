@@ -7,7 +7,9 @@ import Accounts from './components/Accounts/Accounts';
 import Categories from './components/Categories/Categories';
 import Payees from './components/Payees/Payees';
 import Linking from './components/Linking/Linking';
+import Login from './components/Auth/Login';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import './index.css';
 import { useState, useEffect } from 'react';
 import api from './api/client';
@@ -202,22 +204,41 @@ export default function App() {
   return (
     <BrowserRouter>
       <SettingsProvider>
-        <div className="flex h-screen w-screen overflow-hidden">
-          <Sidebar />
-          <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/import" element={<Import />} />
-              <Route path="/transactions" element={<Transactions />} />
-              <Route path="/accounts" element={<Accounts />} />
-              <Route path="/categories" element={<Categories />} />
-              <Route path="/payees" element={<Payees />} />
-              <Route path="/linking" element={<Linking />} />
-              <Route path="/settings" element={<Settings />} />
-            </Routes>
-          </main>
-        </div>
+        <AuthProvider>
+          <Root />
+        </AuthProvider>
       </SettingsProvider>
     </BrowserRouter>
+  );
+}
+
+function Root() {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) {
+    return (
+      <Routes>
+        <Route path="*" element={<Login />} />
+      </Routes>
+    );
+  }
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden">
+      <Sidebar />
+      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/import" element={<Import />} />
+          <Route path="/transactions" element={<Transactions />} />
+          <Route path="/accounts" element={<Accounts />} />
+          <Route path="/categories" element={<Categories />} />
+          <Route path="/payees" element={<Payees />} />
+          <Route path="/linking" element={<Linking />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<Dashboard />} />
+        </Routes>
+      </main>
+    </div>
   );
 }

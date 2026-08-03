@@ -31,14 +31,17 @@ func TestGetAccounts(t *testing.T) {
 	// Setup Gin
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
+	r.Use(testAuthMiddleware())
 	r.GET("/accounts", GetAccounts)
 
 	// Define expected data
+	userID := testUserID()
 	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "balance"}).
 		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", 1000.50).
 		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
+		WithArgs(userID).
 		WillReturnRows(rows)
 
 	// Perform request
@@ -48,7 +51,7 @@ func TestGetAccounts(t *testing.T) {
 
 	// Assertions
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var accounts []models.Account
 	err = json.Unmarshal(w.Body.Bytes(), &accounts)
 	assert.NoError(t, err)
@@ -72,9 +75,11 @@ func TestCreateAccount(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
+	r.Use(testAuthMiddleware())
 	r.POST("/accounts", CreateAccount)
 
 	accountID := uuid.New()
+	userID := testUserID()
 	reqBody := models.CreateAccountRequest{
 		Name:          "New Account",
 		AccountTypeID: "bank",
@@ -83,10 +88,10 @@ func TestCreateAccount(t *testing.T) {
 
 	// Expect Transaction
 	mock.ExpectBegin()
-	
+
 	// Expect Insert Account
 	mock.ExpectQuery("INSERT INTO accounts").
-		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4").
+		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color"}).
 			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4"))
 
@@ -97,7 +102,7 @@ func TestCreateAccount(t *testing.T) {
 
 	// Expect Insert/Update Payee
 	mock.ExpectExec("INSERT INTO payees").
-		WithArgs(reqBody.Name, accountID).
+		WithArgs(userID, reqBody.Name, accountID).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	mock.ExpectCommit()
@@ -111,7 +116,7 @@ func TestCreateAccount(t *testing.T) {
 
 	// Assertions
 	assert.Equal(t, http.StatusCreated, w.Code)
-	
+
 	var account models.Account
 	err = json.Unmarshal(w.Body.Bytes(), &account)
 	assert.NoError(t, err)
@@ -119,4 +124,15 @@ func TestCreateAccount(t *testing.T) {
 	assert.Equal(t, "New Account", account.Name)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func testUserID() uuid.UUID {
+	return uuid.MustParse("00000000-0000-0000-0000-000000000001")
+}
+
+func testAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("userID", testUserID())
+		c.Next()
+	}
 }

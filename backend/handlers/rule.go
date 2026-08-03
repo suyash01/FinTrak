@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,8 @@ func GetRules(c *gin.Context) {
 		 FROM rules r
 		 LEFT JOIN categories c ON r.category_id = c.id
 		 LEFT JOIN payees p ON r.payee_id = p.id
-		 ORDER BY r.priority DESC`)
+		 WHERE r.user_id = $1
+		 ORDER BY r.priority DESC`, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetRules: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -53,9 +55,9 @@ func CreateRule(c *gin.Context) {
 
 	var rule models.Rule
 	err := db.Pool.QueryRow(c,
-		`INSERT INTO rules (pattern, match_type, category_id, payee_id, priority) VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority) VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
-		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority,
+		auth.GetUserID(c), req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority,
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
@@ -74,7 +76,8 @@ func DeleteRule(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1", id)
+	userID := auth.GetUserID(c)
+	_, err = db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteRule: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -100,8 +103,8 @@ func UpdateRule(c *gin.Context) {
 	var rule models.Rule
 	err = db.Pool.QueryRow(c,
 		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5
-		 WHERE id = $6 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
-		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority, id,
+		 WHERE id = $6 AND user_id = $7 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
+		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority, id, auth.GetUserID(c),
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
@@ -114,8 +117,10 @@ func UpdateRule(c *gin.Context) {
 }
 
 func ApplyRules(c *gin.Context) {
+	userID := auth.GetUserID(c)
+
 	// Get all rules
-	rows, err := db.Pool.Query(c, "SELECT pattern, match_type, category_id, payee_id FROM rules ORDER BY priority DESC")
+	rows, err := db.Pool.Query(c, "SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
 	if err != nil {
 		log.Printf("Error in ApplyRules (getting rules): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -141,14 +146,14 @@ func ApplyRules(c *gin.Context) {
 
 	// Find the "Uncategorized" category ID
 	var uncategorizedID uuid.UUID
-	err = db.Pool.QueryRow(c, "SELECT id FROM categories WHERE name = 'Uncategorized' LIMIT 1").Scan(&uncategorizedID)
+	err = db.Pool.QueryRow(c, "SELECT id FROM categories WHERE name = 'Uncategorized' AND user_id = $1 LIMIT 1", userID).Scan(&uncategorizedID)
 	hasUncategorized := err == nil
 
 	// Get uncategorized transactions (NULL or "Uncategorized" category)
-	query := "SELECT id, description FROM transactions WHERE category_id IS NULL"
-	args := []interface{}{}
+	query := "SELECT id, description FROM transactions WHERE category_id IS NULL AND user_id = $1"
+	args := []interface{}{userID}
 	if hasUncategorized {
-		query += " OR category_id = $1"
+		query += " OR (category_id = $2 AND user_id = $1)"
 		args = append(args, uncategorizedID)
 	}
 
@@ -183,11 +188,11 @@ func ApplyRules(c *gin.Context) {
 				updateQuery := "UPDATE transactions SET category_id = $1"
 				updateArgs := []interface{}{r.CatID}
 				if r.PayeeID != nil {
-					updateQuery += ", payee_id = $2 WHERE id = $3"
-					updateArgs = append(updateArgs, r.PayeeID, txnID)
+					updateQuery += ", payee_id = $2 WHERE id = $3 AND user_id = $4"
+					updateArgs = append(updateArgs, r.PayeeID, txnID, userID)
 				} else {
-					updateQuery += " WHERE id = $2"
-					updateArgs = append(updateArgs, txnID)
+					updateQuery += " WHERE id = $2 AND user_id = $3"
+					updateArgs = append(updateArgs, txnID, userID)
 				}
 				_, err := tx.Exec(c, updateQuery, updateArgs...)
 				if err != nil {

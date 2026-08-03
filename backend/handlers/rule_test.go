@@ -99,31 +99,35 @@ func TestApplyRules(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
+	r.Use(testAuthMiddleware())
 	r.POST("/rules/apply", ApplyRules)
 
 	ruleCatID := uuid.New()
 	txnID := uuid.New()
 	uncategorizedID := uuid.New()
+	userID := testUserID()
 
 	// 1. Get all rules
 	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"pattern", "match_type", "category_id", "payee_id"}).
 			AddRow("Zomato", "contains", ruleCatID, nil))
 
 	// 2. Find "Uncategorized" category ID
 	mock.ExpectQuery("SELECT id FROM categories WHERE name = 'Uncategorized'").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uncategorizedID))
 
 	// 3. Get uncategorized transactions
 	mock.ExpectQuery("SELECT id, description FROM transactions WHERE category_id IS NULL").
-		WithArgs(uncategorizedID).
+		WithArgs(userID, uncategorizedID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "description"}).
 			AddRow(txnID, "Zomato Order #999"))
 
 	// 4. Batch update transaction
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE transactions SET category_id =").
-		WithArgs(ruleCatID, txnID).
+		WithArgs(ruleCatID, txnID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 

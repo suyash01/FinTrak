@@ -11,7 +11,10 @@ type Config struct {
 	DatabaseURL    string
 	Port           string
 	AllowedOrigins []string
+	JWTSecret      string
 }
+
+const defaultJWTSecret = "dev-secret-change-me-in-production"
 
 func Load() *Config {
 	godotenv.Load()
@@ -24,6 +27,10 @@ func Load() *Config {
 	if allowedOrigins == "" {
 		allowedOrigins = "http://localhost:5173,http://127.0.0.1:5173"
 	}
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = defaultJWTSecret
+	}
 
 	rawOrigins := strings.Split(allowedOrigins, ",")
 	var origins []string
@@ -35,5 +42,6 @@ func Load() *Config {
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		Port:           port,
 		AllowedOrigins: origins,
+		JWTSecret:      jwtSecret,
 	}
 }

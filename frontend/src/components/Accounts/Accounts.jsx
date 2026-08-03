@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, CreditCard, Building2, X, Edit2, Download } from 'lucide-react';
-import api from '../../api/client';
+import api, { downloadCSV } from '../../api/client';
 import { formatDate, formatCurrency } from '../../utils/formatters';
 import { useSettings } from '../../context/SettingsContext';
 
@@ -55,8 +55,12 @@ export default function Accounts() {
     setEditAcc({ name: acc.name, accountTypeId: acc.accountTypeId, bank: acc.bank || '', color: acc.color, currency: acc.currency });
   };
 
-  const handleExport = (id) => {
-    window.open(`${import.meta.env.VITE_API_URL || 'http://localhost:8080/api'}/accounts/${id}/export`, '_blank');
+  const handleExport = async (id) => {
+    try {
+      await downloadCSV(`/accounts/${id}/export`);
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   const getTypeIcon = (accountTypeId, color, size) => {

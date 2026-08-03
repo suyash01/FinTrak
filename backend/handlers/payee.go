@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -11,7 +12,7 @@ import (
 )
 
 func GetPayees(c *gin.Context) {
-	rows, err := db.Pool.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees ORDER BY name")
+	rows, err := db.Pool.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees WHERE user_id = $1 ORDER BY name", auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetPayees: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -42,8 +43,8 @@ func CreatePayee(c *gin.Context) {
 
 	var p models.Payee
 	err := db.Pool.QueryRow(c,
-		"INSERT INTO payees (name, account_id) VALUES ($1, $2) RETURNING id, name, account_id, created_at, updated_at",
-		req.Name, req.AccountID,
+		"INSERT INTO payees (user_id, name, account_id) VALUES ($1, $2, $3) RETURNING id, name, account_id, created_at, updated_at",
+		auth.GetUserID(c), req.Name, req.AccountID,
 	).Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt)
 
 	if err != nil {
@@ -70,8 +71,8 @@ func UpdatePayee(c *gin.Context) {
 
 	var p models.Payee
 	err = db.Pool.QueryRow(c,
-		"UPDATE payees SET name = $1, account_id = $2, updated_at = NOW() WHERE id = $3 RETURNING id, name, account_id, created_at, updated_at",
-		req.Name, req.AccountID, id,
+		"UPDATE payees SET name = $1, account_id = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4 RETURNING id, name, account_id, created_at, updated_at",
+		req.Name, req.AccountID, id, auth.GetUserID(c),
 	).Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt)
 
 	if err != nil {
@@ -90,7 +91,8 @@ func DeletePayee(c *gin.Context) {
 		return
 	}
 
-	_, err = db.Pool.Exec(c, "DELETE FROM payees WHERE id = $1", id)
+	userID := auth.GetUserID(c)
+	_, err = db.Pool.Exec(c, "DELETE FROM payees WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeletePayee: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

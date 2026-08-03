@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/handlers"
@@ -20,11 +21,16 @@ func main() {
 
 	// Run migrations and seed
 	db.RunMigrations(cfg.DatabaseURL)
-	db.SeedCategories()
 	db.SeedAccountTypes()
 
 	// Setup Gin
 	r := gin.Default()
+
+	// Expose JWT secret to auth handlers via context
+	r.Use(func(c *gin.Context) {
+		c.Set("jwtSecret", cfg.JWTSecret)
+		c.Next()
+	})
 
 	// CORS
 	r.Use(cors.New(cors.Config{
@@ -48,6 +54,13 @@ func main() {
 
 	// API Routes
 	api := r.Group("/api/v1")
+
+	// Public: authentication
+	api.POST("/auth/register", handlers.Register)
+	api.POST("/auth/login", handlers.Login)
+
+	// Protected routes
+	api.Use(auth.RequireAuth(cfg.JWTSecret))
 	{
 		// Accounts
 		accounts := api.Group("/accounts")

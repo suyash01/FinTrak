@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -15,11 +16,13 @@ type SeedCategory struct {
 	Type  string
 }
 
-func SeedCategories() {
-	ctx := context.Background()
-
+func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	var count int
-	Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories").Scan(&count)
+	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
+	if err != nil {
+		log.Printf("Failed to count categories for user %s: %v", userID, err)
+		return
+	}
 	if count > 0 {
 		return
 	}
@@ -52,23 +55,29 @@ func SeedCategories() {
 		{"Dividends", "trending-up", "#10b981", "income"},
 	}
 
-	for _, c := range categories {
-		id := uuid.New()
-		_, err := Pool.Exec(ctx,
-			"INSERT INTO categories (id, name, icon, color, type) VALUES ($1, $2, $3, $4, $5)",
-			id, c.Name, c.Icon, c.Color, c.Type,
-		)
-		if err != nil {
-			log.Printf("Failed to seed category %s: %v", c.Name, err)
-		}
+	query := `INSERT INTO categories (id, name, icon, color, type, user_id) VALUES `
+	values := []interface{}{}
+	placeholders := []string{}
+	for i, c := range categories {
+		base := i * 6
+		placeholders = append(placeholders,
+			fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)", base+1, base+2, base+3, base+4, base+5, base+6))
+		values = append(values, uuid.New(), c.Name, c.Icon, c.Color, c.Type, userID)
+	}
+	query += strings.Join(placeholders, ", ")
+
+	_, err = Pool.Exec(ctx, query, values...)
+	if err != nil {
+		log.Printf("Failed to seed categories: %v", err)
+		return
 	}
 
 	fmt.Println("✓ Seeded default categories")
 }
 
 type SeedAccountType struct {
-	ID             string
-	Name           string
+	ID              string
+	Name            string
 	PositiveTxnType string
 }
 
