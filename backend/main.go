@@ -12,6 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Version is injected at build time via -ldflags "-X main.Version=...".
+// Falls back to a dev version for local builds.
+var Version = "0.1.0-alpha"
+
 func main() {
 	cfg := config.Load()
 
@@ -25,8 +29,6 @@ func main() {
 
 	// Setup Gin
 	r := setupRouter(cfg)
-
-	const Version = "0.1.0-alpha"
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	log.Printf("🚀 FinTrak API v%s running on %s\n", Version, addr)

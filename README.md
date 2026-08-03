@@ -24,7 +24,7 @@
 ## 🛠️ Tech Stack
 
 ### Backend
--   **Language**: Go 1.24+
+-   **Language**: Go 1.26
 -   **Framework**: [Gin Gonic](https://gin-gonic.com/)
 -   **Database**: PostgreSQL with [pgx](https://github.com/jackc/pgx)
 -   **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate)
@@ -55,12 +55,25 @@ The easiest way to get FinTrak running is using Docker Compose:
     ```
 2.  **Start the services**:
     ```bash
-    docker-compose up -d
+    docker compose up -d
     ```
 3.  **Access the application**:
-    -   **Frontend**: [http://localhost:5173](http://localhost:5173)
+    -   **Frontend**: [http://localhost:3000](http://localhost:3000)
     -   **API Server**: [http://localhost:8080/api/v1](http://localhost:8080/api/v1)
     -   **Database Admin (Adminer)**: [http://localhost:8081](http://localhost:8081)
+
+### Production Deployment
+Copy `.env.example` to `.env`, set the values, then:
+
+```bash
+# With a bundled database (PostgreSQL)
+docker compose -f docker-compose.prod.yml up -d
+
+# Using an existing/external database
+docker compose -f docker-compose.prod-no-db.yml up -d
+```
+
+The backend runs schema migrations on startup, and the frontend reverse-proxies `/api/v1` to the backend.
 
 ---
 
@@ -81,7 +94,10 @@ The easiest way to get FinTrak running is using Docker Compose:
 │   │   ├── context  # State Management (Settings, etc.)
 │   │   └── utils    # Helper Functions
 │   └── index.html
-└── docker-compose.yml # Container orchestration
+├── .env.example       # Template for environment variables
+├── docker-compose.yml # Local development orchestration
+├── docker-compose.prod.yml     # Production (with bundled database)
+└── docker-compose.prod-no-db.yml # Production (external database)
 ```
 
 ---

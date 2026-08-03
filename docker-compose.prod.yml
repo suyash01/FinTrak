@@ -1,5 +1,7 @@
-# Production Deployment (with Database)
+# Production Deployment (with bundled PostgreSQL database)
 # Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# Extends docker-compose.prod-no-db.yml and adds a managed database service.
 #
 # Required environment variables (set in .env or export):
 #   POSTGRES_DB       - Database name
@@ -7,6 +9,13 @@
 #   POSTGRES_PASSWORD - Database password
 #   DATABASE_URL      - Full connection string (e.g. postgres://user:pass@db:5432/dbname?sslmode=disable)
 #   JWT_SECRET        - Secret used to sign auth tokens (set a long random value)
+#
+# Optional:
+#   ALLOWED_ORIGINS - Comma-separated list of allowed CORS origins
+#                     (default: http://localhost:3000,http://127.0.0.1:3000)
+#   IMAGE_REPO      - Registry prefix (default: ghcr.io/suyash01)
+#   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
+#                     version (e.g. v1.2.3) for reproducible deployments.
 
 services:
   db:
@@ -27,47 +36,23 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - backend-net
+      - app-net
 
   backend:
-    container_name: backend
-    image: suyash01/fintrak-backend:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
-      - JWT_SECRET=${JWT_SECRET}
-      - APP_ENV=production
+    extends:
+      file: docker-compose.prod-no-db.yml
+      service: backend
     depends_on:
       db:
         condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-    networks:
-      - backend-net
-      - frontend-net
 
   frontend:
-    container_name: frontend
-    image: suyash01/fintrak-frontend:latest
-    ports:
-      - "3000:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - frontend-net
+    extends:
+      file: docker-compose.prod-no-db.yml
+      service: frontend
 
 networks:
-  backend-net:
-  frontend-net:
+  app-net:
 
 volumes:
   pgdata:

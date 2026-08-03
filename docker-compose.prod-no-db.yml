@@ -1,23 +1,34 @@
-# Production Deployment (without Database)
+# Production Deployment (external/existing database)
 # Usage: docker compose -f docker-compose.prod-no-db.yml up -d
+#
+# This file defines the core backend + frontend services. It is also the base
+# for docker-compose.prod.yml, which extends it with a bundled PostgreSQL
+# database service.
 #
 # Required environment variables (set in .env or export):
 #   DATABASE_URL - Full connection string to an external database
 #   JWT_SECRET   - Secret used to sign auth tokens (set a long random value)
+#
+# Optional:
+#   ALLOWED_ORIGINS - Comma-separated list of allowed CORS origins
+#                     (default: http://localhost:3000,http://127.0.0.1:3000)
+#   IMAGE_REPO      - Registry prefix (default: ghcr.io/suyash01)
+#   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
+#                     version (e.g. v1.2.3) for reproducible deployments.
 
 services:
   backend:
     container_name: backend
-    image: suyash01/fintrak-backend:latest
+    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-backend:${IMAGE_TAG:-latest}
     ports:
       - "8080:8080"
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - JWT_SECRET=${JWT_SECRET}
       - APP_ENV=production
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -28,7 +39,7 @@ services:
 
   frontend:
     container_name: frontend
-    image: suyash01/fintrak-frontend:latest
+    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-frontend:${IMAGE_TAG:-latest}
     ports:
       - "3000:80"
     depends_on:

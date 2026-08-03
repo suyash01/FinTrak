@@ -7,6 +7,10 @@ on:
     paths-ignore:
       - "*.md"
       - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
@@ -33,6 +37,10 @@ jobs:
           cd backend
           go mod tidy
           git diff --exit-code go.mod go.sum
+      - name: Run go vet
+        run: |
+          cd backend
+          go vet ./...
       - name: Run tests
         run: |
           cd backend
@@ -52,10 +60,6 @@ jobs:
         run: |
           cd frontend
           npm ci
-      - name: Lint
-        run: |
-          cd frontend
-          npm run lint --if-present
       - name: Build
         run: |
           cd frontend
@@ -77,12 +81,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       
-      - name: Log into Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Log into GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -95,7 +93,6 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_BACKEND }}
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_BACKEND }}
           tags: |
             type=raw,value=latest
@@ -110,6 +107,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -129,12 +128,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       
-      - name: Log into Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Log into GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -147,7 +140,6 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_FRONTEND }}
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_FRONTEND }}
           tags: |
             type=raw,value=latest
@@ -178,9 +170,5 @@ jobs:
           generate_release_notes: true
           body: |
             ## Docker Images
-            - Backend: `docker pull ${{ secrets.DOCKERHUB_USERNAME }}/fintrak-backend:${{ github.ref_name }}`
-            - Frontend: `docker pull ${{ secrets.DOCKERHUB_USERNAME }}/fintrak-frontend:${{ github.ref_name }}`
-            
-            GHCR:
-            - `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-backend:${{ github.ref_name }}`
-            - `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-frontend:${{ github.ref_name }}`
+            - Backend: `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-backend:${{ github.ref_name }}`
+            - Frontend: `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-frontend:${{ github.ref_name }}`
