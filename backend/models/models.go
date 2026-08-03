@@ -52,7 +52,6 @@ type Transaction struct {
 	Notes       string     `json:"notes"`
 	PayeeID     *uuid.UUID `json:"payeeId,omitempty"`
 	Payee       string     `json:"payee"`
-	Hash        string     `json:"hash"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	// Joined fields
 	AccountName   string     `json:"accountName,omitempty"`

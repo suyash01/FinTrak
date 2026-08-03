@@ -575,7 +575,7 @@ export default function Import() {
             <h2 className="text-2xl font-bold text-slate-100 mb-2">Import Complete!</h2>
             <p className="text-slate-400 mb-8 max-w-[80%] mx-auto leading-relaxed">
               <span className="font-semibold text-slate-200">{importResult.imported}</span> transactions successfully imported.<br />
-              <span className="text-sm">{importResult.skipped} duplicates skipped.</span>
+              <span className="text-sm">Duplicate detection is not applied — identical transactions on the same day are preserved.</span>
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setImportResult(null); }}>

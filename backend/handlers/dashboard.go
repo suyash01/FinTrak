@@ -144,7 +144,7 @@ func GetDashboardSummary(c *gin.Context) {
 
 	// Recent transactions
 	recentQuery := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type,
-					t.category_id, t.tags, t.notes, t.payee, COALESCE(t.hash, ''), t.created_at,
+					t.category_id, t.tags, t.notes, t.payee, t.created_at,
 					a.name as account_name,
 					COALESCE(c.name, '') as category_name,
 					COALESCE(c.icon, '') as category_icon,
@@ -166,7 +166,7 @@ func GetDashboardSummary(c *gin.Context) {
 	for recentRows.Next() {
 		var t models.Transaction
 		if err := recentRows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
-			&t.CategoryID, &t.Tags, &t.Notes, &t.Payee, &t.Hash, &t.CreatedAt,
+			&t.CategoryID, &t.Tags, &t.Notes, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor); err != nil {
 			log.Printf("Error in GetDashboardSummary scan (recent transactions): %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

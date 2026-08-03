@@ -1,14 +1,12 @@
 package handlers
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
@@ -56,7 +54,7 @@ func GetTransactions(c *gin.Context) {
 	}
 
 	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, 
-			  t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.hash, t.created_at,
+			  t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
 			  a.name as account_name,
 			  COALESCE(c.name, '') as category_name,
 			  COALESCE(c.icon, '') as category_icon,
@@ -172,7 +170,7 @@ func GetTransactions(c *gin.Context) {
 	for rows.Next() {
 		var t models.Transaction
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
-			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.Hash, &t.CreatedAt,
+			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkID); err != nil {
 			log.Printf("Error in GetTransactions scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -231,24 +229,20 @@ func UpdateTransaction(c *gin.Context) {
 	paramIdx++
 
 	// Conditionally update core fields
-	coreChanged := false
 	if req.Date != nil {
 		setClauses = append(setClauses, fmt.Sprintf("date = $%d", paramIdx))
 		args = append(args, *req.Date)
 		paramIdx++
-		coreChanged = true
 	}
 	if req.Description != nil {
 		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIdx))
 		args = append(args, *req.Description)
 		paramIdx++
-		coreChanged = true
 	}
 	if req.Amount != nil {
 		setClauses = append(setClauses, fmt.Sprintf("amount = $%d", paramIdx))
 		args = append(args, *req.Amount)
 		paramIdx++
-		coreChanged = true
 	}
 	if req.Type != nil {
 		if *req.Type != "debit" && *req.Type != "credit" {
@@ -258,59 +252,10 @@ func UpdateTransaction(c *gin.Context) {
 		setClauses = append(setClauses, fmt.Sprintf("type = $%d", paramIdx))
 		args = append(args, *req.Type)
 		paramIdx++
-		coreChanged = true
 	}
 	if req.AccountID != nil {
 		setClauses = append(setClauses, fmt.Sprintf("account_id = $%d", paramIdx))
 		args = append(args, *req.AccountID)
-		paramIdx++
-		coreChanged = true
-	}
-
-	// If core fields changed, recalculate the dedup hash
-	if coreChanged {
-		// Fetch current values to compute new hash
-		var acctID uuid.UUID
-		var date time.Time
-		var desc, txnType string
-		var amount float64
-		err := db.Pool.QueryRow(c,
-			"SELECT account_id, date, description, amount, type FROM transactions WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c),
-		).Scan(&acctID, &date, &desc, &amount, &txnType)
-		if err != nil {
-			log.Printf("Error fetching transaction for hash: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-			return
-		}
-
-		dateStr := date.Format("2006-01-02")
-
-		// Override with new values
-		if req.AccountID != nil {
-			acctID = *req.AccountID
-		}
-		if req.Date != nil {
-			if len(*req.Date) >= 10 {
-				dateStr = (*req.Date)[:10]
-			} else {
-				dateStr = *req.Date
-			}
-		}
-		if req.Description != nil {
-			desc = *req.Description
-		}
-		if req.Amount != nil {
-			amount = *req.Amount
-		}
-		if req.Type != nil {
-			txnType = *req.Type
-		}
-
-		hashStr := fmt.Sprintf("%s|%s|%s|%.2f|%s", acctID.String(), dateStr, desc, amount, txnType)
-		newHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashStr)))
-
-		setClauses = append(setClauses, fmt.Sprintf("hash = $%d", paramIdx))
-		args = append(args, newHash)
 		paramIdx++
 	}
 
@@ -424,15 +369,10 @@ func ImportTransactions(c *gin.Context) {
 	}
 
 	imported := 0
-	skipped := 0
 	userID := auth.GetUserID(c)
 	log.Printf("Starting import of %d transactions for account %s\n", len(req.Transactions), req.AccountID)
 
 	for _, t := range req.Transactions {
-		// Generate hash for dedup
-		hashStr := fmt.Sprintf("%s|%s|%s|%.2f|%s", req.AccountID, t.Date, t.Description, t.Amount, t.Type)
-		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashStr)))
-
 		// Auto-categorize
 		var categoryID *uuid.UUID
 		var payeeID *uuid.UUID
@@ -448,9 +388,9 @@ func ImportTransactions(c *gin.Context) {
 		}
 
 		_, err := db.Pool.Exec(c,
-			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, hash)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID, hash,
+			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID,
 		)
 		if err != nil {
 			log.Printf("Error in ImportTransactions: %v\n", err)
@@ -462,10 +402,9 @@ func ImportTransactions(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"imported": imported,
-		"skipped":  skipped,
 		"total":    len(req.Transactions),
 	})
-	log.Printf("Import complete: %d imported, %d skipped out of %d total.\n", imported, skipped, len(req.Transactions))
+	log.Printf("Import complete: %d imported out of %d total.\n", imported, len(req.Transactions))
 }
 
 func autoCategorize(c *gin.Context, userID uuid.UUID, description string) (*uuid.UUID, *uuid.UUID) {
