@@ -1,18 +1,204 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import Papa from 'papaparse';
-import { Upload, ChevronRight, Check, ArrowRight, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { ChevronRight, Check, ArrowRight, AlertCircle, AlertTriangle, X, FileSpreadsheet } from 'lucide-react';
 import api from '../../api/client';
 import { formatCurrency, formatDateOnly } from '../../utils/formatters';
 
-const DB_COLUMNS = [
-  { key: 'skip', label: '— Skip this column —', required: false },
+const TARGET_FIELDS = [
   { key: 'date', label: 'Date', required: true },
   { key: 'description', label: 'Description', required: true },
-  { key: 'amount', label: 'Amount (single column)', required: false },
-  { key: 'debit', label: 'Debit Amount', required: false },
-  { key: 'credit', label: 'Credit Amount', required: false },
+  { key: 'amount', label: 'Amount', required: true, mode: 'single' },
+  { key: 'debit', label: 'Debit Amount', required: true, mode: 'separate' },
+  { key: 'credit', label: 'Credit Amount', required: true, mode: 'separate' },
   { key: 'payee', label: 'Payee', required: false },
 ];
+
+const targetFieldsFor = (amountMode) => TARGET_FIELDS.filter((f) => !f.mode || f.mode === amountMode);
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+const MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+
+const DATE_FORMAT_OPTIONS = [
+  { value: 'auto', label: 'Auto-detect' },
+  { value: 'DD/MM/YYYY', label: 'DD/MM/YYYY' },
+  { value: 'MM/DD/YYYY', label: 'MM/DD/YYYY' },
+  { value: 'DD/MM/YY', label: 'DD/MM/YY' },
+  { value: 'YYYY-MM-DD', label: 'YYYY-MM-DD' },
+  { value: 'DD Mon YYYY', label: 'DD Mon YYYY' },
+];
+
+const DATE_PATTERNS = {
+  'DD/MM/YYYY': /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/,
+  'MM/DD/YYYY': /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/,
+  'DD/MM/YY': /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2})$/,
+  'YYYY-MM-DD': /^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/,
+  'DD Mon YYYY': /^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})$/i,
+};
+
+function parseDateExplicit(str, format) {
+  const m = String(str).match(DATE_PATTERNS[format]);
+  if (!m) return null;
+  if (format === 'DD/MM/YYYY') return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  if (format === 'MM/DD/YYYY') return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+  if (format === 'YYYY-MM-DD') return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  if (format === 'DD Mon YYYY') return `${m[3]}-${MONTHS[m[2].toLowerCase().substring(0, 3)]}-${pad2(m[1])}`;
+  const year = parseInt(m[3]) > 50 ? `19${m[3]}` : `20${m[3]}`;
+  return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
+}
+
+function parseDateAuto(str) {
+  const s = String(str);
+  let m = s.match(DATE_PATTERNS['DD/MM/YYYY']);
+  if (m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  m = s.match(DATE_PATTERNS['YYYY-MM-DD']);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  m = s.match(DATE_PATTERNS['DD/MM/YY']);
+  if (m) {
+    const year = parseInt(m[3]) > 50 ? `19${m[3]}` : `20${m[3]}`;
+    return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
+  }
+  m = s.match(DATE_PATTERNS['DD Mon YYYY']);
+  if (m) return `${m[3]}-${MONTHS[m[2].toLowerCase().substring(0, 3)]}-${pad2(m[1])}`;
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return formatDateOnly(d);
+  return null;
+}
+
+function parseDate(str, format) {
+  if (!str) return null;
+  const value = String(str).trim();
+  if (format !== 'auto') {
+    const parsed = parseDateExplicit(value, format);
+    if (parsed) return parsed;
+  }
+  return parseDateAuto(value);
+}
+
+function parseAmount(str) {
+  if (str == null || str === '') return 0;
+  if (typeof str === 'number') return Number.isFinite(str) ? str : 0;
+
+  const cleaned = String(str).replace(/[^\d.,()+\-]/g, '').trim();
+  if (!cleaned) return 0;
+
+  let negative = false;
+  let body = cleaned;
+
+  // Parenthesised negatives: (1,234.56)
+  if (body.startsWith('(') && body.endsWith(')')) {
+    negative = true;
+    body = body.slice(1, -1);
+  }
+  // Trailing minus: 1,234.56-
+  if (body.endsWith('-')) {
+    negative = true;
+    body = body.slice(0, -1);
+  }
+
+  let parsed;
+  if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(body)) {
+    // European style: 1.234.567,89
+    parsed = parseFloat(body.replace(/\./g, '').replace(',', '.'));
+  } else {
+    // Remove thousands separators, use "." as decimal separator
+    parsed = parseFloat(body.replace(/,/g, ''));
+  }
+
+  if (!Number.isFinite(parsed)) return 0;
+  return negative ? -Math.abs(parsed) : parsed;
+}
+
+const getMappingErrors = (columnMapping, amountMode) => {
+  const errors = [];
+  if (!columnMapping.date) errors.push('Date field must be mapped to a CSV column');
+  if (!columnMapping.description) errors.push('Description field must be mapped to a CSV column');
+  if (amountMode === 'single' && !columnMapping.amount) {
+    errors.push('Amount field must be mapped (or switch to separate Debit/Credit mode)');
+  }
+  if (amountMode === 'separate') {
+    if (!columnMapping.debit) errors.push('Debit field must be mapped in separate mode');
+    if (!columnMapping.credit) errors.push('Credit field must be mapped in separate mode');
+  }
+  return errors;
+};
+
+// Duplicate detection mirrors the backend fingerprint so that the count the
+// user sees matches what the import endpoint would skip.
+const FINGERPRINT_SEP = '\x00';
+const fingerprintOf = (date, amount, type, description) =>
+  `${date}${FINGERPRINT_SEP}${Math.round(amount * 100)}${FINGERPRINT_SEP}${type}${FINGERPRINT_SEP}${String(description || '').trim().toLowerCase()}`;
+
+const apiDate = (d) => {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[0] : '';
+};
+
+function buildParsedTransactions({ csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount }) {
+  if (!csvData) return [];
+
+  const dateCol = columnMapping.date;
+  const descCol = columnMapping.description;
+  const amountCol = columnMapping.amount;
+  const debitCol = columnMapping.debit;
+  const creditCol = columnMapping.credit;
+  const payeeCol = columnMapping.payee;
+
+  const selAcct = accounts.find((a) => a.id === selectedAccount);
+  const selType = accountTypes.find((at) => at.id === selAcct?.accountTypeId);
+  const positiveTxnType = selType?.positiveTxnType || 'credit';
+
+  return csvData
+    .map((row) => {
+      const rawDate = row[dateCol]?.trim();
+      if (!rawDate) return null;
+
+      const date = parseDate(rawDate, dateFormat);
+      if (!date) return null;
+
+      const description = row[descCol]?.trim() || '';
+      if (!description) return null;
+
+      let amount = 0;
+      let type = 'debit';
+
+      // Determine sign convention from account type
+      if (amountMode === 'single' && amountCol) {
+        const raw = parseAmount(row[amountCol]);
+        if (raw < 0) {
+          amount = Math.abs(raw);
+          type = positiveTxnType === 'credit' ? 'debit' : 'credit';
+        } else {
+          amount = raw;
+          type = positiveTxnType;
+        }
+      } else if (amountMode === 'separate') {
+        const debitAmt = parseAmount(row[debitCol]);
+        const creditAmt = parseAmount(row[creditCol]);
+        if (debitAmt !== 0) {
+          amount = Math.abs(debitAmt);
+          type = 'debit';
+        } else if (creditAmt !== 0) {
+          amount = Math.abs(creditAmt);
+          type = 'credit';
+        } else {
+          return null;
+        }
+      }
+
+      if (amount === 0) return null;
+
+      let payeeId = null;
+      if (payeeCol && row[payeeCol]) {
+        const name = row[payeeCol].trim().toLowerCase();
+        const match = payees.find((p) => p.name.toLowerCase() === name);
+        if (match) payeeId = match.id;
+      }
+
+      return { date, description, amount, type, payeeId };
+    })
+    .filter(Boolean);
+}
 
 export default function Import() {
   const [step, setStep] = useState(1);
@@ -34,6 +220,11 @@ export default function Import() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
 
+  // Duplicate detection
+  const [existingTxns, setExistingTxns] = useState([]);
+  const [existingRefresh, setExistingRefresh] = useState(0);
+  const [dupDialogOpen, setDupDialogOpen] = useState(false);
+
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -41,6 +232,19 @@ export default function Import() {
     api.getAccountTypes().then(setAccountTypes).catch(console.error);
     api.getPayees().then(setPayees).catch(console.error);
   }, []);
+
+  // Load the account's existing transactions so duplicates can be flagged
+  // before anything is imported.
+  useEffect(() => {
+    if (!selectedAccount) {
+      setExistingTxns([]);
+      return;
+    }
+    api
+      .getTransactions({ accountId: selectedAccount, limit: 0 })
+      .then((res) => setExistingTxns(res.data || []))
+      .catch(console.error);
+  }, [selectedAccount, existingRefresh]);
 
   // ---- Step 1: Select Account ----
   const handleCreateAccount = async () => {
@@ -84,188 +288,96 @@ export default function Import() {
   };
 
   const autoDetectMapping = (headers) => {
-    const mapping = {};
-    headers.forEach((h) => {
-      const lower = h.toLowerCase().trim();
-      if (/date|txn.*date|transaction.*date|value.*date/i.test(lower)) {
-        mapping[h] = 'date';
-      } else if (/narration|description|particulars|details|remark/i.test(lower)) {
-        mapping[h] = 'description';
-      } else if (/^amount$|^transaction.*amount$|^txn.*amount$/i.test(lower)) {
-        mapping[h] = 'amount';
-      } else if (/debit|withdrawal|dr/i.test(lower)) {
-        mapping[h] = 'debit';
-      } else if (/credit|deposit|cr/i.test(lower)) {
-        mapping[h] = 'credit';
-      } else if (/payee|beneficiary|merchant|receiver|sender/i.test(lower)) {
-        mapping[h] = 'payee';
-      } else {
-        mapping[h] = 'skip';
+    const mapping = { date: null, description: null, amount: null, debit: null, credit: null, payee: null };
+    const used = new Set();
+    const pick = (patterns) => {
+      for (const h of headers) {
+        const lower = String(h).toLowerCase().trim();
+        if (!used.has(h) && patterns.some((p) => p.test(lower))) {
+          used.add(h);
+          return h;
+        }
       }
-    });
+      return null;
+    };
+
+    mapping.date = pick([/date|txn.*date|transaction.*date|value.*date/i]);
+    mapping.description = pick([/narration|description|particulars|details|remark/i]);
+    mapping.amount = pick([/^amount$|^transaction.*amount$|^txn.*amount$/i]);
+    mapping.debit = pick([/debit|withdrawal|dr/i]);
+    mapping.credit = pick([/credit|deposit|cr/i]);
+    mapping.payee = pick([/payee|beneficiary|merchant|receiver|sender/i]);
     return mapping;
   };
 
   // ---- Step 3: Column Mapping ----
-  const updateMapping = (csvCol, dbCol) => {
-    setColumnMapping((prev) => ({ ...prev, [csvCol]: dbCol }));
+  const updateMapping = (key, csvHeader) => {
+    setColumnMapping((prev) => ({ ...prev, [key]: csvHeader || null }));
   };
 
-  const getMappingErrors = () => {
-    const errors = [];
-    const mapped = Object.values(columnMapping);
-    if (!mapped.includes('date')) errors.push('Date column is required');
-    if (!mapped.includes('description')) errors.push('Description column is required');
-    if (amountMode === 'single' && !mapped.includes('amount')) {
-      errors.push('Amount column is required (or switch to separate Debit/Credit mode)');
+  const mappingErrors = useMemo(
+    () => (csvData ? getMappingErrors(columnMapping, amountMode) : []),
+    [csvData, columnMapping, amountMode]
+  );
+
+  // Reverse lookup: which field each CSV column feeds, for highlighting.
+  const csvTarget = useMemo(() => {
+    const map = {};
+    for (const f of TARGET_FIELDS) {
+      const src = columnMapping[f.key];
+      if (src) map[src] = f.key;
     }
-    if (amountMode === 'separate') {
-      if (!mapped.includes('debit')) errors.push('Debit column is required in separate mode');
-      if (!mapped.includes('credit')) errors.push('Credit column is required in separate mode');
-    }
-    return errors;
-  };
+    return map;
+  }, [columnMapping]);
 
   // ---- Step 4: Preview & Import ----
-  const parseTransactions = () => {
-    const dateCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'date');
-    const descCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'description');
-    const amountCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'amount');
-    const debitCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'debit');
-    const creditCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'credit');
-    const payeeCol = Object.keys(columnMapping).find((k) => columnMapping[k] === 'payee');
+  const parsedTransactions = useMemo(
+    () =>
+      buildParsedTransactions({ csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount }),
+    [csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount]
+  );
 
-    return csvData
-      .map((row) => {
-        const rawDate = row[dateCol]?.trim();
-        if (!rawDate) return null;
+  // Fingerprints of transactions already stored for the selected account. The
+  // fingerprint formula mirrors the backend so counts match between preview and
+  // the import endpoint.
+  const existingSet = useMemo(
+    () =>
+      new Set(
+        existingTxns.map((t) => fingerprintOf(apiDate(t.date), t.amount, t.type, t.description))
+      ),
+    [existingTxns]
+  );
 
-        const date = parseDate(rawDate);
-        if (!date) return null;
-
-        const description = row[descCol]?.trim() || '';
-        if (!description) return null;
-
-        let amount = 0;
-        let type = 'debit';
-
-        // Determine sign convention from account type
-        const selAcct = accounts.find(a => a.id === selectedAccount);
-        const selType = accountTypes.find(at => at.id === selAcct?.accountTypeId);
-        const positiveTxnType = selType?.positiveTxnType || 'credit';
-
-        if (amountMode === 'single' && amountCol) {
-          const raw = parseAmount(row[amountCol]);
-          if (raw < 0) {
-            amount = Math.abs(raw);
-            type = positiveTxnType === 'credit' ? 'debit' : 'credit';
-          } else {
-            amount = raw;
-            type = positiveTxnType;
-          }
-        } else if (amountMode === 'separate') {
-          const debitAmt = parseAmount(row[debitCol]);
-          const creditAmt = parseAmount(row[creditCol]);
-          // Some statements export debits as negative numbers
-          if (debitAmt !== 0) {
-            amount = Math.abs(debitAmt);
-            type = 'debit';
-          } else if (creditAmt !== 0) {
-            amount = Math.abs(creditAmt);
-            type = 'credit';
-          } else {
-            return null;
-          }
-        }
-
-        if (amount === 0) return null;
-
-        let payeeId = null;
-        if (payeeCol && row[payeeCol]) {
-          const name = row[payeeCol].trim().toLowerCase();
-          const match = payees.find(p => p.name.toLowerCase() === name);
-          if (match) payeeId = match.id;
-        }
-
-        return { date, description, amount, type, payeeId };
-      })
-      .filter(Boolean);
-  };
-
-  const parseDate = (str) => {
-    if (!str) return null;
-    // Try multiple formats
-    const formats = [
-      // DD/MM/YYYY, DD-MM-YYYY
-      /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/,
-      // YYYY-MM-DD
-      /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/,
-      // DD/MM/YY
-      /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/,
-      // DD Mon YYYY
-      /^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})$/i,
-    ];
-
-    // DD/MM/YYYY or DD-MM-YYYY
-    let match = str.match(formats[0]);
-    if (match) {
-      return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  const { dupCount, inFileDupCount, existingDupCount } = useMemo(() => {
+    const seen = new Set();
+    let inFileDup = 0;
+    let existingDup = 0;
+    let total = 0;
+    for (const t of parsedTransactions) {
+      const fp = fingerprintOf(t.date, t.amount, t.type, t.description);
+      const matchesExisting = existingSet.has(fp);
+      const repeatsInFile = seen.has(fp);
+      if (matchesExisting) existingDup++;
+      if (repeatsInFile) inFileDup++;
+      if (matchesExisting || repeatsInFile) total++;
+      seen.add(fp);
     }
+    return { dupCount: total, inFileDupCount: inFileDup, existingDupCount: existingDup };
+  }, [parsedTransactions, existingSet]);
 
-    // YYYY-MM-DD
-    match = str.match(formats[1]);
-    if (match) {
-      return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-    }
-
-    // DD/MM/YY
-    match = str.match(formats[2]);
-    if (match) {
-      const year = parseInt(match[3]) > 50 ? `19${match[3]}` : `20${match[3]}`;
-      return `${year}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
-    }
-
-    // DD Mon YYYY
-    match = str.match(formats[3]);
-    if (match) {
-      const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-      const m = months[match[2].toLowerCase().substring(0, 3)];
-      return `${match[3]}-${m}-${match[1].padStart(2, '0')}`;
-    }
-
-    // Fallback: try Date constructor (parsed as local calendar date)
-    const d = new Date(str);
-    if (!isNaN(d.getTime())) {
-      return formatDateOnly(d);
-    }
-
-    return null;
-  };
-
-  const parseAmount = (str) => {
-    if (!str || typeof str !== 'string') {
-      if (typeof str === 'number') return str;
-      return 0;
-    }
-    // Remove commas, currency symbols, spaces
-    const cleaned = str.replace(/[₹$,\s]/g, '').trim();
-    if (!cleaned) return 0;
-    return parseFloat(cleaned) || 0;
-  };
-
-  const handleImport = async () => {
+  const runImport = async (action) => {
+    setDupDialogOpen(false);
     setImporting(true);
     try {
-      const transactions = parseTransactions();
-      if (transactions.length === 0) {
+      if (parsedTransactions.length === 0) {
         alert('No valid transactions found. Please check your column mapping.');
-        setImporting(false);
         return;
       }
 
       const result = await api.importTransactions({
         accountId: selectedAccount,
-        transactions,
+        transactions: parsedTransactions,
+        duplicateAction: action,
       });
       setImportResult(result);
       setStep(5);
@@ -276,8 +388,13 @@ export default function Import() {
     }
   };
 
-  const parsedTransactions = step >= 4 ? parseTransactions() : [];
-  const mappingErrors = step >= 3 ? getMappingErrors() : [];
+  const handleImport = () => {
+    if (dupCount > 0) {
+      setDupDialogOpen(true);
+      return;
+    }
+    runImport('keep');
+  };
 
   const steps = [
     { num: 1, label: 'Select Account' },
@@ -416,40 +533,57 @@ export default function Import() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6" style={{ maxWidth: '800px' }}>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
               <h3 className="text-lg font-bold text-slate-100">Map CSV Columns</h3>
-              <div className="flex gap-2">
-                <button className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === 'single' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`} onClick={() => setAmountMode('single')}>Single Amount</button>
-                <button className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === 'separate' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`} onClick={() => setAmountMode('separate')}>Debit / Credit</button>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="import-date-format" className="text-xs font-semibold text-slate-500 whitespace-nowrap">Date Format</label>
+                  <select
+                    id="import-date-format"
+                    className="px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-md text-slate-200 text-xs focus:outline-none focus:border-cyan-500 transition-all"
+                    value={dateFormat}
+                    onChange={(e) => setDateFormat(e.target.value)}
+                  >
+                    {DATE_FORMAT_OPTIONS.map((f) => (
+                      <option key={f.value} value={f.value}>{f.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <button className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === 'single' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`} onClick={() => setAmountMode('single')}>Single Amount</button>
+                  <button className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === 'separate' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`} onClick={() => setAmountMode('separate')}>Debit / Credit</button>
+                </div>
               </div>
             </div>
 
             <p className="text-sm text-slate-400 mb-6">
-              Map each CSV column to the corresponding database field. Skip columns you don't need.
+              Select which CSV column supplies each field below. Columns you don't map are ignored.
             </p>
 
             <div className="bg-slate-950 border border-slate-800 rounded-lg overflow-hidden">
-              {csvHeaders.map((header) => (
-                <div key={header} className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 p-4 border-b border-slate-800 last:border-0 hover:bg-slate-900/50 transition-colors">
+              {targetFieldsFor(amountMode).map((f) => (
+                <div key={f.key} className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 p-4 border-b border-slate-800 last:border-0 hover:bg-slate-900/50 transition-colors">
                   <div className="flex flex-col gap-1 min-w-0">
-                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">CSV Column</div>
-                    <div className="font-medium text-sm text-slate-200 truncate">{header}</div>
+                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Field</div>
+                    <div className="font-medium text-sm text-slate-200">
+                      {f.label}
+                      {f.required && <span className="ml-2 text-[10px] font-bold text-red-400 uppercase tracking-wide">Required</span>}
+                    </div>
                     <div className="text-xs text-slate-500 truncate mt-0.5">
-                      e.g. "{csvData?.[0]?.[header] || '—'}"
+                      {columnMapping[f.key]
+                        ? `e.g. "${csvData?.[0]?.[columnMapping[f.key]] || '—'}"`
+                        : 'No CSV column selected'}
                     </div>
                   </div>
                   <ArrowRight className="text-slate-600 shrink-0" size={20} />
                   <div className="flex flex-col gap-1 min-w-0">
-                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Maps To</div>
+                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">From CSV Column</div>
                     <select
                       className="mt-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 w-full"
-                      value={columnMapping[header] || 'skip'}
-                      onChange={(e) => updateMapping(header, e.target.value)}
+                      value={columnMapping[f.key] || ''}
+                      onChange={(e) => updateMapping(f.key, e.target.value)}
                     >
-                      {DB_COLUMNS.filter(col => {
-                        if (amountMode === 'single' && (col.key === 'debit' || col.key === 'credit')) return false;
-                        if (amountMode === 'separate' && col.key === 'amount') return false;
-                        return true;
-                      }).map((col) => (
-                        <option key={col.key} value={col.key}>{col.label}</option>
+                      <option value="">{f.required ? '— Select a column —' : '— Not mapped —'}</option>
+                      {csvHeaders.map((h) => (
+                        <option key={h} value={h}>{h}</option>
                       ))}
                     </select>
                   </div>
@@ -476,8 +610,8 @@ export default function Import() {
                       {csvHeaders.map((h) => (
                         <th key={h} className="py-2.5 px-4 text-xs font-semibold text-slate-400 bg-slate-950 border-b border-slate-800 whitespace-nowrap">
                           {h}
-                          {columnMapping[h] && columnMapping[h] !== 'skip' && (
-                            <div className="text-[10px] font-medium text-cyan-500 mt-0.5 tracking-wide">→ {columnMapping[h].toUpperCase()}</div>
+                          {csvTarget[h] && (
+                            <div className="text-[10px] font-medium text-cyan-500 mt-0.5 tracking-wide">→ {csvTarget[h].toUpperCase()}</div>
                           )}
                         </th>
                       ))}
@@ -487,7 +621,7 @@ export default function Import() {
                     {csvData.slice(0, 5).map((row, i) => (
                       <tr key={i} className="border-b border-slate-800 last:border-0 hover:bg-slate-800/30">
                         {csvHeaders.map((h) => (
-                          <td key={h} className={`py-2 px-4 text-xs max-w-[150px] overflow-hidden text-ellipsis whitespace-nowrap ${columnMapping[h] === 'skip' ? 'opacity-40 text-slate-500' : 'text-slate-300'}`}>
+                          <td key={h} className={`py-2 px-4 text-xs max-w-[150px] overflow-hidden text-ellipsis whitespace-nowrap ${csvTarget[h] ? 'text-slate-300' : 'opacity-40 text-slate-500'}`}>
                             {row[h]}
                           </td>
                         ))}
@@ -515,6 +649,20 @@ export default function Import() {
               <div className="text-sm text-slate-400 font-medium">{csvData.length - parsedTransactions.length} rows skipped (empty/invalid)</div>
             </div>
 
+            {dupCount > 0 && (
+              <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/25 rounded-lg flex gap-3 items-start">
+                <AlertTriangle size={18} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-amber-200">
+                  <p className="font-semibold mb-1">{dupCount} transaction{dupCount === 1 ? '' : 's'} look like duplicates.</p>
+                  <p className="text-amber-200/80">
+                    {existingDupCount > 0 && <span>{existingDupCount} already exist{existingDupCount === 1 ? 's' : ''} in this account{inFileDupCount > 0 ? ', ' : '. '}</span>}
+                    {inFileDupCount > 0 && <span>{inFileDupCount} repeat{inFileDupCount === 1 ? 's' : ''} within this file. </span>}
+                    You'll be asked what to do before importing.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="border border-slate-800 rounded-lg overflow-y-auto max-h-[500px] bg-slate-950">
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead className="sticky top-0 bg-slate-900 z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-slate-800">
@@ -539,7 +687,7 @@ export default function Import() {
                         )}
                       </td>
                       <td className="py-2.5 px-4">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded textxs font-semibold tracking-wide uppercase ${t.type === 'debit' ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'}`}>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold tracking-wide uppercase ${t.type === 'debit' ? 'bg-red-500/10 text-red-500 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'}`}>
                           {t.type}
                         </span>
                       </td>
@@ -575,16 +723,57 @@ export default function Import() {
             </div>
             <h2 className="text-2xl font-bold text-slate-100 mb-2">Import Complete!</h2>
             <p className="text-slate-400 mb-8 max-w-[80%] mx-auto leading-relaxed">
-              <span className="font-semibold text-slate-200">{importResult.imported}</span> transactions successfully imported.<br />
-              <span className="text-sm">Duplicate detection is not applied — identical transactions on the same day are preserved.</span>
+              <span className="font-semibold text-slate-200">{importResult.imported}</span> of {importResult.total} transactions
+              {importResult.duplicates > 0
+                ? ` imported (${importResult.duplicates} duplicates skipped).`
+                : ' imported.'}
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setImportResult(null); }}>
+              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setCsvHeaders([]); setColumnMapping({}); setImportResult(null); setExistingRefresh(k => k + 1); }}>
                 Import Another
               </button>
               <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20" onClick={() => window.location.href = '/transactions'}>
                 View Transactions
               </button>
+              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => window.location.href = '/linking'}>
+                Transfer Suggestions
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Duplicate handling dialog */}
+        {dupDialogOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setDupDialogOpen(false)}>
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-2.5 text-amber-400">
+                  <AlertTriangle size={20} />
+                  <h3 className="text-lg font-bold text-slate-100">Duplicate transactions found</h3>
+                </div>
+                <button className="text-slate-500 hover:text-slate-300 transition-colors" onClick={() => setDupDialogOpen(false)} aria-label="Close">
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="text-sm text-slate-300 mb-4">
+                {dupCount} of the {parsedTransactions.length} transactions match an existing transaction or repeat within this file.
+              </p>
+              <ul className="text-sm text-slate-400 mb-6 list-disc pl-5 space-y-1">
+                {existingDupCount > 0 && <li>{existingDupCount} already {existingDupCount === 1 ? 'exists in' : 'exist in'} this account</li>}
+                {inFileDupCount > 0 && <li>{inFileDupCount} repeat{inFileDupCount === 1 ? 's' : ''} within this file</li>}
+              </ul>
+              <p className="text-sm text-slate-500 mb-5">How would you like to handle them?</p>
+              <div className="flex flex-col gap-3">
+                <button className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-md shadow-cyan-500/20" onClick={() => runImport('skip')} disabled={importing}>
+                  Skip duplicates
+                </button>
+                <button className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => runImport('keep')} disabled={importing}>
+                  Keep all (import everything)
+                </button>
+                <button className="inline-flex justify-center items-center gap-2 px-4 py-2.5 text-slate-400 text-sm font-medium hover:text-slate-200 transition-colors" onClick={() => setDupDialogOpen(false)} disabled={importing}>
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         )}

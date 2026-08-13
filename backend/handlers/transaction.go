@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
@@ -15,6 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// maxImportBatch caps the number of transactions accepted in a single import so
+// that a malformed or malicious request can't queue an unbounded batch.
+const maxImportBatch = 10000
 
 func GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
@@ -62,7 +68,10 @@ func GetTransactions(c *gin.Context) {
 			  COALESCE(c.icon, '') as category_icon,
 			  COALESCE(c.color, '') as category_color,
 			  EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as is_linked,
-			  (SELECT id FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id LIMIT 1) as link_id
+			  (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as link_count,
+			  CASE WHEN (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) = 1
+			       THEN (SELECT id FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id LIMIT 1)
+			  END as link_id
 			  FROM transactions t
 			  JOIN accounts a ON t.account_id = a.id
 			  LEFT JOIN categories c ON t.category_id = c.id
@@ -173,7 +182,7 @@ func GetTransactions(c *gin.Context) {
 		var t models.Transaction
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
-			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkID); err != nil {
+			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkCount, &t.LinkID); err != nil {
 			log.Printf("Error in GetTransactions scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
@@ -384,9 +393,54 @@ func ImportTransactions(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	log.Printf("Starting import of %d transactions for account %s\n", len(req.Transactions), req.AccountID)
 
-	// Load rules once and match in memory to avoid N+1 queries
+	// Validate payload before touching the database.
+	if len(req.Transactions) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no transactions to import"})
+		return
+	}
+	if len(req.Transactions) > maxImportBatch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many transactions (max %d per import)", maxImportBatch)})
+		return
+	}
+	action := req.DuplicateAction
+	if action != "" && action != "skip" && action != "keep" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "duplicateAction must be 'skip' or 'keep'"})
+		return
+	}
+	for i, t := range req.Transactions {
+		if t.Type != "debit" && t.Type != "credit" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type)})
+			return
+		}
+		if t.Amount <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount)})
+			return
+		}
+		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date)})
+			return
+		}
+	}
+
+	// The account must exist and belong to the authenticated user.
+	var ownerID uuid.UUID
+	err := db.Pool.QueryRow(c, "SELECT user_id FROM accounts WHERE id = $1", req.AccountID).Scan(&ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("Error in ImportTransactions (checking account): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if ownerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	// Load rules once and match in memory to avoid N+1 queries.
 	rules, err := loadRules(c, userID)
 	if err != nil {
 		log.Printf("Error in ImportTransactions (getting rules): %v\n", err)
@@ -394,12 +448,61 @@ func ImportTransactions(c *gin.Context) {
 		return
 	}
 
-	// Send all inserts in a single batch round trip
+	// Run the whole import in a transaction so it is all-or-nothing.
+	tx, err := db.Pool.Begin(c)
+	if err != nil {
+		log.Printf("Error in ImportTransactions (begin): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	defer tx.Rollback(c)
+
+	// When the user asks to skip duplicates, load the existing transactions for
+	// this account so we can compare against a consistent snapshot.
+	existing := map[string]bool{}
+	if action == "skip" {
+		rows, err := tx.Query(c,
+			"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
+			req.AccountID, userID)
+		if err != nil {
+			log.Printf("Error in ImportTransactions (loading existing transactions): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		for rows.Next() {
+			var d time.Time
+			var amount float64
+			var typ, description string
+			if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
+				rows.Close()
+				log.Printf("Error in ImportTransactions (scanning existing transactions): %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				return
+			}
+			existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			log.Printf("Error in ImportTransactions (iterating existing transactions): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+	}
+
+	// If the user chose to skip duplicates, drop the rows that match an existing
+	// transaction or repeat earlier in the same batch.
+	insertTxns := req.Transactions
+	duplicates := 0
+	if action == "skip" {
+		insertTxns, duplicates = dedupeTransactions(req.Transactions, existing)
+	}
+
 	batch := &pgx.Batch{}
-	for _, t := range req.Transactions {
+	imported := 0
+	for _, t := range insertTxns {
 		categoryID, payeeID := autoCategorize(rules, t.Description)
 
-		// If rule gives no payee, try to find one by name from import
+		// If a rule gives no payee, fall back to the payee matched during import.
 		if payeeID == nil && t.PayeeID != nil {
 			payeeID = t.PayeeID
 		}
@@ -409,26 +512,64 @@ func ImportTransactions(c *gin.Context) {
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID,
 		)
-	}
-
-	br := db.Pool.SendBatch(c, batch)
-	defer br.Close()
-
-	imported := 0
-	for range req.Transactions {
-		if _, err := br.Exec(); err != nil {
-			log.Printf("Error in ImportTransactions: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error", "imported": imported})
-			return
-		}
 		imported++
 	}
 
+	if imported > 0 {
+		br := tx.SendBatch(c, batch)
+		done := 0
+		for done < imported {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				log.Printf("Error in ImportTransactions: %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				return
+			}
+			done++
+		}
+		br.Close()
+
+		if err := tx.Commit(c); err != nil {
+			log.Printf("Error in ImportTransactions (commit): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"imported": imported,
-		"total":    len(req.Transactions),
+		"imported":   imported,
+		"duplicates": duplicates,
+		"total":      len(req.Transactions),
 	})
-	log.Printf("Import complete: %d imported out of %d total.\n", imported, len(req.Transactions))
+	log.Printf("Import complete: %d imported, %d duplicates skipped out of %d total for account %s\n",
+		imported, duplicates, len(req.Transactions), req.AccountID)
+}
+
+// transactionFingerprint collapses a row into a stable value used for duplicate
+// detection. Amounts are compared as integer cents so penny rounding and float
+// noise don't produce false matches.
+func transactionFingerprint(date string, amount float64, typ, description string) string {
+	cents := int(math.Round(amount * 100))
+	return fmt.Sprintf("%s\x00%d\x00%s\x00%s", date, cents, typ, strings.ToLower(strings.TrimSpace(description)))
+}
+
+// dedupeTransactions keeps the first occurrence of every unique row, dropping
+// rows that match an existing transaction or repeat earlier in the batch. It
+// returns the rows to insert and the number of duplicates dropped.
+func dedupeTransactions(txns []models.ImportTransaction, existing map[string]bool) ([]models.ImportTransaction, int) {
+	seen := make(map[string]bool, len(txns))
+	kept := make([]models.ImportTransaction, 0, len(txns))
+	duplicates := 0
+	for _, t := range txns {
+		fp := transactionFingerprint(t.Date, t.Amount, t.Type, t.Description)
+		if existing[fp] || seen[fp] {
+			duplicates++
+			continue
+		}
+		seen[fp] = true
+		kept = append(kept, t)
+	}
+	return kept, duplicates
 }
 
 func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UUID) {

@@ -162,7 +162,10 @@ const api = {
   deletePayee: (id) => request(`/payees/${id}`, { method: 'DELETE' }),
 
   // Links
-  getLinks: (type) => request(`/links${type ? `?type=${type}` : ''}`),
+  getLinks: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/links${qs ? `?${qs}` : ''}`);
+  },
   createLink: (data) => request('/links', { method: 'POST', body: JSON.stringify(data) }),
   deleteLink: (id) => request(`/links/${id}`, { method: 'DELETE' }),
   bulkDeleteLinks: (data) =>

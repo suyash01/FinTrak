@@ -60,6 +60,7 @@ type Transaction struct {
 	CategoryIcon  string     `json:"categoryIcon,omitempty"`
 	CategoryColor string     `json:"categoryColor,omitempty"`
 	IsLinked      bool       `json:"isLinked"`
+	LinkCount     int        `json:"linkCount"`
 	LinkID        *uuid.UUID `json:"linkId,omitempty"`
 }
 
@@ -196,8 +197,9 @@ type BulkDeleteTransactionsRequest struct {
 }
 
 type ImportRequest struct {
-	AccountID    uuid.UUID           `json:"accountId"`
-	Transactions []ImportTransaction `json:"transactions"`
+	AccountID       uuid.UUID           `json:"accountId"`
+	Transactions    []ImportTransaction `json:"transactions"`
+	DuplicateAction string              `json:"duplicateAction"` // "skip" | "keep"
 }
 
 type ImportTransaction struct {

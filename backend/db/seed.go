@@ -86,7 +86,7 @@ func SeedAccountTypes() {
 
 	accountTypes := []SeedAccountType{
 		{"bank", "Bank Account", "credit"},
-		{"credit_card", "Credit Card", "debit"},
+		{"credit_card", "Credit Card", "credit"},
 	}
 
 	for _, at := range accountTypes {

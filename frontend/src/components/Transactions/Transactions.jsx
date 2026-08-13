@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check, Pencil } from 'lucide-react';
 import LinkTransactionModal from './LinkTransactionModal';
 import EditTransactionModal from './EditTransactionModal';
@@ -71,19 +72,18 @@ const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected
           >
             <Pencil size={14} />
           </button>
-          {!t.isLinked ? (
-            <button
-              className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
-              onClick={() => setLinkingTxn(t)}
-              title="Find match and link"
-            >
-              <Link2 size={14} />
-            </button>
-          ) : (
+          <button
+            className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+            onClick={() => setLinkingTxn(t)}
+            title={t.isLinked ? 'Link more transactions' : 'Find match and link'}
+          >
+            <Link2 size={14} />
+          </button>
+          {t.linkCount > 0 && (
             <button
               className="p-1.5 text-emerald-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors group"
-              onClick={() => handleUnlink(t.linkId)}
-              title="Unlink"
+              onClick={() => handleUnlink(t)}
+              title={t.linkCount > 1 ? 'Manage links' : 'Unlink'}
             >
               <Check size={14} className="group-hover:hidden" />
               <Link2Off size={14} className="hidden group-hover:block" />
@@ -99,6 +99,7 @@ const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected
 });
 
 export default function Transactions() {
+  const navigate = useNavigate();
   const [data, setData] = useState({ data: [], total: 0, page: 1, pages: 0 });
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState([]);
@@ -278,15 +279,19 @@ export default function Transactions() {
     }
   }, [loadTransactions]);
 
-  const handleUnlink = useCallback(async (linkId) => {
+  const handleUnlink = useCallback(async (t) => {
+    if (t.linkCount > 1 || !t.linkId) {
+      navigate('/linking');
+      return;
+    }
     if (!confirm('Unlink these transactions?')) return;
     try {
-      await api.deleteLink(linkId);
+      await api.deleteLink(t.linkId);
       loadTransactions();
     } catch (err) {
       console.error(err);
     }
-  }, [loadTransactions]);
+  }, [loadTransactions, navigate]);
 
   const toggleSelect = useCallback((id) => {
     setSelected((prev) => {

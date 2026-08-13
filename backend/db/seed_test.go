@@ -66,7 +66,7 @@ func TestSeedAccountTypes(t *testing.T) {
 		WithArgs("bank", "Bank Account", "credit").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO account_types").
-		WithArgs("credit_card", "Credit Card", "debit").
+		WithArgs("credit_card", "Credit Card", "credit").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	SeedAccountTypes()

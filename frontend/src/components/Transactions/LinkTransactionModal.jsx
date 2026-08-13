@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, X, Link2, ArrowRight, ArrowLeft, RotateCcw, Gift } from 'lucide-react';
+import { Search, X, Link2, ArrowRight, ArrowLeft, RotateCcw, Gift, Trash2 } from 'lucide-react';
 import api from '../../api/client';
 import { formatCurrency, formatDate, formatDateOnly, parseDateOnly } from '../../utils/formatters';
 
@@ -15,10 +15,20 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
   const [dateTo, setDateTo] = useState('');
   const [matchAmount, setMatchAmount] = useState(true);
   const [excludeSameAccount, setExcludeSameAccount] = useState(true);
+  const [existingLinks, setExistingLinks] = useState([]);
+
+  const loadLinks = async () => {
+    try {
+      setExistingLinks(await api.getLinks({ txnId: txn.id }));
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   useEffect(() => {
     // Initial fetch accounts
     api.getAccounts().then(setAccounts).catch(console.error);
+    loadLinks();
 
     // Set default date range: ±14 days from txn.date
     if (txn.date) {
@@ -57,7 +67,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
 
       const res = await api.getTransactions(params);
 
-      let filtered = res.data.filter(t => t.id !== txn.id && !t.isLinked);
+      let filtered = res.data.filter(t => t.id !== txn.id);
 
       if (exclAccount) {
         filtered = filtered.filter(t => t.accountId !== txn.accountId);
@@ -104,6 +114,17 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
       onSuccess();
     } catch (err) {
       alert(err.message);
+    }
+  };
+
+  const handleUnlinkLink = async (linkId) => {
+    if (!confirm('Remove this link?')) return;
+    try {
+      await api.deleteLink(linkId);
+      await loadLinks();
+      onSuccess();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -243,10 +264,46 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
           </div>
         </div>
 
+        {/* Existing links */}
+        {existingLinks.length > 0 && (
+          <div className="px-6 py-3 border-b border-slate-800 bg-slate-950/40">
+            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+              Already Linked ({existingLinks.length})
+            </div>
+            <div className="space-y-1.5">
+              {existingLinks.map((l) => {
+                const other = l.fromTxnID === txn.id ? l.toTxn : l.fromTxn;
+                const typeClass = l.type === 'transfer'
+                  ? 'bg-blue-500/10 text-blue-400'
+                  : l.type === 'cashback'
+                    ? 'bg-emerald-500/10 text-emerald-400'
+                    : 'bg-amber-500/10 text-amber-400';
+                return (
+                  <div key={l.id} className="flex items-center gap-2.5 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${typeClass}`}>{l.type}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-slate-300 truncate">{other?.description}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {other?.accountName} · {formatDate(other?.date)} ·
+                        <span className={other?.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}>
+                          {other?.type === 'debit' ? '−' : '+'}{formatCurrency(other?.amount || 0)}
+                        </span>
+                      </div>
+                    </div>
+                    <button onClick={() => handleUnlinkLink(l.id)} className="p-1 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors" title="Unlink">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Info banner */}
         <div className="px-6 py-2.5 bg-cyan-500/5 border-b border-slate-800">
           <p className="text-[11px] text-cyan-400/70 text-center">
-            <span className="font-semibold">Cross-account</span> links auto-assign as Transfer · <span className="font-semibold">Same-account</span> links let you choose Cashback or Refund
+            <span className="font-semibold">Cross-account</span> links auto-assign as Transfer · <span className="font-semibold">Same-account</span> links let you choose Cashback or Refund · A transaction can be linked to many others
           </p>
         </div>
 
@@ -370,6 +427,9 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
                         </span>
                         {sameAccount && (
                           <span className="px-1.5 py-0.5 bg-amber-500/10 rounded text-amber-400 text-[10px] font-semibold">Same Account</span>
+                        )}
+                        {r.isLinked && (
+                          <span className="px-1.5 py-0.5 bg-cyan-500/10 rounded text-cyan-400 text-[10px] font-semibold">Already Linked</span>
                         )}
                       </div>
                     </div>

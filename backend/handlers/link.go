@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 func GetLinks(c *gin.Context) {
 	linkType := c.Query("type")
+	txnID := c.Query("txnId")
 
 	query := `SELECT l.id, l.type, l.from_txn_id, l.to_txn_id, l.notes, l.created_at,
 			  ft.date, ft.description, ft.amount, ft.type, fa.name,
@@ -27,9 +29,15 @@ func GetLinks(c *gin.Context) {
 			  WHERE l.user_id = $1`
 
 	args := []interface{}{auth.GetUserID(c)}
+	paramIdx := 2
 	if linkType != "" {
-		query += " AND l.type = $2"
+		query += fmt.Sprintf(" AND l.type = $%d", paramIdx)
 		args = append(args, linkType)
+		paramIdx++
+	}
+	if txnID != "" {
+		query += fmt.Sprintf(" AND (l.from_txn_id = $%d OR l.to_txn_id = $%d)", paramIdx, paramIdx+1)
+		args = append(args, txnID, txnID)
 	}
 	query += " ORDER BY l.created_at DESC"
 
@@ -94,6 +102,22 @@ func CreateLink(c *gin.Context) {
 	}
 	if owned != 2 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
+		return
+	}
+
+	// Prevent exact duplicate links; the same transaction may still appear
+	// in many links with different partners (one-to-many).
+	var dupCount int
+	if err := tx.QueryRow(c,
+		"SELECT COUNT(*) FROM links WHERE user_id = $1 AND type = $2 AND from_txn_id = $3 AND to_txn_id = $4",
+		userID, req.Type, req.FromTxnID, req.ToTxnID,
+	).Scan(&dupCount); err != nil {
+		log.Printf("Error checking duplicate link in CreateLink: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if dupCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "link already exists"})
 		return
 	}
 
@@ -195,6 +219,20 @@ func BulkCreateLinks(c *gin.Context) {
 		if owned != 2 {
 			c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
 			return
+		}
+
+		// Skip exact duplicates; a transaction may still be linked to many partners.
+		var dupCount int
+		if err := tx.QueryRow(c,
+			"SELECT COUNT(*) FROM links WHERE user_id = $1 AND type = $2 AND from_txn_id = $3 AND to_txn_id = $4",
+			userID, l.Type, l.FromTxnID, l.ToTxnID,
+		).Scan(&dupCount); err != nil {
+			log.Printf("Error checking duplicate link in BulkCreateLinks: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		if dupCount > 0 {
+			continue
 		}
 
 		_, err = tx.Exec(c,

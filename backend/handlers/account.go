@@ -91,7 +91,7 @@ func CreateAccount(c *gin.Context) {
 		// Synchronize with Payees: Create a payee for the new account
 		_, err = tx.Exec(c,
 			`INSERT INTO payees (user_id, name, account_id) VALUES ($1, $2, $3)
-			 ON CONFLICT (account_id) DO UPDATE SET name = EXCLUDED.name`,
+			 ON CONFLICT (account_id) WHERE account_id IS NOT NULL DO UPDATE SET name = EXCLUDED.name`,
 			userID, account.Name, account.ID,
 		)
 		if err != nil {

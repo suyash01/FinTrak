@@ -110,7 +110,7 @@ The backend exposes a RESTful API under `/api/v1`:
 -   `POST /auth/login`: Sign in (returns a JWT).
 -   `GET /accounts`: List all financial accounts.
 -   `GET /transactions`: List transactions with support for search and filters.
--   `POST /transactions/import`: Upload CSV files for processing.
+-   `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
 -   `POST /rules/apply`: Manually trigger categorization rules.
 -   `GET /dashboard/summary`: Retrieve aggregated data for charts.
 
