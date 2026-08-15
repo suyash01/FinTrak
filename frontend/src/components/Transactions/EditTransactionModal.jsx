@@ -186,7 +186,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
                   </label>
                   <input
                     type="date"
-                    className={`${inputClass} scheme-dark [&::-webkit-calendar-picker-indicator]:invert`}
+                    className={`${inputClass} scheme-dark`}
                     value={form.date}
                     onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
                     required

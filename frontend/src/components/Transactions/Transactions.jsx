@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check, Pencil, Plus } from 'lucide-react';
 import LinkTransactionModal from './LinkTransactionModal';
 import EditTransactionModal from './EditTransactionModal';
@@ -113,8 +113,11 @@ const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected
   );
 });
 
+const URL_PARAMS = ['search', 'accountId', 'categoryId', 'payeeId', 'type', 'dateFrom', 'dateTo', 'uncategorized', 'linked', 'sortBy', 'sortOrder', 'page'];
+
 export default function Transactions() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState({ data: [], total: 0, page: 1, pages: 0 });
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState([]);
@@ -143,11 +146,52 @@ export default function Transactions() {
     [payees]
   );
 
-  // Filters
-  const [filters, setFilters] = useState({
-    search: '', accountId: '', categoryId: '', payeeId: '', type: '', dateFrom: '', dateTo: '', uncategorized: '', linked: '',
-    sortBy: 'date', sortOrder: 'DESC', page: 1, limit: pageSize || 0,
+  // Filters (initialized from URL search params)
+  const [filters, setFilters] = useState(() => {
+    const urlToFilters = {
+      search: '', accountId: '', categoryId: '', payeeId: '', type: '', dateFrom: '', dateTo: '', uncategorized: '', linked: '',
+      sortBy: 'date', sortOrder: 'DESC', page: 1,
+    };
+    URL_PARAMS.forEach((k) => {
+      const v = searchParams.get(k);
+      if (v !== null && v !== '') urlToFilters[k] = v;
+    });
+    return { ...urlToFilters, limit: pageSize || 0 };
   });
+
+  // Keep the URL in sync with the current filters (browser back/forward friendly)
+  useEffect(() => {
+    const params = {};
+    URL_PARAMS.forEach((k) => {
+      const v = filters[k];
+      if (v !== '' && v !== null && v !== undefined) params[k] = v;
+    });
+    const urlParams = Object.fromEntries(searchParams.entries());
+    if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
+      setSearchParams(params, { replace: true });
+    }
+  }, [filters, searchParams, setSearchParams]);
+
+  // React to external URL changes (navigation, back/forward, shared links)
+  useEffect(() => {
+    const urlToFilters = {};
+    let changed = false;
+    URL_PARAMS.forEach((k) => {
+      const v = searchParams.get(k);
+      const current = filters[k];
+      if (v !== null && v !== '') {
+        if (String(current) !== v) { urlToFilters[k] = v; changed = true; }
+      } else if (current !== '' && current !== undefined && current !== null) {
+        urlToFilters[k] = '';
+        changed = true;
+      }
+    });
+    if (changed) {
+      setFilters((f) => ({ ...f, ...urlToFilters, page: urlToFilters.page || '1' }));
+      setSelected(new Set());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Sync filter limit when pageSize changes in settings
   useEffect(() => {
@@ -377,8 +421,8 @@ export default function Transactions() {
             <option value="true">Linked Only</option>
             <option value="false">Not Linked Only</option>
           </select>
-          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark [&::-webkit-calendar-picker-indicator]:invert`} value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} title="From date" />
-          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark [&::-webkit-calendar-picker-indicator]:invert`} value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} title="To date" />
+          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`} value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} title="From date" />
+          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`} value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} title="To date" />
         </div>
 
         {/* Bulk actions */}

@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell,
 } from 'recharts';
 import { TrendingUp, TrendingDown, Wallet, ArrowUpDown } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { useSettings } from '../../context/SettingsContext';
@@ -27,9 +28,10 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [accounts, setAccounts] = useState([]);
   const defaultRange = lastTwelveMonthsRange();
-  const [accountId, setAccountId] = useState('');
-  const [dateFrom, setDateFrom] = useState(defaultRange.dateFrom);
-  const [dateTo, setDateTo] = useState(defaultRange.dateTo);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [accountId, setAccountId] = useState(searchParams.get('accountId') || '');
+  const [dateFrom, setDateFrom] = useState(searchParams.get('dateFrom') || defaultRange.dateFrom);
+  const [dateTo, setDateTo] = useState(searchParams.get('dateTo') || defaultRange.dateTo);
   const { compactLayout } = useSettings();
 
   useEffect(() => {
@@ -37,6 +39,26 @@ export default function Dashboard() {
       .then((res) => setAccounts(Array.isArray(res) ? res : []))
       .catch(() => setAccounts([]));
   }, []);
+
+  // Keep filters in the URL for easy sharing / navigation
+  useEffect(() => {
+    const params = {};
+    if (accountId) params.accountId = accountId;
+    if (dateFrom) params.dateFrom = dateFrom;
+    if (dateTo) params.dateTo = dateTo;
+    const urlParams = Object.fromEntries(searchParams.entries());
+    if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
+      setSearchParams(params, { replace: true });
+    }
+  }, [accountId, dateFrom, dateTo, searchParams, setSearchParams]);
+
+  // React to URL changes from navigation / back-forward
+  useEffect(() => {
+    setAccountId(searchParams.get('accountId') || '');
+    setDateFrom(searchParams.get('dateFrom') || defaultRange.dateFrom);
+    setDateTo(searchParams.get('dateTo') || defaultRange.dateTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
