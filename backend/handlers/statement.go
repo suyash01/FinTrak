@@ -83,6 +83,7 @@ func ParseStatement(c *gin.Context) {
 	if extractor == "" {
 		extractor = "sbi_cc"
 	}
+	dateFormat := c.PostForm("date_format")
 
 	// Forward the uploaded PDF to the parser service as a multipart request.
 	body := &bytes.Buffer{}
@@ -109,6 +110,9 @@ func ParseStatement(c *gin.Context) {
 
 	if password != "" {
 		_ = writer.WriteField("password", password)
+	}
+	if dateFormat != "" {
+		_ = writer.WriteField("date_format", dateFormat)
 	}
 	writer.Close()
 
@@ -173,7 +177,7 @@ func ParseStatement(c *gin.Context) {
 	}
 	for _, t := range raw.Transactions {
 		result.Transactions = append(result.Transactions, models.ImportTransaction{
-			Date:        normalizeParserDate(t.Date),
+			Date:        normalizeParserDate(t.Date, dateFormat),
 			Description: t.Description,
 			Amount:      t.Amount,
 			Type:        normalizeParserType(t.Type),
@@ -183,23 +187,53 @@ func ParseStatement(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// normalizeParserDate converts the parser's "DD Mon YY" date format to the app's
-// "YYYY-MM-DD" format used by the import pipeline. Dates it can't parse are
-// returned unchanged so the frontend can surface them.
-func normalizeParserDate(d string) string {
+// normalizeParserDate converts the parser's date string to the app's
+// "YYYY-MM-DD" format used by the import pipeline. The dateFormat argument
+// mirrors the frontend's date-format option (e.g. "DD/MM/YYYY"); when it is
+// empty the common parser layouts are tried. Dates it can't parse are returned
+// unchanged so the frontend can surface them.
+func normalizeParserDate(d, dateFormat string) string {
 	s := strings.TrimSpace(d)
 	if s == "" {
 		return s
 	}
-	t, err := time.Parse("02 Jan 06", s)
-	if err == nil {
-		return t.Format("2006-01-02")
+
+	layout := parserDateLayout(dateFormat)
+	if layout != "" {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Format("2006-01-02")
+		}
+		// Fall through to the auto-detect layouts below if the explicit
+		// format doesn't match.
 	}
-	t, err = time.Parse("02 Jan 2006", s)
-	if err == nil {
-		return t.Format("2006-01-02")
+
+	for _, l := range []string{"02 Jan 06", "02 Jan 2006", "02/01/2006", "01/02/2006", "2006-01-02", "02/01/06"} {
+		if t, err := time.Parse(l, s); err == nil {
+			return t.Format("2006-01-02")
+		}
 	}
 	return s
+}
+
+// parserDateLayout maps the frontend's date-format option values to Go time
+// layouts. Unknown/auto values return "" so normalizeParserDate auto-detects.
+func parserDateLayout(dateFormat string) string {
+	switch dateFormat {
+	case "DD/MM/YYYY":
+		return "02/01/2006"
+	case "MM/DD/YYYY":
+		return "01/02/2006"
+	case "DD/MM/YY":
+		return "02/01/06"
+	case "YYYY-MM-DD":
+		return "2006-01-02"
+	case "DD Mon YYYY":
+		return "02 Jan 2006"
+	case "DD Mon YY":
+		return "02 Jan 06"
+	default:
+		return ""
+	}
 }
 
 // normalizeParserType maps the parser's "Credit"/"Debit" values to the app's

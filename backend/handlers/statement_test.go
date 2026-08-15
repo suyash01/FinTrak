@@ -253,10 +253,20 @@ func TestParseStatementParserUnavailable(t *testing.T) {
 }
 
 func TestNormalizeParserDate(t *testing.T) {
-	assert.Equal(t, "2026-05-18", normalizeParserDate("18 May 26"))
-	assert.Equal(t, "2024-12-12", normalizeParserDate("12 Dec 2024"))
-	assert.Equal(t, "", normalizeParserDate(""))
-	assert.Equal(t, "unparseable", normalizeParserDate("unparseable"))
+	assert.Equal(t, "2026-05-18", normalizeParserDate("18 May 26", ""))
+	assert.Equal(t, "2024-12-12", normalizeParserDate("12 Dec 2024", ""))
+	assert.Equal(t, "", normalizeParserDate("", ""))
+	assert.Equal(t, "unparseable", normalizeParserDate("unparseable", ""))
+}
+
+func TestNormalizeParserDateWithFormat(t *testing.T) {
+	assert.Equal(t, "2026-05-18", normalizeParserDate("18/05/2026", "DD/MM/YYYY"))
+	assert.Equal(t, "2026-05-18", normalizeParserDate("05/18/2026", "MM/DD/YYYY"))
+	assert.Equal(t, "2026-05-18", normalizeParserDate("2026-05-18", "YYYY-MM-DD"))
+	assert.Equal(t, "2026-05-18", normalizeParserDate("18/05/26", "DD/MM/YY"))
+	assert.Equal(t, "2024-12-12", normalizeParserDate("12 Dec 2024", "DD Mon YYYY"))
+	// falls back to auto-detect when the requested format doesn't match
+	assert.Equal(t, "2026-05-18", normalizeParserDate("18 May 26", "DD/MM/YYYY"))
 }
 
 func TestNormalizeParserType(t *testing.T) {

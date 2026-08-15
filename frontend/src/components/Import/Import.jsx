@@ -220,6 +220,7 @@ export default function Import() {
   const [statementMode, setStatementMode] = useState('csv'); // 'csv' | 'pdf'
   const [parsing, setParsing] = useState(false);
   const [pdfPassword, setPdfPassword] = useState('');
+  const [pdfDateFormat, setPdfDateFormat] = useState('auto');
   const [statementSummary, setStatementSummary] = useState(null);
   const [statementTxns, setStatementTxns] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
@@ -313,6 +314,7 @@ export default function Import() {
       const fd = new FormData();
       fd.append('file', file);
       if (pdfPassword) fd.append('password', pdfPassword);
+      if (pdfDateFormat !== 'auto') fd.append('date_format', pdfDateFormat);
       if (chosenExtractor) fd.append('extractor', chosenExtractor);
       const result = await api.parseStatement(fd);
       setStatementTxns(result.transactions || []);
@@ -778,6 +780,18 @@ export default function Import() {
                     ))}
                   </select>
                 </div>
+                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Date Format</label>
+                  <select
+                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    value={pdfDateFormat}
+                    onChange={(e) => setPdfDateFormat(e.target.value)}
+                  >
+                    {DATE_FORMAT_OPTIONS.map((f) => (
+                      <option key={f.value} value={f.value}>{f.label}</option>
+                    ))}
+                  </select>
+                </div>
                 <button
                   className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={() => parsePdf(pdfFile, extractor)}
@@ -785,7 +799,7 @@ export default function Import() {
                 >
                   {parsing ? <><Loader2 size={15} className="animate-spin" /> Reparsing...</> : <>Reparse PDF</>}
                 </button>
-                <p className="text-xs text-slate-500 w-full">Parsing didn't look right? Try a different extractor to reprocess the same file.</p>
+                <p className="text-xs text-slate-500 w-full">Parsing didn't look right? Try a different extractor or date format to reprocess the same file.</p>
               </div>
             )}
 
@@ -883,7 +897,7 @@ export default function Import() {
                 : ' imported.'}
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setCsvHeaders([]); setColumnMapping({}); setImportResult(null); setStatementTxns(null); setStatementSummary(null); setPdfPassword(''); setPdfFile(null); setExistingRefresh(k => k + 1); }}>
+              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setCsvHeaders([]); setColumnMapping({}); setImportResult(null); setStatementTxns(null); setStatementSummary(null); setPdfPassword(''); setPdfDateFormat('auto'); setPdfFile(null); setExistingRefresh(k => k + 1); }}>
                 Import Another
               </button>
               <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20" onClick={() => window.location.href = '/transactions'}>
