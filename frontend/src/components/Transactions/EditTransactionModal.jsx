@@ -3,12 +3,13 @@ import { X, Save, Pencil, Calendar, DollarSign, FileText, Tag, User, Landmark, A
 import api from '../../api/client';
 
 export default function EditTransactionModal({ transaction, accounts, categories, payees, onClose, onSaved }) {
+  const isCreate = !transaction;
   const [form, setForm] = useState({
-    date: '',
+    date: new Date().toISOString().split('T')[0],
     description: '',
     amount: '',
     type: 'debit',
-    accountId: '',
+    accountId: accounts?.[0]?.id || '',
     categoryId: '',
     payeeId: '',
     notes: '',
@@ -24,7 +25,19 @@ export default function EditTransactionModal({ transaction, accounts, categories
   useEffect(() => () => clearTimeout(closeTimerRef.current), []);
 
   useEffect(() => {
-    if (transaction) {
+    if (isCreate) {
+      setForm({
+        date: new Date().toISOString().split('T')[0],
+        description: '',
+        amount: '',
+        type: 'debit',
+        accountId: accounts?.[0]?.id || '',
+        categoryId: '',
+        payeeId: '',
+        notes: '',
+        tags: [],
+      });
+    } else {
       const dateStr = String(transaction.date).split('T')[0];
       setForm({
         date: dateStr,
@@ -37,10 +50,10 @@ export default function EditTransactionModal({ transaction, accounts, categories
         notes: transaction.notes || '',
         tags: transaction.tags || [],
       });
-      // Trigger enter animation
-      requestAnimationFrame(() => setVisible(true));
     }
-  }, [transaction]);
+    // Trigger enter animation
+    requestAnimationFrame(() => setVisible(true));
+  }, [transaction, isCreate, accounts]);
 
   const handleClose = () => {
     setVisible(false);
@@ -70,10 +83,14 @@ export default function EditTransactionModal({ transaction, accounts, categories
         accountId: form.accountId,
       };
 
-      await api.updateTransaction(transaction.id, payload);
+      if (isCreate) {
+        await api.createTransaction(payload);
+      } else {
+        await api.updateTransaction(transaction.id, payload);
+      }
       onSaved();
     } catch (err) {
-      setError(err.message || 'Failed to update transaction');
+      setError(err.message || (isCreate ? 'Failed to add transaction' : 'Failed to update transaction'));
     } finally {
       setSaving(false);
     }
@@ -98,8 +115,6 @@ export default function EditTransactionModal({ transaction, accounts, categories
     }
   };
 
-  if (!transaction) return null;
-
   const inputClass = "w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700/60 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all placeholder:text-slate-600";
   const labelClass = "block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5";
 
@@ -120,8 +135,8 @@ export default function EditTransactionModal({ transaction, accounts, categories
                 <Pencil size={18} className="text-cyan-400" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-slate-100">Edit Transaction</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Modify transaction details</p>
+                <h2 className="text-lg font-bold text-slate-100">{isCreate ? 'Add Transaction' : 'Edit Transaction'}</h2>
+                <p className="text-xs text-slate-500 mt-0.5">{isCreate ? 'Add a new transaction' : 'Modify transaction details'}</p>
               </div>
             </div>
             <button
@@ -335,7 +350,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
         {/* Footer */}
         <div className="shrink-0 px-6 py-4 border-t border-slate-800/80 bg-slate-900/50 flex items-center justify-between gap-3">
           <div className="text-xs text-slate-600 truncate">
-            ID: {transaction.id?.slice(0, 8)}...
+            {isCreate ? 'New transaction' : `ID: ${transaction.id?.slice(0, 8)}...`}
           </div>
           <div className="flex gap-3">
             <button
@@ -352,7 +367,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
               disabled={saving}
             >
               <Save size={14} />
-              {saving ? 'Saving...' : 'Save Changes'}
+              {saving ? 'Saving...' : isCreate ? 'Add Transaction' : 'Save Changes'}
             </button>
           </div>
         </div>

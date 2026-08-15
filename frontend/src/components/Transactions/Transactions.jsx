@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check, Pencil } from 'lucide-react';
+import { Search, ChevronUp, ChevronDown, Trash2, Tags, Link2, Link2Off, Check, Pencil, Plus } from 'lucide-react';
 import LinkTransactionModal from './LinkTransactionModal';
 import EditTransactionModal from './EditTransactionModal';
 import api from '../../api/client';
@@ -33,6 +33,21 @@ function EditableSelect({ value, options, onChange, placeholder, displayText, st
 }
 
 const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected, toggleSelect, categoryOptions, payeeOptions, handleCategoryChange, handlePayeeChange, handleDelete, handleUnlink, setLinkingTxn, setEditingTxn }) {
+  if (t.isSummary) {
+    const pad = compactLayout ? 'py-1.5 px-3' : 'py-3 px-4';
+    return (
+      <tr className="bg-cyan-500/10 border-b border-slate-800 last:border-0">
+        <td className={pad}></td>
+        <td className={`${pad} text-sm text-slate-400 whitespace-nowrap`}>{formatDate(t.date)}</td>
+        <td className={`${pad} text-sm font-semibold text-cyan-300`}>{t.description}</td>
+        <td className={pad}></td>
+        <td className={`${pad} text-sm text-slate-400 whitespace-nowrap`}>{t.accountName}</td>
+        <td className={pad}></td>
+        <td className={`${pad} text-sm text-right font-bold text-slate-100 font-mono whitespace-nowrap`}>{formatCurrency(t.amount)}</td>
+        <td className={pad}></td>
+      </tr>
+    );
+  }
   return (
     <tr className={`transition-colors border-b border-slate-800 last:border-0 ${selected ? 'bg-cyan-500/10' : 'hover:bg-slate-800/30'}`}>
       <td className={`${compactLayout ? 'py-1.5 px-3' : 'py-3 px-4'}`}><input type="checkbox" className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500" checked={selected} onChange={() => toggleSelect(t.id)} /></td>
@@ -108,6 +123,7 @@ export default function Transactions() {
   const [selected, setSelected] = useState(new Set());
   const [linkingTxn, setLinkingTxn] = useState(null);
   const [editingTxn, setEditingTxn] = useState(null);
+  const [creating, setCreating] = useState(false);
   const { compactLayout, pageSize } = useSettings();
 
   // Refs to avoid closures in callbacks
@@ -314,8 +330,19 @@ export default function Transactions() {
   return (
     <>
       <div className="shrink-0 px-8 pt-6">
-        <h1 className="text-2xl font-bold mb-1">Transactions</h1>
-        <p className="text-slate-400 text-sm">{data.total.toLocaleString()} transactions across all accounts</p>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-bold mb-1">Transactions</h1>
+            <p className="text-slate-400 text-sm">{data.total.toLocaleString()} transactions across all accounts</p>
+          </div>
+          <button
+            className="flex items-center gap-2 px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-all shadow-lg shadow-cyan-500/20"
+            onClick={() => setCreating(true)}
+          >
+            <Plus size={16} />
+            Add Transaction
+          </button>
+        </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
         {/* Filters */}
@@ -457,6 +484,18 @@ export default function Transactions() {
           onClose={() => setLinkingTxn(null)}
           onSuccess={() => {
             setLinkingTxn(null);
+            loadTransactions();
+          }}
+        />
+      )}
+      {creating && (
+        <EditTransactionModal
+          accounts={accounts}
+          categories={categories}
+          payees={payees}
+          onClose={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
             loadTransactions();
           }}
         />

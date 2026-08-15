@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -190,6 +191,15 @@ func GetTransactions(c *gin.Context) {
 		transactions = append(transactions, t)
 	}
 
+	// When a single account is filtered, inject computed summary rows: the
+	// current-cycle total outstanding for credit cards and the running balance
+	// at the end of each month for bank accounts. These are synthetic and are
+	// never persisted.
+	if accountID != "" {
+		summaryTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
+		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
+	}
+
 	pages := 1
 	if limit > 0 {
 		pages = int(math.Ceil(float64(total) / float64(limit)))
@@ -202,6 +212,75 @@ func GetTransactions(c *gin.Context) {
 		"limit": limit,
 		"pages": pages,
 	})
+}
+
+func CreateTransaction(c *gin.Context) {
+	var req models.CreateTransactionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Type != "debit" && req.Type != "credit" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 'debit' or 'credit'"})
+		return
+	}
+	if req.Amount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be positive"})
+		return
+	}
+	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (expected YYYY-MM-DD)"})
+		return
+	}
+
+	userID := auth.GetUserID(c)
+
+	// The account must exist and belong to the authenticated user.
+	var ownerID uuid.UUID
+	err := db.Pool.QueryRow(c, "SELECT user_id FROM accounts WHERE id = $1", req.AccountID).Scan(&ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("Error in CreateTransaction (checking account): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if ownerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	// Auto-categorize from rules when no explicit category is supplied.
+	categoryID, payeeID := req.CategoryID, req.PayeeID
+	if categoryID == nil {
+		rules, err := loadRules(c, userID)
+		if err != nil {
+			log.Printf("Error in CreateTransaction (getting rules): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		matchedCat, matchedPayee := autoCategorize(rules, req.Description)
+		categoryID = matchedCat
+		if payeeID == nil {
+			payeeID = matchedPayee
+		}
+	}
+
+	var id uuid.UUID
+	err = db.Pool.QueryRow(c,
+		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
+	if err != nil {
+		log.Printf("Error in CreateTransaction (insert): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
 func UpdateTransaction(c *gin.Context) {
@@ -579,4 +658,356 @@ func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UU
 		}
 	}
 	return nil, nil
+}
+
+// summaryNamespace seeds the deterministic UUIDs used for synthetic summary rows
+// so React keys stay stable across requests.
+var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
+
+// acctTxn is a minimal account transaction row used to compute running balances.
+type acctTxn struct {
+	Date   time.Time
+	Amount float64
+	Type   string
+}
+
+// buildAccountSummaryRows looks up the filtered account's type and, when it is
+// a credit card with a billing day set or a bank account, queries its
+// transactions and returns the synthetic summary rows to display.
+func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) []models.Transaction {
+	var acctName, acctTypeID, positiveTxnType string
+	var billingDay int
+	err := db.Pool.QueryRow(c,
+		`SELECT a.name, a.account_type_id, at.positive_txn_type, COALESCE(a.billing_day, 0)
+		 FROM accounts a JOIN account_types at ON a.account_type_id = at.id
+		 WHERE a.id = $1 AND a.user_id = $2`,
+		accountID, userID).Scan(&acctName, &acctTypeID, &positiveTxnType, &billingDay)
+	if err != nil {
+		return nil
+	}
+
+	rows, err := db.Pool.Query(c,
+		`SELECT date, amount, type FROM transactions WHERE account_id = $1 AND user_id = $2 ORDER BY date ASC`,
+		accountID, userID)
+	if err != nil {
+		log.Printf("Error in buildAccountSummaryRows: %v\n", err)
+		return nil
+	}
+	defer rows.Close()
+
+	txns := []acctTxn{}
+	for rows.Next() {
+		var t acctTxn
+		if err := rows.Scan(&t.Date, &t.Amount, &t.Type); err != nil {
+			log.Printf("Error in buildAccountSummaryRows scan: %v\n", err)
+			return nil
+		}
+		txns = append(txns, t)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("Error in buildAccountSummaryRows iterate: %v\n", err)
+		return nil
+	}
+
+	return computeSummaryRows(acctName, accountID, acctTypeID, positiveTxnType, billingDay, dateFrom, dateTo, txns)
+}
+
+// computeSummaryRows builds the synthetic summary rows for an account. Credit
+// cards get a "Total outstanding" row after every billing date (one per billing
+// cycle, summing the debit purchases in that cycle) plus a final row for the
+// current in-progress cycle; bank accounts get a "Month-end balance" row after
+// every month-end plus a final "Balance" row at the end of the range.
+func computeSummaryRows(accountName, accountID, acctTypeID, positiveTxnType string, billingDay int, dateFrom, dateTo string, txns []acctTxn) []models.Transaction {
+	rows := []models.Transaction{}
+	today := dateOnly(time.Now())
+
+	// sumByDirection adds txns to `running` up to `upTo` (inclusive), applying
+	// the account type's positive/negative direction.
+	sumByDirection := func(upTo time.Time, running *float64, idx *int) {
+		for *idx < len(txns) {
+			d := dateOnly(txns[*idx].Date)
+			if d.After(upTo) {
+				break
+			}
+			if txns[*idx].Type == positiveTxnType {
+				*running += txns[*idx].Amount
+			} else {
+				*running -= txns[*idx].Amount
+			}
+			*idx++
+		}
+	}
+
+	buildRow := func(kind, description string, date time.Time, amount float64) models.Transaction {
+		return models.Transaction{
+			ID:          summaryID(accountID, kind, date),
+			AccountID:   uuid.MustParse(accountID),
+			Date:        date,
+			Description: description,
+			Amount:      amount,
+			Type:        "credit",
+			AccountName: accountName,
+			IsSummary:   true,
+		}
+	}
+
+	// Resolve the date range (defaults: earliest transaction to today).
+	var from, to time.Time
+	if dateFrom != "" {
+		if t, err := time.Parse("2006-01-02", dateFrom); err == nil {
+			from = t
+		}
+	}
+	if dateTo != "" {
+		if t, err := time.Parse("2006-01-02", dateTo); err == nil {
+			to = t
+		}
+	}
+	if to.IsZero() {
+		to = today
+	}
+	if from.IsZero() {
+		for _, tx := range txns {
+			d := dateOnly(tx.Date)
+			if from.IsZero() || d.Before(from) {
+				from = d
+			}
+		}
+	}
+	if from.IsZero() {
+		from = to
+	}
+
+	if acctTypeID == "credit_card" {
+		// Default to the 1st of the month when no billing day is configured.
+		if billingDay <= 0 {
+			billingDay = 1
+		}
+		idx := 0
+		lastBd := time.Time{}
+		// Start one month before `from` so the txns of the first (partial) cycle
+		// are attributed correctly even though its billing date is before `from`.
+		for ms := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0); ; ms = ms.AddDate(0, 1, 0) {
+			bd := billingDateInMonth(ms, billingDay)
+			if bd.After(to) {
+				break
+			}
+			var debit float64
+			sawTxn := false
+			for idx < len(txns) {
+				d := dateOnly(txns[idx].Date)
+				if d.After(bd) {
+					break
+				}
+				sawTxn = true
+				// The amount due is the sum of the debit (purchase) transactions
+				// in the billing cycle; credits/payments are not netted out.
+				if txns[idx].Type == "debit" {
+					debit += txns[idx].Amount
+				}
+				idx++
+			}
+			// Only surface a row for cycles that actually have transactions.
+			if !bd.Before(from) && sawTxn {
+				rows = append(rows, buildRow("outstanding", "Total outstanding", bd, debit))
+			}
+			lastBd = bd
+		}
+		// Current in-progress cycle up to the end of the range. Skipped when the
+		// current cycle has no transactions.
+		var debit float64
+		sawTxn := false
+		for idx < len(txns) {
+			d := dateOnly(txns[idx].Date)
+			if d.After(to) {
+				break
+			}
+			sawTxn = true
+			if txns[idx].Type == "debit" {
+				debit += txns[idx].Amount
+			}
+			idx++
+		}
+		if !lastBd.Equal(dateOnly(to)) && sawTxn {
+			rows = append(rows, buildRow("outstanding-current", "Total outstanding", to, debit))
+		}
+	}
+
+	if acctTypeID == "bank" {
+		running := 0.0
+		idx := 0
+		lastMonthEnd := time.Time{}
+		for ms := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC); !ms.After(to); ms = ms.AddDate(0, 1, 0) {
+			me := lastDayOfMonth(ms)
+			if me.After(to) {
+				break
+			}
+			sumByDirection(me, &running, &idx)
+			if !me.Before(from) {
+				rows = append(rows, buildRow("monthend", "Month-end balance", me, running))
+			}
+			lastMonthEnd = me
+		}
+
+		// Final running balance at the end of the range. Skipped when the range
+		// already ends exactly on a month-end (already emitted above).
+		sumByDirection(to, &running, &idx)
+		if !lastMonthEnd.Equal(dateOnly(to)) {
+			rows = append(rows, buildRow("balance", "Balance", to, running))
+		}
+	}
+
+	return rows
+}
+
+// mergeSummaryRows interleaves synthetic summary rows into the already-sorted
+// transaction list by date so they appear in the correct chronological position.
+func mergeSummaryRows(transactions []models.Transaction, rows []models.Transaction, sortBy, sortOrder string) []models.Transaction {
+	if len(rows) == 0 {
+		return transactions
+	}
+	// Only include the summary rows whose cycle window overlaps the transactions
+	// on the current page, so rows are spread across pages instead of repeating
+	// on every page.
+	rows = filterSummaryRowsForPage(transactions, rows)
+	if len(rows) == 0 {
+		return transactions
+	}
+	return mergeByDate(transactions, rows, sortBy, sortOrder)
+}
+
+// filterSummaryRowsForPage keeps only the summary rows whose window (the period
+// since the previous summary row) contains at least one transaction on the
+// current page. This distributes each "Total outstanding" / balance row to the
+// page holding the transactions that produced it rather than showing it on
+// every page.
+func filterSummaryRowsForPage(transactions []models.Transaction, rows []models.Transaction) []models.Transaction {
+	if len(rows) == 0 || len(transactions) == 0 {
+		return nil
+	}
+	// Lower bound for the first row's window: the earliest page transaction.
+	earliest := time.Time{}
+	for _, t := range transactions {
+		d := dateOnly(t.Date)
+		if earliest.IsZero() || d.Before(earliest) {
+			earliest = d
+		}
+	}
+	prev := earliest.AddDate(0, 0, -1)
+
+	sorted := make([]models.Transaction, len(rows))
+	copy(sorted, rows)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Date.Before(sorted[j].Date) })
+
+	kept := []models.Transaction{}
+	for _, r := range sorted {
+		d := dateOnly(r.Date)
+		for _, t := range transactions {
+			tx := dateOnly(t.Date)
+			if tx.After(prev) && !tx.After(d) {
+				kept = append(kept, r)
+				break
+			}
+		}
+		prev = d
+	}
+	return kept
+}
+
+// mergeByDate interleaves summary rows into the sorted transaction list by date,
+// placing a summary row at the top of the day when it shares a date with the
+// day's transactions.
+func mergeByDate(transactions []models.Transaction, rows []models.Transaction, sortBy, sortOrder string) []models.Transaction {
+	asc := sortOrder == "ASC"
+	sort.Slice(rows, func(i, j int) bool {
+		if asc {
+			return rows[i].Date.Before(rows[j].Date)
+		}
+		return rows[i].Date.After(rows[j].Date)
+	})
+	if sortBy != "date" {
+		return append(append([]models.Transaction{}, transactions...), rows...)
+	}
+
+	merged := make([]models.Transaction, 0, len(transactions)+len(rows))
+	i, j := 0, 0
+	for i < len(transactions) || j < len(rows) {
+		if j >= len(rows) {
+			merged = append(merged, transactions[i])
+			i++
+		} else if i >= len(transactions) {
+			merged = append(merged, rows[j])
+			j++
+		} else {
+			a, b := transactions[i], rows[j]
+			if asc {
+				// Ascending by date; on ties put the summary row (b) first.
+				if !a.Date.Before(b.Date) {
+					merged = append(merged, b)
+					j++
+				} else {
+					merged = append(merged, a)
+					i++
+				}
+			} else {
+				// Descending by date; on ties put the summary row (b) first.
+				if !a.Date.After(b.Date) {
+					merged = append(merged, b)
+					j++
+				} else {
+					merged = append(merged, a)
+					i++
+				}
+			}
+		}
+	}
+	return merged
+}
+
+// summaryID returns a deterministic UUID for a summary row so it is stable
+// across requests and safe to use as a React key.
+func summaryID(accountID, kind string, date time.Time) uuid.UUID {
+	return uuid.NewSHA1(summaryNamespace, []byte(fmt.Sprintf("%s|%s|%s", accountID, kind, date.Format("2006-01-02"))))
+}
+
+// dateOnly normalizes a time to midnight UTC for date-only comparisons.
+func dateOnly(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// daysInMonth returns the number of days in the given month.
+func daysInMonth(y int, m time.Month) int {
+	return time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+// lastDayOfMonth returns the last day of the month containing t, at midnight.
+func lastDayOfMonth(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), daysInMonth(t.Year(), t.Month()), 0, 0, 0, 0, time.UTC)
+}
+
+// lastBillingDate returns the most recent billing date (the configured day of
+// month, clamped to the month length) that is on or before today.
+func lastBillingDate(today time.Time, day int) time.Time {
+	clamp := func(y int, m time.Month) int {
+		if day > daysInMonth(y, m) {
+			return daysInMonth(y, m)
+		}
+		return day
+	}
+	cand := time.Date(today.Year(), today.Month(), clamp(today.Year(), today.Month()), 0, 0, 0, 0, time.UTC)
+	if !cand.After(today) {
+		return cand
+	}
+	prev := today.AddDate(0, -1, 0)
+	return time.Date(prev.Year(), prev.Month(), clamp(prev.Year(), prev.Month()), 0, 0, 0, 0, time.UTC)
+}
+
+// billingDateInMonth returns the billing day (clamped to the month length)
+// within the month containing t.
+func billingDateInMonth(t time.Time, day int) time.Time {
+	y, m := t.Year(), t.Month()
+	if day > daysInMonth(y, m) {
+		day = daysInMonth(y, m)
+	}
+	return time.Date(y, m, day, 0, 0, 0, 0, time.UTC)
 }

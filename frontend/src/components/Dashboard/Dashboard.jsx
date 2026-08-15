@@ -8,24 +8,52 @@ import api from '../../api/client';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { useSettings } from '../../context/SettingsContext';
 
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function lastTwelveMonthsRange() {
+  const to = new Date();
+  const from = new Date(to.getFullYear(), to.getMonth() - 12, to.getDate() + 1);
+  return { dateFrom: toISODate(from), dateTo: toISODate(to) };
+}
+
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [accounts, setAccounts] = useState([]);
+  const defaultRange = lastTwelveMonthsRange();
+  const [accountId, setAccountId] = useState('');
+  const [dateFrom, setDateFrom] = useState(defaultRange.dateFrom);
+  const [dateTo, setDateTo] = useState(defaultRange.dateTo);
   const { compactLayout } = useSettings();
+
+  useEffect(() => {
+    api.getAccounts()
+      .then((res) => setAccounts(Array.isArray(res) ? res : []))
+      .catch(() => setAccounts([]));
+  }, []);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.getDashboardSummary();
+      const params = {};
+      if (accountId) params.accountId = accountId;
+      if (dateFrom) params.dateFrom = dateFrom;
+      if (dateTo) params.dateTo = dateTo;
+      const res = await api.getDashboardSummary(params);
       setData(res);
     } catch (err) {
       setError(err.message || 'Failed to load dashboard');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accountId, dateFrom, dateTo]);
 
   useEffect(() => {
     loadSummary();
@@ -58,6 +86,16 @@ export default function Dashboard() {
       <div className="shrink-0 px-8 pt-6">
         <h1 className="text-2xl font-bold mb-1">Dashboard</h1>
         <p className="text-slate-400 text-sm">Your financial overview at a glance</p>
+      </div>
+      <div className="shrink-0 px-8 pt-4">
+        <div className={`flex flex-wrap items-center ${compactLayout ? 'gap-2' : 'gap-3'}`}>
+          <select className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`} value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+            <option value="">All Accounts</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark `} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="From date" />
+          <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark `} value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="To date" />
+        </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
         {/* Stats */}

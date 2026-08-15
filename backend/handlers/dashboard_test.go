@@ -145,7 +145,7 @@ func TestGetDashboardSummaryWithDateFilter(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE user_id").
-		WithArgs(userID).
+		WithArgs(filterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(10))
 	mock.ExpectQuery("type = 'credit' AND user_id").
 		WithArgs(filterArgs...).
@@ -160,10 +160,10 @@ func TestGetDashboardSummaryWithDateFilter(t *testing.T) {
 		WithArgs(filterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}))
 	mock.ExpectQuery("SELECT TO_CHAR\\(date, 'YYYY-MM'\\) as month").
-		WithArgs(userID).
+		WithArgs(filterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"month", "income", "expense"}))
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type").
-		WithArgs(userID).
+		WithArgs(filterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type",
 			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
@@ -171,6 +171,59 @@ func TestGetDashboardSummaryWithDateFilter(t *testing.T) {
 		}))
 
 	req, _ := http.NewRequest(http.MethodGet, "/dashboard/summary?dateFrom="+dateFrom+"&dateTo="+dateTo, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetDashboardSummaryWithAccountFilter(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newDashboardTestRouter()
+	userID := testUserID()
+	accountID := uuid.New()
+	filterArgs := []interface{}{userID, accountID.String()}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(5))
+	mock.ExpectQuery("type = 'credit' AND user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(8000.00))
+	mock.ExpectQuery("type = 'debit' AND user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(2000.00))
+	mock.ExpectQuery("t.type = 'debit' AND t.user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}))
+	mock.ExpectQuery("t.type = 'credit' AND t.user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}))
+	mock.ExpectQuery("SELECT TO_CHAR\\(date, 'YYYY-MM'\\) as month").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"month", "income", "expense"}))
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "account_id", "date", "description", "amount", "type",
+			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
+			"account_name", "category_name", "category_icon", "category_color",
+		}))
+
+	req, _ := http.NewRequest(http.MethodGet, "/dashboard/summary?accountId="+accountID.String(), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

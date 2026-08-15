@@ -101,6 +101,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		// Transactions
 		transactions := api.Group("/transactions")
 		transactions.GET("", handlers.GetTransactions)
+		transactions.POST("", handlers.CreateTransaction)
 		transactions.PATCH("/:id", handlers.UpdateTransaction)
 		transactions.DELETE("/:id", handlers.DeleteTransaction)
 		transactions.POST("/import", handlers.ImportTransactions)

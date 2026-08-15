@@ -109,8 +109,9 @@ The backend exposes a RESTful API under `/api/v1`:
 
 -   `POST /auth/register`: Create an account (returns a JWT).
 -   `POST /auth/login`: Sign in (returns a JWT).
--   `GET /accounts`: List all financial accounts.
--   `GET /transactions`: List transactions with support for search and filters.
+-   `GET /accounts`: List all financial accounts. Credit cards may carry a `billingDay` (1-31) that sets the statement-cut date.
+-   `GET /transactions`: List transactions with support for search and filters. When a single `accountId` is filtered, synthetic (non-persisted) summary rows are appended: credit cards get a `Total outstanding` row after every billing date (the sum of debit/purchase transactions in that billing cycle, defaulting to the 1st of the month if no billing day is set) plus a final row for the current in-progress cycle; bank accounts get a `Month-end balance` row after every month-end plus a final `Balance` row at the range end. Summary rows have `isSummary: true` and are interleaved by date.
+-   `POST /transactions`: Create a single transaction manually. Body: `{ accountId, date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", categoryId?, payeeId?, tags?, notes? }`. The account must belong to the authenticated user; when `categoryId` is omitted the transaction is auto-categorized from rules. Returns `{ id }`.
 -   `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
 -   `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount }` ready for preview and import.
 -   `POST /rules/apply`: Manually trigger categorization rules.

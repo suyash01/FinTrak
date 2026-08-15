@@ -8,7 +8,7 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [accountTypes, setAccountTypes] = useState([]);
   const [showNew, setShowNew] = useState(false);
-  const [newAcc, setNewAcc] = useState({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
+  const [newAcc, setNewAcc] = useState({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4', billingDay: '' });
   const [editingId, setEditingId] = useState(null);
   const [editAcc, setEditAcc] = useState(null);
   const { compactLayout } = useSettings();
@@ -20,10 +20,10 @@ export default function Accounts() {
 
   const handleCreate = async () => {
     try {
-      const acc = await api.createAccount(newAcc);
+      const acc = await api.createAccount({ ...newAcc, billingDay: newAcc.billingDay === '' ? null : Number(newAcc.billingDay) });
       setAccounts((prev) => [acc, ...prev]);
       setShowNew(false);
-      setNewAcc({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4' });
+      setNewAcc({ name: '', accountTypeId: 'bank', bank: '', color: '#06b6d4', billingDay: '' });
     } catch (err) {
       alert(err.message);
     }
@@ -41,7 +41,7 @@ export default function Accounts() {
 
   const handleUpdate = async () => {
     try {
-      const updated = await api.updateAccount(editingId, editAcc);
+      const updated = await api.updateAccount(editingId, { ...editAcc, billingDay: editAcc.billingDay === '' ? null : Number(editAcc.billingDay) });
       setAccounts((prev) => prev.map((a) => (a.id === editingId ? updated : a)));
       setEditingId(null);
       setEditAcc(null);
@@ -52,7 +52,7 @@ export default function Accounts() {
 
   const startEdit = (acc) => {
     setEditingId(acc.id);
-    setEditAcc({ name: acc.name, accountTypeId: acc.accountTypeId, bank: acc.bank || '', color: acc.color, currency: acc.currency });
+    setEditAcc({ name: acc.name, accountTypeId: acc.accountTypeId, bank: acc.bank || '', color: acc.color, currency: acc.currency, billingDay: acc.billingDay ?? '' });
   };
 
   const handleExport = async (id) => {
@@ -110,6 +110,12 @@ export default function Accounts() {
                 <input type="color" value={newAcc.color} onChange={(e) => setNewAcc({ ...newAcc, color: e.target.value })} className="w-full h-[42px] cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1" />
               </div>
             </div>
+            {newAcc.accountTypeId === 'credit_card' && (
+              <div className="flex flex-col gap-1.5 mb-5 max-w-xs">
+                <label className="text-sm font-medium text-slate-400">Billing Day (1-31)</label>
+                <input type="number" min="1" max="31" className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" placeholder="e.g. 5" value={newAcc.billingDay} onChange={(e) => setNewAcc({ ...newAcc, billingDay: e.target.value })} />
+              </div>
+            )}
             <button className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed" onClick={handleCreate} disabled={!newAcc.name}>Create</button>
           </div>
         )}
@@ -140,6 +146,9 @@ export default function Accounts() {
                       </select>
                       <input className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" placeholder="Bank" value={editAcc.bank} onChange={(e) => setEditAcc({ ...editAcc, bank: e.target.value })} />
                       <input type="color" value={editAcc.color} onChange={(e) => setEditAcc({ ...editAcc, color: e.target.value })} className="w-full h-[42px] cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1" />
+                      {editAcc.accountTypeId === 'credit_card' && (
+                        <input type="number" min="1" max="31" className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all" placeholder="Billing Day (1-31)" value={editAcc.billingDay} onChange={(e) => setEditAcc({ ...editAcc, billingDay: e.target.value })} />
+                      )}
                     </div>
                     <button className="inline-flex items-center justify-center w-full gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50" onClick={handleUpdate} disabled={!editAcc.name}>Save</button>
                   </div>

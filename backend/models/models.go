@@ -21,6 +21,7 @@ type Account struct {
 	Bank            string    `json:"bank"`
 	Currency        string    `json:"currency"`
 	Color           string    `json:"color"`
+	BillingDay      *int      `json:"billingDay,omitempty"`
 	Balance         float64   `json:"balance"`
 }
 
@@ -62,6 +63,7 @@ type Transaction struct {
 	IsLinked      bool       `json:"isLinked"`
 	LinkCount     int        `json:"linkCount"`
 	LinkID        *uuid.UUID `json:"linkId,omitempty"`
+	IsSummary     bool       `json:"isSummary,omitempty"`
 }
 
 type Rule struct {
@@ -117,6 +119,7 @@ type CreateAccountRequest struct {
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
+	BillingDay    *int   `json:"billingDay"`
 }
 
 type UpdateAccountRequest struct {
@@ -125,6 +128,7 @@ type UpdateAccountRequest struct {
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
+	BillingDay    *int   `json:"billingDay"`
 }
 
 type CreateAccountTypeRequest struct {
@@ -180,6 +184,18 @@ type UpdateTransactionRequest struct {
 	Amount      *float64     `json:"amount"`
 	Type        *string      `json:"type"`
 	AccountID   *uuid.UUID   `json:"accountId"`
+}
+
+type CreateTransactionRequest struct {
+	AccountID   uuid.UUID  `json:"accountId" binding:"required"`
+	Date        string     `json:"date" binding:"required"`
+	Description string     `json:"description" binding:"required"`
+	Amount      float64    `json:"amount" binding:"required"`
+	Type        string     `json:"type" binding:"required"`
+	CategoryID  *uuid.UUID `json:"categoryId"`
+	PayeeID     *uuid.UUID `json:"payeeId"`
+	Tags        []string   `json:"tags"`
+	Notes       string     `json:"notes"`
 }
 
 type BulkCategorizeRequest struct {

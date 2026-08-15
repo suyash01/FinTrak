@@ -178,6 +178,8 @@ const api = {
     const qs = new URLSearchParams(params).toString();
     return request(`/transactions?${qs}`, options);
   },
+  createTransaction: (data) =>
+    request('/transactions', { method: 'POST', body: JSON.stringify(data) }),
   updateTransaction: (id, data) =>
     request(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteTransaction: (id) => request(`/transactions/${id}`, { method: 'DELETE' }),

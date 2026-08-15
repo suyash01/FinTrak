@@ -19,19 +19,28 @@ import (
 
 var errAccountNotFound = errors.New("account not found")
 
+// balanceExpr builds the per-account balance/outstanding expression as an
+// accumulative net sum: credits are added and debits subtracted, according to
+// the account type's positive_txn_type convention.
+// `alias` is the accounts table alias referenced in the query.
+func balanceExpr(alias string) string {
+	return `COALESCE((
+		SELECT SUM(CASE
+			WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+			WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+			ELSE 0 END)
+		FROM transactions t WHERE t.account_id = ` + alias + `.id
+	), 0)`
+}
+
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
-		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color,
-		COALESCE(SUM(CASE 
-			WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-			WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
-			ELSE 0 END), 0) as balance
+		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.billing_day,
+		` + balanceExpr("a") + ` as balance
 		FROM accounts a
 		JOIN account_types at ON a.account_type_id = at.id
-		LEFT JOIN transactions t ON a.id = t.account_id
 		WHERE a.user_id = $1
-		GROUP BY a.id, a.name, a.account_type_id, at.name, a.bank, a.currency, a.color, a.created_at
 		ORDER BY a.created_at DESC`
 
 	rows, err := db.Pool.Query(c, query, userID)
@@ -45,7 +54,7 @@ func GetAccounts(c *gin.Context) {
 	accounts := []models.Account{}
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.Balance); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.BillingDay, &a.Balance); err != nil {
 			log.Printf("Error in GetAccounts scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
@@ -74,10 +83,10 @@ func CreateAccount(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	err := db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
-			`INSERT INTO accounts (user_id, name, account_type_id, bank, currency, color) VALUES ($1, $2, $3, $4, $5, $6)
-			 RETURNING id, name, account_type_id, bank, currency, color`,
-			userID, req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color,
-		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color)
+			`INSERT INTO accounts (user_id, name, account_type_id, bank, currency, color, billing_day) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 RETURNING id, name, account_type_id, bank, currency, color, billing_day`,
+			userID, req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color, &account.BillingDay)
 
 		if err != nil {
 			return err
@@ -164,18 +173,15 @@ func UpdateAccount(c *gin.Context) {
 	err = db.WithTx(c, func(tx pgx.Tx) error {
 		err := tx.QueryRow(c,
 			`WITH updated AS (
-				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, updated_at = NOW() 
-				WHERE id = $6 AND user_id = $7 RETURNING id, name, account_type_id, bank, currency, color
+				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, billing_day = $6, updated_at = NOW() 
+				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, billing_day
 			)
-			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color,
-			COALESCE((SELECT SUM(CASE 
-				WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-				WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
-				ELSE 0 END) FROM transactions t WHERE t.account_id = u.id), 0) as balance
+			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.billing_day,
+			` + balanceExpr("u") + ` as balance
 			FROM updated u
 			JOIN account_types at ON u.account_type_id = at.id`,
-			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, id, userID,
-		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.Balance)
+			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay, id, userID,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.BillingDay, &account.Balance)
 
 		if err != nil {
 			return err

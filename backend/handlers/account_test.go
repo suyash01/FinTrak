@@ -36,9 +36,9 @@ func TestGetAccounts(t *testing.T) {
 
 	// Define expected data
 	userID := testUserID()
-	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "balance"}).
-		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", 1000.50).
-		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", 500.00)
+	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "billing_day", "balance"}).
+		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", nil, 1000.50).
+		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", intPtr(5), 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
 		WithArgs(userID).
@@ -91,9 +91,9 @@ func TestCreateAccount(t *testing.T) {
 
 	// Expect Insert Account
 	mock.ExpectQuery("INSERT INTO accounts").
-		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4"))
+		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", (*int)(nil)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "billing_day"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", nil))
 
 	// Expect Account Type Name Fetch
 	mock.ExpectQuery("SELECT name FROM account_types").
@@ -129,6 +129,8 @@ func TestCreateAccount(t *testing.T) {
 func testUserID() uuid.UUID {
 	return uuid.MustParse("00000000-0000-0000-0000-000000000001")
 }
+
+func intPtr(v int) *int { return &v }
 
 func testAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
