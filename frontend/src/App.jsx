@@ -17,15 +17,7 @@ import api from './api/client';
 import { Trash2, Edit2, Plus, X } from 'lucide-react';
 
 function Settings() {
-  const { compactLayout, toggleCompactLayout, pageSize, setPageSize } = useSettings();
-
-  const pageSizeOptions = [
-    { value: 25, label: '25' },
-    { value: 50, label: '50' },
-    { value: 100, label: '100' },
-    { value: 200, label: '200' },
-    { value: 0, label: 'No Pagination' },
-  ];
+  const { compactLayout, toggleCompactLayout } = useSettings();
 
   return (
     <>
@@ -49,21 +41,6 @@ function Settings() {
                 className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${compactLayout ? 'translate-x-5' : 'translate-x-0'}`}
               />
             </button>
-          </div>
-          <div className="flex items-center justify-between mt-5 pt-5 border-t border-slate-800">
-            <div>
-              <div className="text-sm font-medium text-slate-200">Page Size</div>
-              <div className="text-[13px] text-slate-500">Number of transactions per page (0 = show all)</div>
-            </div>
-            <select
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-              className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all cursor-pointer"
-            >
-              {pageSizeOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
           </div>
         </div>
 

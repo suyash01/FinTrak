@@ -103,11 +103,13 @@ type User struct {
 type UserSettings struct {
 	PaperlessURL   string `json:"paperlessUrl"`
 	PaperlessToken string `json:"paperlessToken"`
+	PageSize       *int   `json:"pageSize"`
 }
 
 type UpdateUserSettingsRequest struct {
-	PaperlessURL   string `json:"paperlessUrl"`
-	PaperlessToken string `json:"paperlessToken"`
+	PaperlessURL   *string     `json:"paperlessUrl"`
+	PaperlessToken *string     `json:"paperlessToken"`
+	PageSize       OptionalInt `json:"pageSize"`
 }
 
 // PaperlessDocument is a lightweight summary of a document hosted in a
@@ -198,6 +200,38 @@ func (o *OptionalUUID) Set() bool { return o != nil && o.present }
 
 // Value returns the parsed UUID, or nil when the key was explicitly null.
 func (o *OptionalUUID) Value() *uuid.UUID {
+	if o == nil {
+		return nil
+	}
+	return o.value
+}
+
+// OptionalInt distinguishes an absent JSON key from an explicit null so that a
+// null value can clear an INT column while an absent key leaves it untouched.
+type OptionalInt struct {
+	present bool
+	value   *int
+}
+
+func (o *OptionalInt) UnmarshalJSON(data []byte) error {
+	o.present = true
+	if string(data) == "null" {
+		o.value = nil
+		return nil
+	}
+	var v int
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	o.value = &v
+	return nil
+}
+
+// Set reports whether the key was present in the JSON body (including null).
+func (o *OptionalInt) Set() bool { return o != nil && o.present }
+
+// Value returns the parsed int, or nil when the key was explicitly null.
+func (o *OptionalInt) Value() *int {
 	if o == nil {
 		return nil
 	}

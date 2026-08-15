@@ -41,9 +41,9 @@ func setupPaperlessMock(t *testing.T, url, token string) pgxmock.PgxPoolIface {
 }
 
 func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token string) {
-	mock.ExpectQuery("SELECT paperless_url, paperless_token FROM users").
+	mock.ExpectQuery("SELECT paperless_url, paperless_token, page_size FROM users").
 		WithArgs(testUserID()).
-		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token"}).AddRow(url, token))
+		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token", "page_size"}).AddRow(url, token, nil))
 }
 
 func TestGetPaperlessSettings(t *testing.T) {
@@ -64,7 +64,7 @@ func TestGetPaperlessSettings(t *testing.T) {
 
 func TestUpdatePaperlessSettings(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
-	mock.ExpectExec("UPDATE users SET paperless_url = \\$1, paperless_token = \\$2").
+	mock.ExpectExec("UPDATE users SET paperless_url = \\$1, paperless_token = \\$2 WHERE id = \\$3").
 		WithArgs("http://paperless.local", "tok456", testUserID()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -74,6 +74,48 @@ func TestUpdatePaperlessSettings(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePaperlessSettingsWithPageSize(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+	pageSize := 100
+	mock.ExpectExec("UPDATE users SET page_size = \\$1 WHERE id = \\$2").
+		WithArgs(&pageSize, testUserID()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	r := newPaperlessTestRouter()
+	body := bytes.NewBufferString(`{"pageSize":100}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePaperlessSettingsClearsPageSize(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+	mock.ExpectExec("UPDATE users SET page_size = \\$1 WHERE id = \\$2").
+		WithArgs((*int)(nil), testUserID()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	r := newPaperlessTestRouter()
+	body := bytes.NewBufferString(`{"pageSize":null}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePaperlessSettingsNoFields(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+	r := newPaperlessTestRouter()
+	body := bytes.NewBufferString(`{}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

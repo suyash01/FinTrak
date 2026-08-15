@@ -1,5 +1,5 @@
 -- FinTrak initial schema.
--- Squashed from the original migrations 000001-000011.
+-- Squashed from the original migrations 000001-000005.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -7,10 +7,16 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    paperless_url VARCHAR(500) DEFAULT '',
+    paperless_token TEXT DEFAULT '',
+    page_size INTEGER,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Account types (reference data, global)
+-- Credit card statements typically export purchases as negative amounts and
+-- payments/refunds as positive, so the default convention makes a positive
+-- amount on a credit card mean a credit and a negative amount mean a debit.
 CREATE TABLE IF NOT EXISTS account_types (
     id VARCHAR(30) PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -25,6 +31,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     bank VARCHAR(100),
     currency VARCHAR(3) DEFAULT 'INR',
     color VARCHAR(7) DEFAULT '#06b6d4',
+    billing_day INT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE
@@ -106,5 +113,5 @@ CREATE INDEX IF NOT EXISTS idx_links_user_id ON links(user_id);
 -- Seed default account types
 INSERT INTO account_types (id, name, positive_txn_type) VALUES
     ('bank', 'Bank Account', 'credit'),
-    ('credit_card', 'Credit Card', 'debit')
+    ('credit_card', 'Credit Card', 'credit')
 ON CONFLICT DO NOTHING;

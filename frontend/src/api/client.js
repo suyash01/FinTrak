@@ -199,6 +199,11 @@ const api = {
   // Paperless-ngx integration (per-user settings + manual pull)
   getPaperlessSettings: () => request('/paperless/settings'),
   updatePaperlessSettings: (data) => request('/paperless/settings', { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Generic per-user settings (the same /paperless/settings endpoint also
+  // carries the transactions page-size preference).
+  getUserSettings: () => request('/paperless/settings'),
+  updateUserSettings: (data) => request('/paperless/settings', { method: 'PUT', body: JSON.stringify(data) }),
   getPaperlessDocuments: () => request('/paperless/documents'),
   importPaperlessDocument: (data) =>
     request('/paperless/import', { method: 'POST', body: JSON.stringify(data) }),

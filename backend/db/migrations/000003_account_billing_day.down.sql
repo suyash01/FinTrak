@@ -1,1 +1,0 @@
-ALTER TABLE accounts DROP COLUMN IF EXISTS billing_day;

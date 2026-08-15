@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -23,9 +24,9 @@ const paperlessClientTimeout = 60 * time.Second
 func paperlessConfig(c *gin.Context, userID uuid.UUID) (models.UserSettings, error) {
 	var s models.UserSettings
 	err := db.Pool.QueryRow(c,
-		"SELECT paperless_url, paperless_token FROM users WHERE id = $1",
+		"SELECT paperless_url, paperless_token, page_size FROM users WHERE id = $1",
 		userID,
-	).Scan(&s.PaperlessURL, &s.PaperlessToken)
+	).Scan(&s.PaperlessURL, &s.PaperlessToken, &s.PageSize)
 	return s, err
 }
 
@@ -47,8 +48,9 @@ func GetPaperlessSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, settings)
 }
 
-// UpdatePaperlessSettings persists the user's Paperless-ngx settings against
-// their user row.
+// UpdatePaperlessSettings persists the user's settings against their user row.
+// Only the fields present in the request are updated, so saving one setting
+// (e.g. the transactions page size) never clobbers the others.
 func UpdatePaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	var req models.UpdateUserSettingsRequest
@@ -57,20 +59,51 @@ func UpdatePaperlessSettings(c *gin.Context) {
 		return
 	}
 
-	req.PaperlessURL = strings.TrimSpace(req.PaperlessURL)
-	req.PaperlessToken = strings.TrimSpace(req.PaperlessToken)
+	updates := []string{}
+	args := []any{}
+	argIdx := 1
 
-	_, err := db.Pool.Exec(c,
-		"UPDATE users SET paperless_url = $1, paperless_token = $2 WHERE id = $3",
-		req.PaperlessURL, req.PaperlessToken, userID,
-	)
-	if err != nil {
+	if req.PaperlessURL != nil {
+		updates = append(updates, fmt.Sprintf("paperless_url = $%d", argIdx))
+		args = append(args, strings.TrimSpace(*req.PaperlessURL))
+		argIdx++
+	}
+	if req.PaperlessToken != nil {
+		updates = append(updates, fmt.Sprintf("paperless_token = $%d", argIdx))
+		args = append(args, strings.TrimSpace(*req.PaperlessToken))
+		argIdx++
+	}
+	if req.PageSize.Set() {
+		updates = append(updates, fmt.Sprintf("page_size = $%d", argIdx))
+		args = append(args, req.PageSize.Value())
+		argIdx++
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no settings provided"})
+		return
+	}
+
+	args = append(args, userID)
+	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(updates, ", "), argIdx)
+	if _, err := db.Pool.Exec(c, query, args...); err != nil {
 		log.Printf("Error in UpdatePaperlessSettings: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
 
-	c.JSON(http.StatusOK, models.UserSettings{PaperlessURL: req.PaperlessURL, PaperlessToken: req.PaperlessToken})
+	// Echo back only the fields that were just updated.
+	updated := models.UserSettings{}
+	if req.PaperlessURL != nil {
+		updated.PaperlessURL = strings.TrimSpace(*req.PaperlessURL)
+	}
+	if req.PaperlessToken != nil {
+		updated.PaperlessToken = strings.TrimSpace(*req.PaperlessToken)
+	}
+	if req.PageSize.Set() {
+		updated.PageSize = req.PageSize.Value()
+	}
+	c.JSON(http.StatusOK, updated)
 }
 
 // rawPaperlessDocument mirrors the Paperless-ngx document list item fields we

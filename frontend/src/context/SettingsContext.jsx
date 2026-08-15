@@ -8,23 +8,14 @@ export function SettingsProvider({ children }) {
     return saved !== null ? JSON.parse(saved) : true; // Default to true
   });
 
-  const [pageSize, setPageSize] = useState(() => {
-    const saved = localStorage.getItem('pageSize');
-    return saved !== null ? Number(saved) : 50; // Default to 50, 0 = no pagination
-  });
-
   useEffect(() => {
     localStorage.setItem('compactLayout', JSON.stringify(compactLayout));
   }, [compactLayout]);
 
-  useEffect(() => {
-    localStorage.setItem('pageSize', String(pageSize));
-  }, [pageSize]);
-
   const toggleCompactLayout = () => setCompactLayout(prev => !prev);
 
   return (
-    <SettingsContext.Provider value={{ compactLayout, setCompactLayout, toggleCompactLayout, pageSize, setPageSize }}>
+    <SettingsContext.Provider value={{ compactLayout, setCompactLayout, toggleCompactLayout }}>
       {children}
     </SettingsContext.Provider>
   );

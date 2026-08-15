@@ -115,6 +115,9 @@ const TransactionRow = memo(function TransactionRow({ t, compactLayout, selected
 
 const URL_PARAMS = ['search', 'accountId', 'categoryId', 'payeeId', 'type', 'dateFrom', 'dateTo', 'uncategorized', 'linked', 'sortBy', 'sortOrder', 'page'];
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 0]; // 0 = show all
+const PAGE_SIZE_LS_KEY = 'txPageSize';
+
 export default function Transactions() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -127,7 +130,20 @@ export default function Transactions() {
   const [linkingTxn, setLinkingTxn] = useState(null);
   const [editingTxn, setEditingTxn] = useState(null);
   const [creating, setCreating] = useState(false);
-  const { compactLayout, pageSize } = useSettings();
+  const { compactLayout } = useSettings();
+
+  // Page size: remembered locally, with an opt-in to persist against the user.
+  const savedPageSize = () => {
+    const v = Number(localStorage.getItem(PAGE_SIZE_LS_KEY));
+    return Number.isNaN(v) ? 50 : v;
+  };
+  const [pageSize, setPageSize] = useState(savedPageSize);
+  const [preset, setPreset] = useState(() => {
+    const v = savedPageSize();
+    return PAGE_SIZE_OPTIONS.includes(v) ? String(v) : 'custom';
+  });
+  const [customInput, setCustomInput] = useState(() => String(savedPageSize()));
+  const [persistPageSize, setPersistPageSize] = useState(false);
 
   // Refs to avoid closures in callbacks
   const categoriesRef = useRef(categories);
@@ -198,6 +214,53 @@ export default function Transactions() {
     setFilters(f => ({ ...f, limit: pageSize || 0, page: 1 }));
     setSelected(new Set());
   }, [pageSize]);
+
+  // Restore a persisted page size from the server if the user opted in.
+  useEffect(() => {
+    api.getUserSettings()
+      .then((s) => {
+        if (typeof s.pageSize !== 'number') return;
+        setPageSize(s.pageSize);
+        setPersistPageSize(true);
+        if (PAGE_SIZE_OPTIONS.includes(s.pageSize)) {
+          setPreset(String(s.pageSize));
+        } else {
+          setPreset('custom');
+          setCustomInput(String(s.pageSize));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const applyPageSize = (size) => {
+    const n = Number(size);
+    if (!Number.isFinite(n) || n < 0) return;
+    setPageSize(n);
+    localStorage.setItem(PAGE_SIZE_LS_KEY, String(n));
+    if (persistPageSize) api.updateUserSettings({ pageSize: n }).catch(() => {});
+  };
+
+  const handlePresetChange = (val) => {
+    if (val === 'custom') {
+      setCustomInput(String(pageSize));
+      setPreset('custom');
+    } else {
+      setPreset(val);
+      setCustomInput('');
+      applyPageSize(Number(val));
+    }
+  };
+
+  const commitCustom = () => {
+    const n = Number(customInput);
+    if (!Number.isFinite(n) || n < 0) return;
+    applyPageSize(n);
+  };
+
+  const togglePersist = (checked) => {
+    setPersistPageSize(checked);
+    api.updateUserSettings({ pageSize: checked ? pageSize : null }).catch(() => {});
+  };
 
   const loadTransactions = useCallback(async () => {
     const controller = new AbortController();
@@ -423,6 +486,44 @@ export default function Transactions() {
           </select>
           <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`} value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} title="From date" />
           <input type="date" className={`px-3.5 ${compactLayout ? 'py-1.5' : 'py-2.5'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`} value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} title="To date" />
+        </div>
+
+        {/* Page size control */}
+        <div className="flex flex-wrap items-center justify-end gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-slate-400">Rows per page</label>
+            <select
+              value={preset}
+              onChange={(e) => handlePresetChange(e.target.value)}
+              className={`px-3 ${compactLayout ? 'py-1.5' : 'py-2'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all cursor-pointer`}
+            >
+              {PAGE_SIZE_OPTIONS.map((o) => (
+                <option key={o} value={o}>{o === 0 ? 'Show all' : o}</option>
+              ))}
+              <option value="custom">Custom...</option>
+            </select>
+            {preset === 'custom' && (
+              <input
+                type="number"
+                min="0"
+                value={customInput}
+                onChange={(e) => setCustomInput(e.target.value)}
+                onBlur={commitCustom}
+                onKeyDown={(e) => e.key === 'Enter' && commitCustom()}
+                placeholder="Custom"
+                className={`w-24 px-3 ${compactLayout ? 'py-1.5' : 'py-2'} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
+              />
+            )}
+            <label className="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={persistPageSize}
+                onChange={(e) => togglePersist(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500 cursor-pointer"
+              />
+              Remember for my account
+            </label>
+          </div>
         </div>
 
         {/* Bulk actions */}
