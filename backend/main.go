@@ -113,6 +113,13 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		api.POST("/statements/parse", handlers.ParseStatement)
 		api.GET("/statements/extractors", handlers.ListStatementExtractors)
 
+		// Paperless-ngx integration (per-user settings + manual pull)
+		api.GET("/paperless/settings", handlers.GetPaperlessSettings)
+		api.PUT("/paperless/settings", handlers.UpdatePaperlessSettings)
+		api.GET("/paperless/documents", handlers.ListPaperlessDocuments)
+		api.GET("/paperless/documents/:id/file", handlers.GetPaperlessDocumentFile)
+		api.POST("/paperless/import", handlers.ImportPaperlessDocument)
+
 		// Rules
 		api.GET("/rules", handlers.GetRules)
 		api.POST("/rules", handlers.CreateRule)

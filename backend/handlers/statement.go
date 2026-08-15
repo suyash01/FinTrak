@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -78,6 +79,21 @@ func ParseStatement(c *gin.Context) {
 		return
 	}
 
+	src, err := file.Open()
+	if err != nil {
+		log.Printf("Error in ParseStatement (open upload): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	defer src.Close()
+
+	pdf, err := io.ReadAll(src)
+	if err != nil {
+		log.Printf("Error in ParseStatement (read upload): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
 	password := c.PostForm("password")
 	extractor := c.PostForm("extractor")
 	if extractor == "" {
@@ -85,28 +101,31 @@ func ParseStatement(c *gin.Context) {
 	}
 	dateFormat := c.PostForm("date_format")
 
-	// Forward the uploaded PDF to the parser service as a multipart request.
+	result, status, errMsg, passwordRequired := forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
+	if errMsg != "" {
+		c.JSON(status, gin.H{"error": errMsg, "passwordRequired": passwordRequired})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// forwardStatementToParser sends the raw PDF bytes to the standalone
+// statement-parser service and returns the normalized parse result. On failure
+// it returns the HTTP status and message the caller should surface; on success
+// status is 200 and errMsg is empty. Shared by both the manual upload path
+// (ParseStatement) and the Paperless import path (ImportPaperlessDocument).
+func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string, bool) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", file.Filename)
+	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
-		log.Printf("Error in ParseStatement (create form file): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
+		log.Printf("Error forwarding statement (create form file): %v\n", err)
+		return nil, http.StatusInternalServerError, "internal server error", false
 	}
-	src, err := file.Open()
-	if err != nil {
-		log.Printf("Error in ParseStatement (open upload): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
+	if _, err := part.Write(pdf); err != nil {
+		log.Printf("Error forwarding statement (write pdf): %v\n", err)
+		return nil, http.StatusInternalServerError, "internal server error", false
 	}
-	if _, err := io.Copy(part, src); err != nil {
-		src.Close()
-		log.Printf("Error in ParseStatement (copy upload): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
-	}
-	src.Close()
 
 	if password != "" {
 		_ = writer.WriteField("password", password)
@@ -118,58 +137,51 @@ func ParseStatement(c *gin.Context) {
 
 	// The extractor selector is passed as a query parameter, which is how the
 	// parser service reads it (see app.py: request.args.get("extractor")).
-	url := strings.TrimRight(statementParserURL, "/") + "/api/extract?format=json&extractor=" + url.QueryEscape(extractor)
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, url, body)
+	parserURL := strings.TrimRight(statementParserURL, "/") + "/api/extract?format=json&extractor=" + url.QueryEscape(extractor)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parserURL, body)
 	if err != nil {
-		log.Printf("Error in ParseStatement (build request): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
+		log.Printf("Error forwarding statement (build request): %v\n", err)
+		return nil, http.StatusInternalServerError, "internal server error", false
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error in ParseStatement (calling parser): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser is unavailable"})
-		return
+		log.Printf("Error forwarding statement (calling parser): %v\n", err)
+		return nil, http.StatusBadGateway, "statement parser is unavailable", false
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Error in ParseStatement (read parser response): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser returned an unreadable response"})
-		return
+		log.Printf("Error forwarding statement (read parser response): %v\n", err)
+		return nil, http.StatusBadGateway, "statement parser returned an unreadable response", false
 	}
 
 	if resp.StatusCode >= 500 {
-		log.Printf("Error in ParseStatement (parser error status %d): %s\n", resp.StatusCode, string(respBody))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser failed to process the file"})
-		return
+		log.Printf("Error forwarding statement (parser error status %d): %s\n", resp.StatusCode, string(respBody))
+		return nil, http.StatusBadGateway, "statement parser failed to process the file", false
 	}
 
 	var raw rawParserResponse
 	if err := json.Unmarshal(respBody, &raw); err != nil {
-		log.Printf("Error in ParseStatement (unmarshal parser response): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser returned an invalid response"})
-		return
+		log.Printf("Error forwarding statement (unmarshal parser response): %v\n", err)
+		return nil, http.StatusBadGateway, "statement parser returned an invalid response", false
 	}
 
 	if raw.PasswordRequired || resp.StatusCode == http.StatusUnauthorized {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "password required or incorrect", "passwordRequired": true})
-		return
+		return nil, http.StatusUnauthorized, "password required or incorrect", true
 	}
 	if resp.StatusCode >= 400 || raw.Error != "" {
 		msg := raw.Error
 		if msg == "" {
 			msg = "failed to parse statement"
 		}
-		c.JSON(resp.StatusCode, gin.H{"error": msg})
-		return
+		return nil, resp.StatusCode, msg, false
 	}
 
-	result := parseStatementResult{
+	result := &parseStatementResult{
 		Transactions: make([]models.ImportTransaction, 0, len(raw.Transactions)),
 		Summary:      raw.Summary,
 		PageCount:    raw.PageCount,
@@ -184,7 +196,7 @@ func ParseStatement(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, result)
+	return result, http.StatusOK, "", false
 }
 
 // normalizeParserDate converts the parser's date string to the app's

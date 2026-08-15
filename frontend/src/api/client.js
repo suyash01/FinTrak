@@ -196,6 +196,25 @@ const api = {
   parseStatement: (formData) => requestMultipart('/statements/parse', formData),
   getStatementExtractors: () => request('/statements/extractors'),
 
+  // Paperless-ngx integration (per-user settings + manual pull)
+  getPaperlessSettings: () => request('/paperless/settings'),
+  updatePaperlessSettings: (data) => request('/paperless/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  getPaperlessDocuments: () => request('/paperless/documents'),
+  importPaperlessDocument: (data) =>
+    request('/paperless/import', { method: 'POST', body: JSON.stringify(data) }),
+  getPaperlessDocumentFile: async (id) => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/paperless/documents/${id}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = new Error('Failed to load document file');
+      err.status = res.status;
+      throw err;
+    }
+    return res.blob();
+  },
+
   // Rules
   getRules: () => request('/rules'),
   createRule: (data) => request('/rules', { method: 'POST', body: JSON.stringify(data) }),

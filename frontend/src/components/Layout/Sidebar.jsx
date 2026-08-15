@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   Upload,
@@ -10,13 +10,27 @@ import {
   Sparkles,
   Users,
   LogOut,
+  FileText,
 } from 'lucide-react';
 import packageJson from '../../../package.json';
 import { useAuth } from '../../context/AuthContext';
+import api from '../../api/client';
+import { useState, useEffect } from 'react';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [paperlessEnabled, setPaperlessEnabled] = useState(false);
+
+  // Re-check Paperless config on mount and whenever the route changes so a
+  // newly-saved setting is picked up without a full page reload.
+  useEffect(() => {
+    api
+      .getPaperlessSettings()
+      .then((s) => setPaperlessEnabled(Boolean(s.paperlessUrl && s.paperlessToken)))
+      .catch(() => setPaperlessEnabled(false));
+  }, [location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -45,6 +59,11 @@ export default function Sidebar() {
         <NavLink to="/import" className={navLinkClass}>
           <Upload className="w-[18px] h-[18px] shrink-0" /> Import
         </NavLink>
+        {paperlessEnabled && (
+          <NavLink to="/paperless" className={navLinkClass}>
+            <FileText className="w-[18px] h-[18px] shrink-0" /> Paperless
+          </NavLink>
+        )}
         <NavLink to="/transactions" className={navLinkClass}>
           <List className="w-[18px] h-[18px] shrink-0" /> Transactions
         </NavLink>

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Layout/Sidebar';
 import Dashboard from './components/Dashboard/Dashboard';
 import Import from './components/Import/Import';
+import PaperlessImport from './components/PaperlessImport/PaperlessImport';
 import Transactions from './components/Transactions/Transactions';
 import Accounts from './components/Accounts/Accounts';
 import Categories from './components/Categories/Categories';
@@ -70,6 +71,15 @@ function Settings() {
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
           <h3 className="text-base font-semibold mb-4">Account Types</h3>
           <AccountTypesManager />
+        </div>
+
+        {/* Paperless-ngx integration */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+          <h3 className="text-base font-semibold mb-1">Paperless-ngx</h3>
+          <p className="text-[13px] text-slate-500 mb-4">
+            Connect a Paperless-ngx instance to pull statement PDFs. The import UI appears once both a URL and API token are set.
+          </p>
+          <PaperlessSettingsManager />
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
@@ -200,6 +210,76 @@ function AccountTypesManager() {
   );
 }
 
+function PaperlessSettingsManager() {
+  const [url, setUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api
+      .getPaperlessSettings()
+      .then((s) => {
+        setUrl(s.paperlessUrl || '');
+        setToken(s.paperlessToken || '');
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.updatePaperlessSettings({ paperlessUrl: url, paperlessToken: token });
+      setSaved(true);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="text-sm text-slate-500">Loading...</div>;
+
+  return (
+    <form onSubmit={handleSave} className="space-y-3">
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-1">Paperless URL</label>
+        <input
+          type="text"
+          placeholder="http://localhost:8000"
+          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded text-sm text-white focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-1">API Token</label>
+        <input
+          type="password"
+          placeholder="Paperless-ngx API token"
+          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded text-sm text-white focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+        />
+      </div>
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          type="submit"
+          disabled={saving}
+          className="px-3 py-1.5 text-xs font-medium bg-cyan-500 text-white rounded hover:bg-cyan-600 disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        {saved && <span className="text-xs text-emerald-400">Saved</span>}
+      </div>
+    </form>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -230,6 +310,7 @@ function Root() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/import" element={<Import />} />
+          <Route path="/paperless" element={<PaperlessImport />} />
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/categories" element={<Categories />} />

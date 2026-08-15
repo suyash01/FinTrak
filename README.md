@@ -114,6 +114,10 @@ The backend exposes a RESTful API under `/api/v1`:
 -   `POST /transactions`: Create a single transaction manually. Body: `{ accountId, date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", categoryId?, payeeId?, tags?, notes? }`. The account must belong to the authenticated user; when `categoryId` is omitted the transaction is auto-categorized from rules. Returns `{ id }`.
 -   `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
 -   `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount }` ready for preview and import.
+-   `GET /paperless/settings` / `PUT /paperless/settings`: Read/update the user's Paperless-ngx integration settings (`{ paperlessUrl, paperlessToken }`), stored per-user against the `users` row. The Paperless import UI is hidden until both are set.
+-   `GET /paperless/documents`: Proxy the user's Paperless-ngx document list (`?page_size=100`) so statements can be picked manually. Correspondent, document type, and tag names are resolved from Paperless's lookup endpoints.
+-   `GET /paperless/documents/:id/file`: Stream a document's original file (e.g. a PDF) for in-browser preview/download.
+-   `POST /paperless/import`: Pull a document's original file from the user's Paperless-ngx (`POST { documentId, extractor?, password?, dateFormat? }`), feed it through the statement parser, and return the same normalized result as `/statements/parse` for preview and import.
 -   `POST /rules/apply`: Manually trigger categorization rules.
 -   `GET /dashboard/summary`: Retrieve aggregated data for charts.
 

@@ -98,6 +98,36 @@ type User struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// UserSettings holds per-user integration configuration, stored against the
+// user row rather than in docker/env config.
+type UserSettings struct {
+	PaperlessURL   string `json:"paperlessUrl"`
+	PaperlessToken string `json:"paperlessToken"`
+}
+
+type UpdateUserSettingsRequest struct {
+	PaperlessURL   string `json:"paperlessUrl"`
+	PaperlessToken string `json:"paperlessToken"`
+}
+
+// PaperlessDocument is a lightweight summary of a document hosted in a
+// Paperless-ngx instance, returned by the paperless list endpoint.
+type PaperlessDocument struct {
+	ID            int      `json:"id"`
+	Title         string   `json:"title"`
+	Correspondent string   `json:"correspondent"`
+	DocumentType  string   `json:"documentType"`
+	Added         string   `json:"added"`
+	Tags          []string `json:"tags"`
+}
+
+type PaperlessImportRequest struct {
+	DocumentID int    `json:"documentId" binding:"required"`
+	Extractor  string `json:"extractor"`
+	Password   string `json:"password"`
+	DateFormat string `json:"dateFormat"`
+}
+
 type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
