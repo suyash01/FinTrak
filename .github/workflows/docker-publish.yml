@@ -21,6 +21,7 @@ env:
   REGISTRY_GHCR: ghcr.io
   DOCKER_IMAGE_BACKEND: fintrak-backend
   DOCKER_IMAGE_FRONTEND: fintrak-frontend
+  DOCKER_IMAGE_PARSER: fintrak-statement-parser
 
 jobs:
   test-backend:
@@ -157,8 +158,52 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  publish-parser:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_PARSER }}
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=sha,prefix=,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./statement_parser
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   create-release:
-    needs: [publish-backend, publish-frontend]
+    needs: [publish-backend, publish-frontend, publish-parser]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -172,3 +217,4 @@ jobs:
             ## Docker Images
             - Backend: `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-backend:${{ github.ref_name }}`
             - Frontend: `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-frontend:${{ github.ref_name }}`
+            - Statement Parser: `docker pull ghcr.io/${{ github.repository_owner }}/fintrak-statement-parser:${{ github.ref_name }}`

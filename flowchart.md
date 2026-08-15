@@ -9,17 +9,22 @@ graph TD
     User([User]) <--> Frontend[React Frontend]
     Frontend <--> API[Go API Gateway]
     API <--> PostgreSQL[(PostgreSQL DB)]
-    
+    API <--> Parser[Statement Parser Service]
+
     subgraph "Frontend Components"
         Dashboard[Dashboard / Recharts]
         Transactions[Transactions Table]
-        Import[CSV Import Modal]
+        Import[Import / CSV + PDF Statement]
     end
     
     subgraph "Backend Modules"
         Handlers[Gin Handlers]
         RulesEngine[Rules Engine]
         LinkingService[Linking Service]
+    end
+    
+    subgraph "Standalone Services"
+        Parser[Python Statement Parser]
     end
     
     Frontend --- Dashboard
@@ -29,6 +34,7 @@ graph TD
     API --- Handlers
     Handlers --- RulesEngine
     Handlers --- LinkingService
+    Handlers -. forwards PDFs via HTTP .-> Parser
 ```
 
 ## 💸 Transaction Lifecycle

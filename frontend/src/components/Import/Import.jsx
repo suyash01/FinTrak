@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import Papa from 'papaparse';
-import { ChevronRight, Check, ArrowRight, AlertCircle, AlertTriangle, X, FileSpreadsheet } from 'lucide-react';
+import { ChevronRight, Check, ArrowRight, AlertCircle, AlertTriangle, X, FileSpreadsheet, FileText, Loader2 } from 'lucide-react';
 import api from '../../api/client';
 import { formatCurrency, formatDateOnly } from '../../utils/formatters';
 
@@ -216,6 +216,16 @@ export default function Import() {
   const [dateFormat, setDateFormat] = useState('auto');
   const [amountMode, setAmountMode] = useState('single'); // 'single' or 'separate'
 
+  // Statement (PDF) state
+  const [statementMode, setStatementMode] = useState('csv'); // 'csv' | 'pdf'
+  const [parsing, setParsing] = useState(false);
+  const [pdfPassword, setPdfPassword] = useState('');
+  const [statementSummary, setStatementSummary] = useState(null);
+  const [statementTxns, setStatementTxns] = useState(null);
+  const [pdfFile, setPdfFile] = useState(null);
+  const [extractors, setExtractors] = useState([]);
+  const [extractor, setExtractor] = useState('sbi_cc');
+
   // Import results
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -226,11 +236,19 @@ export default function Import() {
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
 
   const fileInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
 
   useEffect(() => {
     api.getAccounts().then(setAccounts).catch(console.error);
     api.getAccountTypes().then(setAccountTypes).catch(console.error);
     api.getPayees().then(setPayees).catch(console.error);
+    api.getStatementExtractors()
+      .then((res) => {
+        const list = res?.extractors || [];
+        setExtractors(list);
+        if (list.length > 0) setExtractor(list[0].name);
+      })
+      .catch(console.error);
   }, []);
 
   // Load the account's existing transactions so duplicates can be flagged
@@ -287,6 +305,33 @@ export default function Import() {
     });
   };
 
+  const parsePdf = async (file, chosenExtractor) => {
+    setParsing(true);
+    setStatementTxns(null);
+    setStatementSummary(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (pdfPassword) fd.append('password', pdfPassword);
+      if (chosenExtractor) fd.append('extractor', chosenExtractor);
+      const result = await api.parseStatement(fd);
+      setStatementTxns(result.transactions || []);
+      setStatementSummary(result.summary || null);
+      setStep(4);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setPdfFile(file);
+    await parsePdf(file, extractor);
+  };
+
   const autoDetectMapping = (headers) => {
     const mapping = { date: null, description: null, amount: null, debit: null, credit: null, payee: null };
     const used = new Set();
@@ -331,11 +376,10 @@ export default function Import() {
   }, [columnMapping]);
 
   // ---- Step 4: Preview & Import ----
-  const parsedTransactions = useMemo(
-    () =>
-      buildParsedTransactions({ csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount }),
-    [csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount]
-  );
+  const parsedTransactions = useMemo(() => {
+    if (statementTxns) return statementTxns;
+    return buildParsedTransactions({ csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount });
+  }, [statementTxns, csvData, columnMapping, amountMode, dateFormat, accounts, accountTypes, payees, selectedAccount]);
 
   // Fingerprints of transactions already stored for the selected account. The
   // fingerprint formula mirrors the backend so counts match between preview and
@@ -498,33 +542,102 @@ export default function Import() {
           </div>
         )}
 
-        {/* Step 2: Upload CSV */}
+        {/* Step 2: Upload */}
         {step === 2 && (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6" style={{ maxWidth: '600px' }}>
-            <div
-              className="border-2 border-dashed border-slate-700 bg-slate-950/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-cyan-500/50 hover:bg-slate-900/50 group"
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-cyan-500', 'bg-slate-900/80'); }}
-              onDragLeave={(e) => e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80')}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80');
-                const file = e.dataTransfer.files[0];
-                if (file) {
-                  const dt = new DataTransfer();
-                  dt.items.add(file);
-                  fileInputRef.current.files = dt.files;
-                  handleFileUpload({ target: { files: [file] } });
-                }
-              }}
-            >
-              <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 text-slate-400 group-hover:text-cyan-400 transition-colors">
-                <FileSpreadsheet size={32} />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-200 mb-2">Drop your CSV file here</h3>
-              <p className="text-sm text-slate-500">or click to browse. Supports .csv files from any bank.</p>
+            <div className="flex gap-2 mb-6">
+              <button
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${statementMode === 'csv' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                onClick={() => setStatementMode('csv')}
+              >
+                <FileSpreadsheet size={18} /> CSV
+              </button>
+              <button
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${statementMode === 'pdf' ? 'bg-cyan-500 border-cyan-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                onClick={() => setStatementMode('pdf')}
+              >
+                <FileText size={18} /> Statement PDF
+              </button>
             </div>
-            <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+
+            {statementMode === 'csv' ? (
+              <>
+                <div
+                  className="border-2 border-dashed border-slate-700 bg-slate-950/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-cyan-500/50 hover:bg-slate-900/50 group"
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-cyan-500', 'bg-slate-900/80'); }}
+                  onDragLeave={(e) => e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80')}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80');
+                    const file = e.dataTransfer.files[0];
+                    if (file) {
+                      const dt = new DataTransfer();
+                      dt.items.add(file);
+                      fileInputRef.current.files = dt.files;
+                      handleFileUpload({ target: { files: [file] } });
+                    }
+                  }}
+                >
+                  <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 text-slate-400 group-hover:text-cyan-400 transition-colors">
+                    <FileSpreadsheet size={32} />
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-200 mb-2">Drop your CSV file here</h3>
+                  <p className="text-sm text-slate-500">or click to browse. Supports .csv files from any bank.</p>
+                </div>
+                <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+              </>
+            ) : (
+              <>
+                <div
+                  className="border-2 border-dashed border-slate-700 bg-slate-950/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-cyan-500/50 hover:bg-slate-900/50 group"
+                  onClick={() => pdfInputRef.current?.click()}
+                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-cyan-500', 'bg-slate-900/80'); }}
+                  onDragLeave={(e) => e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80')}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove('border-cyan-500', 'bg-slate-900/80');
+                    const file = e.dataTransfer.files[0];
+                    if (file) {
+                      const dt = new DataTransfer();
+                      dt.items.add(file);
+                      pdfInputRef.current.files = dt.files;
+                      handlePdfUpload({ target: { files: [file] } });
+                    }
+                  }}
+                >
+                  <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 text-slate-400 group-hover:text-cyan-400 transition-colors">
+                    {parsing ? <Loader2 size={32} className="animate-spin" /> : <FileText size={32} />}
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-200 mb-2">{parsing ? 'Parsing statement...' : 'Drop your statement PDF here'}</h3>
+                  <p className="text-sm text-slate-500">{parsing ? 'Extracting transactions from your statement.' : 'or click to browse. The extracted transactions will be shown for review.'}</p>
+                </div>
+                <input ref={pdfInputRef} type="file" accept=".pdf" className="hidden" onChange={handlePdfUpload} />
+                <div className="mt-4 flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-slate-400">Extractor</label>
+                  <select
+                    className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    value={extractor}
+                    onChange={(e) => setExtractor(e.target.value)}
+                  >
+                    {extractors.length === 0 && <option value="sbi_cc">SBI Credit Card</option>}
+                    {extractors.map((ex) => (
+                      <option key={ex.name} value={ex.name}>{ex.display_name || ex.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mt-4 flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-slate-400">Password (if the PDF is protected)</label>
+                  <input
+                    type="password"
+                    className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    placeholder="Optional"
+                    value={pdfPassword}
+                    onChange={(e) => setPdfPassword(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -644,10 +757,51 @@ export default function Import() {
         {/* Step 4: Preview & Confirm Import */}
         {step === 4 && (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-            <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-2 mb-6">
+            <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-2 mb-4">
               <h3 className="text-xl font-bold text-slate-100">Preview — {parsedTransactions.length} transactions</h3>
-              <div className="text-sm text-slate-400 font-medium">{csvData.length - parsedTransactions.length} rows skipped (empty/invalid)</div>
+              {!statementTxns && csvData && (
+                <div className="text-sm text-slate-400 font-medium">{csvData.length - parsedTransactions.length} rows skipped (empty/invalid)</div>
+              )}
             </div>
+
+            {statementTxns && pdfFile && (
+              <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg flex flex-wrap items-end gap-3">
+                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Reparse with extractor</label>
+                  <select
+                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    value={extractor}
+                    onChange={(e) => setExtractor(e.target.value)}
+                  >
+                    {extractors.map((ex) => (
+                      <option key={ex.name} value={ex.name}>{ex.display_name || ex.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => parsePdf(pdfFile, extractor)}
+                  disabled={parsing}
+                >
+                  {parsing ? <><Loader2 size={15} className="animate-spin" /> Reparsing...</> : <>Reparse PDF</>}
+                </button>
+                <p className="text-xs text-slate-500 w-full">Parsing didn't look right? Try a different extractor to reprocess the same file.</p>
+              </div>
+            )}
+
+            {statementSummary && (
+              <div className="mb-5 p-4 bg-cyan-500/5 border border-cyan-500/20 rounded-lg">
+                <div className="text-xs font-semibold text-cyan-400 uppercase tracking-wider mb-2">Statement Summary</div>
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-slate-300">
+                  {Object.entries(statementSummary).map(([k, v]) => (
+                    <div key={k}>
+                      <span className="text-slate-500 capitalize">{k.replace(/_/g, ' ')}: </span>
+                      <span className="font-medium">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {dupCount > 0 && (
               <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/25 rounded-lg flex gap-3 items-start">
@@ -707,7 +861,7 @@ export default function Import() {
             )}
 
             <div className="pt-5 mt-6 border-t border-slate-800 flex justify-between gap-4">
-              <button className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => setStep(3)}>Back to Mapping</button>
+              <button className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => setStep(statementTxns ? 2 : 3)}>{statementTxns ? 'Back to Upload' : 'Back to Mapping'}</button>
               <button className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed" onClick={handleImport} disabled={importing || parsedTransactions.length === 0}>
                 {importing ? <div className="flex gap-2 items-center"><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div> Importing...</div> : <>Import {parsedTransactions.length} Transactions</>}
               </button>
@@ -729,7 +883,7 @@ export default function Import() {
                 : ' imported.'}
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setCsvHeaders([]); setColumnMapping({}); setImportResult(null); setExistingRefresh(k => k + 1); }}>
+              <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all" onClick={() => { setStep(1); setCsvData(null); setCsvHeaders([]); setColumnMapping({}); setImportResult(null); setStatementTxns(null); setStatementSummary(null); setPdfPassword(''); setPdfFile(null); setExistingRefresh(k => k + 1); }}>
                 Import Another
               </button>
               <button className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20" onClick={() => window.location.href = '/transactions'}>

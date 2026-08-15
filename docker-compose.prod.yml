@@ -51,6 +51,11 @@ services:
       file: docker-compose.prod-no-db.yml
       service: frontend
 
+  statement-parser:
+    extends:
+      file: docker-compose.prod-no-db.yml
+      service: statement-parser
+
 networks:
   app-net:
 

@@ -27,6 +27,10 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - JWT_SECRET=${JWT_SECRET}
       - APP_ENV=production
+      - STATEMENT_PARSER_URL=http://statement-parser:5000
+    depends_on:
+      statement-parser:
+        condition: service_started
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
       interval: 10s
@@ -45,6 +49,15 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  statement-parser:
+    container_name: statement-parser
+    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-statement-parser:${IMAGE_TAG:-latest}
+    ports:
+      - "5000:5000"
     restart: unless-stopped
     networks:
       - app-net

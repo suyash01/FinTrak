@@ -86,6 +86,48 @@ async function request(url, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+// requestMultipart POSTs a FormData payload (multipart/form-data) with the auth
+// header but without forcing a JSON content type, which the browser must set
+// itself (including the boundary). Used for statement PDF uploads.
+async function requestMultipart(url, formData) {
+  const token = getToken();
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${url}`, {
+      method: 'POST',
+      body: formData,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('Request timed out');
+    throw new Error('Network error: could not reach the API server');
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (res.status === 401 && url !== '/auth/login' && url !== '/auth/register') {
+    setToken(null);
+    storeUser(null);
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login';
+    }
+  }
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: res.statusText }));
+    const err = new Error(error.error || 'Request failed');
+    err.status = res.status;
+    throw err;
+  }
+
+  return res.json();
+}
+
 export async function downloadCSV(path) {
   const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
@@ -147,6 +189,10 @@ const api = {
     request('/transactions/bulk-payee', { method: 'POST', body: JSON.stringify(data) }),
   bulkDeleteTransactions: (data) =>
     request('/transactions/bulk-delete', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Statement parsing (PDF) — forwarded by the backend to the parser service
+  parseStatement: (formData) => requestMultipart('/statements/parse', formData),
+  getStatementExtractors: () => request('/statements/extractors'),
 
   // Rules
   getRules: () => request('/rules'),

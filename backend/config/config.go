@@ -13,6 +13,7 @@ type Config struct {
 	Port           string
 	AllowedOrigins []string
 	JWTSecret      string
+	ParserURL      string
 }
 
 const defaultJWTSecret = "dev-secret-change-me-in-production"
@@ -28,6 +29,11 @@ func Load() *Config {
 	if allowedOrigins == "" {
 		allowedOrigins = "http://localhost:5173,http://127.0.0.1:5173"
 	}
+	parserURL := os.Getenv("STATEMENT_PARSER_URL")
+	if parserURL == "" {
+		parserURL = "http://localhost:5000"
+	}
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		if os.Getenv("APP_ENV") == "production" {
@@ -47,5 +53,6 @@ func Load() *Config {
 		Port:           port,
 		AllowedOrigins: origins,
 		JWTSecret:      jwtSecret,
+		ParserURL:      parserURL,
 	}
 }

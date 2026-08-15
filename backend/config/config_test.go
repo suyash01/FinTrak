@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	unsetEnv(t, "DATABASE_URL", "PORT", "ALLOWED_ORIGINS", "JWT_SECRET", "APP_ENV")
+	unsetEnv(t, "DATABASE_URL", "PORT", "ALLOWED_ORIGINS", "JWT_SECRET", "APP_ENV", "STATEMENT_PARSER_URL")
 
 	cfg := Load()
 
@@ -15,15 +15,17 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, "8080", cfg.Port)
 	assert.Equal(t, defaultJWTSecret, cfg.JWTSecret)
 	assert.Equal(t, []string{"http://localhost:5173", "http://127.0.0.1:5173"}, cfg.AllowedOrigins)
+	assert.Equal(t, "http://localhost:5000", cfg.ParserURL)
 }
 
 func TestLoadFromEnvironment(t *testing.T) {
-	unsetEnv(t, "DATABASE_URL", "PORT", "ALLOWED_ORIGINS", "JWT_SECRET", "APP_ENV")
+	unsetEnv(t, "DATABASE_URL", "PORT", "ALLOWED_ORIGINS", "JWT_SECRET", "APP_ENV", "STATEMENT_PARSER_URL")
 
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/fintrak")
 	t.Setenv("PORT", "9090")
 	t.Setenv("JWT_SECRET", "env-secret")
 	t.Setenv("ALLOWED_ORIGINS", "https://app.example.com")
+	t.Setenv("STATEMENT_PARSER_URL", "http://parser:5000")
 
 	cfg := Load()
 
@@ -31,6 +33,7 @@ func TestLoadFromEnvironment(t *testing.T) {
 	assert.Equal(t, "9090", cfg.Port)
 	assert.Equal(t, "env-secret", cfg.JWTSecret)
 	assert.Equal(t, []string{"https://app.example.com"}, cfg.AllowedOrigins)
+	assert.Equal(t, "http://parser:5000", cfg.ParserURL)
 }
 
 func TestLoadTrimsAndSplitsOrigins(t *testing.T) {

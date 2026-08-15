@@ -18,6 +18,7 @@ FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.26 + Gin + Pos
 - **Tests need no database**: unit tests use `pgxmock` and swap the package-level `db.Pool` global with a mock (see `backend/db/db_test.go` `setupMock`, `handlers/*_test.go`). Tests that hit SQL expect exact queries/args against the mock — change a query string or arg order and tests fail. Follow the existing `new*TestRouter()` + `testAuthMiddleware()` helpers; always call `gin.SetMode(gin.TestMode)`.
 - Config via godotenv (`.env`, template in `.env.example`). `JWT_SECRET` has a dev default; startup fails if unset when `APP_ENV=production`. `ALLOWED_ORIGINS` is a comma-separated CORS allowlist. `main.Version` is injected via `-ldflags` in Docker builds.
 - Business logic stays in handlers; e.g. transfer scoring is `calculateTransferScore` in `backend/handlers/link.go`.
+- Statement parsing (`backend/handlers/statement.go`) is decoupled: the backend only forwards uploaded PDFs to a standalone Python service (`statement_parser/`) over HTTP. The parser base URL comes from `STATEMENT_PARSER_URL` (config `ParserURL`, wired in `setupRouter` via `SetStatementParserURL`). Handler tests use `httptest` to simulate the upstream parser.
 
 ## Frontend
 

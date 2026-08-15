@@ -117,6 +117,8 @@ func TestRouterRegistersExpectedRoutes(t *testing.T) {
 		"GET /api/v1/payees",
 		"GET /api/v1/links",
 		"GET /api/v1/dashboard/summary",
+		"POST /api/v1/statements/parse",
+		"GET /api/v1/statements/extractors",
 	}
 
 	for _, key := range expected {

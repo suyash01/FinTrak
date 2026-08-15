@@ -40,6 +40,9 @@ func main() {
 func setupRouter(cfg *config.Config) *gin.Engine {
 	r := gin.Default()
 
+	// Point the statement handler at the standalone parser service.
+	handlers.SetStatementParserURL(cfg.ParserURL)
+
 	// Expose JWT secret to auth handlers via context
 	r.Use(func(c *gin.Context) {
 		c.Set("jwtSecret", cfg.JWTSecret)
@@ -104,6 +107,10 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		transactions.POST("/bulk-categorize", handlers.BulkCategorize)
 		transactions.POST("/bulk-payee", handlers.BulkUpdatePayee)
 		transactions.POST("/bulk-delete", handlers.BulkDeleteTransactions)
+
+		// Statement parsing (forwards to the standalone parser service)
+		api.POST("/statements/parse", handlers.ParseStatement)
+		api.GET("/statements/extractors", handlers.ListStatementExtractors)
 
 		// Rules
 		api.GET("/rules", handlers.GetRules)

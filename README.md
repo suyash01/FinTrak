@@ -9,6 +9,7 @@
 -   **Dashboard & Analytics**: Get a clear overview of your financial health with income vs. expense summaries and category-wise breakdowns using **Recharts**.
 -   **Transaction Management**:
     -   **CSV Import**: Seamlessly import your bank statements (powered by PapaParse).
+    -   **PDF Statement Import**: Upload a bank/credit-card statement PDF and preview the extracted transactions before importing (powered by a standalone parser service).
     -   **Advanced Filtering**: Search and filter transactions by date, amount, account, or status.
     -   **Compact Layout**: High-density view for managing large volumes of transactions.
 -   **Account Synchronization**: Track multiple bank accounts, credit cards, and wallets.
@@ -111,6 +112,7 @@ The backend exposes a RESTful API under `/api/v1`:
 -   `GET /accounts`: List all financial accounts.
 -   `GET /transactions`: List transactions with support for search and filters.
 -   `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
+-   `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount }` ready for preview and import.
 -   `POST /rules/apply`: Manually trigger categorization rules.
 -   `GET /dashboard/summary`: Retrieve aggregated data for charts.
 
