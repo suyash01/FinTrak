@@ -1,20 +1,20 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import Sidebar from './components/Layout/Sidebar';
-import Dashboard from './components/Dashboard/Dashboard';
-import Import from './components/Import/Import';
-import PaperlessImport from './components/PaperlessImport/PaperlessImport';
-import Transactions from './components/Transactions/Transactions';
-import Accounts from './components/Accounts/Accounts';
-import Categories from './components/Categories/Categories';
-import Payees from './components/Payees/Payees';
-import Linking from './components/Linking/Linking';
-import Login from './components/Auth/Login';
-import { SettingsProvider, useSettings } from './context/SettingsContext';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import './index.css';
-import { useState, useEffect } from 'react';
-import api from './api/client';
-import { Trash2, Edit2, Plus, X } from 'lucide-react';
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Sidebar from "./components/Layout/Sidebar";
+import Dashboard from "./components/Dashboard/Dashboard";
+import Import from "./components/Import/Import";
+import PaperlessImport from "./components/PaperlessImport/PaperlessImport";
+import Transactions from "./components/Transactions/Transactions";
+import Accounts from "./components/Accounts/Accounts";
+import Categories from "./components/Categories/Categories";
+import Payees from "./components/Payees/Payees";
+import Linking from "./components/Linking/Linking";
+import Login from "./components/Auth/Login";
+import { SettingsProvider, useSettings } from "./context/SettingsContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import "./index.css";
+import { useState, useEffect } from "react";
+import api from "./api/client";
+import { Trash2, Edit2, Plus, X } from "lucide-react";
 
 function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
@@ -26,44 +26,50 @@ function Settings() {
         <p className="text-slate-400 text-sm">Application preferences</p>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto space-y-6">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
           <h3 className="text-base font-semibold mb-4">Display Preferences</h3>
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-slate-200">Compact Layout</div>
-              <div className="text-[13px] text-slate-500">Reduce padding and spacing to show more data</div>
+              <div className="text-sm font-medium text-slate-200">
+                Compact Layout
+              </div>
+              <div className="text-[13px] text-slate-500">
+                Reduce padding and spacing to show more data
+              </div>
             </div>
             <button
               onClick={toggleCompactLayout}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ring-offset-slate-900 focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 ${compactLayout ? 'bg-cyan-500' : 'bg-slate-700'}`}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ring-offset-slate-900 focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 ${compactLayout ? "bg-cyan-500" : "bg-slate-700"}`}
             >
               <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${compactLayout ? 'translate-x-5' : 'translate-x-0'}`}
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${compactLayout ? "translate-x-5" : "translate-x-0"}`}
               />
             </button>
           </div>
         </div>
 
         {/* Account Types Management */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
           <h3 className="text-base font-semibold mb-4">Account Types</h3>
           <AccountTypesManager />
         </div>
 
         {/* Paperless-ngx integration */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
           <h3 className="text-base font-semibold mb-1">Paperless-ngx</h3>
           <p className="text-[13px] text-slate-500 mb-4">
-            Connect a Paperless-ngx instance to pull statement PDFs. The import UI appears once both a URL and API token are set.
+            Connect a Paperless-ngx instance to pull statement PDFs. The import
+            UI appears once both a URL and API token are set.
           </p>
           <PaperlessSettingsManager />
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-[500px]">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
           <h3 className="text-base font-semibold mb-4">About FinTrak</h3>
           <p className="text-slate-400 text-sm leading-relaxed">
             FinTrak helps you consolidate bank and credit card statements,
-            categorize transactions, and track transfers and cashbacks — all in one place.
+            categorize transactions, and track transfers and cashbacks — all in
+            one place.
           </p>
           <div className="mt-4 text-[13px] text-slate-500">
             Version 0.1.0-alpha · Built with Go + React
@@ -78,7 +84,11 @@ function AccountTypesManager() {
   const [types, setTypes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
-  const [formData, setFormData] = useState({ id: '', name: '', positiveTxnType: 'credit' });
+  const [formData, setFormData] = useState({
+    id: "",
+    name: "",
+    positiveTxnType: "credit",
+  });
 
   useEffect(() => {
     fetchTypes();
@@ -99,12 +109,15 @@ function AccountTypesManager() {
     e.preventDefault();
     try {
       if (editingId) {
-        await api.updateAccountType(editingId, { name: formData.name, positiveTxnType: formData.positiveTxnType });
+        await api.updateAccountType(editingId, {
+          name: formData.name,
+          positiveTxnType: formData.positiveTxnType,
+        });
       } else {
         await api.createAccountType(formData);
       }
       setEditingId(null);
-      setFormData({ id: '', name: '', positiveTxnType: 'credit' });
+      setFormData({ id: "", name: "", positiveTxnType: "credit" });
       fetchTypes();
     } catch (err) {
       alert(err.message);
@@ -112,7 +125,10 @@ function AccountTypesManager() {
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Delete this account type? This will fail if accounts use it.')) return;
+    if (
+      !confirm("Delete this account type? This will fail if accounts use it.")
+    )
+      return;
     try {
       await api.deleteAccountType(id);
       fetchTypes();
@@ -127,26 +143,79 @@ function AccountTypesManager() {
     <div className="space-y-4">
       <div className="divide-y divide-slate-800 border border-slate-800 rounded-lg overflow-hidden bg-slate-950">
         {types.map((t) => (
-          <div key={t.id} className="p-3 flex justify-between items-center group hover:bg-slate-900 transition-colors">
+          <div
+            key={t.id}
+            className="p-3 flex justify-between items-center group hover:bg-slate-900 transition-colors"
+          >
             {editingId === t.id ? (
-              <form onSubmit={handleSubmit} className="flex gap-2 w-full items-center">
-                <input required className="flex-1 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
-                <select className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.positiveTxnType} onChange={e => setFormData({ ...formData, positiveTxnType: e.target.value })}>
+              <form
+                onSubmit={handleSubmit}
+                className="flex gap-2 w-full items-center"
+              >
+                <input
+                  required
+                  className="flex-1 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white"
+                  value={formData.name}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
+                />
+                <select
+                  className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-sm text-white"
+                  value={formData.positiveTxnType}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      positiveTxnType: e.target.value,
+                    })
+                  }
+                >
                   <option value="credit">Credit is positive</option>
                   <option value="debit">Debit is positive</option>
                 </select>
-                <button type="submit" className="text-cyan-500 hover:text-cyan-400 p-1"><Plus size={16} /></button>
-                <button type="button" onClick={() => setEditingId(null)} className="text-slate-500 hover:text-slate-300 p-1"><X size={16} /></button>
+                <button
+                  type="submit"
+                  className="text-cyan-500 hover:text-cyan-400 p-1"
+                >
+                  <Plus size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingId(null)}
+                  className="text-slate-500 hover:text-slate-300 p-1"
+                >
+                  <X size={16} />
+                </button>
               </form>
             ) : (
               <>
                 <div>
-                  <div className="font-medium text-sm text-slate-200">{t.name}</div>
-                  <div className="text-xs text-slate-500">ID: {t.id} • Positive: <span className="uppercase text-[10px] bg-slate-800 px-1 rounded">{t.positiveTxnType}</span></div>
+                  <div className="font-medium text-sm text-slate-200">
+                    {t.name}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    ID: {t.id} • Positive:{" "}
+                    <span className="uppercase text-[10px] bg-slate-800 px-1 rounded">
+                      {t.positiveTxnType}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => { setEditingId(t.id); setFormData(t); }} className="p-1.5 text-slate-400 hover:text-cyan-400"><Edit2 size={14} /></button>
-                  <button onClick={() => handleDelete(t.id)} className="p-1.5 text-slate-400 hover:text-red-400"><Trash2 size={14} /></button>
+                  <button
+                    onClick={() => {
+                      setEditingId(t.id);
+                      setFormData(t);
+                    }}
+                    className="p-1.5 text-slate-400 hover:text-cyan-400"
+                  >
+                    <Edit2 size={14} />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(t.id)}
+                    className="p-1.5 text-slate-400 hover:text-red-400"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </>
             )}
@@ -154,32 +223,78 @@ function AccountTypesManager() {
         ))}
       </div>
 
-      {!editingId && editingId !== 'new' && (
-        <button onClick={() => { setEditingId('new'); setFormData({ id: '', name: '', positiveTxnType: 'credit' }); }} className="text-sm text-cyan-500 hover:text-cyan-400 flex items-center gap-1 font-medium">
+      {!editingId && editingId !== "new" && (
+        <button
+          onClick={() => {
+            setEditingId("new");
+            setFormData({ id: "", name: "", positiveTxnType: "credit" });
+          }}
+          className="text-sm text-cyan-500 hover:text-cyan-400 flex items-center gap-1 font-medium"
+        >
           <Plus size={14} /> Add Account Type
         </button>
       )}
 
-      {editingId === 'new' && (
-        <form onSubmit={handleSubmit} className="p-3 border border-slate-800 rounded-lg bg-slate-950 space-y-3">
+      {editingId === "new" && (
+        <form
+          onSubmit={handleSubmit}
+          className="p-3 border border-slate-800 rounded-lg bg-slate-950 space-y-3"
+        >
           <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1">Type ID (Code)</label>
-            <input required placeholder="e.g. wallet, cash" className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.id} onChange={e => setFormData({ ...formData, id: e.target.value })} />
+            <label className="block text-xs font-medium text-slate-400 mb-1">
+              Type ID (Code)
+            </label>
+            <input
+              required
+              placeholder="e.g. wallet, cash"
+              className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white"
+              value={formData.id}
+              onChange={(e) => setFormData({ ...formData, id: e.target.value })}
+            />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
-            <input required placeholder="e.g. Mobile Wallet" className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+            <label className="block text-xs font-medium text-slate-400 mb-1">
+              Display Name
+            </label>
+            <input
+              required
+              placeholder="e.g. Mobile Wallet"
+              className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white"
+              value={formData.name}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
+            />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1">Sign Convention</label>
-            <select className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white" value={formData.positiveTxnType} onChange={e => setFormData({ ...formData, positiveTxnType: e.target.value })}>
+            <label className="block text-xs font-medium text-slate-400 mb-1">
+              Sign Convention
+            </label>
+            <select
+              className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-sm text-white"
+              value={formData.positiveTxnType}
+              onChange={(e) =>
+                setFormData({ ...formData, positiveTxnType: e.target.value })
+              }
+            >
               <option value="credit">Credit amounts increase balance</option>
               <option value="debit">Debit amounts increase balance</option>
             </select>
           </div>
           <div className="flex gap-2 justify-end pt-1">
-            <button type="button" onClick={() => setEditingId(null)} className="px-3 py-1 text-xs font-medium text-slate-400 hover:text-white">Cancel</button>
-            <button type="submit" className="px-3 py-1 text-xs font-medium bg-cyan-500 text-white rounded hover:bg-cyan-600">Create</button>
+            <button
+              type="button"
+              onClick={() => setEditingId(null)}
+              className="px-3 py-1 text-xs font-medium text-slate-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-3 py-1 text-xs font-medium bg-cyan-500 text-white rounded hover:bg-cyan-600"
+            >
+              Create
+            </button>
           </div>
         </form>
       )}
@@ -188,9 +303,9 @@ function AccountTypesManager() {
 }
 
 function PaperlessSettingsManager() {
-  const [url, setUrl] = useState('');
-  const [token, setToken] = useState('');
-  const [tag, setTag] = useState('');
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [tag, setTag] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -199,9 +314,9 @@ function PaperlessSettingsManager() {
     api
       .getPaperlessSettings()
       .then((s) => {
-        setUrl(s.paperlessUrl || '');
-        setToken(s.paperlessToken || '');
-        setTag(s.paperlessTag || '');
+        setUrl(s.paperlessUrl || "");
+        setToken(s.paperlessToken || "");
+        setTag(s.paperlessTag || "");
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -212,7 +327,11 @@ function PaperlessSettingsManager() {
     setSaving(true);
     setSaved(false);
     try {
-      await api.updatePaperlessSettings({ paperlessUrl: url, paperlessToken: token, paperlessTag: tag });
+      await api.updatePaperlessSettings({
+        paperlessUrl: url,
+        paperlessToken: token,
+        paperlessTag: tag,
+      });
       setSaved(true);
     } catch (err) {
       alert(err.message);
@@ -226,7 +345,9 @@ function PaperlessSettingsManager() {
   return (
     <form onSubmit={handleSave} className="space-y-3">
       <div>
-        <label className="block text-xs font-medium text-slate-400 mb-1">Paperless URL</label>
+        <label className="block text-xs font-medium text-slate-400 mb-1">
+          Paperless URL
+        </label>
         <input
           type="text"
           placeholder="http://localhost:8000"
@@ -236,7 +357,9 @@ function PaperlessSettingsManager() {
         />
       </div>
       <div>
-        <label className="block text-xs font-medium text-slate-400 mb-1">API Token</label>
+        <label className="block text-xs font-medium text-slate-400 mb-1">
+          API Token
+        </label>
         <input
           type="password"
           placeholder="Paperless-ngx API token"
@@ -246,7 +369,9 @@ function PaperlessSettingsManager() {
         />
       </div>
       <div>
-        <label className="block text-xs font-medium text-slate-400 mb-1">Import Tag Label</label>
+        <label className="block text-xs font-medium text-slate-400 mb-1">
+          Import Tag Label
+        </label>
         <input
           type="text"
           placeholder="e.g. fintrak"
@@ -255,7 +380,8 @@ function PaperlessSettingsManager() {
           onChange={(e) => setTag(e.target.value)}
         />
         <p className="text-[11px] text-slate-500 mt-1">
-          When enabled during import, successfully imported documents get tagged with this label in Paperless-ngx.
+          When enabled during import, successfully imported documents get tagged
+          with this label in Paperless-ngx.
         </p>
       </div>
       <div className="flex items-center gap-3 pt-1">
@@ -264,7 +390,7 @@ function PaperlessSettingsManager() {
           disabled={saving}
           className="px-3 py-1.5 text-xs font-medium bg-cyan-500 text-white rounded hover:bg-cyan-600 disabled:opacity-50"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? "Saving..." : "Save"}
         </button>
         {saved && <span className="text-xs text-emerald-400">Saved</span>}
       </div>

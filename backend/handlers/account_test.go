@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
@@ -206,4 +207,122 @@ func testAuthMiddleware() gin.HandlerFunc {
 		c.Set("userID", testUserID())
 		c.Next()
 	}
+}
+
+func newAccountTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPool := db.Pool
+	db.Pool = mock
+	t.Cleanup(func() {
+		db.Pool = oldPool
+		mock.Close()
+	})
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	return r, mock
+}
+
+func TestDeleteAccount(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", DeleteAccount)
+
+	userID := testUserID()
+	accountID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM payees WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec("DELETE FROM accounts WHERE id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest("DELETE", "/accounts/"+accountID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDeleteAccountNotFound(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", DeleteAccount)
+
+	userID := testUserID()
+	accountID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM payees WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	mock.ExpectExec("DELETE FROM accounts WHERE id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+
+	req, _ := http.NewRequest("DELETE", "/accounts/"+accountID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDeleteAccountInvalidID(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", DeleteAccount)
+
+	req, _ := http.NewRequest("DELETE", "/accounts/not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestExportAccount(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.GET("/accounts/:id/export", ExportAccount)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	now := time.Now()
+
+	rows := pgxmock.NewRows([]string{"date", "description", "amount", "type", "tags", "notes"}).
+		AddRow(now, "Coffee", 250.5, "debit", []string{"food"}, "morning").
+		AddRow(now.AddDate(0, 0, -1), "Salary", 50000.0, "credit", nil, "")
+
+	mock.ExpectQuery("SELECT t.date, t.description, t.amount, t.type, t.tags, t.notes").
+		WithArgs(accountID, userID).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET", "/accounts/"+accountID.String()+"/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/csv")
+	assert.Contains(t, w.Body.String(), "Date,Description,Amount,Type,Tags,Notes")
+	assert.Contains(t, w.Body.String(), "Coffee")
+	assert.Contains(t, w.Body.String(), "Salary")
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestExportAccountInvalidID(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.GET("/accounts/:id/export", ExportAccount)
+
+	req, _ := http.NewRequest("GET", "/accounts/not-a-uuid/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

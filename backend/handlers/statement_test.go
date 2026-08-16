@@ -259,6 +259,18 @@ func TestNormalizeParserDate(t *testing.T) {
 	assert.Equal(t, "unparseable", normalizeParserDate("unparseable", ""))
 }
 
+func TestSetStatementParserURL(t *testing.T) {
+	old := statementParserURL
+	defer func() { statementParserURL = old }()
+
+	SetStatementParserURL("http://parser:8080")
+	assert.Equal(t, "http://parser:8080", statementParserURL)
+
+	// An empty URL must not overwrite the configured value.
+	SetStatementParserURL("")
+	assert.Equal(t, "http://parser:8080", statementParserURL)
+}
+
 func TestNormalizeParserDateWithFormat(t *testing.T) {
 	assert.Equal(t, "2026-05-18", normalizeParserDate("18/05/2026", "DD/MM/YYYY"))
 	assert.Equal(t, "2026-05-18", normalizeParserDate("05/18/2026", "MM/DD/YYYY"))

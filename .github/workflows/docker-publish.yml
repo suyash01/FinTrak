@@ -47,7 +47,7 @@ jobs:
           cd backend
           go test -v ./...
 
-  build-frontend:
+  test-frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -61,10 +61,10 @@ jobs:
         run: |
           cd frontend
           npm ci
-      - name: Build
+      - name: Run tests
         run: |
           cd frontend
-          npm run build
+          npm test
 
   publish-backend:
     needs: test-backend
@@ -114,7 +114,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish-frontend:
-    needs: build-frontend
+    needs: test-frontend
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

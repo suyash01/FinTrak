@@ -90,3 +90,12 @@ func TestWithTxReturnsCommitError(t *testing.T) {
 	assert.ErrorIs(t, err, commitErr)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestCloseWithNilPool(t *testing.T) {
+	oldPool := Pool
+	Pool = nil
+	defer func() { Pool = oldPool }()
+
+	// Close must be a no-op (not panic) when the pool is nil.
+	assert.NotPanics(t, Close)
+}
