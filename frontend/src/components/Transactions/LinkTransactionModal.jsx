@@ -1,18 +1,33 @@
-import { useState, useEffect } from 'react';
-import { Search, X, Link2, ArrowRight, ArrowLeft, RotateCcw, Gift, Trash2 } from 'lucide-react';
-import api from '../../api/client';
-import { formatCurrency, formatDate, formatDateOnly, parseDateOnly } from '../../utils/formatters';
+import { useState, useEffect } from "react";
+import {
+  Search,
+  X,
+  Link2,
+  ArrowRight,
+  ArrowLeft,
+  RotateCcw,
+  Gift,
+  Trash2,
+} from "lucide-react";
+import Checkbox from "../Checkbox/Checkbox";
+import api from "../../api/client";
+import {
+  formatCurrency,
+  formatDate,
+  formatDateOnly,
+  parseDateOnly,
+} from "../../utils/formatters";
 
 export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
-  const [search, setSearch] = useState('');
-  const [accountId, setAccountId] = useState('');
+  const [search, setSearch] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [accounts, setAccounts] = useState([]);
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [linkType, setLinkType] = useState('');
+  const [linkType, setLinkType] = useState("");
   const [pendingTarget, setPendingTarget] = useState(null);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [matchAmount, setMatchAmount] = useState(true);
   const [excludeSameAccount, setExcludeSameAccount] = useState(true);
   const [existingLinks, setExistingLinks] = useState([]);
@@ -50,7 +65,12 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     }
   }, [txn.id, txn.date]);
 
-  const handleSearch = async (dFrom = dateFrom, dTo = dateTo, mAmount = matchAmount, exclAccount = excludeSameAccount) => {
+  const handleSearch = async (
+    dFrom = dateFrom,
+    dTo = dateTo,
+    mAmount = matchAmount,
+    exclAccount = excludeSameAccount,
+  ) => {
     setLoading(true);
     try {
       const params = {
@@ -67,10 +87,10 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
 
       const res = await api.getTransactions(params);
 
-      let filtered = res.data.filter(t => t.id !== txn.id);
+      let filtered = res.data.filter((t) => t.id !== txn.id);
 
       if (exclAccount) {
-        filtered = filtered.filter(t => t.accountId !== txn.accountId);
+        filtered = filtered.filter((t) => t.accountId !== txn.accountId);
       }
 
       setResults(filtered);
@@ -89,10 +109,10 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     if (isSameAccount(targetTxn)) {
       // Same account: show confirmation step with cashback/refund choice
       setPendingTarget(targetTxn);
-      setLinkType('cashback'); // default for same-account
+      setLinkType("cashback"); // default for same-account
     } else {
       // Different accounts: immediately link as transfer
-      performLink(targetTxn, 'transfer');
+      performLink(targetTxn, "transfer");
     }
   };
 
@@ -101,7 +121,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
       let fromId = txn.id;
       let toId = targetTxn.id;
 
-      if (txn.type === 'credit' && targetTxn.type === 'debit') {
+      if (txn.type === "credit" && targetTxn.type === "debit") {
         fromId = targetTxn.id;
         toId = txn.id;
       }
@@ -109,7 +129,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
       await api.createLink({
         type: type,
         fromTxnId: fromId,
-        toTxnId: toId
+        toTxnId: toId,
       });
       onSuccess();
     } catch (err) {
@@ -118,7 +138,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
   };
 
   const handleUnlinkLink = async (linkId) => {
-    if (!confirm('Remove this link?')) return;
+    if (!confirm("Remove this link?")) return;
     try {
       await api.deleteLink(linkId);
       await loadLinks();
@@ -141,15 +161,23 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
           {/* Header */}
           <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
             <div className="flex items-center gap-3">
-              <button onClick={() => setPendingTarget(null)} className="p-1.5 hover:bg-slate-800 rounded-full transition-colors">
+              <button
+                onClick={() => setPendingTarget(null)}
+                className="p-1.5 hover:bg-slate-800 rounded-full transition-colors"
+              >
                 <ArrowLeft size={18} className="text-slate-400" />
               </button>
               <div>
                 <h3 className="text-lg font-bold">Same Account Link</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Choose the link type for this connection</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Choose the link type for this connection
+                </p>
               </div>
             </div>
-            <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-slate-800 rounded-full transition-colors"
+            >
               <X size={20} className="text-slate-400" />
             </button>
           </div>
@@ -158,12 +186,21 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
           <div className="px-6 py-5 border-b border-slate-800 bg-slate-800/20">
             <div className="space-y-3">
               <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-3.5">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Source</div>
-                <div className="font-medium text-sm text-slate-200 truncate">{txn.description}</div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Source
+                </div>
+                <div className="font-medium text-sm text-slate-200 truncate">
+                  {txn.description}
+                </div>
                 <div className="text-xs text-slate-400 mt-1">
                   {txn.accountName} · {formatDate(txn.date)} ·
-                  <span className={txn.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}>
-                    {txn.type === 'debit' ? '−' : '+'}{formatCurrency(txn.amount)}
+                  <span
+                    className={
+                      txn.type === "debit" ? "text-red-500" : "text-emerald-500"
+                    }
+                  >
+                    {txn.type === "debit" ? "−" : "+"}
+                    {formatCurrency(txn.amount)}
                   </span>
                 </div>
               </div>
@@ -171,12 +208,24 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
                 <Link2 className="text-cyan-500/50" size={18} />
               </div>
               <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-3.5">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Target</div>
-                <div className="font-medium text-sm text-slate-200 truncate">{pendingTarget.description}</div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                  Target
+                </div>
+                <div className="font-medium text-sm text-slate-200 truncate">
+                  {pendingTarget.description}
+                </div>
                 <div className="text-xs text-slate-400 mt-1">
-                  {pendingTarget.accountName} · {formatDate(pendingTarget.date)} ·
-                  <span className={pendingTarget.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}>
-                    {pendingTarget.type === 'debit' ? '−' : '+'}{formatCurrency(pendingTarget.amount)}
+                  {pendingTarget.accountName} · {formatDate(pendingTarget.date)}{" "}
+                  ·
+                  <span
+                    className={
+                      pendingTarget.type === "debit"
+                        ? "text-red-500"
+                        : "text-emerald-500"
+                    }
+                  >
+                    {pendingTarget.type === "debit" ? "−" : "+"}
+                    {formatCurrency(pendingTarget.amount)}
                   </span>
                 </div>
               </div>
@@ -185,29 +234,57 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
 
           {/* Link type selection */}
           <div className="px-6 py-5 border-b border-slate-800">
-            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3">Link Type</div>
+            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-3">
+              Link Type
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => setLinkType('cashback')}
-                className={`relative flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${linkType === 'cashback'
-                  ? 'border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10'
-                  : 'border-slate-800 bg-slate-950/50 hover:border-slate-700'
-                  }`}
+                onClick={() => setLinkType("cashback")}
+                className={`relative flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
+                  linkType === "cashback"
+                    ? "border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10"
+                    : "border-slate-800 bg-slate-950/50 hover:border-slate-700"
+                }`}
               >
-                <Gift size={22} className={linkType === 'cashback' ? 'text-emerald-400' : 'text-slate-500'} />
-                <span className={`text-sm font-semibold ${linkType === 'cashback' ? 'text-emerald-400' : 'text-slate-400'}`}>Cashback</span>
-                <span className="text-[10px] text-slate-500">Reward or cash back</span>
+                <Gift
+                  size={22}
+                  className={
+                    linkType === "cashback"
+                      ? "text-emerald-400"
+                      : "text-slate-500"
+                  }
+                />
+                <span
+                  className={`text-sm font-semibold ${linkType === "cashback" ? "text-emerald-400" : "text-slate-400"}`}
+                >
+                  Cashback
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  Reward or cash back
+                </span>
               </button>
               <button
-                onClick={() => setLinkType('refund')}
-                className={`relative flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${linkType === 'refund'
-                  ? 'border-amber-500 bg-amber-500/10 shadow-lg shadow-amber-500/10'
-                  : 'border-slate-800 bg-slate-950/50 hover:border-slate-700'
-                  }`}
+                onClick={() => setLinkType("refund")}
+                className={`relative flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
+                  linkType === "refund"
+                    ? "border-amber-500 bg-amber-500/10 shadow-lg shadow-amber-500/10"
+                    : "border-slate-800 bg-slate-950/50 hover:border-slate-700"
+                }`}
               >
-                <RotateCcw size={22} className={linkType === 'refund' ? 'text-amber-400' : 'text-slate-500'} />
-                <span className={`text-sm font-semibold ${linkType === 'refund' ? 'text-amber-400' : 'text-slate-400'}`}>Refund</span>
-                <span className="text-[10px] text-slate-500">Return or reversal</span>
+                <RotateCcw
+                  size={22}
+                  className={
+                    linkType === "refund" ? "text-amber-400" : "text-slate-500"
+                  }
+                />
+                <span
+                  className={`text-sm font-semibold ${linkType === "refund" ? "text-amber-400" : "text-slate-400"}`}
+                >
+                  Refund
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  Return or reversal
+                </span>
               </button>
             </div>
           </div>
@@ -217,12 +294,16 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
             <button
               onClick={() => setPendingTarget(null)}
               className="px-4 py-2.5 text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors"
-            >Back to Results</button>
+            >
+              Back to Results
+            </button>
             <button
               onClick={handleConfirmSameAccountLink}
               disabled={!linkType}
               className="px-6 py-2.5 bg-cyan-500 text-white rounded-lg text-sm font-bold shadow-lg shadow-cyan-500/30 transition-all hover:bg-cyan-600 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-            >Confirm Link</button>
+            >
+              Confirm Link
+            </button>
           </div>
         </div>
       </div>
@@ -236,9 +317,14 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
         <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
           <div>
             <h3 className="text-lg font-bold">Find Match & Link</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Pick a matching transaction to create a connection</p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Pick a matching transaction to create a connection
+            </p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-800 rounded-full transition-colors"
+          >
             <X size={20} className="text-slate-400" />
           </button>
         </div>
@@ -247,19 +333,33 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
         <div className="px-6 py-4 bg-slate-800/20 border-b border-slate-800">
           <div className="flex items-center gap-4">
             <div className="flex-1 min-w-0">
-              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Source Transaction</div>
-              <div className="font-medium text-slate-200 truncate">{txn.description}</div>
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Source Transaction
+              </div>
+              <div className="font-medium text-slate-200 truncate">
+                {txn.description}
+              </div>
               <div className="text-xs text-slate-400 mt-1">
                 {txn.accountName} · {formatDate(txn.date)} ·
-                <span className={txn.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}>
-                  {txn.type === 'debit' ? '−' : '+'}{formatCurrency(txn.amount)}
+                <span
+                  className={
+                    txn.type === "debit" ? "text-red-500" : "text-emerald-500"
+                  }
+                >
+                  {txn.type === "debit" ? "−" : "+"}
+                  {formatCurrency(txn.amount)}
                 </span>
               </div>
             </div>
-            <ArrowRight className="text-cyan-500 opacity-50 shrink-0" size={20} />
+            <ArrowRight
+              className="text-cyan-500 opacity-50 shrink-0"
+              size={20}
+            />
             <div className="flex-1 text-center py-4 border-2 border-dashed border-slate-800 rounded-xl">
               <Link2 className="w-5 h-5 text-slate-700 mx-auto mb-1" />
-              <span className="text-[11px] text-slate-500">Pick match below</span>
+              <span className="text-[11px] text-slate-500">
+                Pick match below
+              </span>
             </div>
           </div>
         </div>
@@ -273,24 +373,45 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
             <div className="space-y-1.5">
               {existingLinks.map((l) => {
                 const other = l.fromTxnID === txn.id ? l.toTxn : l.fromTxn;
-                const typeClass = l.type === 'transfer'
-                  ? 'bg-blue-500/10 text-blue-400'
-                  : l.type === 'cashback'
-                    ? 'bg-emerald-500/10 text-emerald-400'
-                    : 'bg-amber-500/10 text-amber-400';
+                const typeClass =
+                  l.type === "transfer"
+                    ? "bg-blue-500/10 text-blue-400"
+                    : l.type === "cashback"
+                      ? "bg-emerald-500/10 text-emerald-400"
+                      : "bg-amber-500/10 text-amber-400";
                 return (
-                  <div key={l.id} className="flex items-center gap-2.5 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${typeClass}`}>{l.type}</span>
+                  <div
+                    key={l.id}
+                    className="flex items-center gap-2.5 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2"
+                  >
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${typeClass}`}
+                    >
+                      {l.type}
+                    </span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs text-slate-300 truncate">{other?.description}</div>
+                      <div className="text-xs text-slate-300 truncate">
+                        {other?.description}
+                      </div>
                       <div className="text-[10px] text-slate-500">
                         {other?.accountName} · {formatDate(other?.date)} ·
-                        <span className={other?.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}>
-                          {other?.type === 'debit' ? '−' : '+'}{formatCurrency(other?.amount || 0)}
+                        <span
+                          className={
+                            other?.type === "debit"
+                              ? "text-red-500"
+                              : "text-emerald-500"
+                          }
+                        >
+                          {other?.type === "debit" ? "−" : "+"}
+                          {formatCurrency(other?.amount || 0)}
                         </span>
                       </div>
                     </div>
-                    <button onClick={() => handleUnlinkLink(l.id)} className="p-1 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors" title="Unlink">
+                    <button
+                      onClick={() => handleUnlinkLink(l.id)}
+                      className="p-1 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                      title="Unlink"
+                    >
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -303,7 +424,11 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
         {/* Info banner */}
         <div className="px-6 py-2.5 bg-cyan-500/5 border-b border-slate-800">
           <p className="text-[11px] text-cyan-400/70 text-center">
-            <span className="font-semibold">Cross-account</span> links auto-assign as Transfer · <span className="font-semibold">Same-account</span> links let you choose Cashback or Refund · A transaction can be linked to many others
+            <span className="font-semibold">Cross-account</span> links
+            auto-assign as Transfer ·{" "}
+            <span className="font-semibold">Same-account</span> links let you
+            choose Cashback or Refund · A transaction can be linked to many
+            others
           </p>
         </div>
 
@@ -318,38 +443,45 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
                   placeholder="Search description..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                 />
               </div>
               <div className="flex flex-row flex-wrap md:col-span-3 gap-3">
                 <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     id="matchAmount"
-                    className="w-4 h-4 rounded border-slate-700 text-cyan-500 focus:ring-cyan-500 bg-slate-800"
                     checked={matchAmount}
-                    onChange={(e) => {
-                      setMatchAmount(e.target.checked);
-                      handleSearch(dateFrom, dateTo, e.target.checked, excludeSameAccount);
+                    onChange={(checked) => {
+                      setMatchAmount(checked);
+                      handleSearch(
+                        dateFrom,
+                        dateTo,
+                        checked,
+                        excludeSameAccount,
+                      );
                     }}
                   />
-                  <label htmlFor="matchAmount" className="text-sm text-slate-400 cursor-pointer select-none">
+                  <label
+                    htmlFor="matchAmount"
+                    className="text-sm text-slate-400 cursor-pointer select-none"
+                  >
                     Match Amount
                   </label>
                 </div>
 
                 <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2.5">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     id="excludeAccount"
-                    className="w-4 h-4 rounded border-slate-700 text-cyan-500 focus:ring-cyan-500 bg-slate-800"
                     checked={excludeSameAccount}
-                    onChange={(e) => {
-                      setExcludeSameAccount(e.target.checked);
-                      handleSearch(dateFrom, dateTo, matchAmount, e.target.checked);
+                    onChange={(checked) => {
+                      setExcludeSameAccount(checked);
+                      handleSearch(dateFrom, dateTo, matchAmount, checked);
                     }}
                   />
-                  <label htmlFor="excludeAccount" className="text-sm text-slate-400 cursor-pointer select-none">
+                  <label
+                    htmlFor="excludeAccount"
+                    className="text-sm text-slate-400 cursor-pointer select-none"
+                  >
                     Different Account Only
                   </label>
                 </div>
@@ -361,17 +493,23 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
                   }}
                 >
                   <option value="">All Accounts</option>
-                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
 
             <div className="flex flex-col md:flex-row items-center gap-3">
               <div className="flex-1 flex items-center gap-2 p-1.5 bg-slate-950 border border-slate-800 rounded-xl w-full">
-                <div className="pl-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider shrink-0">Date Range</div>
+                <div className="pl-2.5 text-[10px] font-bold text-slate-600 uppercase tracking-wider shrink-0">
+                  Date Range
+                </div>
                 <input
                   type="date"
-                  style={{ colorScheme: 'dark' }}
+                  style={{ colorScheme: "dark" }}
                   className="flex-1 bg-slate-900 border border-slate-800 text-slate-200 text-sm focus:outline-none p-2 rounded-lg cursor-pointer hover:border-slate-700 transition-colors"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
@@ -379,7 +517,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
                 <div className="text-slate-700 text-xs px-0.5">to</div>
                 <input
                   type="date"
-                  style={{ colorScheme: 'dark' }}
+                  style={{ colorScheme: "dark" }}
                   className="flex-1 bg-slate-900 border border-slate-800 text-slate-200 text-sm focus:outline-none p-2 rounded-lg cursor-pointer hover:border-slate-700 transition-colors"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
@@ -406,37 +544,57 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
           ) : results.length === 0 ? (
             <div className="text-center p-12 bg-slate-950/30 rounded-2xl border border-dashed border-slate-800">
               <Link2 className="w-10 h-10 text-slate-700 mx-auto mb-3 opacity-20" />
-              <div className="text-slate-500 text-sm font-medium">No potential matches found</div>
-              <p className="text-slate-600 text-[11px] mt-1 italic">Try adjusting your search or filters</p>
+              <div className="text-slate-500 text-sm font-medium">
+                No potential matches found
+              </div>
+              <p className="text-slate-600 text-[11px] mt-1 italic">
+                Try adjusting your search or filters
+              </p>
             </div>
           ) : (
             <div className="space-y-2">
               {results.map((r) => {
                 const sameAccount = isSameAccount(r);
                 return (
-                  <div key={r.id} className="bg-slate-950/50 border border-slate-800 p-4 rounded-xl flex items-center gap-4 hover:border-cyan-500/50 hover:bg-slate-800/30 transition-all group">
+                  <div
+                    key={r.id}
+                    className="bg-slate-950/50 border border-slate-800 p-4 rounded-xl flex items-center gap-4 hover:border-cyan-500/50 hover:bg-slate-800/30 transition-all group"
+                  >
                     <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-sm text-slate-200 truncate group-hover:text-cyan-400 transition-colors">{r.description}</div>
+                      <div className="font-semibold text-sm text-slate-200 truncate group-hover:text-cyan-400 transition-colors">
+                        {r.description}
+                      </div>
                       <div className="text-[12px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                        <span className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400">{r.accountName}</span>
+                        <span className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400">
+                          {r.accountName}
+                        </span>
                         <span>·</span>
                         <span>{formatDate(r.date)}</span>
                         <span>·</span>
-                        <span className={`font-bold ${r.type === 'debit' ? 'text-red-500' : 'text-emerald-500'}`}>
-                          {r.type === 'debit' ? '−' : '+'}{formatCurrency(r.amount)}
+                        <span
+                          className={`font-bold ${r.type === "debit" ? "text-red-500" : "text-emerald-500"}`}
+                        >
+                          {r.type === "debit" ? "−" : "+"}
+                          {formatCurrency(r.amount)}
                         </span>
                         {sameAccount && (
-                          <span className="px-1.5 py-0.5 bg-amber-500/10 rounded text-amber-400 text-[10px] font-semibold">Same Account</span>
+                          <span className="px-1.5 py-0.5 bg-amber-500/10 rounded text-amber-400 text-[10px] font-semibold">
+                            Same Account
+                          </span>
                         )}
                         {r.isLinked && (
-                          <span className="px-1.5 py-0.5 bg-cyan-500/10 rounded text-cyan-400 text-[10px] font-semibold">Already Linked</span>
+                          <span className="px-1.5 py-0.5 bg-cyan-500/10 rounded text-cyan-400 text-[10px] font-semibold">
+                            Already Linked
+                          </span>
                         )}
                       </div>
                     </div>
                     <button
                       onClick={() => handleSelectTarget(r)}
                       className="opacity-0 group-hover:opacity-100 px-4 py-2 bg-cyan-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-cyan-500/30 transition-all hover:scale-105 active:scale-95"
-                    >{sameAccount ? 'Choose Type…' : 'Link as Transfer'}</button>
+                    >
+                      {sameAccount ? "Choose Type…" : "Link as Transfer"}
+                    </button>
                   </div>
                 );
               })}

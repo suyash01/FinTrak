@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
+import Checkbox from "../Checkbox/Checkbox";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -106,12 +107,7 @@ const TransactionRow = memo(function TransactionRow({
       className={`transition-colors border-b border-slate-800 last:border-0 ${selected ? "bg-cyan-500/10" : "hover:bg-slate-800/30"}`}
     >
       <td className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
-        <input
-          type="checkbox"
-          className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500"
-          checked={selected}
-          onChange={() => toggleSelect(t.id)}
-        />
+        <Checkbox checked={selected} onChange={() => toggleSelect(t.id)} />
       </td>
       <td
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm whitespace-nowrap`}
@@ -732,11 +728,9 @@ export default function Transactions() {
               />
             )}
             <label className="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={persistPageSize}
-                onChange={(e) => togglePersist(e.target.checked)}
-                className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500 cursor-pointer"
+                onChange={(checked) => togglePersist(checked)}
               />
               Remember for my account
             </label>
@@ -802,9 +796,7 @@ export default function Transactions() {
                 <th
                   className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-10`}
                 >
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-cyan-500"
+                  <Checkbox
                     checked={
                       data.data.length > 0 && selected.size === data.data.length
                     }
