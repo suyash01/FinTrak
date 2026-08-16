@@ -1,5 +1,6 @@
 -- FinTrak initial schema.
--- Squashed from the original migrations 000001-000005.
+-- Squashed from the original migrations 000001-000005 plus the later
+-- 000002 (users.paperless_tag) and 000003 (accounts.is_default) migrations.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -9,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     paperless_url VARCHAR(500) DEFAULT '',
     paperless_token TEXT DEFAULT '',
+    paperless_tag VARCHAR(255) DEFAULT '',
     page_size INTEGER,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     currency VARCHAR(3) DEFAULT 'INR',
     color VARCHAR(7) DEFAULT '#06b6d4',
     billing_day INT,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE

@@ -217,7 +217,7 @@ export default function Accounts() {
                   onChange={(e) =>
                     setNewAcc({ ...newAcc, color: e.target.value })
                   }
-                  className="w-full h-[42px] cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
+                  className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
                 />
               </div>
             </div>
@@ -328,7 +328,7 @@ export default function Accounts() {
                         onChange={(e) =>
                           setEditAcc({ ...editAcc, color: e.target.value })
                         }
-                        className="w-full h-[42px] cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
+                        className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
                       />
                       {editAcc.accountTypeId === "credit_card" && (
                         <input

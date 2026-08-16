@@ -47,7 +47,7 @@ function MultiFilter({ label, options, map, onSet }) {
       </button>
 
       {open && (
-        <div className="absolute z-20 mt-1 w-full min-w-[220px] bg-slate-900 border border-slate-700 rounded-lg shadow-xl overflow-hidden">
+        <div className="absolute z-20 mt-1 w-full min-w-55 bg-slate-900 border border-slate-700 rounded-lg shadow-xl overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-800 text-xs font-semibold text-slate-400">
             {label} — <span className="text-cyan-400">+ include</span> · <span className="text-red-400">− exclude</span>
           </div>
@@ -348,7 +348,7 @@ export default function PaperlessImport() {
           <p className="text-slate-400 text-sm">Pull statements from Paperless-ngx</p>
         </div>
         <div className="flex-1 px-8 pb-8 pt-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-[500px]">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-125">
             <div className="flex items-center gap-2 text-slate-400 mb-2">
               <AlertCircle size={18} className="text-amber-500" />
               <h3 className="text-base font-semibold text-slate-200">Paperless not configured</h3>
@@ -632,7 +632,7 @@ export default function PaperlessImport() {
       {/* File preview modal */}
       {filePreview && (
         <div
-          className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+          className="fixed inset-0 z-100 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
           onClick={closeFilePreview}
         >
           <div

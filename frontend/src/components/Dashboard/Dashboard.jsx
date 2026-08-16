@@ -243,7 +243,7 @@ export default function Dashboard() {
                 Monthly Income vs Expenses
               </h3>
             </div>
-            <div className="flex-1 min-h-[280px]">
+            <div className="flex-1 min-h-70">
               {data.monthlyTrend.length > 0 ? (
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={data.monthlyTrend} barGap={4}>
@@ -352,7 +352,7 @@ export default function Dashboard() {
                         {formatDate(t.date)}
                       </td>
                       <td
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm border-b border-slate-800 max-w-[300px]`}
+                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm border-b border-slate-800 max-w-75`}
                       >
                         <div className="font-medium text-slate-200 truncate">
                           {t.description}
@@ -430,7 +430,7 @@ function CategoryPieSection({ title, categories, emptyMessage }) {
       <div className="flex-1">
         {categories && categories.length > 0 ? (
           <div className="flex flex-col md:flex-row gap-4 items-center h-full">
-            <div className="w-full md:w-1/2 min-h-[280px]">
+            <div className="w-full md:w-1/2 min-h-70">
               <ResponsiveContainer width="100%" height={280}>
                 <PieChart>
                   <Pie
@@ -460,7 +460,7 @@ function CategoryPieSection({ title, categories, emptyMessage }) {
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="w-full md:w-1/2 text-[13px] max-h-[280px] overflow-y-auto pr-2">
+            <div className="w-full md:w-1/2 text-[13px] max-h-70 overflow-y-auto pr-2">
               {categories.map((cat, i) => (
                 <div
                   key={i}

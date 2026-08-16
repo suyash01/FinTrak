@@ -526,7 +526,7 @@ export default function Import() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium text-slate-400">Color</label>
-                    <input type="color" value={newAccount.color} onChange={(e) => setNewAccount({ ...newAccount, color: e.target.value })} className="w-full h-[42px] cursor-pointer bg-slate-900 border border-slate-800 rounded-lg p-1" />
+                    <input type="color" value={newAccount.color} onChange={(e) => setNewAccount({ ...newAccount, color: e.target.value })} className="w-full h-10.5 cursor-pointer bg-slate-900 border border-slate-800 rounded-lg p-1" />
                   </div>
                 </div>
                 <div className="flex gap-3">
@@ -736,7 +736,7 @@ export default function Import() {
                     {csvData.slice(0, 5).map((row, i) => (
                       <tr key={i} className="border-b border-slate-800 last:border-0 hover:bg-slate-800/30">
                         {csvHeaders.map((h) => (
-                          <td key={h} className={`py-2 px-4 text-xs max-w-[150px] overflow-hidden text-ellipsis whitespace-nowrap ${csvTarget[h] ? 'text-slate-300' : 'opacity-40 text-slate-500'}`}>
+                          <td key={h} className={`py-2 px-4 text-xs max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap ${csvTarget[h] ? 'text-slate-300' : 'opacity-40 text-slate-500'}`}>
                             {row[h]}
                           </td>
                         ))}
@@ -768,7 +768,7 @@ export default function Import() {
 
             {statementTxns && pdfFile && (
               <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg flex flex-wrap items-end gap-3">
-                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                <div className="flex flex-col gap-1.5 min-w-45">
                   <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Reparse with extractor</label>
                   <select
                     className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
@@ -780,7 +780,7 @@ export default function Import() {
                     ))}
                   </select>
                 </div>
-                <div className="flex flex-col gap-1.5 min-w-[180px]">
+                <div className="flex flex-col gap-1.5 min-w-45">
                   <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Date Format</label>
                   <select
                     className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
@@ -831,8 +831,8 @@ export default function Import() {
               </div>
             )}
 
-            <div className="border border-slate-800 rounded-lg overflow-y-auto max-h-[500px] bg-slate-950">
-              <table className="w-full text-left border-collapse min-w-[600px]">
+            <div className="border border-slate-800 rounded-lg overflow-y-auto max-h-125 bg-slate-950">
+              <table className="w-full text-left border-collapse min-w-150">
                 <thead className="sticky top-0 bg-slate-900 z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-slate-800">
                   <tr>
                     <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-28">Date</th>
@@ -846,8 +846,8 @@ export default function Import() {
                   {parsedTransactions.slice(0, 100).map((t, i) => (
                     <tr key={i} className="hover:bg-slate-900/50 transition-colors">
                       <td className="py-2.5 px-4 text-sm text-slate-300 whitespace-nowrap">{t.date}</td>
-                      <td className="py-2.5 px-4 text-sm text-slate-200 max-w-[200px] overflow-hidden text-ellipsis whitespace-nowrap">{t.description}</td>
-                      <td className="py-2.5 px-4 text-sm text-slate-400 max-w-[150px] overflow-hidden text-ellipsis whitespace-nowrap">
+                      <td className="py-2.5 px-4 text-sm text-slate-200 max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">{t.description}</td>
+                      <td className="py-2.5 px-4 text-sm text-slate-400 max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap">
                         {t.payeeId ? (
                           <span className="text-cyan-500 font-medium">{payees.find(p => p.id === t.payeeId)?.name}</span>
                         ) : (
@@ -885,7 +885,7 @@ export default function Import() {
 
         {/* Step 5: Done */}
         {step === 5 && importResult && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 max-w-[500px] text-center mx-auto mt-10">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 max-w-125 text-center mx-auto mt-10">
             <div className="w-16 h-16 rounded-full bg-emerald-500/15 flex items-center justify-center mx-auto mb-6 text-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.2)]">
               <Check size={32} />
             </div>

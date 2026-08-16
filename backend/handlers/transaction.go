@@ -971,7 +971,7 @@ func mergeByDate(transactions []models.Transaction, rows []models.Transaction, s
 // summaryID returns a deterministic UUID for a summary row so it is stable
 // across requests and safe to use as a React key.
 func summaryID(accountID, kind string, date time.Time) uuid.UUID {
-	return uuid.NewSHA1(summaryNamespace, []byte(fmt.Sprintf("%s|%s|%s", accountID, kind, date.Format("2006-01-02"))))
+	return uuid.NewSHA1(summaryNamespace, fmt.Appendf(nil, "%s|%s|%s", accountID, kind, date.Format("2006-01-02")))
 }
 
 // dateOnly normalizes a time to midnight UTC for date-only comparisons.

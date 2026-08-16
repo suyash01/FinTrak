@@ -494,7 +494,7 @@ func addPaperlessTag(c *gin.Context, base, token string, documentID int, tagName
 	if tagID == 0 {
 		createReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
 			base+"/api/tags/",
-			bytes.NewReader([]byte(fmt.Sprintf(`{"name":%q,"color":"#06b6d4"}`, tagName))))
+			bytes.NewReader(fmt.Appendf(nil, `{"name":%q,"color":"#06b6d4"}`, tagName)))
 		if err != nil {
 			return err
 		}

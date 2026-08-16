@@ -119,13 +119,13 @@ const TransactionRow = memo(function TransactionRow({
         {formatDate(t.date)}
       </td>
       <td
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm max-w-[250px] overflow-hidden text-ellipsis whitespace-nowrap`}
+        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap`}
         title={t.description}
       >
         {t.description}
       </td>
       <td
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm min-w-[100px]`}
+        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm min-w-25`}
       >
         <EditableSelect
           value={t.payeeId}
@@ -845,7 +845,7 @@ export default function Transactions() {
                   Amount <SortIcon col="amount" />
                 </th>
                 <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-[50px]`}
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-12.5`}
                 ></th>
               </tr>
             </thead>
