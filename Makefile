@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test vet build-backend build-frontend release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-parser vet build-backend build-frontend release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -14,6 +14,7 @@ help:
 	@echo "  make prod-no-db         Deploy production stack (external DB)"
 	@echo "  make prod-down          Stop production stack"
 	@echo "  make test               Run backend tests"
+	@echo "  make test-parser        Run statement parser tests"
 	@echo "  make vet                Run go vet on backend"
 	@echo "  make build-backend      Verify backend compiles"
 	@echo "  make build-frontend     Build frontend production bundle"
@@ -36,6 +37,9 @@ prod-down:
 
 test:
 	cd backend && go test ./...
+
+test-parser:
+	cd statement_parser && python -m unittest discover -s tests -v
 
 vet:
 	cd backend && go vet ./...
