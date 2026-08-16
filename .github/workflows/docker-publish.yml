@@ -67,7 +67,7 @@ jobs:
           npm test
 
   publish-backend:
-    needs: test-backend
+    needs: [test-backend, publish-parser]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -114,7 +114,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish-frontend:
-    needs: test-frontend
+    needs: [test-frontend, publish-parser]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
