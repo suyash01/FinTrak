@@ -1,7 +1,106 @@
-import { useState, useEffect, useMemo } from 'react';
-import { RefreshCw, Loader2, FileText, Check, AlertCircle, Search, Eye, X } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  RefreshCw, Loader2, FileText, Check, AlertCircle, Search, Eye, X,
+  ChevronDown, Plus, Minus,
+} from 'lucide-react';
 import api from '../../api/client';
 import { formatCurrency, formatDateOnly } from '../../utils/formatters';
+
+function MultiFilter({ label, options, map, onSet }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const onClick = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, []);
+
+  const entries = Object.entries(map);
+  const includeCount = entries.filter(([, m]) => m === 'inc').length;
+  const excludeCount = entries.filter(([, m]) => m === 'exc').length;
+
+  let selectedLabel;
+  if (includeCount === 0 && excludeCount === 0) {
+    selectedLabel = `All ${label.toLowerCase()}`;
+  } else if (excludeCount === 0) {
+    selectedLabel = [...entries].filter(([, m]) => m === 'inc').map(([k]) => k).sort().join(', ');
+  } else if (includeCount === 0) {
+    selectedLabel = `Not: ${[...entries].filter(([, m]) => m === 'exc').map(([k]) => k).sort().join(', ')}`;
+  } else {
+    selectedLabel = `+${includeCount} / -${excludeCount}`;
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`w-full flex items-center justify-between gap-2 px-3 py-2 bg-slate-950 border rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 ${
+          entries.length > 0 ? 'border-cyan-500/60' : 'border-slate-800'
+        }`}
+      >
+        <span className="truncate text-left">{selectedLabel}</span>
+        <ChevronDown size={14} className={`shrink-0 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full min-w-[220px] bg-slate-900 border border-slate-700 rounded-lg shadow-xl overflow-hidden">
+          <div className="px-3 py-2 border-b border-slate-800 text-xs font-semibold text-slate-400">
+            {label} — <span className="text-cyan-400">+ include</span> · <span className="text-red-400">− exclude</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {options.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-slate-500">No options</div>
+            ) : (
+              options.map((opt) => {
+                const mode = map[opt];
+                return (
+                  <div
+                    key={opt}
+                    className={`flex items-center justify-between gap-2 px-3 py-1.5 text-sm transition-colors ${
+                      mode === 'inc' ? 'bg-cyan-500/10 text-cyan-300' : mode === 'exc' ? 'bg-red-500/10 text-red-300' : 'text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="truncate flex-1">{opt}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onSet(opt, mode === 'inc' ? null : 'inc')}
+                        title="Include (match)"
+                        className={`w-6 h-6 inline-flex items-center justify-center rounded-md border transition-colors ${
+                          mode === 'inc'
+                            ? 'bg-cyan-500 text-slate-950 border-cyan-500'
+                            : 'text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-white'
+                        }`}
+                      >
+                        <Plus size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSet(opt, mode === 'exc' ? null : 'exc')}
+                        title="Exclude (skip)"
+                        className={`w-6 h-6 inline-flex items-center justify-center rounded-md border transition-colors ${
+                          mode === 'exc'
+                            ? 'bg-red-500 text-white border-red-500'
+                            : 'text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-white'
+                        }`}
+                      >
+                        <Minus size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const DATE_FORMAT_OPTIONS = [
   { value: 'auto', label: 'Auto-detect' },
@@ -23,6 +122,8 @@ export default function PaperlessImport() {
   const [extractor, setExtractor] = useState('sbi_cc');
   const [password, setPassword] = useState('');
   const [dateFormat, setDateFormat] = useState('auto');
+  const [tagOnImport, setTagOnImport] = useState(false);
+  const [tagLabel, setTagLabel] = useState('');
 
   const [documents, setDocuments] = useState([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
@@ -30,15 +131,15 @@ export default function PaperlessImport() {
 
   // Filters
   const [search, setSearch] = useState('');
-  const [correspondentFilter, setCorrespondentFilter] = useState('');
-  const [documentTypeFilter, setDocumentTypeFilter] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
+  const [correspondentMap, setCorrespondentMap] = useState({});
+  const [documentTypeMap, setDocumentTypeMap] = useState({});
+  const [tagMap, setTagMap] = useState({});
 
   // File preview (blob URL of the original PDF)
   const [filePreview, setFilePreview] = useState(null); // { url, title }
   const [loadingFileId, setLoadingFileId] = useState(null);
 
-  const [preview, setPreview] = useState(null); // { title, transactions }
+  const [preview, setPreview] = useState(null); // { title, transactions, documentIds }
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
@@ -47,7 +148,10 @@ export default function PaperlessImport() {
   useEffect(() => {
     api
       .getPaperlessSettings()
-      .then((s) => setConfigured(Boolean(s.paperlessUrl && s.paperlessToken)))
+      .then((s) => {
+        setConfigured(Boolean(s.paperlessUrl && s.paperlessToken));
+        setTagLabel(s.paperlessTag || '');
+      })
       .catch(() => setConfigured(false))
       .finally(() => setLoadingConfig(false));
   }, []);
@@ -89,6 +193,15 @@ export default function PaperlessImport() {
     });
   };
 
+  const setFilter = (setter) => (value, mode) => {
+    setter((prev) => {
+      const next = { ...prev };
+      if (mode) next[value] = mode;
+      else delete next[value];
+      return next;
+    });
+  };
+
   // Build filter dropdown options from the loaded documents.
   const correspondentOptions = useMemo(() => {
     const set = new Set(documents.map((d) => d.correspondent).filter(Boolean));
@@ -105,26 +218,38 @@ export default function PaperlessImport() {
     return [...set].sort();
   }, [documents]);
 
+  const applyFilter = (matchValue, map) => {
+    const inc = Object.keys(map).filter((k) => map[k] === 'inc');
+    const exc = Object.keys(map).filter((k) => map[k] === 'exc');
+    const docValues = Array.isArray(matchValue) ? matchValue : [matchValue];
+    if (exc.length > 0 && docValues.some((v) => exc.includes(v))) return false;
+    if (inc.length > 0) return docValues.some((v) => inc.includes(v));
+    return true;
+  };
+
   const filteredDocuments = useMemo(() => {
     const q = search.trim().toLowerCase();
     return documents.filter((d) => {
-      if (correspondentFilter && d.correspondent !== correspondentFilter) return false;
-      if (documentTypeFilter && d.documentType !== documentTypeFilter) return false;
-      if (tagFilter && !(d.tags || []).includes(tagFilter)) return false;
+      const docTags = d.tags || [];
+
+      if (!applyFilter(d.correspondent, correspondentMap)) return false;
+      if (!applyFilter(d.documentType, documentTypeMap)) return false;
+      if (!applyFilter(docTags, tagMap)) return false;
+
       if (!q) return true;
       const haystack = [
         d.title,
         d.correspondent,
         d.documentType,
         `#${d.id}`,
-        ...(d.tags || []),
+        ...docTags,
       ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [documents, search, correspondentFilter, documentTypeFilter, tagFilter]);
+  }, [documents, search, correspondentMap, documentTypeMap, tagMap]);
 
   const openFilePreview = async (doc) => {
     setLoadingFileId(doc.id);
@@ -171,7 +296,7 @@ export default function PaperlessImport() {
         titles.push(doc?.title || `Document #${id}`);
         transactions.push(...(res.transactions || []));
       }
-      setPreview({ title: titles.join(', '), transactions });
+      setPreview({ title: titles.join(', '), transactions, documentIds: [...selected] });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -185,10 +310,14 @@ export default function PaperlessImport() {
     setError('');
     setSuccess('');
     try {
+      // The backend tags the source Paperless documents only after the
+      // transactions have been committed, so the label is added only on a
+      // successful import.
       await api.importTransactions({
         accountId: selectedAccount,
         transactions: preview.transactions,
         duplicateAction: 'keep',
+        paperlessDocumentIds: tagOnImport ? (preview.documentIds || []) : [],
       });
       setSuccess(`Imported ${preview.transactions.length} transactions.`);
       setPreview(null);
@@ -308,6 +437,17 @@ export default function PaperlessImport() {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tagOnImport}
+                  onChange={(e) => setTagOnImport(e.target.checked)}
+                  className="accent-cyan-500"
+                />
+                Tag imported docs as “{tagLabel || 'fintrak'}”
+              </label>
+            </div>
           </div>
         </div>
 
@@ -337,36 +477,24 @@ export default function PaperlessImport() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <select
-              className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-              value={correspondentFilter}
-              onChange={(e) => setCorrespondentFilter(e.target.value)}
-            >
-              <option value="">All correspondents</option>
-              {correspondentOptions.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <select
-              className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-              value={documentTypeFilter}
-              onChange={(e) => setDocumentTypeFilter(e.target.value)}
-            >
-              <option value="">All document types</option>
-              {documentTypeOptions.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            <select
-              className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-              value={tagFilter}
-              onChange={(e) => setTagFilter(e.target.value)}
-            >
-              <option value="">All tags</option>
-              {tagOptions.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+            <MultiFilter
+              label="Correspondents"
+              options={correspondentOptions}
+              map={correspondentMap}
+              onSet={setFilter(setCorrespondentMap)}
+            />
+            <MultiFilter
+              label="Document Types"
+              options={documentTypeOptions}
+              map={documentTypeMap}
+              onSet={setFilter(setDocumentTypeMap)}
+            />
+            <MultiFilter
+              label="Tags"
+              options={tagOptions}
+              map={tagMap}
+              onSet={setFilter(setTagMap)}
+            />
           </div>
 
           {loadingDocs ? (
@@ -396,7 +524,7 @@ export default function PaperlessImport() {
                       #{d.id}
                       {d.correspondent ? ` · ${d.correspondent}` : ''}
                       {d.documentType ? ` · ${d.documentType}` : ''}
-                      {d.added ? ` · Added ${formatDateOnly(new Date(d.added))}` : ''}
+                      {d.created ? ` · Created ${formatDateOnly(new Date(d.created))}` : ''}
                     </div>
                     {d.tags?.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5">

@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,9 +26,9 @@ const paperlessClientTimeout = 60 * time.Second
 func paperlessConfig(c *gin.Context, userID uuid.UUID) (models.UserSettings, error) {
 	var s models.UserSettings
 	err := db.Pool.QueryRow(c,
-		"SELECT paperless_url, paperless_token, page_size FROM users WHERE id = $1",
+		"SELECT paperless_url, paperless_token, paperless_tag, page_size FROM users WHERE id = $1",
 		userID,
-	).Scan(&s.PaperlessURL, &s.PaperlessToken, &s.PageSize)
+	).Scan(&s.PaperlessURL, &s.PaperlessToken, &s.PaperlessTag, &s.PageSize)
 	return s, err
 }
 
@@ -73,6 +75,11 @@ func UpdatePaperlessSettings(c *gin.Context) {
 		args = append(args, strings.TrimSpace(*req.PaperlessToken))
 		argIdx++
 	}
+	if req.PaperlessTag != nil {
+		updates = append(updates, fmt.Sprintf("paperless_tag = $%d", argIdx))
+		args = append(args, strings.TrimSpace(*req.PaperlessTag))
+		argIdx++
+	}
 	if req.PageSize.Set() {
 		updates = append(updates, fmt.Sprintf("page_size = $%d", argIdx))
 		args = append(args, req.PageSize.Value())
@@ -100,6 +107,9 @@ func UpdatePaperlessSettings(c *gin.Context) {
 	if req.PaperlessToken != nil {
 		updated.PaperlessToken = strings.TrimSpace(*req.PaperlessToken)
 	}
+	if req.PaperlessTag != nil {
+		updated.PaperlessTag = strings.TrimSpace(*req.PaperlessTag)
+	}
 	if req.PageSize.Set() {
 		updated.PageSize = req.PageSize.Value()
 	}
@@ -115,7 +125,7 @@ type rawPaperlessDocument struct {
 	Title         string `json:"title"`
 	Correspondent int    `json:"correspondent"`
 	DocumentType  int    `json:"document_type"`
-	Added         string `json:"added"`
+	Created       string `json:"created"`
 	Tags          []int  `json:"tags"`
 }
 
@@ -265,9 +275,9 @@ func ListPaperlessDocuments(c *gin.Context) {
 	docs := make([]models.PaperlessDocument, 0, len(allRaw))
 	for _, d := range allRaw {
 		doc := models.PaperlessDocument{
-			ID:    d.ID,
-			Title: d.Title,
-			Added: d.Added,
+			ID:      d.ID,
+			Title:   d.Title,
+			Created: d.Created,
 		}
 		doc.Correspondent = maps.correspondents[d.Correspondent]
 		doc.DocumentType = maps.documentTypes[d.DocumentType]
@@ -414,5 +424,147 @@ func ImportPaperlessDocument(c *gin.Context) {
 		c.JSON(status, gin.H{"error": errMsg})
 		return
 	}
+
 	c.JSON(http.StatusOK, result)
+}
+
+// tagPaperlessDocuments applies the user's configured FinTrak tag to the given
+// Paperless documents. It is called from the import flow only after the
+// transactions have been successfully committed to the database, so the tag
+// marks documents that were actually imported rather than merely parsed.
+// Tagging is best-effort: a failure is logged but never fails the import.
+func tagPaperlessDocuments(c *gin.Context, userID uuid.UUID, documentIDs []int) {
+	if len(documentIDs) == 0 {
+		return
+	}
+	settings, err := paperlessConfig(c, userID)
+	if err != nil {
+		log.Printf("Error in tagPaperlessDocuments (config): %v\n", err)
+		return
+	}
+	if !paperlessConfigured(settings) || strings.TrimSpace(settings.PaperlessTag) == "" {
+		return
+	}
+
+	base := strings.TrimRight(settings.PaperlessURL, "/")
+	for _, id := range documentIDs {
+		if err := addPaperlessTag(c, base, settings.PaperlessToken, id, settings.PaperlessTag); err != nil {
+			log.Printf("Error tagging paperless document %d: %v\n", id, err)
+		}
+	}
+}
+
+// addPaperlessTag ensures the named tag exists in the user's Paperless-ngx
+// instance and appends it to the given document, preserving its existing tags.
+// The tag is created on first use (with the FinTrak brand colour) and looked up
+// by name on subsequent imports.
+func addPaperlessTag(c *gin.Context, base, token string, documentID int, tagName string) error {
+	client := &http.Client{Timeout: paperlessClientTimeout}
+	tagName = strings.TrimSpace(tagName)
+	if tagName == "" {
+		return nil
+	}
+
+	// 1. Look up an existing tag by name (Paperless supports filtering by name).
+	tagID := 0
+	listReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet,
+		base+"/api/tags/?name="+url.QueryEscape(tagName), nil)
+	if err != nil {
+		return err
+	}
+	listReq.Header.Set("Authorization", "Token "+token)
+	listResp, err := client.Do(listReq)
+	if err != nil {
+		return err
+	}
+	if listResp.StatusCode == http.StatusOK {
+		var list struct {
+			Results []struct {
+				ID int `json:"id"`
+			} `json:"results"`
+		}
+		listBody, _ := io.ReadAll(listResp.Body)
+		if json.Unmarshal(listBody, &list) == nil && len(list.Results) > 0 {
+			tagID = list.Results[0].ID
+		}
+	}
+	listResp.Body.Close()
+
+	// 2. Create the tag if it does not exist yet.
+	if tagID == 0 {
+		createReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
+			base+"/api/tags/",
+			bytes.NewReader([]byte(fmt.Sprintf(`{"name":%q,"color":"#06b6d4"}`, tagName))))
+		if err != nil {
+			return err
+		}
+		createReq.Header.Set("Authorization", "Token "+token)
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp, err := client.Do(createReq)
+		if err != nil {
+			return err
+		}
+		createBody, _ := io.ReadAll(createResp.Body)
+		createResp.Body.Close()
+		if createResp.StatusCode >= 400 {
+			return fmt.Errorf("paperless tag creation failed with status %d", createResp.StatusCode)
+		}
+		var created struct {
+			ID int `json:"id"`
+		}
+		if json.Unmarshal(createBody, &created) != nil || created.ID == 0 {
+			return fmt.Errorf("paperless tag creation returned no id")
+		}
+		tagID = created.ID
+	}
+
+	// 3. Load the document's current tags so we append rather than replace.
+	docURL := base + "/api/documents/" + strconv.Itoa(documentID) + "/"
+	docReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, docURL, nil)
+	if err != nil {
+		return err
+	}
+	docReq.Header.Set("Authorization", "Token "+token)
+	docResp, err := client.Do(docReq)
+	if err != nil {
+		return err
+	}
+	var doc struct {
+		Tags []int `json:"tags"`
+	}
+	docBody, _ := io.ReadAll(docResp.Body)
+	docResp.Body.Close()
+	if docResp.StatusCode >= 400 {
+		return fmt.Errorf("paperless document fetch failed with status %d", docResp.StatusCode)
+	}
+	if json.Unmarshal(docBody, &doc) != nil {
+		return fmt.Errorf("paperless document fetch returned invalid data")
+	}
+	for _, t := range doc.Tags {
+		if t == tagID {
+			return nil // already tagged
+		}
+	}
+	doc.Tags = append(doc.Tags, tagID)
+
+	// 4. PATCH the document with the merged tag set.
+	merged, err := json.Marshal(map[string]any{"tags": doc.Tags})
+	if err != nil {
+		return err
+	}
+	patchReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPatch, docURL, bytes.NewReader(merged))
+	if err != nil {
+		return err
+	}
+	patchReq.Header.Set("Authorization", "Token "+token)
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		return err
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode >= 400 {
+		return fmt.Errorf("paperless tag update failed with status %d", patchResp.StatusCode)
+	}
+	return nil
 }

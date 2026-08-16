@@ -36,7 +36,7 @@ func balanceExpr(alias string) string {
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
-		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.billing_day,
+		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.billing_day, a.is_default,
 		` + balanceExpr("a") + ` as balance
 		FROM accounts a
 		JOIN account_types at ON a.account_type_id = at.id
@@ -54,7 +54,7 @@ func GetAccounts(c *gin.Context) {
 	accounts := []models.Account{}
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.BillingDay, &a.Balance); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.BillingDay, &a.IsDefault, &a.Balance); err != nil {
 			log.Printf("Error in GetAccounts scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
@@ -82,11 +82,19 @@ func CreateAccount(c *gin.Context) {
 	var account models.Account
 	userID := auth.GetUserID(c)
 	err := db.WithTx(c, func(tx pgx.Tx) error {
+		// If this account is created as the default, clear the flag on any other
+		// accounts belonging to the user so there is only one default.
+		if req.IsDefault {
+			if _, err := tx.Exec(c, "UPDATE accounts SET is_default = FALSE WHERE user_id = $1", userID); err != nil {
+				return err
+			}
+		}
+
 		err := tx.QueryRow(c,
-			`INSERT INTO accounts (user_id, name, account_type_id, bank, currency, color, billing_day) VALUES ($1, $2, $3, $4, $5, $6, $7)
-			 RETURNING id, name, account_type_id, bank, currency, color, billing_day`,
-			userID, req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay,
-		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color, &account.BillingDay)
+			`INSERT INTO accounts (user_id, name, account_type_id, bank, currency, color, billing_day, is_default) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			 RETURNING id, name, account_type_id, bank, currency, color, billing_day, is_default`,
+			userID, req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay, req.IsDefault,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.Bank, &account.Currency, &account.Color, &account.BillingDay, &account.IsDefault)
 
 		if err != nil {
 			return err
@@ -171,17 +179,25 @@ func UpdateAccount(c *gin.Context) {
 	var account models.Account
 	userID := auth.GetUserID(c)
 	err = db.WithTx(c, func(tx pgx.Tx) error {
+		// If this account is being set as the default, clear the flag on any
+		// other accounts belonging to the user so there is only one default.
+		if req.IsDefault != nil && *req.IsDefault {
+			if _, err := tx.Exec(c, "UPDATE accounts SET is_default = FALSE WHERE user_id = $1 AND id <> $2", userID, id); err != nil {
+				return err
+			}
+		}
+
 		err := tx.QueryRow(c,
 			`WITH updated AS (
-				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, billing_day = $6, updated_at = NOW() 
-				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, billing_day
+				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, billing_day = $6, is_default = COALESCE($7, is_default), updated_at = NOW() 
+				WHERE id = $8 AND user_id = $9 RETURNING id, name, account_type_id, bank, currency, color, billing_day, is_default
 			)
-			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.billing_day,
+			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.billing_day, u.is_default,
 			` + balanceExpr("u") + ` as balance
 			FROM updated u
 			JOIN account_types at ON u.account_type_id = at.id`,
-			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay, id, userID,
-		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.BillingDay, &account.Balance)
+			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.BillingDay, req.IsDefault, id, userID,
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.BillingDay, &account.IsDefault, &account.Balance)
 
 		if err != nil {
 			return err

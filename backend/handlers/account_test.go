@@ -36,9 +36,9 @@ func TestGetAccounts(t *testing.T) {
 
 	// Define expected data
 	userID := testUserID()
-	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "billing_day", "balance"}).
-		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", nil, 1000.50).
-		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", intPtr(5), 500.00)
+	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "billing_day", "is_default", "balance"}).
+		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", nil, true, 1000.50).
+		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", intPtr(5), false, 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
 		WithArgs(userID).
@@ -91,9 +91,9 @@ func TestCreateAccount(t *testing.T) {
 
 	// Expect Insert Account
 	mock.ExpectQuery("INSERT INTO accounts").
-		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", (*int)(nil)).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "billing_day"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", nil))
+		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", (*int)(nil), false).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "billing_day", "is_default"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", nil, false))
 
 	// Expect Account Type Name Fetch
 	mock.ExpectQuery("SELECT name FROM account_types").
@@ -122,6 +122,75 @@ func TestCreateAccount(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, accountID, account.ID)
 	assert.Equal(t, "New Account", account.Name)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateAccount(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+	isDefault := true
+	reqBody := models.UpdateAccountRequest{
+		Name:          "Updated Account",
+		AccountTypeID: "bank",
+		Bank:          "Axis",
+		Currency:      "INR",
+		Color:         "#06b6d4",
+		IsDefault:     &isDefault,
+	}
+
+	// Expect Transaction
+	mock.ExpectBegin()
+
+	// Expect clearing other defaults for the user
+	mock.ExpectExec("UPDATE accounts SET is_default = FALSE WHERE user_id = \\$1 AND id <> \\$2").
+		WithArgs(userID, accountID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	// Expect Update Account
+	mock.ExpectQuery("WITH updated AS").
+		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, (*int)(nil), &isDefault, accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "billing_day", "is_default", "balance"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, nil, true, 0.0))
+
+	// Expect Update Payee
+	mock.ExpectExec("UPDATE payees SET name = \\$1 WHERE account_id = \\$2").
+		WithArgs(reqBody.Name, accountID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	mock.ExpectCommit()
+
+	// Perform request
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Assertions
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var account models.Account
+	err = json.Unmarshal(w.Body.Bytes(), &account)
+	assert.NoError(t, err)
+	assert.Equal(t, accountID, account.ID)
+	assert.Equal(t, "Updated Account", account.Name)
+	assert.True(t, account.IsDefault)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -40,15 +40,15 @@ func setupPaperlessMock(t *testing.T, url, token string) pgxmock.PgxPoolIface {
 	return mock
 }
 
-func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token string) {
-	mock.ExpectQuery("SELECT paperless_url, paperless_token, page_size FROM users").
+func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token, tag string) {
+	mock.ExpectQuery("SELECT paperless_url, paperless_token, paperless_tag, page_size FROM users").
 		WithArgs(testUserID()).
-		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token", "page_size"}).AddRow(url, token, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token", "paperless_tag", "page_size"}).AddRow(url, token, tag, nil))
 }
 
 func TestGetPaperlessSettings(t *testing.T) {
 	mock := setupPaperlessMock(t, "http://paperless.local", "tok123")
-	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok123")
+	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok123", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
@@ -121,7 +121,7 @@ func TestUpdatePaperlessSettingsNoFields(t *testing.T) {
 
 func TestListPaperlessDocumentsUnconfigured(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
-	expectPaperlessConfigQuery(mock, "", "")
+	expectPaperlessConfigQuery(mock, "", "", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
@@ -148,13 +148,13 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 			w.Write([]byte(`{"results":[{"id":9,"name":"credit-card"}]}`))
 		default:
 			w.Write([]byte(`{"results":[
-				{"id":42,"title":"SBI Statement March","correspondent":7,"document_type":3,"added":"2026-03-01T10:00:00Z","tags":[9]}
+				{"id":42,"title":"SBI Statement March","correspondent":7,"document_type":3,"added":"2026-03-01T10:00:00Z","created":"2026-03-01T10:00:00Z","tags":[9]}
 			]}`))
 		}
 	}))
 	defer paperless.Close()
 	// point paperlessConfig at the fake via the settings row value
-	expectPaperlessConfigQuery(mock, paperless.URL, "tok")
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
@@ -167,6 +167,7 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 			Title         string   `json:"title"`
 			Correspondent string   `json:"correspondent"`
 			DocumentType  string   `json:"documentType"`
+			Created       string   `json:"created"`
 			Tags          []string `json:"tags"`
 		} `json:"documents"`
 	}
@@ -175,6 +176,7 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 	assert.Equal(t, 42, res.Documents[0].ID)
 	assert.Equal(t, "SBI", res.Documents[0].Correspondent)
 	assert.Equal(t, "credit-card", res.Documents[0].Tags[0])
+	assert.Equal(t, "2026-03-01T10:00:00Z", res.Documents[0].Created)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -205,7 +207,7 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 	defer func() { statementParserURL = old }()
 
 	// need fresh config query pointing at paperless.URL (not the fake parser)
-	expectPaperlessConfigQuery(mock, paperless.URL, "tok")
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
 	r := newPaperlessTestRouter()
 	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
@@ -221,9 +223,102 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestImportPaperlessDocumentDoesNotTagOnParse(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	// Fake Paperless serving the original file. Any tag-related call is made to
+	// fail, proving the import endpoint no longer tags during parsing.
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
+		if strings.Contains(r.URL.Path, "/api/tags") || strings.HasSuffix(r.URL.Path, "/api/documents/42/") {
+			http.Error(w, "tagging should not happen during parse", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("%PDF-1.4 fake"))
+	}))
+	defer paperless.Close()
+
+	parser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"transactions":[{"date":"18 May 26","description":"UPI-SUYASH MITTAL","amount":310.0,"type":"Credit"}],"summary":{},"page_count":1,"transaction_count":1}`))
+	}))
+	defer parser.Close()
+
+	old := statementParserURL
+	statementParserURL = parser.URL
+	defer func() { statementParserURL = old }()
+
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
+
+	r := newPaperlessTestRouter()
+	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc","tagOnImport":true}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTagPaperlessDocuments(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	// Fake Paperless serving tag lookups, tag creation, and the document
+	// fetch/patch used to append the tag.
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/tags"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"results":[]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/api/tags/"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":55,"name":"fintrak"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/documents/42/":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":42,"tags":[9]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/documents/42/":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":42,"tags":[9,55]}`))
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	defer paperless.Close()
+
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	tagPaperlessDocuments(c, testUserID(), []int{42})
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTagPaperlessDocumentsNoIDs(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	// No document IDs means no settings lookup and no Paperless calls.
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	tagPaperlessDocuments(c, testUserID(), nil)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTagPaperlessDocumentsUnconfigured(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+	expectPaperlessConfigQuery(mock, "", "", "")
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	tagPaperlessDocuments(c, testUserID(), []int{42})
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestImportPaperlessDocumentUnconfigured(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
-	expectPaperlessConfigQuery(mock, "", "")
+	expectPaperlessConfigQuery(mock, "", "", "")
 
 	r := newPaperlessTestRouter()
 	body := bytes.NewBufferString(`{"documentId":1,"extractor":"sbi_cc"}`)
@@ -244,7 +339,7 @@ func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 		w.Write([]byte("%PDF-1.4 fake content"))
 	}))
 	defer paperless.Close()
-	expectPaperlessConfigQuery(mock, paperless.URL, "tok")
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
@@ -258,7 +353,7 @@ func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 
 func TestGetPaperlessDocumentFileInvalidID(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
-	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok")
+	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
@@ -292,7 +387,7 @@ func TestListPaperlessDocumentsPagination(t *testing.T) {
 	}))
 	baseURL = paperless.URL
 	defer paperless.Close()
-	expectPaperlessConfigQuery(mock, paperless.URL, "tok")
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()

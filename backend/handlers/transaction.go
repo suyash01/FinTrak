@@ -615,6 +615,10 @@ func ImportTransactions(c *gin.Context) {
 		}
 	}
 
+	// Tag the source Paperless documents only after the import has committed, so
+	// the label reflects documents that were actually imported. Best-effort.
+	tagPaperlessDocuments(c, userID, req.PaperlessDocumentIDs)
+
 	c.JSON(http.StatusOK, gin.H{
 		"imported":   imported,
 		"duplicates": duplicates,

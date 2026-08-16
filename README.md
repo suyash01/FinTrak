@@ -6,47 +6,51 @@
 
 ## ✨ Features
 
--   **Dashboard & Analytics**: Get a clear overview of your financial health with income vs. expense summaries and category-wise breakdowns using **Recharts**.
--   **Transaction Management**:
-    -   **CSV Import**: Seamlessly import your bank statements (powered by PapaParse).
-    -   **PDF Statement Import**: Upload a bank/credit-card statement PDF and preview the extracted transactions before importing (powered by a standalone parser service).
-    -   **Advanced Filtering**: Search and filter transactions by date, amount, account, or status.
-    -   **Compact Layout**: High-density view for managing large volumes of transactions.
--   **Account Synchronization**: Track multiple bank accounts, credit cards, and wallets.
--   **Category & Payee Management**: Organize your spending with hierarchical categories and tracked payees.
--   **Smart Rules Engine**: Automate categorization by creating rules based on transaction descriptions or payees.
--   **Transaction Linking**:
-    -   **Transfer Detection**: Link matching transactions between accounts to avoid double-counting.
-    -   **Cashback & Refunds**: Link refunds or cashback to their original purchases.
--   **Bulk Operations**: Categorize, update payees, or delete multiple transactions at once.
+- **Dashboard & Analytics**: Get a clear overview of your financial health with income vs. expense summaries and category-wise breakdowns using **Recharts**.
+- **Transaction Management**:
+  - **CSV Import**: Seamlessly import your bank statements (powered by PapaParse).
+  - **PDF Statement Import**: Upload a bank/credit-card statement PDF and preview the extracted transactions before importing (powered by a standalone parser service).
+  - **Advanced Filtering**: Search and filter transactions by date, amount, account, or status.
+  - **Compact Layout**: High-density view for managing large volumes of transactions.
+- **Account Synchronization**: Track multiple bank accounts, credit cards, and wallets.
+- **Category & Payee Management**: Organize your spending with hierarchical categories and tracked payees.
+- **Smart Rules Engine**: Automate categorization by creating rules based on transaction descriptions or payees.
+- **Transaction Linking**:
+  - **Transfer Detection**: Link matching transactions between accounts to avoid double-counting.
+  - **Cashback & Refunds**: Link refunds or cashback to their original purchases.
+- **Bulk Operations**: Categorize, update payees, or delete multiple transactions at once.
 
 ---
 
 ## 🛠️ Tech Stack
 
 ### Backend
--   **Language**: Go 1.26
--   **Framework**: [Gin Gonic](https://gin-gonic.com/)
--   **Database**: PostgreSQL with [pgx](https://github.com/jackc/pgx)
--   **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate)
--   **Configuration**: godotenv
+
+- **Language**: Go 1.26
+- **Framework**: [Gin Gonic](https://gin-gonic.com/)
+- **Database**: PostgreSQL with [pgx](https://github.com/jackc/pgx)
+- **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate)
+- **Configuration**: godotenv
 
 ### Frontend
--   **Library**: React 18+ (Vite)
--   **Styling**: **Tailwind CSS 4**
--   **Icons**: Lucide React
--   **Charts**: Recharts
--   **Routing**: React Router 7
--   **Virtualization**: TanStack Virtual (for smooth scrolling in long lists)
+
+- **Library**: React 18+ (Vite)
+- **Styling**: **Tailwind CSS 4**
+- **Icons**: Lucide React
+- **Charts**: Recharts
+- **Routing**: React Router 7
+- **Virtualization**: TanStack Virtual (for smooth scrolling in long lists)
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
--   [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
+
+- [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
 
 ### Quick Start with Docker
+
 The easiest way to get FinTrak running is using Docker Compose:
 
 1.  **Clone the repository**:
@@ -59,11 +63,12 @@ The easiest way to get FinTrak running is using Docker Compose:
     docker compose up -d
     ```
 3.  **Access the application**:
-    -   **Frontend**: [http://localhost:3000](http://localhost:3000)
-    -   **API Server**: [http://localhost:8080/api/v1](http://localhost:8080/api/v1)
-    -   **Database Admin (Adminer)**: [http://localhost:8081](http://localhost:8081)
+    - **Frontend**: [http://localhost:3000](http://localhost:3000)
+    - **API Server**: [http://localhost:8080/api/v1](http://localhost:8080/api/v1)
+    - **Database Admin (Adminer)**: [http://localhost:8081](http://localhost:8081)
 
 ### Production Deployment
+
 Copy `.env.example` to `.env`, set the values, then:
 
 ```bash
@@ -107,19 +112,19 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 
 The backend exposes a RESTful API under `/api/v1`:
 
--   `POST /auth/register`: Create an account (returns a JWT).
--   `POST /auth/login`: Sign in (returns a JWT).
--   `GET /accounts`: List all financial accounts. Credit cards may carry a `billingDay` (1-31) that sets the statement-cut date.
--   `GET /transactions`: List transactions with support for search and filters. When a single `accountId` is filtered, synthetic (non-persisted) summary rows are appended: credit cards get a `Total outstanding` row after every billing date (the sum of debit/purchase transactions in that billing cycle, defaulting to the 1st of the month if no billing day is set) plus a final row for the current in-progress cycle; bank accounts get a `Month-end balance` row after every month-end plus a final `Balance` row at the range end. Summary rows have `isSummary: true` and are interleaved by date.
--   `POST /transactions`: Create a single transaction manually. Body: `{ accountId, date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", categoryId?, payeeId?, tags?, notes? }`. The account must belong to the authenticated user; when `categoryId` is omitted the transaction is auto-categorized from rules. Returns `{ id }`.
--   `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
--   `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount }` ready for preview and import.
--   `GET /paperless/settings` / `PUT /paperless/settings`: Read/update the user's Paperless-ngx integration settings (`{ paperlessUrl, paperlessToken }`), stored per-user against the `users` row. The Paperless import UI is hidden until both are set.
--   `GET /paperless/documents`: Proxy the user's Paperless-ngx document list (`?page_size=100`) so statements can be picked manually. Correspondent, document type, and tag names are resolved from Paperless's lookup endpoints.
--   `GET /paperless/documents/:id/file`: Stream a document's original file (e.g. a PDF) for in-browser preview/download.
--   `POST /paperless/import`: Pull a document's original file from the user's Paperless-ngx (`POST { documentId, extractor?, password?, dateFormat? }`), feed it through the statement parser, and return the same normalized result as `/statements/parse` for preview and import.
--   `POST /rules/apply`: Manually trigger categorization rules.
--   `GET /dashboard/summary`: Retrieve aggregated data for charts.
+- `POST /auth/register`: Create an account (returns a JWT).
+- `POST /auth/login`: Sign in (returns a JWT).
+- `GET /accounts`: List all financial accounts. Credit cards may carry a `billingDay` (1-31) that sets the statement-cut date. Accounts carry an `isDefault` flag; the single default account (per user) is used to pre-fill account filters across the app (except the import screen).
+- `GET /transactions`: List transactions with support for search and filters. When a single `accountId` is filtered, synthetic (non-persisted) summary rows are appended: credit cards get a `Total outstanding` row after every billing date (the sum of debit/purchase transactions in that billing cycle, defaulting to the 1st of the month if no billing day is set) plus a final row for the current in-progress cycle; bank accounts get a `Month-end balance` row after every month-end plus a final `Balance` row at the range end. Summary rows have `isSummary: true` and are interleaved by date.
+- `POST /transactions`: Create a single transaction manually. Body: `{ accountId, date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", categoryId?, payeeId?, tags?, notes? }`. The account must belong to the authenticated user; when `categoryId` is omitted the transaction is auto-categorized from rules. Returns `{ id }`.
+- `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep" }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`.
+- `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount }` ready for preview and import.
+- `GET /paperless/settings` / `PUT /paperless/settings`: Read/update the user's Paperless-ngx integration settings (`{ paperlessUrl, paperlessToken, paperlessTag }`), stored per-user against the `users` row. The Paperless import UI is hidden until both `paperlessUrl` and `paperlessToken` are set. `paperlessTag` is an optional label applied to successfully imported documents.
+- `GET /paperless/documents`: Proxy the user's Paperless-ngx document list (`?page_size=100`) so statements can be picked manually. Correspondent, document type, and tag names are resolved from Paperless's lookup endpoints.
+- `GET /paperless/documents/:id/file`: Stream a document's original file (e.g. a PDF) for in-browser preview/download.
+- `POST /paperless/import`: Pull a document's original file from the user's Paperless-ngx (`POST { documentId, extractor?, password?, dateFormat?, tagOnImport? }`), feed it through the statement parser, and return the same normalized result as `/statements/parse` for preview and import. When `tagOnImport` is true and a `paperlessTag` label is configured, the document is tagged (created if needed) in Paperless-ngx after a successful parse.
+- `POST /rules/apply`: Manually trigger categorization rules.
+- `GET /dashboard/summary`: Retrieve aggregated data for charts.
 
 All endpoints except `/auth/register` and `/auth/login` require an `Authorization: Bearer <token>` header. Set the signing secret via the `JWT_SECRET` environment variable (a dev default is used when unset).
 

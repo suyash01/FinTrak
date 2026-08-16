@@ -190,6 +190,7 @@ function AccountTypesManager() {
 function PaperlessSettingsManager() {
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
+  const [tag, setTag] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -200,6 +201,7 @@ function PaperlessSettingsManager() {
       .then((s) => {
         setUrl(s.paperlessUrl || '');
         setToken(s.paperlessToken || '');
+        setTag(s.paperlessTag || '');
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -210,7 +212,7 @@ function PaperlessSettingsManager() {
     setSaving(true);
     setSaved(false);
     try {
-      await api.updatePaperlessSettings({ paperlessUrl: url, paperlessToken: token });
+      await api.updatePaperlessSettings({ paperlessUrl: url, paperlessToken: token, paperlessTag: tag });
       setSaved(true);
     } catch (err) {
       alert(err.message);
@@ -242,6 +244,19 @@ function PaperlessSettingsManager() {
           value={token}
           onChange={(e) => setToken(e.target.value)}
         />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-1">Import Tag Label</label>
+        <input
+          type="text"
+          placeholder="e.g. fintrak"
+          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded text-sm text-white focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+          value={tag}
+          onChange={(e) => setTag(e.target.value)}
+        />
+        <p className="text-[11px] text-slate-500 mt-1">
+          When enabled during import, successfully imported documents get tagged with this label in Paperless-ngx.
+        </p>
       </div>
       <div className="flex items-center gap-3 pt-1">
         <button

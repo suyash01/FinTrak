@@ -22,6 +22,7 @@ type Account struct {
 	Currency        string    `json:"currency"`
 	Color           string    `json:"color"`
 	BillingDay      *int      `json:"billingDay,omitempty"`
+	IsDefault       bool      `json:"isDefault"`
 	Balance         float64   `json:"balance"`
 }
 
@@ -103,12 +104,14 @@ type User struct {
 type UserSettings struct {
 	PaperlessURL   string `json:"paperlessUrl"`
 	PaperlessToken string `json:"paperlessToken"`
+	PaperlessTag   string `json:"paperlessTag"`
 	PageSize       *int   `json:"pageSize"`
 }
 
 type UpdateUserSettingsRequest struct {
 	PaperlessURL   *string     `json:"paperlessUrl"`
 	PaperlessToken *string     `json:"paperlessToken"`
+	PaperlessTag   *string     `json:"paperlessTag"`
 	PageSize       OptionalInt `json:"pageSize"`
 }
 
@@ -119,7 +122,7 @@ type PaperlessDocument struct {
 	Title         string   `json:"title"`
 	Correspondent string   `json:"correspondent"`
 	DocumentType  string   `json:"documentType"`
-	Added         string   `json:"added"`
+	Created       string   `json:"created"`
 	Tags          []string `json:"tags"`
 }
 
@@ -152,8 +155,12 @@ type CreateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	BillingDay    *int   `json:"billingDay"`
+	IsDefault     bool   `json:"isDefault"`
 }
 
+// UpdateAccountRequest uses a *bool for IsDefault so that an absent key leaves
+// the current default flag untouched (the edit form does not send it), while an
+// explicit true/false sets it.
 type UpdateAccountRequest struct {
 	Name          string `json:"name"`
 	AccountTypeID string `json:"accountTypeId"`
@@ -161,6 +168,7 @@ type UpdateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	BillingDay    *int   `json:"billingDay"`
+	IsDefault     *bool  `json:"isDefault"`
 }
 
 type CreateAccountTypeRequest struct {
@@ -277,9 +285,10 @@ type BulkDeleteTransactionsRequest struct {
 }
 
 type ImportRequest struct {
-	AccountID       uuid.UUID           `json:"accountId"`
-	Transactions    []ImportTransaction `json:"transactions"`
-	DuplicateAction string              `json:"duplicateAction"` // "skip" | "keep"
+	AccountID           uuid.UUID           `json:"accountId"`
+	Transactions        []ImportTransaction `json:"transactions"`
+	DuplicateAction     string              `json:"duplicateAction"` // "skip" | "keep"
+	PaperlessDocumentIDs []int               `json:"paperlessDocumentIds"` // tag these Paperless docs after a successful import
 }
 
 type ImportTransaction struct {
