@@ -170,6 +170,8 @@ const api = {
   updateAccount: (id, data) =>
     request(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteAccount: (id) => request(`/accounts/${id}`, { method: "DELETE" }),
+  getBillingCycles: (accountId) =>
+    request(`/accounts/${accountId}/billing-cycles`),
 
   // Account Types
   getAccountTypes: () => request("/account-types"),
@@ -207,6 +209,11 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  validateTransactions: (data) =>
+    request("/transactions/validate", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   bulkCategorize: (data) =>
     request("/transactions/bulk-categorize", {
       method: "POST",
@@ -214,6 +221,11 @@ const api = {
     }),
   bulkUpdatePayee: (data) =>
     request("/transactions/bulk-payee", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  bulkUpdateBillingCycle: (data) =>
+    request("/transactions/bulk-billing-cycle", {
       method: "POST",
       body: JSON.stringify(data),
     }),

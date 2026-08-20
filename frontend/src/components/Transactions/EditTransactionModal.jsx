@@ -1,59 +1,128 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, Save, Pencil, Calendar, DollarSign, FileText, Tag, User, Landmark, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
-import api from '../../api/client';
+import { useState, useEffect, useRef } from "react";
+import {
+  X,
+  Save,
+  Pencil,
+  Calendar,
+  DollarSign,
+  FileText,
+  Tag,
+  User,
+  Landmark,
+  ArrowDownLeft,
+  ArrowUpRight,
+} from "lucide-react";
+import api from "../../api/client";
+import { formatDate } from "../../utils/formatters";
 
-export default function EditTransactionModal({ transaction, accounts, categories, payees, onClose, onSaved }) {
+export default function EditTransactionModal({
+  transaction,
+  accounts,
+  categories,
+  payees,
+  onClose,
+  onSaved,
+}) {
   const isCreate = !transaction;
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
-    description: '',
-    amount: '',
-    type: 'debit',
-    accountId: accounts?.[0]?.id || '',
-    categoryId: '',
-    payeeId: '',
-    notes: '',
+    date: new Date().toISOString().split("T")[0],
+    description: "",
+    amount: "",
+    type: "debit",
+    accountId: accounts?.[0]?.id || "",
+    categoryId: "",
+    payeeId: "",
+    notes: "",
     tags: [],
+    billingCycleId: "",
   });
-  const [tagInput, setTagInput] = useState('');
+  const selectedAccount = accounts.find((a) => a.id === form.accountId);
+  const [tagInput, setTagInput] = useState("");
+  const [billingCycles, setBillingCycles] = useState([]);
+  const [loadingCycles, setLoadingCycles] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [visible, setVisible] = useState(false);
   const backdropRef = useRef(null);
   const closeTimerRef = useRef(null);
+  const prevAccountRef = useRef(null);
 
   useEffect(() => () => clearTimeout(closeTimerRef.current), []);
 
   useEffect(() => {
     if (isCreate) {
       setForm({
-        date: new Date().toISOString().split('T')[0],
-        description: '',
-        amount: '',
-        type: 'debit',
-        accountId: accounts?.[0]?.id || '',
-        categoryId: '',
-        payeeId: '',
-        notes: '',
+        date: new Date().toISOString().split("T")[0],
+        description: "",
+        amount: "",
+        type: "debit",
+        accountId: accounts?.[0]?.id || "",
+        categoryId: "",
+        payeeId: "",
+        notes: "",
         tags: [],
+        billingCycleId: "",
       });
     } else {
-      const dateStr = String(transaction.date).split('T')[0];
+      const dateStr = String(transaction.date).split("T")[0];
       setForm({
         date: dateStr,
-        description: transaction.description || '',
-        amount: String(transaction.amount || ''),
-        type: transaction.type || 'debit',
-        accountId: transaction.accountId || '',
-        categoryId: transaction.categoryId || '',
-        payeeId: transaction.payeeId || '',
-        notes: transaction.notes || '',
+        description: transaction.description || "",
+        amount: String(transaction.amount || ""),
+        type: transaction.type || "debit",
+        accountId: transaction.accountId || "",
+        categoryId: transaction.categoryId || "",
+        payeeId: transaction.payeeId || "",
+        notes: transaction.notes || "",
         tags: transaction.tags || [],
+        billingCycleId: transaction.billingCycleId || "",
       });
     }
     // Trigger enter animation
     requestAnimationFrame(() => setVisible(true));
   }, [transaction, isCreate, accounts]);
+
+  // Load billing cycles for the selected account (credit cards only). The
+  // cycle is cleared when the account actually changes, but preserved on the
+  // initial load so an existing attachment survives opening the modal.
+  useEffect(() => {
+    const acct = accounts.find((a) => a.id === form.accountId);
+    const isCreditCard = acct?.accountTypeId === "credit_card";
+
+    if (!isCreditCard) {
+      setBillingCycles([]);
+      setLoadingCycles(false);
+      // Clear any cycle picked for a previous (credit-card) account.
+      if (prevAccountRef.current && prevAccountRef.current !== form.accountId) {
+        setForm((f) => ({ ...f, billingCycleId: "" }));
+      }
+      prevAccountRef.current = form.accountId;
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingCycles(true);
+    api
+      .getBillingCycles(form.accountId)
+      .then((res) => {
+        if (!cancelled) setBillingCycles(res.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setBillingCycles([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCycles(false);
+      });
+
+    if (prevAccountRef.current && prevAccountRef.current !== form.accountId) {
+      setForm((f) => ({ ...f, billingCycleId: "" }));
+    }
+    prevAccountRef.current = form.accountId;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [form.accountId, accounts]);
 
   const handleClose = () => {
     setVisible(false);
@@ -67,7 +136,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    setError("");
     setSaving(true);
 
     try {
@@ -83,6 +152,12 @@ export default function EditTransactionModal({ transaction, accounts, categories
         accountId: form.accountId,
       };
 
+      // Only credit-card transactions carry a billing cycle; for other account
+      // types omit the field so an edit never clears an existing attachment.
+      if (selectedAccount?.accountTypeId === "credit_card") {
+        payload.billingCycleId = form.billingCycleId || null;
+      }
+
       if (isCreate) {
         await api.createTransaction(payload);
       } else {
@@ -90,7 +165,12 @@ export default function EditTransactionModal({ transaction, accounts, categories
       }
       onSaved();
     } catch (err) {
-      setError(err.message || (isCreate ? 'Failed to add transaction' : 'Failed to update transaction'));
+      setError(
+        err.message ||
+          (isCreate
+            ? "Failed to add transaction"
+            : "Failed to update transaction"),
+      );
     } finally {
       setSaving(false);
     }
@@ -99,33 +179,35 @@ export default function EditTransactionModal({ transaction, accounts, categories
   const addTag = () => {
     const tag = tagInput.trim();
     if (tag && !form.tags.includes(tag)) {
-      setForm(f => ({ ...f, tags: [...f.tags, tag] }));
-      setTagInput('');
+      setForm((f) => ({ ...f, tags: [...f.tags, tag] }));
+      setTagInput("");
     }
   };
 
   const removeTag = (tag) => {
-    setForm(f => ({ ...f, tags: f.tags.filter(t => t !== tag) }));
+    setForm((f) => ({ ...f, tags: f.tags.filter((t) => t !== tag) }));
   };
 
   const handleTagKeyDown = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === "Enter") {
       e.preventDefault();
       addTag();
     }
   };
 
-  const inputClass = "w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700/60 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all placeholder:text-slate-600";
-  const labelClass = "block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5";
+  const inputClass =
+    "w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700/60 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all placeholder:text-slate-600";
+  const labelClass =
+    "block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5";
 
   return (
     <div
       ref={backdropRef}
-      className={`fixed inset-0 z-50 flex justify-end transition-colors duration-200 ${visible ? 'bg-black/60 backdrop-blur-sm' : 'bg-transparent'}`}
+      className={`fixed inset-0 z-50 flex justify-end transition-colors duration-200 ${visible ? "bg-black/60 backdrop-blur-sm" : "bg-transparent"}`}
       onClick={handleBackdropClick}
     >
       <div
-        className={`w-full max-w-lg h-full bg-linear-to-b from-slate-900 to-slate-950 border-l border-slate-700/50 shadow-2xl shadow-black/50 flex flex-col transition-transform duration-200 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`w-full max-w-lg h-full bg-linear-to-b from-slate-900 to-slate-950 border-l border-slate-700/50 shadow-2xl shadow-black/50 flex flex-col transition-transform duration-200 ease-out ${visible ? "translate-x-0" : "translate-x-full"}`}
       >
         {/* Header */}
         <div className="shrink-0 px-6 py-5 border-b border-slate-800/80 bg-slate-900/50">
@@ -135,8 +217,14 @@ export default function EditTransactionModal({ transaction, accounts, categories
                 <Pencil size={18} className="text-cyan-400" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-slate-100">{isCreate ? 'Add Transaction' : 'Edit Transaction'}</h2>
-                <p className="text-xs text-slate-500 mt-0.5">{isCreate ? 'Add a new transaction' : 'Modify transaction details'}</p>
+                <h2 className="text-lg font-bold text-slate-100">
+                  {isCreate ? "Add Transaction" : "Edit Transaction"}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {isCreate
+                    ? "Add a new transaction"
+                    : "Modify transaction details"}
+                </p>
               </div>
             </div>
             <button
@@ -149,7 +237,11 @@ export default function EditTransactionModal({ transaction, accounts, categories
         </div>
 
         {/* Form */}
-        <form id="edit-transaction-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+        <form
+          id="edit-transaction-form"
+          onSubmit={handleSubmit}
+          className="flex-1 overflow-y-auto"
+        >
           <div className="px-6 py-5 space-y-6">
             {/* Error */}
             {error && (
@@ -172,7 +264,9 @@ export default function EditTransactionModal({ transaction, accounts, categories
                   type="text"
                   className={inputClass}
                   value={form.description}
-                  onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, description: e.target.value }))
+                  }
                   placeholder="Transaction description"
                   required
                 />
@@ -182,19 +276,23 @@ export default function EditTransactionModal({ transaction, accounts, categories
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={labelClass}>
-                    <Calendar size={10} className="inline mr-1" />Date
+                    <Calendar size={10} className="inline mr-1" />
+                    Date
                   </label>
                   <input
                     type="date"
                     className={`${inputClass} scheme-dark`}
                     value={form.date}
-                    onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, date: e.target.value }))
+                    }
                     required
                   />
                 </div>
                 <div>
                   <label className={labelClass}>
-                    <DollarSign size={10} className="inline mr-1" />Amount
+                    <DollarSign size={10} className="inline mr-1" />
+                    Amount
                   </label>
                   <input
                     type="number"
@@ -202,7 +300,9 @@ export default function EditTransactionModal({ transaction, accounts, categories
                     min="0"
                     className={inputClass}
                     value={form.amount}
-                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, amount: e.target.value }))
+                    }
                     placeholder="0.00"
                     required
                   />
@@ -216,16 +316,16 @@ export default function EditTransactionModal({ transaction, accounts, categories
                   <div className="flex rounded-lg border border-slate-700/60 overflow-hidden">
                     <button
                       type="button"
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === 'debit' ? 'bg-red-500/20 text-red-400 border-r border-red-500/30' : 'bg-slate-950/80 text-slate-500 border-r border-slate-700/60 hover:text-slate-300'}`}
-                      onClick={() => setForm(f => ({ ...f, type: 'debit' }))}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === "debit" ? "bg-red-500/20 text-red-400 border-r border-red-500/30" : "bg-slate-950/80 text-slate-500 border-r border-slate-700/60 hover:text-slate-300"}`}
+                      onClick={() => setForm((f) => ({ ...f, type: "debit" }))}
                     >
                       <ArrowDownLeft size={14} />
                       Debit
                     </button>
                     <button
                       type="button"
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === 'credit' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-950/80 text-slate-500 hover:text-slate-300'}`}
-                      onClick={() => setForm(f => ({ ...f, type: 'credit' }))}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === "credit" ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-950/80 text-slate-500 hover:text-slate-300"}`}
+                      onClick={() => setForm((f) => ({ ...f, type: "credit" }))}
                     >
                       <ArrowUpRight size={14} />
                       Credit
@@ -234,21 +334,58 @@ export default function EditTransactionModal({ transaction, accounts, categories
                 </div>
                 <div>
                   <label className={labelClass}>
-                    <Landmark size={10} className="inline mr-1" />Account
+                    <Landmark size={10} className="inline mr-1" />
+                    Account
                   </label>
                   <select
                     className={inputClass}
                     value={form.accountId}
-                    onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, accountId: e.target.value }))
+                    }
                     required
                   >
                     <option value="">Select account</option>
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.name}</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
                     ))}
                   </select>
                 </div>
               </div>
+
+              {/* Billing Cycle (credit cards only) */}
+              {selectedAccount?.accountTypeId === "credit_card" && (
+                <div>
+                  <label className={labelClass}>
+                    <Calendar size={10} className="inline mr-1" />
+                    Billing Cycle
+                  </label>
+                  <select
+                    className={inputClass}
+                    value={form.billingCycleId}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, billingCycleId: e.target.value }))
+                    }
+                  >
+                    <option value="">
+                      {isCreate ? "Auto (by date)" : "Unassigned"}
+                    </option>
+                    {billingCycles.map((bc) => (
+                      <option key={bc.id} value={bc.id}>
+                        {bc.label} ({formatDate(bc.startDate)} –{" "}
+                        {formatDate(bc.endDate)})
+                      </option>
+                    ))}
+                  </select>
+                  {loadingCycles && (
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      Loading billing cycles...
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Divider */}
@@ -268,26 +405,35 @@ export default function EditTransactionModal({ transaction, accounts, categories
                   <select
                     className={inputClass}
                     value={form.categoryId}
-                    onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, categoryId: e.target.value }))
+                    }
                   >
                     <option value="">Uncategorized</option>
-                    {categories.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
                     ))}
                   </select>
                 </div>
                 <div>
                   <label className={labelClass}>
-                    <User size={10} className="inline mr-1" />Payee
+                    <User size={10} className="inline mr-1" />
+                    Payee
                   </label>
                   <select
                     className={inputClass}
                     value={form.payeeId}
-                    onChange={e => setForm(f => ({ ...f, payeeId: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, payeeId: e.target.value }))
+                    }
                   >
                     <option value="">No Payee</option>
-                    {payees.map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
+                    {payees.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -300,7 +446,9 @@ export default function EditTransactionModal({ transaction, accounts, categories
                   className={`${inputClass} resize-none`}
                   rows={3}
                   value={form.notes}
-                  onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, notes: e.target.value }))
+                  }
                   placeholder="Add notes..."
                 />
               </div>
@@ -309,7 +457,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
               <div>
                 <label className={labelClass}>Tags</label>
                 <div className="flex flex-wrap gap-2 mb-2">
-                  {form.tags.map(tag => (
+                  {form.tags.map((tag) => (
                     <span
                       key={tag}
                       className="inline-flex items-center gap-1 px-2.5 py-1 bg-cyan-500/10 text-cyan-400 text-xs font-medium rounded-full border border-cyan-500/20"
@@ -330,7 +478,7 @@ export default function EditTransactionModal({ transaction, accounts, categories
                     type="text"
                     className={`${inputClass} flex-1`}
                     value={tagInput}
-                    onChange={e => setTagInput(e.target.value)}
+                    onChange={(e) => setTagInput(e.target.value)}
                     onKeyDown={handleTagKeyDown}
                     placeholder="Add a tag and press Enter"
                   />
@@ -350,7 +498,9 @@ export default function EditTransactionModal({ transaction, accounts, categories
         {/* Footer */}
         <div className="shrink-0 px-6 py-4 border-t border-slate-800/80 bg-slate-900/50 flex items-center justify-between gap-3">
           <div className="text-xs text-slate-600 truncate">
-            {isCreate ? 'New transaction' : `ID: ${transaction.id?.slice(0, 8)}...`}
+            {isCreate
+              ? "New transaction"
+              : `ID: ${transaction.id?.slice(0, 8)}...`}
           </div>
           <div className="flex gap-3">
             <button
@@ -367,7 +517,11 @@ export default function EditTransactionModal({ transaction, accounts, categories
               disabled={saving}
             >
               <Save size={14} />
-              {saving ? 'Saving...' : isCreate ? 'Add Transaction' : 'Save Changes'}
+              {saving
+                ? "Saving..."
+                : isCreate
+                  ? "Add Transaction"
+                  : "Save Changes"}
             </button>
           </div>
         </div>

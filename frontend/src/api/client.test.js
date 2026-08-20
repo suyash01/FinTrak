@@ -117,6 +117,39 @@ describe("api request", () => {
     expect(url).toBe(`${API_BASE}/transactions?accountId=acct-1&limit=50`);
   });
 
+  it("posts transactions to the validate endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        total: 1,
+        existingCount: 1,
+        missingCount: 0,
+        results: [{ index: 0, exists: true }],
+      }),
+    );
+    const payload = {
+      accountId: "acct-1",
+      transactions: [
+        {
+          date: "2024-01-15",
+          description: "Coffee",
+          amount: 250.5,
+          type: "debit",
+        },
+      ],
+    };
+    const res = await api.validateTransactions(payload);
+    expect(res).toEqual({
+      total: 1,
+      existingCount: 1,
+      missingCount: 0,
+      results: [{ index: 0, exists: true }],
+    });
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/transactions/validate`);
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body)).toEqual(payload);
+  });
+
   it("returns null for empty response bodies", async () => {
     fetchMock.mockResolvedValue(jsonResponse("", 204));
     const res = await api.deleteAccount("acct-1");

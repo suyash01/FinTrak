@@ -22,7 +22,6 @@ export default function Accounts() {
     accountTypeId: "bank",
     bank: "",
     color: "#06b6d4",
-    billingDay: "",
   });
   const [editingId, setEditingId] = useState(null);
   const [editAcc, setEditAcc] = useState(null);
@@ -35,10 +34,7 @@ export default function Accounts() {
 
   const handleCreate = async () => {
     try {
-      const acc = await api.createAccount({
-        ...newAcc,
-        billingDay: newAcc.billingDay === "" ? null : Number(newAcc.billingDay),
-      });
+      const acc = await api.createAccount(newAcc);
       setAccounts((prev) => [acc, ...prev]);
       setShowNew(false);
       setNewAcc({
@@ -46,7 +42,6 @@ export default function Accounts() {
         accountTypeId: "bank",
         bank: "",
         color: "#06b6d4",
-        billingDay: "",
       });
     } catch (err) {
       alert(err.message);
@@ -65,11 +60,7 @@ export default function Accounts() {
 
   const handleUpdate = async () => {
     try {
-      const updated = await api.updateAccount(editingId, {
-        ...editAcc,
-        billingDay:
-          editAcc.billingDay === "" ? null : Number(editAcc.billingDay),
-      });
+      const updated = await api.updateAccount(editingId, editAcc);
       setAccounts((prev) =>
         prev.map((a) => (a.id === editingId ? updated : a)),
       );
@@ -88,7 +79,6 @@ export default function Accounts() {
       bank: acc.bank || "",
       color: acc.color,
       currency: acc.currency,
-      billingDay: acc.billingDay ?? "",
     });
   };
 
@@ -110,7 +100,6 @@ export default function Accounts() {
         bank: acc.bank || "",
         currency: acc.currency,
         color: acc.color,
-        billingDay: acc.billingDay ?? null,
         isDefault: !acc.isDefault,
       });
       setAccounts((prev) =>
@@ -221,24 +210,6 @@ export default function Accounts() {
                 />
               </div>
             </div>
-            {newAcc.accountTypeId === "credit_card" && (
-              <div className="flex flex-col gap-1.5 mb-5 max-w-xs">
-                <label className="text-sm font-medium text-slate-400">
-                  Billing Day (1-31)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="31"
-                  className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                  placeholder="e.g. 5"
-                  value={newAcc.billingDay}
-                  onChange={(e) =>
-                    setNewAcc({ ...newAcc, billingDay: e.target.value })
-                  }
-                />
-              </div>
-            )}
             <button
               className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleCreate}
@@ -330,22 +301,6 @@ export default function Accounts() {
                         }
                         className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
                       />
-                      {editAcc.accountTypeId === "credit_card" && (
-                        <input
-                          type="number"
-                          min="1"
-                          max="31"
-                          className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                          placeholder="Billing Day (1-31)"
-                          value={editAcc.billingDay}
-                          onChange={(e) =>
-                            setEditAcc({
-                              ...editAcc,
-                              billingDay: e.target.value,
-                            })
-                          }
-                        />
-                      )}
                     </div>
                     <button
                       className="inline-flex items-center justify-center w-full gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50"

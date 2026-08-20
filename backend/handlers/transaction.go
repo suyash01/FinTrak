@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -72,11 +73,14 @@ func GetTransactions(c *gin.Context) {
 			  (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as link_count,
 			  CASE WHEN (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) = 1
 			       THEN (SELECT id FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id LIMIT 1)
-			  END as link_id
+			  END as link_id,
+			  t.billing_cycle_id,
+			  COALESCE(bc.label, '') as billing_cycle_label
 			  FROM transactions t
 			  JOIN accounts a ON t.account_id = a.id
 			  LEFT JOIN categories c ON t.category_id = c.id
 			  LEFT JOIN payees p ON t.payee_id = p.id
+			  LEFT JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
 			  WHERE t.user_id = $1`
 
 	countQuery := `SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1`
@@ -183,7 +187,8 @@ func GetTransactions(c *gin.Context) {
 		var t models.Transaction
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
-			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkCount, &t.LinkID); err != nil {
+			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkCount, &t.LinkID,
+			&t.BillingCycleID, &t.BillingCycleLabel); err != nil {
 			log.Printf("Error in GetTransactions scan: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
@@ -236,9 +241,13 @@ func CreateTransaction(c *gin.Context) {
 
 	userID := auth.GetUserID(c)
 
-	// The account must exist and belong to the authenticated user.
+	// The account must exist and belong to the authenticated user. Also fetch
+	// its type so credit-card transactions can be attached to a billing cycle.
 	var ownerID uuid.UUID
-	err := db.Pool.QueryRow(c, "SELECT user_id FROM accounts WHERE id = $1", req.AccountID).Scan(&ownerID)
+	var acctTypeID string
+	err := db.Pool.QueryRow(c,
+		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
 		return
@@ -278,6 +287,26 @@ func CreateTransaction(c *gin.Context) {
 		log.Printf("Error in CreateTransaction (insert): %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
+	}
+
+	// Credit-card transactions are attached to a billing cycle: by default the
+	// cycle matching the transaction date (the suggested default), or the
+	// explicitly chosen cycle when the client supplied one.
+	if acctTypeID == "credit_card" {
+		if err := ensureBillingCycles(c, db.Pool, userID, req.AccountID); err != nil {
+			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		if req.BillingCycleID != nil {
+			if _, err := db.Pool.Exec(c,
+				"UPDATE transactions SET billing_cycle_id = $1 WHERE id = $2 AND user_id = $3",
+				*req.BillingCycleID, id, userID); err != nil {
+				log.Printf("Error in CreateTransaction (set billing cycle): %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				return
+			}
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": id})
@@ -361,6 +390,15 @@ func UpdateTransaction(c *gin.Context) {
 		args = append(args, *req.AccountID)
 		paramIdx++
 	}
+	if req.BillingCycleID.Set() {
+		setClauses = append(setClauses, fmt.Sprintf("billing_cycle_id = $%d", paramIdx))
+		if v := req.BillingCycleID.Value(); v != nil {
+			args = append(args, *v)
+		} else {
+			args = append(args, nil)
+		}
+		paramIdx++
+	}
 
 	if len(setClauses) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -416,6 +454,24 @@ func BulkUpdatePayee(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdatePayee: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"updated": result.RowsAffected()})
+}
+
+func BulkUpdateBillingCycle(c *gin.Context) {
+	var req models.BulkBillingCycleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	query := "UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
+	if err != nil {
+		log.Printf("Error in BulkUpdateBillingCycle: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
@@ -502,9 +558,13 @@ func ImportTransactions(c *gin.Context) {
 		}
 	}
 
-	// The account must exist and belong to the authenticated user.
+	// The account must exist and belong to the authenticated user. Also fetch
+	// its type so credit-card imports can be attached to a billing cycle.
 	var ownerID uuid.UUID
-	err := db.Pool.QueryRow(c, "SELECT user_id FROM accounts WHERE id = $1", req.AccountID).Scan(&ownerID)
+	var acctTypeID string
+	err := db.Pool.QueryRow(c,
+		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
 		return
@@ -588,7 +648,7 @@ func ImportTransactions(c *gin.Context) {
 
 		batch.Queue(
 			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID,
 		)
 		imported++
@@ -596,17 +656,41 @@ func ImportTransactions(c *gin.Context) {
 
 	if imported > 0 {
 		br := tx.SendBatch(c, batch)
+		ids := make([]uuid.UUID, 0, imported)
 		done := 0
 		for done < imported {
-			if _, err := br.Exec(); err != nil {
+			var id uuid.UUID
+			if err := br.QueryRow().Scan(&id); err != nil {
 				br.Close()
 				log.Printf("Error in ImportTransactions: %v\n", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 				return
 			}
+			ids = append(ids, id)
 			done++
 		}
 		br.Close()
+
+		// Credit-card imports: attach the new transactions to their billing
+		// cycles. When the client chose an explicit cycle, every imported
+		// transaction is attached to it (overriding the date-based default);
+		// otherwise the suggested default (by transaction date) applies. Runs
+		// inside the transaction so the assignment commits atomically with the
+		// import.
+		if acctTypeID == "credit_card" {
+			if req.BillingCycleID != nil {
+				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
+					log.Printf("Error in ImportTransactions (set billing cycle): %v\n", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+					return
+				}
+			}
+			if err := ensureBillingCycles(c, tx, userID, req.AccountID); err != nil {
+				log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				return
+			}
+		}
 
 		if err := tx.Commit(c); err != nil {
 			log.Printf("Error in ImportTransactions (commit): %v\n", err)
@@ -634,6 +718,126 @@ func ImportTransactions(c *gin.Context) {
 func transactionFingerprint(date string, amount float64, typ, description string) string {
 	cents := int(math.Round(amount * 100))
 	return fmt.Sprintf("%s\x00%d\x00%s\x00%s", date, cents, typ, strings.ToLower(strings.TrimSpace(description)))
+}
+
+// ValidateTransactions is a read-only check that reports which of the given
+// candidate transactions already exist in the selected account. It reuses the
+// same fingerprint matching as ImportTransactions (so the results agree with
+// what an import with duplicateAction "skip" would drop) but writes nothing.
+func ValidateTransactions(c *gin.Context) {
+	var req models.ValidateTransactionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := auth.GetUserID(c)
+
+	if len(req.Transactions) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no transactions to validate"})
+		return
+	}
+	if len(req.Transactions) > maxImportBatch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many transactions (max %d per request)", maxImportBatch)})
+		return
+	}
+	for i, t := range req.Transactions {
+		if t.Type != "debit" && t.Type != "credit" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type)})
+			return
+		}
+		if t.Amount <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount)})
+			return
+		}
+		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date)})
+			return
+		}
+	}
+
+	// The account must exist and belong to the authenticated user.
+	var ownerID uuid.UUID
+	err := db.Pool.QueryRow(c,
+		"SELECT user_id FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("Error in ValidateTransactions (checking account): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if ownerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
+	// Load the account's existing transactions into a fingerprint set so each
+	// candidate can be compared in memory.
+	existing := map[string]bool{}
+	rows, err := db.Pool.Query(c,
+		"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
+		req.AccountID, userID)
+	if err != nil {
+		log.Printf("Error in ValidateTransactions (loading existing transactions): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	for rows.Next() {
+		var d time.Time
+		var amount float64
+		var typ, description string
+		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
+			rows.Close()
+			log.Printf("Error in ValidateTransactions (scanning existing transactions): %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			return
+		}
+		existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Printf("Error in ValidateTransactions (iterating existing transactions): %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	results := make([]models.ValidateTransactionResult, 0, len(req.Transactions))
+	existingCount := 0
+	for i, t := range req.Transactions {
+		exists := existing[transactionFingerprint(t.Date, t.Amount, t.Type, t.Description)]
+		if exists {
+			existingCount++
+		}
+		results = append(results, models.ValidateTransactionResult{
+			Index:       i,
+			Exists:      exists,
+			Date:        t.Date,
+			Description: t.Description,
+			Amount:      t.Amount,
+			Type:        t.Type,
+		})
+	}
+
+	c.JSON(http.StatusOK, models.ValidateTransactionsResponse{
+		Total:         len(req.Transactions),
+		ExistingCount: existingCount,
+		MissingCount:  len(req.Transactions) - existingCount,
+		Results:       results,
+	})
+}
+
+// attachTransactionsToCycle attaches the given transaction IDs to a billing
+// cycle. Used by credit-card imports when the client chose an explicit cycle so
+// every imported transaction lands in it, overriding the date-based default.
+func attachTransactionsToCycle(ctx context.Context, q cycleQueryer, cycleID uuid.UUID, ids []uuid.UUID, userID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		"UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3",
+		cycleID, ids, userID)
+	return err
 }
 
 // dedupeTransactions keeps the first occurrence of every unique row, dropping
@@ -676,18 +880,27 @@ type acctTxn struct {
 }
 
 // buildAccountSummaryRows looks up the filtered account's type and, when it is
-// a credit card with a billing day set or a bank account, queries its
-// transactions and returns the synthetic summary rows to display.
+// a credit card or a bank account, returns the synthetic summary rows to
+// display. Credit cards summarize by explicit billing cycle (transactions are
+// attached to cycles rather than bucketed by date); bank accounts get month-end
+// running balances.
 func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) []models.Transaction {
 	var acctName, acctTypeID, positiveTxnType string
-	var billingDay int
 	err := db.Pool.QueryRow(c,
-		`SELECT a.name, a.account_type_id, at.positive_txn_type, COALESCE(a.billing_day, 0)
+		`SELECT a.name, a.account_type_id, at.positive_txn_type
 		 FROM accounts a JOIN account_types at ON a.account_type_id = at.id
 		 WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&acctName, &acctTypeID, &positiveTxnType, &billingDay)
+		accountID, userID).Scan(&acctName, &acctTypeID, &positiveTxnType)
 	if err != nil {
 		return nil
+	}
+
+	if acctTypeID == "credit_card" {
+		if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID)); err != nil {
+			log.Printf("Error in buildAccountSummaryRows (ensure billing cycles): %v\n", err)
+			return nil
+		}
+		return computeCreditCardSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
 	}
 
 	rows, err := db.Pool.Query(c,
@@ -713,15 +926,14 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 		return nil
 	}
 
-	return computeSummaryRows(acctName, accountID, acctTypeID, positiveTxnType, billingDay, dateFrom, dateTo, txns)
+	return computeSummaryRows(acctName, accountID, acctTypeID, positiveTxnType, dateFrom, dateTo, txns)
 }
 
-// computeSummaryRows builds the synthetic summary rows for an account. Credit
-// cards get a "Total outstanding" row after every billing date (one per billing
-// cycle, summing the debit purchases in that cycle) plus a final row for the
-// current in-progress cycle; bank accounts get a "Month-end balance" row after
-// every month-end plus a final "Balance" row at the end of the range.
-func computeSummaryRows(accountName, accountID, acctTypeID, positiveTxnType string, billingDay int, dateFrom, dateTo string, txns []acctTxn) []models.Transaction {
+// computeSummaryRows builds the synthetic summary rows for a bank account: a
+// "Month-end balance" row after every month-end plus a final "Balance" row at
+// the end of the range. Credit-card summaries are computed separately from
+// explicit billing cycles (see computeCreditCardSummaryRows).
+func computeSummaryRows(accountName, accountID, acctTypeID, positiveTxnType string, dateFrom, dateTo string, txns []acctTxn) []models.Transaction {
 	rows := []models.Transaction{}
 	today := dateOnly(time.Now())
 
@@ -782,61 +994,6 @@ func computeSummaryRows(accountName, accountID, acctTypeID, positiveTxnType stri
 		from = to
 	}
 
-	if acctTypeID == "credit_card" {
-		// Default to the 1st of the month when no billing day is configured.
-		if billingDay <= 0 {
-			billingDay = 1
-		}
-		idx := 0
-		lastBd := time.Time{}
-		// Start one month before `from` so the txns of the first (partial) cycle
-		// are attributed correctly even though its billing date is before `from`.
-		for ms := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0); ; ms = ms.AddDate(0, 1, 0) {
-			bd := billingDateInMonth(ms, billingDay)
-			if bd.After(to) {
-				break
-			}
-			var debit float64
-			sawTxn := false
-			for idx < len(txns) {
-				d := dateOnly(txns[idx].Date)
-				if d.After(bd) {
-					break
-				}
-				sawTxn = true
-				// The amount due is the sum of the debit (purchase) transactions
-				// in the billing cycle; credits/payments are not netted out.
-				if txns[idx].Type == "debit" {
-					debit += txns[idx].Amount
-				}
-				idx++
-			}
-			// Only surface a row for cycles that actually have transactions.
-			if !bd.Before(from) && sawTxn {
-				rows = append(rows, buildRow("outstanding", "Total outstanding", bd, debit))
-			}
-			lastBd = bd
-		}
-		// Current in-progress cycle up to the end of the range. Skipped when the
-		// current cycle has no transactions.
-		var debit float64
-		sawTxn := false
-		for idx < len(txns) {
-			d := dateOnly(txns[idx].Date)
-			if d.After(to) {
-				break
-			}
-			sawTxn = true
-			if txns[idx].Type == "debit" {
-				debit += txns[idx].Amount
-			}
-			idx++
-		}
-		if !lastBd.Equal(dateOnly(to)) && sawTxn {
-			rows = append(rows, buildRow("outstanding-current", "Total outstanding", to, debit))
-		}
-	}
-
 	if acctTypeID == "bank" {
 		running := 0.0
 		idx := 0
@@ -858,6 +1015,92 @@ func computeSummaryRows(accountName, accountID, acctTypeID, positiveTxnType stri
 		sumByDirection(to, &running, &idx)
 		if !lastMonthEnd.Equal(dateOnly(to)) {
 			rows = append(rows, buildRow("balance", "Balance", to, running))
+		}
+	}
+
+	return rows
+}
+
+// computeCreditCardSummaryRows builds the synthetic "Total outstanding" rows for
+// a credit-card account from its explicit billing cycles. Each cycle that has
+// attached transactions gets a row at its end date (the sum of its attached
+// debit purchases), and the in-progress cycle containing the end of the range
+// gets a row at the range end. Cycles are expected to already exist (callers
+// run ensureBillingCycles first).
+func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
+	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
+	if err != nil {
+		log.Printf("Error in computeCreditCardSummaryRows (list cycles): %v\n", err)
+		return nil
+	}
+
+	// Resolve the date range (defaults: first cycle start to today).
+	var from, to time.Time
+	if dateFrom != "" {
+		if t, err := time.Parse("2006-01-02", dateFrom); err == nil {
+			from = t
+		}
+	}
+	if dateTo != "" {
+		if t, err := time.Parse("2006-01-02", dateTo); err == nil {
+			to = t
+		}
+	}
+	if to.IsZero() {
+		to = dateOnly(time.Now())
+	}
+	if from.IsZero() {
+		if len(cycles) > 0 {
+			from = dateOnly(cycles[0].StartDate)
+		} else {
+			from = to
+		}
+	}
+
+	buildRow := func(kind, description string, date time.Time, amount float64) models.Transaction {
+		return models.Transaction{
+			ID:          summaryID(accountID.String(), kind, date),
+			AccountID:   accountID,
+			Date:        date,
+			Description: description,
+			Amount:      amount,
+			Type:        "credit",
+			AccountName: acctName,
+			IsSummary:   true,
+		}
+	}
+
+	rows := []models.Transaction{}
+	var current *models.BillingCycle
+	for i := range cycles {
+		bc := &cycles[i]
+		end := dateOnly(bc.EndDate)
+		// A row for every completed cycle (end date within the range) that has
+		// attached transactions.
+		if bc.TransactionCount > 0 && !end.Before(from) && !end.After(to) {
+			rows = append(rows, buildRow("outstanding", "Total outstanding", end, bc.TotalOutstanding))
+		}
+		// Track the in-progress cycle: the one whose date range contains `to`.
+		if !dateOnly(bc.StartDate).After(to) && !end.Before(to) {
+			current = bc
+		}
+	}
+
+	// The in-progress cycle (its end date is beyond the range end) gets a row at
+	// the range end with the debits attached so far.
+	if current != nil && dateOnly(current.EndDate).After(to) {
+		var total float64
+		var count int
+		err := db.Pool.QueryRow(c,
+			`SELECT COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0), COUNT(t.id)
+			 FROM transactions t WHERE t.billing_cycle_id = $1 AND t.date <= $2`,
+			current.ID, to).Scan(&total, &count)
+		if err != nil {
+			log.Printf("Error in computeCreditCardSummaryRows (current cycle): %v\n", err)
+			return nil
+		}
+		if count > 0 {
+			rows = append(rows, buildRow("outstanding-current", "Total outstanding", to, total))
 		}
 	}
 
@@ -987,23 +1230,6 @@ func daysInMonth(y int, m time.Month) int {
 // lastDayOfMonth returns the last day of the month containing t, at midnight.
 func lastDayOfMonth(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), daysInMonth(t.Year(), t.Month()), 0, 0, 0, 0, time.UTC)
-}
-
-// lastBillingDate returns the most recent billing date (the configured day of
-// month, clamped to the month length) that is on or before today.
-func lastBillingDate(today time.Time, day int) time.Time {
-	clamp := func(y int, m time.Month) int {
-		if day > daysInMonth(y, m) {
-			return daysInMonth(y, m)
-		}
-		return day
-	}
-	cand := time.Date(today.Year(), today.Month(), clamp(today.Year(), today.Month()), 0, 0, 0, 0, time.UTC)
-	if !cand.After(today) {
-		return cand
-	}
-	prev := today.AddDate(0, -1, 0)
-	return time.Date(prev.Year(), prev.Month(), clamp(prev.Year(), prev.Month()), 0, 0, 0, 0, time.UTC)
 }
 
 // billingDateInMonth returns the billing day (clamped to the month length)

@@ -86,6 +86,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accounts.PUT("/:id", handlers.UpdateAccount)
 		accounts.DELETE("/:id", handlers.DeleteAccount)
 		accounts.GET("/:id/export", handlers.ExportAccount)
+		accounts.GET("/:id/billing-cycles", handlers.GetBillingCycles)
 
 		// Account Types
 		accountTypes := api.Group("/account-types")
@@ -105,8 +106,10 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		transactions.PATCH("/:id", handlers.UpdateTransaction)
 		transactions.DELETE("/:id", handlers.DeleteTransaction)
 		transactions.POST("/import", handlers.ImportTransactions)
+		transactions.POST("/validate", handlers.ValidateTransactions)
 		transactions.POST("/bulk-categorize", handlers.BulkCategorize)
 		transactions.POST("/bulk-payee", handlers.BulkUpdatePayee)
+		transactions.POST("/bulk-billing-cycle", handlers.BulkUpdateBillingCycle)
 		transactions.POST("/bulk-delete", handlers.BulkDeleteTransactions)
 
 		// Statement parsing (forwards to the standalone parser service)

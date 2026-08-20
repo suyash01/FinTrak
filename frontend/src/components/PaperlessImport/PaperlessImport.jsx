@@ -11,6 +11,9 @@ import {
   ChevronDown,
   Plus,
   Minus,
+  ShieldCheck,
+  CheckCircle2,
+  PlusCircle,
 } from "lucide-react";
 import Checkbox from "../Checkbox/Checkbox";
 import api from "../../api/client";
@@ -174,6 +177,10 @@ export default function PaperlessImport() {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  // Validation (read-only duplicate check against the selected account)
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
 
   useEffect(() => {
     api
@@ -361,6 +368,25 @@ export default function PaperlessImport() {
       setError("Import failed: " + err.message);
     } finally {
       setImporting(false);
+    }
+  };
+
+  // Read-only check: ask the backend which of the parsed transactions already
+  // exist in the selected account. Nothing is written.
+  const runValidation = async () => {
+    if (!preview || preview.transactions.length === 0) return;
+    setValidating(true);
+    setError("");
+    try {
+      const result = await api.validateTransactions({
+        accountId: selectedAccount,
+        transactions: preview.transactions,
+      });
+      setValidationResult(result);
+    } catch (err) {
+      setError("Validation failed: " + err.message);
+    } finally {
+      setValidating(false);
     }
   };
 
@@ -707,6 +733,19 @@ export default function PaperlessImport() {
             {parsedCount > 0 && (
               <div className="flex items-center gap-3 mt-4">
                 <button
+                  onClick={runValidation}
+                  disabled={validating}
+                  title="Check which of these transactions already exist in this account (no data is written)"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-semibold hover:bg-slate-700 disabled:opacity-50 transition-all"
+                >
+                  {validating ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <ShieldCheck size={16} />
+                  )}
+                  {validating ? "Validating..." : "Validate"}
+                </button>
+                <button
                   onClick={confirmImport}
                   disabled={importing}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500 text-slate-950 rounded-lg text-sm font-semibold hover:bg-emerald-600 disabled:opacity-50 transition-all"
@@ -731,6 +770,129 @@ export default function PaperlessImport() {
           </div>
         )}
       </div>
+
+      {/* Validation results dialog */}
+      {validationResult && (
+        <div
+          className="fixed inset-0 z-100 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+          onClick={() => setValidationResult(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-2xl max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck size={20} className="text-cyan-400" />
+                <h3 className="text-lg font-bold text-slate-100">
+                  Validation Results
+                </h3>
+              </div>
+              <button
+                className="text-slate-500 hover:text-slate-300 transition-colors"
+                onClick={() => setValidationResult(null)}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-sm text-slate-400 mb-4">
+              Checked against{" "}
+              <span className="font-medium text-slate-200">
+                {accounts.find((a) => a.id === selectedAccount)?.name ||
+                  "this account"}
+              </span>
+              . Nothing was imported.
+            </p>
+
+            {/* Summary */}
+            <div className="grid grid-cols-3 gap-3 mb-5">
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
+                <div className="text-2xl font-bold text-slate-200">
+                  {validationResult.total}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">Total</div>
+              </div>
+              <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-center">
+                <div className="text-2xl font-bold text-amber-400">
+                  {validationResult.existingCount}
+                </div>
+                <div className="text-xs text-amber-500/80 mt-0.5">
+                  Already exist
+                </div>
+              </div>
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg text-center">
+                <div className="text-2xl font-bold text-emerald-400">
+                  {validationResult.missingCount}
+                </div>
+                <div className="text-xs text-emerald-500/80 mt-0.5">New</div>
+              </div>
+            </div>
+
+            {/* Per-transaction list */}
+            <div className="border border-slate-800 rounded-lg overflow-y-auto flex-1 bg-slate-950">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-900 text-left text-xs text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2 font-medium w-28">Date</th>
+                    <th className="px-4 py-2 font-medium">Description</th>
+                    <th className="px-4 py-2 font-medium w-24">Type</th>
+                    <th className="px-4 py-2 font-medium text-right w-32">
+                      Amount
+                    </th>
+                    <th className="px-4 py-2 font-medium w-32">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {validationResult.results.map((r) => (
+                    <tr key={r.index} className="hover:bg-slate-900">
+                      <td className="px-4 py-2 text-slate-400 whitespace-nowrap">
+                        {r.date}
+                      </td>
+                      <td className="px-4 py-2 text-slate-200 max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
+                        {r.description}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={`uppercase text-[10px] px-1.5 py-0.5 rounded ${r.type === "credit" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}
+                        >
+                          {r.type}
+                        </span>
+                      </td>
+                      <td
+                        className={`px-4 py-2 text-right font-medium whitespace-nowrap ${r.type === "credit" ? "text-emerald-400" : "text-red-400"}`}
+                      >
+                        {r.type === "credit" ? "+" : "−"}
+                        {formatCurrency(r.amount)}
+                      </td>
+                      <td className="px-4 py-2">
+                        {r.exists ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/25">
+                            <CheckCircle2 size={12} /> Already exists
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                            <PlusCircle size={12} /> New
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="pt-5 mt-5 border-t border-slate-800 flex justify-end gap-3">
+              <button
+                className="inline-flex justify-center items-center gap-2 px-5 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+                onClick={() => setValidationResult(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* File preview modal */}
       {filePreview && (

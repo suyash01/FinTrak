@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +112,186 @@ func TestUpdateTransactionSetsCategory(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUpdateTransactionSetsBillingCycle(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.PATCH("/transactions/:id", UpdateTransaction)
+
+	txnID := uuid.New()
+	cycleID := uuid.New()
+	userID := testUserID()
+
+	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		WithArgs(cycleID, txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(map[string]interface{}{"billingCycleId": cycleID})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.PATCH("/transactions/:id", UpdateTransaction)
+
+	txnID := uuid.New()
+	userID := testUserID()
+
+	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		WithArgs(nil, txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(map[string]interface{}{"billingCycleId": nil})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	catID := uuid.New()
+	txnID := uuid.New()
+
+	reqBody := models.CreateTransactionRequest{
+		AccountID:   accountID,
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      250.5,
+		Type:        "debit",
+		CategoryID:  &catID,
+	}
+
+	// Account ownership check (credit card).
+	mock.ExpectQuery("SELECT user_id, account_type_id").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "credit_card"))
+
+	// Insert.
+	mock.ExpectQuery("INSERT INTO transactions").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+
+	// ensureBillingCycles: earliest transaction.
+	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
+
+	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
+	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+
+	// ensureBillingCycles: back-fill (attaches this transaction by date).
+	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	catID := uuid.New()
+	cycleID := uuid.New()
+	txnID := uuid.New()
+
+	reqBody := models.CreateTransactionRequest{
+		AccountID:      accountID,
+		Date:           "2024-01-15",
+		Description:    "Coffee",
+		Amount:         250.5,
+		Type:           "debit",
+		CategoryID:     &catID,
+		BillingCycleID: &cycleID,
+	}
+
+	// Account ownership check (credit card).
+	mock.ExpectQuery("SELECT user_id, account_type_id").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "credit_card"))
+
+	// Insert.
+	mock.ExpectQuery("INSERT INTO transactions").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+
+	// ensureBillingCycles: earliest transaction.
+	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
+
+	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
+	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+
+	// ensureBillingCycles: back-fill.
+	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	// Explicit cycle override.
+	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		WithArgs(cycleID, txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func newImportTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -182,7 +363,7 @@ func TestImportTransactionsAccountNotFound(t *testing.T) {
 	r, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id = \\$1").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
 		WillReturnError(pgx.ErrNoRows)
 
@@ -200,9 +381,9 @@ func TestImportTransactionsAccountForbidden(t *testing.T) {
 	r, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id = \\$1").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
-		WillReturnRows(mock.NewRows([]string{"user_id"}).AddRow(uuid.New()))
+		WillReturnRows(mock.NewRows([]string{"user_id", "account_type_id"}).AddRow(uuid.New(), "bank"))
 
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID:    accountID,
@@ -211,6 +392,176 @@ func TestImportTransactionsAccountForbidden(t *testing.T) {
 	w := postImport(r, body)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func newValidateTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPool := db.Pool
+	db.Pool = mock
+	t.Cleanup(func() {
+		db.Pool = oldPool
+		mock.Close()
+	})
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.POST("/transactions/validate", ValidateTransactions)
+	return r, mock
+}
+
+func postValidate(r *gin.Engine, body []byte) *httptest.ResponseRecorder {
+	req, _ := http.NewRequest("POST", "/transactions/validate", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestValidateTransactionsValidatesPayload(t *testing.T) {
+	accountID := uuid.New()
+
+	valid := models.ImportTransaction{
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      250.5,
+		Type:        "debit",
+	}
+
+	tooMany := make([]models.ImportTransaction, maxImportBatch+1)
+	for i := range tooMany {
+		tooMany[i] = valid
+	}
+
+	tests := []struct {
+		name    string
+		request models.ValidateTransactionsRequest
+	}{
+		{name: "empty transactions", request: models.ValidateTransactionsRequest{AccountID: accountID}},
+		{name: "too many transactions", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: tooMany}},
+		{name: "invalid type", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "refund"}}}},
+		{name: "invalid amount", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 0, Type: "debit"}}}},
+		{name: "invalid date", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "15/01/2024", Description: "X", Amount: 1, Type: "debit"}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, mock := newValidateTestRouter(t)
+
+			body, _ := json.Marshal(tt.request)
+			w := postValidate(r, body)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestValidateTransactionsAccountNotFound(t *testing.T) {
+	r, mock := newValidateTestRouter(t)
+
+	accountID := uuid.New()
+	mock.ExpectQuery("SELECT user_id FROM accounts").
+		WithArgs(accountID).
+		WillReturnError(pgx.ErrNoRows)
+
+	body, _ := json.Marshal(models.ValidateTransactionsRequest{
+		AccountID:    accountID,
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+	})
+	w := postValidate(r, body)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestValidateTransactionsAccountForbidden(t *testing.T) {
+	r, mock := newValidateTestRouter(t)
+
+	accountID := uuid.New()
+	mock.ExpectQuery("SELECT user_id FROM accounts").
+		WithArgs(accountID).
+		WillReturnRows(mock.NewRows([]string{"user_id"}).AddRow(uuid.New()))
+
+	body, _ := json.Marshal(models.ValidateTransactionsRequest{
+		AccountID:    accountID,
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+	})
+	w := postValidate(r, body)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestValidateTransactionsSuccess(t *testing.T) {
+	r, mock := newValidateTestRouter(t)
+
+	accountID := uuid.New()
+	userID := testUserID()
+
+	mock.ExpectQuery("SELECT user_id FROM accounts").
+		WithArgs(accountID).
+		WillReturnRows(mock.NewRows([]string{"user_id"}).AddRow(userID))
+
+	// One existing transaction that matches the first candidate, and one that
+	// does not match anything.
+	existingDate := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT date, amount, type, description FROM transactions").
+		WithArgs(accountID, userID).
+		WillReturnRows(mock.NewRows([]string{"date", "amount", "type", "description"}).
+			AddRow(existingDate, 250.5, "debit", "Coffee").
+			AddRow(existingDate, 99.0, "credit", "Cashback"))
+
+	body, _ := json.Marshal(models.ValidateTransactionsRequest{
+		AccountID: accountID,
+		Transactions: []models.ImportTransaction{
+			{Date: "2024-01-15", Description: "Coffee", Amount: 250.5, Type: "debit"},    // exists
+			{Date: "2024-01-16", Description: "Groceries", Amount: 120.0, Type: "debit"}, // new
+		},
+	})
+	w := postValidate(r, body)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp models.ValidateTransactionsResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, resp.Total)
+	assert.Equal(t, 1, resp.ExistingCount)
+	assert.Equal(t, 1, resp.MissingCount)
+	assert.Len(t, resp.Results, 2)
+	assert.True(t, resp.Results[0].Exists)
+	assert.False(t, resp.Results[1].Exists)
+	assert.Equal(t, 0, resp.Results[0].Index)
+	assert.Equal(t, 1, resp.Results[1].Index)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The import success path uses pgx.Batch (tx.SendBatch), which pgxmock does not
+// support (it returns nil), so the full handler can't be exercised here. The
+// billing-cycle override it calls is covered directly by
+// TestAttachTransactionsToCycle.
+func TestAttachTransactionsToCycle(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	userID := testUserID()
+	cycleID := uuid.New()
+	ids := []uuid.UUID{uuid.New(), uuid.New()}
+
+	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		WithArgs(cycleID, ids, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+
+	err = attachTransactionsToCycle(context.Background(), mock, cycleID, ids, userID)
+	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -298,8 +649,8 @@ func TestGetTransactions(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	// Main query.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, 0, nil)
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id", "billing_cycle_id", "billing_cycle_label"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, 0, nil, nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, 50, 0).
 		WillReturnRows(rows)
@@ -342,8 +693,8 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	// Main query with account filter.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, 0, nil)
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id", "billing_cycle_id", "billing_cycle_label"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, 0, nil, nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, accountID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -351,8 +702,8 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 	// buildAccountSummaryRows: account lookup.
 	mock.ExpectQuery("SELECT a.name, a.account_type_id, at.positive_txn_type").
 		WithArgs(accountID.String(), userID).
-		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id", "positive_txn_type", "billing_day"}).
-			AddRow("Savings", "bank", "credit", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id", "positive_txn_type"}).
+			AddRow("Savings", "bank", "credit"))
 
 	// buildAccountSummaryRows: transactions for running balance.
 	mock.ExpectQuery("SELECT date, amount, type FROM transactions WHERE account_id").
@@ -399,9 +750,9 @@ func TestCreateTransaction(t *testing.T) {
 	}
 
 	// Account ownership check.
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id"}).AddRow(userID))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "bank"))
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
@@ -437,9 +788,9 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 	}
 
 	// Account ownership check.
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id"}).AddRow(userID))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "bank"))
 
 	// Load rules for auto-categorization.
 	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
@@ -502,7 +853,7 @@ func TestCreateTransactionAccountNotFound(t *testing.T) {
 		Type:        "debit",
 	}
 
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
 		WillReturnError(pgx.ErrNoRows)
 
@@ -530,9 +881,9 @@ func TestCreateTransactionForbidden(t *testing.T) {
 	}
 
 	// Account belongs to a different user.
-	mock.ExpectQuery("SELECT user_id FROM accounts WHERE id").
+	mock.ExpectQuery("SELECT user_id, account_type_id").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id"}).AddRow(uuid.New()))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(uuid.New(), "bank"))
 
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
@@ -597,6 +948,34 @@ func TestBulkUpdatePayee(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"updated":1`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBulkUpdateBillingCycle(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-billing-cycle", BulkUpdateBillingCycle)
+
+	userID := testUserID()
+	cycleID := uuid.New()
+	txnIDs := []uuid.UUID{uuid.New(), uuid.New()}
+
+	reqBody := models.BulkBillingCycleRequest{
+		TransactionIDs: txnIDs,
+		BillingCycleID: cycleID,
+	}
+
+	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		WithArgs(cycleID, txnIDs, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/transactions/bulk-billing-cycle", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"updated":2`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

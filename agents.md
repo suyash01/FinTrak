@@ -1,6 +1,6 @@
 # AGENTS.md
 
-FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.26 + Gin + PostgreSQL/pgx) and `frontend/` (React 18 + Vite + Tailwind CSS 4). All routes live under `/api/v1`; API docs are in `README.md`.
+FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.27 + Gin + PostgreSQL/pgx) and `frontend/` (React 18 + Vite + Tailwind CSS 4). All routes live under `/api/v1`; API docs are in `README.md`.
 
 ## Commands (run from repo root)
 

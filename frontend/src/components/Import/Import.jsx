@@ -10,9 +10,16 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  ShieldCheck,
+  CheckCircle2,
+  PlusCircle,
 } from "lucide-react";
 import api from "../../api/client";
-import { formatCurrency, formatDateOnly } from "../../utils/formatters";
+import {
+  formatCurrency,
+  formatDate,
+  formatDateOnly,
+} from "../../utils/formatters";
 
 const TARGET_FIELDS = [
   { key: "date", label: "Date", required: true },
@@ -316,10 +323,20 @@ export default function Import() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
 
+  // Validation (read-only duplicate check against the selected account)
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+
   // Duplicate detection
   const [existingTxns, setExistingTxns] = useState([]);
   const [existingRefresh, setExistingRefresh] = useState(0);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
+
+  // Billing cycle selection (credit-card accounts only): when chosen, every
+  // imported transaction is attached to that cycle instead of the date-based
+  // default.
+  const [billingCycles, setBillingCycles] = useState([]);
+  const [importBillingCycleId, setImportBillingCycleId] = useState("");
 
   const fileInputRef = useRef(null);
   const pdfInputRef = useRef(null);
@@ -350,6 +367,24 @@ export default function Import() {
       .then((res) => setExistingTxns(res.data || []))
       .catch(console.error);
   }, [selectedAccount, existingRefresh]);
+
+  // Load the billing cycles for the selected account when it is a credit card,
+  // so the user can attach all imported transactions to one cycle. Reset the
+  // selection whenever the account changes.
+  const selectedAccountType = accounts.find(
+    (a) => a.id === selectedAccount,
+  )?.accountTypeId;
+  useEffect(() => {
+    setImportBillingCycleId("");
+    if (selectedAccountType !== "credit_card") {
+      setBillingCycles([]);
+      return;
+    }
+    api
+      .getBillingCycles(selectedAccount)
+      .then((res) => setBillingCycles(res.data || []))
+      .catch(() => setBillingCycles([]));
+  }, [selectedAccount, selectedAccountType]);
 
   // ---- Step 1: Select Account ----
   const handleCreateAccount = async () => {
@@ -517,11 +552,17 @@ export default function Import() {
         return;
       }
 
-      const result = await api.importTransactions({
+      const payload = {
         accountId: selectedAccount,
         transactions: parsedTransactions,
         duplicateAction: action,
-      });
+      };
+      // Credit-card imports can attach every transaction to a chosen billing
+      // cycle (null falls back to the date-based default).
+      if (selectedAccountType === "credit_card") {
+        payload.billingCycleId = importBillingCycleId || null;
+      }
+      const result = await api.importTransactions(payload);
       setImportResult(result);
       setStep(5);
     } catch (err) {
@@ -537,6 +578,27 @@ export default function Import() {
       return;
     }
     runImport("keep");
+  };
+
+  // Read-only check: ask the backend which of the parsed transactions already
+  // exist in the selected account. Nothing is written.
+  const runValidation = async () => {
+    setValidating(true);
+    try {
+      if (parsedTransactions.length === 0) {
+        alert("No valid transactions found. Please check your column mapping.");
+        return;
+      }
+      const result = await api.validateTransactions({
+        accountId: selectedAccount,
+        transactions: parsedTransactions,
+      });
+      setValidationResult(result);
+    } catch (err) {
+      alert("Validation failed: " + err.message);
+    } finally {
+      setValidating(false);
+    }
   };
 
   const steps = [
@@ -1068,6 +1130,34 @@ export default function Import() {
               )}
             </div>
 
+            {selectedAccountType === "credit_card" && (
+              <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    Billing Cycle — attach all imported transactions
+                  </label>
+                  <select
+                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    value={importBillingCycleId}
+                    onChange={(e) => setImportBillingCycleId(e.target.value)}
+                  >
+                    <option value="">Auto (by transaction date)</option>
+                    {billingCycles.map((bc) => (
+                      <option key={bc.id} value={bc.id}>
+                        {bc.label} ({formatDate(bc.startDate)} –{" "}
+                        {formatDate(bc.endDate)})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-500">
+                    Leave on "Auto" to attach each transaction to the cycle
+                    matching its date, or pick a cycle to force every imported
+                    transaction into it.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {statementTxns && pdfFile && (
               <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg flex flex-wrap items-end gap-3">
                 <div className="flex flex-col gap-1.5 min-w-45">
@@ -1252,20 +1342,39 @@ export default function Import() {
               >
                 {statementTxns ? "Back to Upload" : "Back to Mapping"}
               </button>
-              <button
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={handleImport}
-                disabled={importing || parsedTransactions.length === 0}
-              >
-                {importing ? (
-                  <div className="flex gap-2 items-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>{" "}
-                    Importing...
-                  </div>
-                ) : (
-                  <>Import {parsedTransactions.length} Transactions</>
-                )}
-              </button>
+              <div className="flex gap-3">
+                <button
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={runValidation}
+                  disabled={validating || parsedTransactions.length === 0}
+                  title="Check which of these transactions already exist in this account (no data is written)"
+                >
+                  {validating ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />{" "}
+                      Validating...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={15} /> Validate
+                    </>
+                  )}
+                </button>
+                <button
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={handleImport}
+                  disabled={importing || parsedTransactions.length === 0}
+                >
+                  {importing ? (
+                    <div className="flex gap-2 items-center">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>{" "}
+                      Importing...
+                    </div>
+                  ) : (
+                    <>Import {parsedTransactions.length} Transactions</>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1391,6 +1500,146 @@ export default function Import() {
                   disabled={importing}
                 >
                   Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Validation results dialog */}
+        {validationResult && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+            onClick={() => setValidationResult(null)}
+          >
+            <div
+              className="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-2xl max-h-[85vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <ShieldCheck size={20} className="text-cyan-400" />
+                  <h3 className="text-lg font-bold text-slate-100">
+                    Validation Results
+                  </h3>
+                </div>
+                <button
+                  className="text-slate-500 hover:text-slate-300 transition-colors"
+                  onClick={() => setValidationResult(null)}
+                  aria-label="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="text-sm text-slate-400 mb-4">
+                Checked against{" "}
+                <span className="font-medium text-slate-200">
+                  {accounts.find((a) => a.id === selectedAccount)?.name ||
+                    "this account"}
+                </span>
+                . Nothing was imported.
+              </p>
+
+              {/* Summary */}
+              <div className="grid grid-cols-3 gap-3 mb-5">
+                <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
+                  <div className="text-2xl font-bold text-slate-200">
+                    {validationResult.total}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">Total</div>
+                </div>
+                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-center">
+                  <div className="text-2xl font-bold text-amber-400">
+                    {validationResult.existingCount}
+                  </div>
+                  <div className="text-xs text-amber-500/80 mt-0.5">
+                    Already exist
+                  </div>
+                </div>
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg text-center">
+                  <div className="text-2xl font-bold text-emerald-400">
+                    {validationResult.missingCount}
+                  </div>
+                  <div className="text-xs text-emerald-500/80 mt-0.5">New</div>
+                </div>
+              </div>
+
+              {/* Per-transaction list */}
+              <div className="border border-slate-800 rounded-lg overflow-y-auto flex-1 bg-slate-950">
+                <table className="w-full text-left border-collapse min-w-150">
+                  <thead className="sticky top-0 bg-slate-900 z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-slate-800">
+                    <tr>
+                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-28">
+                        Date
+                      </th>
+                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                        Description
+                      </th>
+                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-24">
+                        Type
+                      </th>
+                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-right w-32">
+                        Amount
+                      </th>
+                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-32">
+                        Status
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/50">
+                    {validationResult.results.map((r) => (
+                      <tr
+                        key={r.index}
+                        className="hover:bg-slate-900/50 transition-colors"
+                      >
+                        <td className="py-2.5 px-4 text-sm text-slate-300 whitespace-nowrap">
+                          {r.date}
+                        </td>
+                        <td className="py-2.5 px-4 text-sm text-slate-200 max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
+                          {r.description}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold tracking-wide uppercase ${r.type === "debit" ? "bg-red-500/10 text-red-500 border border-red-500/20" : "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"}`}
+                          >
+                            {r.type}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-medium whitespace-nowrap">
+                          <span
+                            className={
+                              r.type === "debit"
+                                ? "text-red-500"
+                                : "text-emerald-500"
+                            }
+                          >
+                            {r.type === "debit" ? "−" : "+"}
+                            {formatCurrency(r.amount)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4">
+                          {r.exists ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/25">
+                              <CheckCircle2 size={12} /> Already exists
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                              <PlusCircle size={12} /> New
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="pt-5 mt-5 border-t border-slate-800 flex justify-end gap-3">
+                <button
+                  className="inline-flex justify-center items-center gap-2 px-5 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+                  onClick={() => setValidationResult(null)}
+                >
+                  Close
                 </button>
               </div>
             </div>

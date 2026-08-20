@@ -16,21 +16,21 @@ graph TD
         Transactions[Transactions Table]
         Import[Import / CSV + PDF Statement]
     end
-    
+
     subgraph "Backend Modules"
         Handlers[Gin Handlers]
         RulesEngine[Rules Engine]
         LinkingService[Linking Service]
     end
-    
+
     subgraph "Standalone Services"
         Parser[Python Statement Parser]
     end
-    
+
     Frontend --- Dashboard
     Frontend --- Transactions
     Frontend --- Import
-    
+
     API --- Handlers
     Handlers --- RulesEngine
     Handlers --- LinkingService
@@ -52,16 +52,16 @@ sequenceDiagram
     B->>B: Identify Pending Rules
     B->>D: Apply Categories (Rules Engine)
     B-->>F: Success Response
-    
+
     Note over F,B: Smart Linking Process
-    
+
     B->>B: Detect Potential Transfers
     B->>D: Suggest Links
     F->>U: Show Linking Suggestions
     U->>F: Approve Link
     F->>B: POST /links
     B->>D: Link Transactions
-    
+
     F->>B: GET /dashboard/summary
     B->>D: Aggregate Data
     B-->>F: JSON Stats
@@ -73,6 +73,8 @@ sequenceDiagram
 ```mermaid
 erDiagram
     ACCOUNT ||--o{ TRANSACTION : "belongs to"
+    ACCOUNT ||--o{ BILLING_CYCLE : "has"
+    BILLING_CYCLE ||--o{ TRANSACTION : "groups"
     CATEGORY ||--o{ TRANSACTION : "categorizes"
     PAYEE ||--o{ TRANSACTION : "associated with"
     TRANSACTION ||--o{ LINK : "linked as source"

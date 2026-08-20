@@ -226,6 +226,8 @@ export default function Transactions() {
   const [linkingTxn, setLinkingTxn] = useState(null);
   const [editingTxn, setEditingTxn] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [billingCycles, setBillingCycles] = useState([]);
+  const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
 
   // Page size: remembered locally, with an opt-in to persist against the user.
@@ -428,6 +430,36 @@ export default function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Bulk billing-cycle assignment is only offered when the account filter is a
+  // single credit-card account (cycles are per-account, so this guarantees all
+  // selected transactions belong to the same account).
+  const selectedAccount = accounts.find((a) => a.id === filters.accountId);
+  const isCreditCardFilter = selectedAccount?.accountTypeId === "credit_card";
+
+  useEffect(() => {
+    if (!isCreditCardFilter) {
+      setBillingCycles([]);
+      setLoadingCycles(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCycles(true);
+    api
+      .getBillingCycles(filters.accountId)
+      .then((res) => {
+        if (!cancelled) setBillingCycles(res.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setBillingCycles([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCycles(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filters.accountId, isCreditCardFilter]);
+
   const updateFilter = (key, value) => {
     setFilters((f) => ({ ...f, [key]: value, page: 1 }));
     setSelected(new Set());
@@ -521,6 +553,20 @@ export default function Transactions() {
     if (selected.size === 0) return;
     try {
       await api.bulkUpdatePayee({ transactionIds: [...selected], payeeId });
+      loadTransactions();
+      setSelected(new Set());
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleBulkSetBillingCycle = async (billingCycleId) => {
+    if (selected.size === 0) return;
+    try {
+      await api.bulkUpdateBillingCycle({
+        transactionIds: [...selected],
+        billingCycleId,
+      });
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
@@ -772,6 +818,27 @@ export default function Transactions() {
                 </option>
               ))}
             </select>
+            {isCreditCardFilter && (
+              <select
+                className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-slate-200 text-[13px] focus:outline-none focus:border-cyan-500 transition-all ml-2"
+                onChange={(e) => {
+                  if (e.target.value) handleBulkSetBillingCycle(e.target.value);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">
+                  {loadingCycles
+                    ? "Loading billing cycles..."
+                    : "Set Billing Cycle..."}
+                </option>
+                {billingCycles.map((bc) => (
+                  <option key={bc.id} value={bc.id}>
+                    {bc.label} ({formatDate(bc.startDate)} –{" "}
+                    {formatDate(bc.endDate)})
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors ml-2"
               onClick={handleBulkDelete}

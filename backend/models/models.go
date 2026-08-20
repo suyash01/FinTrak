@@ -21,7 +21,6 @@ type Account struct {
 	Bank            string    `json:"bank"`
 	Currency        string    `json:"currency"`
 	Color           string    `json:"color"`
-	BillingDay      *int      `json:"billingDay,omitempty"`
 	IsDefault       bool      `json:"isDefault"`
 	Balance         float64   `json:"balance"`
 }
@@ -65,6 +64,23 @@ type Transaction struct {
 	LinkCount     int        `json:"linkCount"`
 	LinkID        *uuid.UUID `json:"linkId,omitempty"`
 	IsSummary     bool       `json:"isSummary,omitempty"`
+	// Billing cycle attachment (credit cards)
+	BillingCycleID    *uuid.UUID `json:"billingCycleId,omitempty"`
+	BillingCycleLabel string     `json:"billingCycleLabel,omitempty"`
+}
+
+// BillingCycle is a persisted billing period for a credit-card account. Cycles
+// are auto-generated from the account's billing day; transactions are attached
+// to them via Transaction.BillingCycleID. TotalOutstanding is the sum of the
+// debit (purchase) transactions attached to the cycle.
+type BillingCycle struct {
+	ID               uuid.UUID `json:"id"`
+	AccountID        uuid.UUID `json:"accountId"`
+	StartDate        time.Time `json:"startDate"`
+	EndDate          time.Time `json:"endDate"`
+	Label            string    `json:"label"`
+	TotalOutstanding float64   `json:"totalOutstanding"`
+	TransactionCount int       `json:"transactionCount"`
 }
 
 type Rule struct {
@@ -154,7 +170,6 @@ type CreateAccountRequest struct {
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
-	BillingDay    *int   `json:"billingDay"`
 	IsDefault     bool   `json:"isDefault"`
 }
 
@@ -167,7 +182,6 @@ type UpdateAccountRequest struct {
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
-	BillingDay    *int   `json:"billingDay"`
 	IsDefault     *bool  `json:"isDefault"`
 }
 
@@ -247,27 +261,29 @@ func (o *OptionalInt) Value() *int {
 }
 
 type UpdateTransactionRequest struct {
-	CategoryID  OptionalUUID `json:"categoryId"`
-	Tags        *[]string    `json:"tags"`
-	Notes       *string      `json:"notes"`
-	PayeeID     OptionalUUID `json:"payeeId"`
-	Date        *string      `json:"date"`
-	Description *string      `json:"description"`
-	Amount      *float64     `json:"amount"`
-	Type        *string      `json:"type"`
-	AccountID   *uuid.UUID   `json:"accountId"`
+	CategoryID     OptionalUUID `json:"categoryId"`
+	Tags           *[]string    `json:"tags"`
+	Notes          *string      `json:"notes"`
+	PayeeID        OptionalUUID `json:"payeeId"`
+	Date           *string      `json:"date"`
+	Description    *string      `json:"description"`
+	Amount         *float64     `json:"amount"`
+	Type           *string      `json:"type"`
+	AccountID      *uuid.UUID   `json:"accountId"`
+	BillingCycleID OptionalUUID `json:"billingCycleId"`
 }
 
 type CreateTransactionRequest struct {
-	AccountID   uuid.UUID  `json:"accountId" binding:"required"`
-	Date        string     `json:"date" binding:"required"`
-	Description string     `json:"description" binding:"required"`
-	Amount      float64    `json:"amount" binding:"required"`
-	Type        string     `json:"type" binding:"required"`
-	CategoryID  *uuid.UUID `json:"categoryId"`
-	PayeeID     *uuid.UUID `json:"payeeId"`
-	Tags        []string   `json:"tags"`
-	Notes       string     `json:"notes"`
+	AccountID      uuid.UUID  `json:"accountId" binding:"required"`
+	Date           string     `json:"date" binding:"required"`
+	Description    string     `json:"description" binding:"required"`
+	Amount         float64    `json:"amount" binding:"required"`
+	Type           string     `json:"type" binding:"required"`
+	CategoryID     *uuid.UUID `json:"categoryId"`
+	PayeeID        *uuid.UUID `json:"payeeId"`
+	Tags           []string   `json:"tags"`
+	Notes          string     `json:"notes"`
+	BillingCycleID *uuid.UUID `json:"billingCycleId"`
 }
 
 type BulkCategorizeRequest struct {
@@ -280,15 +296,48 @@ type BulkUpdatePayeeRequest struct {
 	PayeeID        uuid.UUID   `json:"payeeId" binding:"required"`
 }
 
+type BulkBillingCycleRequest struct {
+	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+	BillingCycleID uuid.UUID   `json:"billingCycleId" binding:"required"`
+}
+
 type BulkDeleteTransactionsRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 }
 
 type ImportRequest struct {
-	AccountID           uuid.UUID           `json:"accountId"`
-	Transactions        []ImportTransaction `json:"transactions"`
-	DuplicateAction     string              `json:"duplicateAction"` // "skip" | "keep"
+	AccountID            uuid.UUID           `json:"accountId"`
+	Transactions         []ImportTransaction `json:"transactions"`
+	DuplicateAction      string              `json:"duplicateAction"`      // "skip" | "keep"
+	BillingCycleID       *uuid.UUID          `json:"billingCycleId"`       // credit-card imports: attach every imported transaction to this cycle
 	PaperlessDocumentIDs []int               `json:"paperlessDocumentIds"` // tag these Paperless docs after a successful import
+}
+
+// ValidateTransactionsRequest asks whether a set of candidate transactions
+// already exist in a given account. It is a read-only check (no rows are
+// written) that mirrors the import endpoint's duplicate detection.
+type ValidateTransactionsRequest struct {
+	AccountID    uuid.UUID           `json:"accountId"`
+	Transactions []ImportTransaction `json:"transactions"`
+}
+
+// ValidateTransactionResult reports whether a single candidate transaction
+// already exists in the target account. Index aligns with the request's
+// Transactions slice so the client can map results back to its preview rows.
+type ValidateTransactionResult struct {
+	Index       int     `json:"index"`
+	Exists      bool    `json:"exists"`
+	Date        string  `json:"date"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Type        string  `json:"type"`
+}
+
+type ValidateTransactionsResponse struct {
+	Total         int                         `json:"total"`
+	ExistingCount int                         `json:"existingCount"`
+	MissingCount  int                         `json:"missingCount"`
+	Results       []ValidateTransactionResult `json:"results"`
 }
 
 type ImportTransaction struct {

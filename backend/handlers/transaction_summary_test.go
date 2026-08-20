@@ -1,51 +1,57 @@
 package handlers
 
 import (
+	"fmt"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestLastBillingDate(t *testing.T) {
-	t.Run("billing day already passed this month", func(t *testing.T) {
-		// today = 2024-05-15, billing day = 5 -> last billing date is 2024-05-05.
-		today := time.Date(2024, 5, 15, 0, 0, 0, 0, time.UTC)
-		assert.Equal(t, time.Date(2024, 5, 5, 0, 0, 0, 0, time.UTC), lastBillingDate(today, 5))
-	})
-	t.Run("billing day is today", func(t *testing.T) {
-		today := time.Date(2024, 5, 5, 0, 0, 0, 0, time.UTC)
-		assert.Equal(t, today, lastBillingDate(today, 5))
-	})
-	t.Run("billing day not reached yet falls to previous month", func(t *testing.T) {
-		// today = 2024-05-03, billing day = 5 -> last billing date is 2024-04-05.
-		today := time.Date(2024, 5, 3, 0, 0, 0, 0, time.UTC)
-		assert.Equal(t, time.Date(2024, 4, 5, 0, 0, 0, 0, time.UTC), lastBillingDate(today, 5))
-	})
-	t.Run("billing day clamps to month length", func(t *testing.T) {
-		// today = 2024-02-28, billing day = 31. Feb's billing date (29th) is still
-		// in the future, so the last billing date falls back to Jan 31.
-		today := time.Date(2024, 2, 28, 0, 0, 0, 0, time.UTC)
-		assert.Equal(t, time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC), lastBillingDate(today, 31))
-	})
-}
+func TestComputeCreditCardSummaryRows(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
 
-func TestComputeSummaryRowsCreditCard(t *testing.T) {
-	acctID := uuid.New().String()
-	txns := []acctTxn{
-		{Date: time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), Amount: 100, Type: "debit"},
-		{Date: time.Date(2024, 1, 20, 0, 0, 0, 0, time.UTC), Amount: 50, Type: "debit"},
-		{Date: time.Date(2024, 2, 10, 0, 0, 0, 0, time.UTC), Amount: 200, Type: "debit"},
-		{Date: time.Date(2024, 2, 20, 0, 0, 0, 0, time.UTC), Amount: 30, Type: "credit"},
-		{Date: time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC), Amount: 60, Type: "debit"},
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	userID := testUserID()
+	acctID := uuid.New()
+
+	cycleID := func(n int) uuid.UUID {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("cycle-%d", n)))
 	}
 
-	// Billing day 5 -> rows at each billing date that has transactions plus a
-	// final current-cycle row. The Jan 5 cycle has no purchases, so it is
-	// omitted.
-	rows := computeSummaryRows("Amex", acctID, "credit_card", "credit", 5, "2024-01-01", "2024-03-31", txns)
+	// listBillingCycles: Jan 6–Feb 5 (150, 2), Feb 6–Mar 5 (200, 2),
+	// Mar 6–Apr 5 (60, 1), Apr 6–May 5 (0, 0), May 6–Jun 5 (0, 0).
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+			AddRow(cycleID(1), time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), "Feb 2024", 150.0, 2).
+			AddRow(cycleID(2), time.Date(2024, 2, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), "Mar 2024", 200.0, 2).
+			AddRow(cycleID(3), time.Date(2024, 3, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 4, 5, 0, 0, 0, 0, time.UTC), "Apr 2024", 60.0, 1).
+			AddRow(cycleID(4), time.Date(2024, 4, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 5, 5, 0, 0, 0, 0, time.UTC), "May 2024", 0.0, 0).
+			AddRow(cycleID(5), time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC), "Jun 2024", 0.0, 0))
+
+	// Current in-progress cycle (Mar 6–Apr 5 contains Mar 31): debits up to Mar 31.
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(CASE WHEN t.type = 'debit'").
+		WithArgs(cycleID(3), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
+		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(60.0, 1))
+
+	rows := computeCreditCardSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	// Feb 5 (Jan debits = 150), Mar 5 (Feb debits = 200), and a current-cycle
 	// row at Mar 31 (Mar debits = 60).
@@ -54,22 +60,51 @@ func TestComputeSummaryRowsCreditCard(t *testing.T) {
 	assert.Equal(t, time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[0].Date))
 	assert.Equal(t, 150.0, rows[0].Amount)
 	assert.Equal(t, time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[1].Date))
-	// Only debit (purchase) transactions count; the credit is not netted out.
 	assert.Equal(t, 200.0, rows[1].Amount)
 	assert.Equal(t, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), dateOnly(rows[2].Date))
 	assert.Equal(t, 60.0, rows[2].Amount)
 	assert.True(t, rows[0].IsSummary)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestComputeSummaryRowsCreditCardDefaultsBillingDay(t *testing.T) {
-	acctID := uuid.New().String()
-	txns := []acctTxn{
-		{Date: time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), Amount: 100, Type: "debit"},
+func TestComputeCreditCardSummaryRowsFirstOfMonth(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	userID := testUserID()
+	acctID := uuid.New()
+
+	cycleID := func(n int) uuid.UUID {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("cycle-%d", n)))
 	}
 
-	// No billing day set -> defaults to the 1st; a row appears at each month's
-	// 1st, and the debit lands on the Feb 1 row.
-	rows := computeSummaryRows("Amex", acctID, "credit_card", "credit", 0, "2024-01-01", "2024-03-31", txns)
+	// Billing day defaults to the 1st: Dec 2–Jan 1 (0, 0), Jan 2–Feb 1 (100, 1),
+	// Feb 2–Mar 1 (0, 0), Mar 2–Apr 1 (0, 0).
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+			AddRow(cycleID(1), time.Date(2023, 12, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), "Jan 2024", 0.0, 0).
+			AddRow(cycleID(2), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC), "Feb 2024", 100.0, 1).
+			AddRow(cycleID(3), time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC), "Mar 2024", 0.0, 0).
+			AddRow(cycleID(4), time.Date(2024, 3, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC), "Apr 2024", 0.0, 0))
+
+	// Current in-progress cycle (Mar 2–Apr 1 contains Mar 31): no debits yet.
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(CASE WHEN t.type = 'debit'").
+		WithArgs(cycleID(4), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
+		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(0.0, 0))
+
+	rows := computeCreditCardSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	var found float64
 	for _, r := range rows {
@@ -78,6 +113,8 @@ func TestComputeSummaryRowsCreditCardDefaultsBillingDay(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 100.0, found)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestComputeSummaryRowsBank(t *testing.T) {
@@ -89,7 +126,7 @@ func TestComputeSummaryRowsBank(t *testing.T) {
 		{Date: time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), Amount: 500, Type: "credit"},
 	}
 
-	rows := computeSummaryRows("Savings", acctID, "bank", "credit", 0, "2024-01-01", "2024-02-29", txns)
+	rows := computeSummaryRows("Savings", acctID, "bank", "credit", "2024-01-01", "2024-02-29", txns)
 
 	assert.Len(t, rows, 2)
 	assert.Equal(t, time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC), dateOnly(rows[0].Date))
@@ -107,7 +144,7 @@ func TestComputeSummaryRowsBankDebitPositive(t *testing.T) {
 	}
 
 	// For a debit-positive account, debits add to the balance.
-	rows := computeSummaryRows("Loan", acctID, "bank", "debit", 0, "2024-01-01", "2024-01-31", txns)
+	rows := computeSummaryRows("Loan", acctID, "bank", "debit", "2024-01-01", "2024-01-31", txns)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, 700.0, rows[0].Amount)
 }
@@ -122,7 +159,7 @@ func TestComputeSummaryRowsBankMidMonthRange(t *testing.T) {
 	}
 
 	// Range ends mid-month: a "Balance" row is added at the range end.
-	rows := computeSummaryRows("Savings", acctID, "bank", "credit", 0, "2024-01-01", "2024-02-15", txns)
+	rows := computeSummaryRows("Savings", acctID, "bank", "credit", "2024-01-01", "2024-02-15", txns)
 
 	assert.Len(t, rows, 2)
 	assert.Equal(t, "Month-end balance", rows[0].Description)
