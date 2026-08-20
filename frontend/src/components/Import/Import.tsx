@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, type ChangeEvent } from "react";
 import Papa from "papaparse";
 import {
   ChevronRight,
@@ -20,8 +20,39 @@ import {
   formatDate,
   formatDateOnly,
 } from "../../utils/formatters";
+import type {
+  Account,
+  AccountType,
+  BillingCycle,
+  ImportResult,
+  ImportTransaction,
+  ImportTransactionsRequest,
+  Payee,
+  StatementExtractor,
+  Transaction,
+  TransactionType,
+  ValidateTransactionsResponse,
+} from "../../types";
 
-const TARGET_FIELDS = [
+type CsvRow = Record<string, string>;
+
+interface ColumnMapping {
+  date: string | null;
+  description: string | null;
+  amount: string | null;
+  debit: string | null;
+  credit: string | null;
+  payee: string | null;
+}
+
+interface TargetField {
+  key: keyof ColumnMapping;
+  label: string;
+  required: boolean;
+  mode?: string;
+}
+
+const TARGET_FIELDS: TargetField[] = [
   { key: "date", label: "Date", required: true },
   { key: "description", label: "Description", required: true },
   { key: "amount", label: "Amount", required: true, mode: "single" },
@@ -30,12 +61,12 @@ const TARGET_FIELDS = [
   { key: "payee", label: "Payee", required: false },
 ];
 
-const targetFieldsFor = (amountMode) =>
+const targetFieldsFor = (amountMode: string): TargetField[] =>
   TARGET_FIELDS.filter((f) => !f.mode || f.mode === amountMode);
 
-const pad2 = (n) => String(n).padStart(2, "0");
+const pad2 = (n: string | number) => String(n).padStart(2, "0");
 
-const MONTHS = {
+const MONTHS: Record<string, string> = {
   jan: "01",
   feb: "02",
   mar: "03",
@@ -59,7 +90,7 @@ const DATE_FORMAT_OPTIONS = [
   { value: "DD Mon YYYY", label: "DD Mon YYYY" },
 ];
 
-const DATE_PATTERNS = {
+const DATE_PATTERNS: Record<string, RegExp> = {
   "DD/MM/YYYY": /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/,
   "MM/DD/YYYY": /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/,
   "DD/MM/YY": /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2})$/,
@@ -68,7 +99,7 @@ const DATE_PATTERNS = {
     /^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})$/i,
 };
 
-function parseDateExplicit(str, format) {
+function parseDateExplicit(str: string, format: string): string | null {
   const m = String(str).match(DATE_PATTERNS[format]);
   if (!m) return null;
   if (format === "DD/MM/YYYY") return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
@@ -80,7 +111,7 @@ function parseDateExplicit(str, format) {
   return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
 }
 
-function parseDateAuto(str) {
+function parseDateAuto(str: string): string | null {
   const s = String(str);
   let m = s.match(DATE_PATTERNS["DD/MM/YYYY"]);
   if (m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
@@ -99,7 +130,10 @@ function parseDateAuto(str) {
   return null;
 }
 
-function parseDate(str, format) {
+function parseDate(
+  str: string | null | undefined,
+  format: string,
+): string | null {
   if (!str) return null;
   const value = String(str).trim();
   if (format !== "auto") {
@@ -109,7 +143,7 @@ function parseDate(str, format) {
   return parseDateAuto(value);
 }
 
-function parseAmount(str) {
+function parseAmount(str: string | number | null | undefined): number {
   if (str == null || str === "") return 0;
   if (typeof str === "number") return Number.isFinite(str) ? str : 0;
 
@@ -132,7 +166,7 @@ function parseAmount(str) {
     body = body.slice(0, -1);
   }
 
-  let parsed;
+  let parsed: number;
   if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(body)) {
     // European style: 1.234.567,89
     parsed = parseFloat(body.replace(/\./g, "").replace(",", "."));
@@ -145,8 +179,11 @@ function parseAmount(str) {
   return negative ? -Math.abs(parsed) : parsed;
 }
 
-const getMappingErrors = (columnMapping, amountMode) => {
-  const errors = [];
+const getMappingErrors = (
+  columnMapping: Partial<ColumnMapping>,
+  amountMode: string,
+): string[] => {
+  const errors: string[] = [];
   if (!columnMapping.date)
     errors.push("Date field must be mapped to a CSV column");
   if (!columnMapping.description)
@@ -168,17 +205,33 @@ const getMappingErrors = (columnMapping, amountMode) => {
 // Duplicate detection mirrors the backend fingerprint so that the count the
 // user sees matches what the import endpoint would skip.
 const FINGERPRINT_SEP = "\x00";
-const fingerprintOf = (date, amount, type, description) =>
+const fingerprintOf = (
+  date: string,
+  amount: number,
+  type: string,
+  description: string,
+): string =>
   `${date}${FINGERPRINT_SEP}${Math.round(amount * 100)}${FINGERPRINT_SEP}${type}${FINGERPRINT_SEP}${String(
     description || "",
   )
     .trim()
     .toLowerCase()}`;
 
-const apiDate = (d) => {
+const apiDate = (d: string | null | undefined): string => {
   const m = String(d || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? m[0] : "";
 };
+
+interface BuildParsedTransactionsArgs {
+  csvData: CsvRow[] | null;
+  columnMapping: Partial<ColumnMapping>;
+  amountMode: string;
+  dateFormat: string;
+  accounts: Account[];
+  accountTypes: AccountType[];
+  payees: Payee[];
+  selectedAccount: string;
+}
 
 function buildParsedTransactions({
   csvData,
@@ -189,7 +242,7 @@ function buildParsedTransactions({
   accountTypes,
   payees,
   selectedAccount,
-}) {
+}: BuildParsedTransactionsArgs): ImportTransaction[] {
   if (!csvData) return [];
 
   const dateCol = columnMapping.date;
@@ -204,18 +257,18 @@ function buildParsedTransactions({
   const positiveTxnType = selType?.positiveTxnType || "credit";
 
   return csvData
-    .map((row) => {
-      const rawDate = row[dateCol]?.trim();
+    .map((row): ImportTransaction | null => {
+      const rawDate = dateCol ? row[dateCol]?.trim() : undefined;
       if (!rawDate) return null;
 
       const date = parseDate(rawDate, dateFormat);
       if (!date) return null;
 
-      const description = row[descCol]?.trim() || "";
+      const description = descCol ? row[descCol]?.trim() || "" : "";
       if (!description) return null;
 
       let amount = 0;
-      let type = "debit";
+      let type: TransactionType = "debit";
 
       // Determine sign convention from account type
       if (amountMode === "single" && amountCol) {
@@ -225,11 +278,11 @@ function buildParsedTransactions({
           type = positiveTxnType === "credit" ? "debit" : "credit";
         } else {
           amount = raw;
-          type = positiveTxnType;
+          type = positiveTxnType as TransactionType;
         }
       } else if (amountMode === "separate") {
-        const debitAmt = parseAmount(row[debitCol]);
-        const creditAmt = parseAmount(row[creditCol]);
+        const debitAmt = parseAmount(debitCol ? row[debitCol] : undefined);
+        const creditAmt = parseAmount(creditCol ? row[creditCol] : undefined);
         if (debitAmt !== 0) {
           amount = Math.abs(debitAmt);
           type = "debit";
@@ -243,7 +296,7 @@ function buildParsedTransactions({
 
       if (amount === 0) return null;
 
-      let payeeId = null;
+      let payeeId: string | null = null;
       if (payeeCol && row[payeeCol]) {
         const name = row[payeeCol].trim().toLowerCase();
         const match = payees.find((p) => p.name.toLowerCase() === name);
@@ -252,11 +305,11 @@ function buildParsedTransactions({
 
       return { date, description, amount, type, payeeId };
     })
-    .filter(Boolean);
+    .filter((t): t is ImportTransaction => Boolean(t));
 }
 
-function autoDetectMapping(headers) {
-  const mapping = {
+function autoDetectMapping(headers: string[]): ColumnMapping {
+  const mapping: ColumnMapping = {
     date: null,
     description: null,
     amount: null,
@@ -264,8 +317,8 @@ function autoDetectMapping(headers) {
     credit: null,
     payee: null,
   };
-  const used = new Set();
-  const pick = (patterns) => {
+  const used = new Set<string>();
+  const pick = (patterns: RegExp[]): string | null => {
     for (const h of headers) {
       const lower = String(h).toLowerCase().trim();
       if (!used.has(h) && patterns.some((p) => p.test(lower))) {
@@ -287,24 +340,41 @@ function autoDetectMapping(headers) {
   return mapping;
 }
 
+interface NewAccountForm {
+  name: string;
+  accountTypeId: string;
+  bank: string;
+  color: string;
+}
+
+const EMPTY_NEW_ACCOUNT: NewAccountForm = {
+  name: "",
+  accountTypeId: "bank",
+  bank: "",
+  color: "#06b6d4",
+};
+
 export default function Import() {
   const [step, setStep] = useState(1);
-  const [accounts, setAccounts] = useState([]);
-  const [accountTypes, setAccountTypes] = useState([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [selectedAccount, setSelectedAccount] = useState("");
-  const [newAccount, setNewAccount] = useState({
-    name: "",
-    accountTypeId: "bank",
-    bank: "",
-    color: "#06b6d4",
-  });
+  const [newAccount, setNewAccount] =
+    useState<NewAccountForm>(EMPTY_NEW_ACCOUNT);
   const [showNewAccount, setShowNewAccount] = useState(false);
-  const [payees, setPayees] = useState([]);
+  const [payees, setPayees] = useState<Payee[]>([]);
 
   // CSV state
-  const [csvData, setCsvData] = useState(null);
-  const [csvHeaders, setCsvHeaders] = useState([]);
-  const [columnMapping, setColumnMapping] = useState({});
+  const [csvData, setCsvData] = useState<CsvRow[] | null>(null);
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [columnMapping, setColumnMapping] = useState<ColumnMapping>({
+    date: null,
+    description: null,
+    amount: null,
+    debit: null,
+    credit: null,
+    payee: null,
+  });
   const [dateFormat, setDateFormat] = useState("auto");
   const [amountMode, setAmountMode] = useState("single"); // 'single' or 'separate'
 
@@ -313,33 +383,39 @@ export default function Import() {
   const [parsing, setParsing] = useState(false);
   const [pdfPassword, setPdfPassword] = useState("");
   const [pdfDateFormat, setPdfDateFormat] = useState("auto");
-  const [statementSummary, setStatementSummary] = useState(null);
-  const [statementTxns, setStatementTxns] = useState(null);
-  const [pdfFile, setPdfFile] = useState(null);
-  const [extractors, setExtractors] = useState([]);
+  const [statementSummary, setStatementSummary] = useState<Record<
+    string,
+    string | number
+  > | null>(null);
+  const [statementTxns, setStatementTxns] = useState<
+    ImportTransaction[] | null
+  >(null);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [extractors, setExtractors] = useState<StatementExtractor[]>([]);
   const [extractor, setExtractor] = useState("sbi_cc");
 
   // Import results
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
   // Validation (read-only duplicate check against the selected account)
   const [validating, setValidating] = useState(false);
-  const [validationResult, setValidationResult] = useState(null);
+  const [validationResult, setValidationResult] =
+    useState<ValidateTransactionsResponse | null>(null);
 
   // Duplicate detection
-  const [existingTxns, setExistingTxns] = useState([]);
+  const [existingTxns, setExistingTxns] = useState<Transaction[]>([]);
   const [existingRefresh, setExistingRefresh] = useState(0);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
 
   // Billing cycle selection (credit-card accounts only): when chosen, every
   // imported transaction is attached to that cycle instead of the date-based
   // default.
-  const [billingCycles, setBillingCycles] = useState([]);
+  const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [importBillingCycleId, setImportBillingCycleId] = useState("");
 
-  const fileInputRef = useRef(null);
-  const pdfInputRef = useRef(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     api.getAccounts().then(setAccounts).catch(console.error);
@@ -393,23 +469,20 @@ export default function Import() {
       setAccounts((prev) => [acc, ...prev]);
       setSelectedAccount(acc.id);
       setShowNewAccount(false);
-      setNewAccount({
-        name: "",
-        accountTypeId: "bank",
-        bank: "",
-        color: "#06b6d4",
-      });
+      setNewAccount(EMPTY_NEW_ACCOUNT);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
   // ---- Step 2: Upload & Parse CSV ----
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+  const handleFileUpload = (e: {
+    target: { files: FileList | File[] | null };
+  }) => {
+    const file = e.target.files?.[0];
     if (!file) return;
 
-    Papa.parse(file, {
+    Papa.parse<CsvRow>(file, {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
@@ -419,10 +492,10 @@ export default function Import() {
         const mapping = autoDetectMapping(results.meta.fields || []);
         setColumnMapping(mapping);
         // Detect if separate debit/credit columns
-        const hasDebit = results.meta.fields.some((h) =>
+        const hasDebit = (results.meta.fields || []).some((h) =>
           /debit|withdrawal|dr/i.test(h),
         );
-        const hasCredit = results.meta.fields.some((h) =>
+        const hasCredit = (results.meta.fields || []).some((h) =>
           /credit|deposit|cr/i.test(h),
         );
         if (hasDebit && hasCredit) {
@@ -436,7 +509,7 @@ export default function Import() {
     });
   };
 
-  const parsePdf = async (file, chosenExtractor) => {
+  const parsePdf = async (file: File, chosenExtractor: string) => {
     setParsing(true);
     setStatementTxns(null);
     setStatementSummary(null);
@@ -451,21 +524,23 @@ export default function Import() {
       setStatementSummary(result.summary || null);
       setStep(4);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     } finally {
       setParsing(false);
     }
   };
 
-  const handlePdfUpload = async (e) => {
-    const file = e.target.files[0];
+  const handlePdfUpload = async (e: {
+    target: { files: FileList | File[] | null };
+  }) => {
+    const file = e.target.files?.[0];
     if (!file) return;
     setPdfFile(file);
     await parsePdf(file, extractor);
   };
 
   // ---- Step 3: Column Mapping ----
-  const updateMapping = (key, csvHeader) => {
+  const updateMapping = (key: string, csvHeader: string) => {
     setColumnMapping((prev) => ({ ...prev, [key]: csvHeader || null }));
   };
 
@@ -476,7 +551,7 @@ export default function Import() {
 
   // Reverse lookup: which field each CSV column feeds, for highlighting.
   const csvTarget = useMemo(() => {
-    const map = {};
+    const map: Record<string, string> = {};
     for (const f of TARGET_FIELDS) {
       const src = columnMapping[f.key];
       if (src) map[src] = f.key;
@@ -523,7 +598,7 @@ export default function Import() {
   );
 
   const { dupCount, inFileDupCount, existingDupCount } = useMemo(() => {
-    const seen = new Set();
+    const seen = new Set<string>();
     let inFileDup = 0;
     let existingDup = 0;
     let total = 0;
@@ -543,7 +618,7 @@ export default function Import() {
     };
   }, [parsedTransactions, existingSet]);
 
-  const runImport = async (action) => {
+  const runImport = async (action: "skip" | "keep") => {
     setDupDialogOpen(false);
     setImporting(true);
     try {
@@ -552,7 +627,7 @@ export default function Import() {
         return;
       }
 
-      const payload = {
+      const payload: ImportTransactionsRequest = {
         accountId: selectedAccount,
         transactions: parsedTransactions,
         duplicateAction: action,
@@ -566,7 +641,7 @@ export default function Import() {
       setImportResult(result);
       setStep(5);
     } catch (err) {
-      alert("Import failed: " + err.message);
+      alert("Import failed: " + (err as Error).message);
     } finally {
       setImporting(false);
     }
@@ -595,7 +670,7 @@ export default function Import() {
       });
       setValidationResult(result);
     } catch (err) {
-      alert("Validation failed: " + err.message);
+      alert("Validation failed: " + (err as Error).message);
     } finally {
       setValidating(false);
     }
@@ -820,11 +895,13 @@ export default function Import() {
                       "border-cyan-500",
                       "bg-slate-900/80",
                     );
-                    const file = e.dataTransfer.files[0];
+                    const file = e.dataTransfer?.files[0];
                     if (file) {
                       const dt = new DataTransfer();
                       dt.items.add(file);
-                      fileInputRef.current.files = dt.files;
+                      if (fileInputRef.current) {
+                        fileInputRef.current.files = dt.files;
+                      }
                       handleFileUpload({ target: { files: [file] } });
                     }
                   }}
@@ -871,11 +948,13 @@ export default function Import() {
                       "border-cyan-500",
                       "bg-slate-900/80",
                     );
-                    const file = e.dataTransfer.files[0];
+                    const file = e.dataTransfer?.files[0];
                     if (file) {
                       const dt = new DataTransfer();
                       dt.items.add(file);
-                      pdfInputRef.current.files = dt.files;
+                      if (pdfInputRef.current) {
+                        pdfInputRef.current.files = dt.files;
+                      }
                       handlePdfUpload({ target: { files: [file] } });
                     }
                   }}
@@ -1014,7 +1093,7 @@ export default function Import() {
                     </div>
                     <div className="text-xs text-slate-500 truncate mt-0.5">
                       {columnMapping[f.key]
-                        ? `e.g. "${csvData?.[0]?.[columnMapping[f.key]] || "—"}"`
+                        ? `e.g. "${csvData?.[0]?.[columnMapping[f.key] ?? ""] || "—"}"`
                         : "No CSV column selected"}
                     </div>
                   </div>
@@ -1404,7 +1483,14 @@ export default function Import() {
                   setStep(1);
                   setCsvData(null);
                   setCsvHeaders([]);
-                  setColumnMapping({});
+                  setColumnMapping({
+                    date: null,
+                    description: null,
+                    amount: null,
+                    debit: null,
+                    credit: null,
+                    payee: null,
+                  });
                   setImportResult(null);
                   setStatementTxns(null);
                   setStatementSummary(null);

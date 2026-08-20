@@ -1,4 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import {
   X,
   Save,
@@ -14,6 +21,37 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import { formatDate } from "../../utils/formatters";
+import type {
+  Transaction,
+  Account,
+  Category,
+  Payee,
+  BillingCycle,
+  CreateTransactionRequest,
+  TransactionType,
+} from "../../types";
+
+interface EditTransactionModalProps {
+  transaction?: Transaction;
+  accounts: Account[];
+  categories: Category[];
+  payees: Payee[];
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+interface TransactionForm {
+  date: string;
+  description: string;
+  amount: string;
+  type: string;
+  accountId: string;
+  categoryId: string;
+  payeeId: string;
+  notes: string;
+  tags: string[];
+  billingCycleId: string;
+}
 
 export default function EditTransactionModal({
   transaction,
@@ -22,9 +60,9 @@ export default function EditTransactionModal({
   payees,
   onClose,
   onSaved,
-}) {
+}: EditTransactionModalProps) {
   const isCreate = !transaction;
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<TransactionForm>({
     date: new Date().toISOString().split("T")[0],
     description: "",
     amount: "",
@@ -38,16 +76,21 @@ export default function EditTransactionModal({
   });
   const selectedAccount = accounts.find((a) => a.id === form.accountId);
   const [tagInput, setTagInput] = useState("");
-  const [billingCycles, setBillingCycles] = useState([]);
+  const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [visible, setVisible] = useState(false);
-  const backdropRef = useRef(null);
-  const closeTimerRef = useRef(null);
-  const prevAccountRef = useRef(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevAccountRef = useRef<string | null>(null);
 
-  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (isCreate) {
@@ -126,21 +169,21 @@ export default function EditTransactionModal({
 
   const handleClose = () => {
     setVisible(false);
-    clearTimeout(closeTimerRef.current);
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     closeTimerRef.current = setTimeout(onClose, 200);
   };
 
-  const handleBackdropClick = (e) => {
+  const handleBackdropClick = (e: MouseEvent<HTMLDivElement>) => {
     if (e.target === backdropRef.current) handleClose();
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     setSaving(true);
 
     try {
-      const payload = {
+      const payload: CreateTransactionRequest = {
         categoryId: form.categoryId || null,
         tags: form.tags,
         notes: form.notes,
@@ -148,7 +191,7 @@ export default function EditTransactionModal({
         date: form.date,
         description: form.description,
         amount: parseFloat(form.amount),
-        type: form.type,
+        type: form.type as TransactionType,
         accountId: form.accountId,
       };
 
@@ -166,7 +209,7 @@ export default function EditTransactionModal({
       onSaved();
     } catch (err) {
       setError(
-        err.message ||
+        (err as Error).message ||
           (isCreate
             ? "Failed to add transaction"
             : "Failed to update transaction"),
@@ -184,11 +227,11 @@ export default function EditTransactionModal({
     }
   };
 
-  const removeTag = (tag) => {
+  const removeTag = (tag: string) => {
     setForm((f) => ({ ...f, tags: f.tags.filter((t) => t !== tag) }));
   };
 
-  const handleTagKeyDown = (e) => {
+  const handleTagKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
       addTag();

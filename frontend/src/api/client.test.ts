@@ -9,7 +9,11 @@ import api, {
 
 const API_BASE = "http://localhost:8080/api/v1";
 
-function jsonResponse(body, status = 200, headers = {}) {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+) {
   const ok = status >= 200 && status < 300;
   return {
     ok,
@@ -43,12 +47,12 @@ describe("user storage", () => {
 
   it("storeUser persists a JSON object", () => {
     const user = { id: 1, email: "a@b.c" };
-    storeUser(user);
+    storeUser(user as any);
     expect(getStoredUser()).toEqual(user);
   });
 
   it("storeUser(null) removes the stored user", () => {
-    storeUser({ id: 1 });
+    storeUser({ id: 1 } as any);
     storeUser(null);
     expect(getStoredUser()).toBeNull();
   });
@@ -60,7 +64,7 @@ describe("user storage", () => {
 });
 
 describe("api request", () => {
-  let fetchMock;
+  let fetchMock: ReturnType<typeof vi.fn>;
   const originalLocation = window.location;
 
   beforeEach(() => {
@@ -133,7 +137,7 @@ describe("api request", () => {
           date: "2024-01-15",
           description: "Coffee",
           amount: 250.5,
-          type: "debit",
+          type: "debit" as const,
         },
       ],
     };
@@ -186,9 +190,9 @@ describe("api request", () => {
 
   it("throws a timeout error when the request exceeds the timeout", async () => {
     vi.useFakeTimers();
-    fetchMock.mockImplementation((_url, opts) => {
+    fetchMock.mockImplementation((_url: unknown, opts: RequestInit) => {
       return new Promise((_resolve, reject) => {
-        opts.signal.addEventListener("abort", () => {
+        opts.signal?.addEventListener("abort", () => {
           const err = new Error("Aborted");
           err.name = "AbortError";
           reject(err);
@@ -202,7 +206,7 @@ describe("api request", () => {
 
   it("clears auth and redirects to /login on 401", async () => {
     setToken("tok");
-    storeUser({ id: 1 });
+    storeUser({ id: 1 } as any);
     fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
     await expect(api.getAccounts()).rejects.toThrow("Unauthorized");
     expect(getToken()).toBeNull();
@@ -222,8 +226,8 @@ describe("api request", () => {
 });
 
 describe("downloadCSV", () => {
-  let fetchMock;
-  let clickSpy;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let clickSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     localStorage.clear();

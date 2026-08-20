@@ -31,7 +31,7 @@ describe("formatCurrency", () => {
 
 describe("parseDateOnly", () => {
   it("parses a YYYY-MM-DD string into a local Date", () => {
-    const d = parseDateOnly("2024-03-05");
+    const d = parseDateOnly("2024-03-05")!;
     expect(d).toBeInstanceOf(Date);
     expect(d.getFullYear()).toBe(2024);
     expect(d.getMonth()).toBe(2); // 0-based
@@ -39,7 +39,7 @@ describe("parseDateOnly", () => {
   });
 
   it("ignores any time portion", () => {
-    const d = parseDateOnly("2024-03-05T10:30:00Z");
+    const d = parseDateOnly("2024-03-05T10:30:00Z")!;
     expect(d.getFullYear()).toBe(2024);
     expect(d.getMonth()).toBe(2);
     expect(d.getDate()).toBe(5);

@@ -2,31 +2,57 @@ import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Play, X, Edit2 } from "lucide-react";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
+import type {
+  Category,
+  Rule,
+  Payee,
+  ApplyRulesResult,
+  CreateRuleRequest,
+} from "../../types";
+
+interface NewCategoryForm {
+  name: string;
+  icon: string;
+  color: string;
+  type: string;
+}
+
+interface NewRuleForm {
+  pattern: string;
+  matchType: string;
+  categoryId: string;
+  payeeId: string | null;
+  priority: number;
+}
+
+const EMPTY_NEW_CATEGORY: NewCategoryForm = {
+  name: "",
+  icon: "tag",
+  color: "#06b6d4",
+  type: "expense",
+};
+
+const EMPTY_NEW_RULE: NewRuleForm = {
+  pattern: "",
+  matchType: "contains",
+  categoryId: "",
+  payeeId: "",
+  priority: 0,
+};
 
 export default function Categories() {
-  const [categories, setCategories] = useState([]);
-  const [rules, setRules] = useState([]);
-  const [payees, setPayees] = useState([]);
-  const [tab, setTab] = useState("categories");
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [payees, setPayees] = useState<Payee[]>([]);
+  const [tab, setTab] = useState<"categories" | "rules">("categories");
   const [showNewCategory, setShowNewCategory] = useState(false);
   const [showNewRule, setShowNewRule] = useState(false);
-  const [editingRule, setEditingRule] = useState(null);
-  const [newCat, setNewCat] = useState({
-    name: "",
-    icon: "tag",
-    color: "#06b6d4",
-    type: "expense",
-  });
-  const [newRule, setNewRule] = useState({
-    pattern: "",
-    matchType: "contains",
-    categoryId: "",
-    payeeId: "",
-    priority: 0,
-  });
-  const [applyResult, setApplyResult] = useState(null);
+  const [editingRule, setEditingRule] = useState<Rule | null>(null);
+  const [newCat, setNewCat] = useState<NewCategoryForm>(EMPTY_NEW_CATEGORY);
+  const [newRule, setNewRule] = useState<NewRuleForm>(EMPTY_NEW_RULE);
+  const [applyResult, setApplyResult] = useState<ApplyRulesResult | null>(null);
   const { compactLayout } = useSettings();
-  const applyTimerRef = useRef(null);
+  const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     api.getCategories().then(setCategories).catch(console.error);
@@ -39,14 +65,14 @@ export default function Categories() {
       const cat = await api.createCategory(newCat);
       setCategories((prev) => [...prev, cat]);
       setShowNewCategory(false);
-      setNewCat({ name: "", icon: "tag", color: "#06b6d4", type: "expense" });
+      setNewCat(EMPTY_NEW_CATEGORY);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
   const handleUpsertRule = async () => {
-    const payload = {
+    const payload: CreateRuleRequest = {
       ...newRule,
       payeeId: newRule.payeeId || null,
     };
@@ -59,27 +85,21 @@ export default function Categories() {
       }
       setShowNewRule(false);
       setEditingRule(null);
-      setNewRule({
-        pattern: "",
-        matchType: "contains",
-        categoryId: "",
-        payeeId: "",
-        priority: 0,
-      });
+      setNewRule(EMPTY_NEW_RULE);
       const updatedRules = await api.getRules();
       setRules(updatedRules);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const handleDeleteRule = async (id) => {
+  const handleDeleteRule = async (id: string) => {
     if (!confirm("Delete this rule?")) return;
     try {
       await api.deleteRule(id);
       setRules((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
@@ -87,14 +107,18 @@ export default function Categories() {
     try {
       const result = await api.applyRules();
       setApplyResult(result);
-      clearTimeout(applyTimerRef.current);
+      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
       applyTimerRef.current = setTimeout(() => setApplyResult(null), 3000);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  useEffect(() => () => clearTimeout(applyTimerRef.current), []);
+  useEffect(() => {
+    return () => {
+      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
+    };
+  }, []);
 
   const expenseCategories = categories.filter((c) => c.type === "expense");
   const incomeCategories = categories.filter((c) => c.type === "income");
@@ -263,13 +287,7 @@ export default function Categories() {
                 className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
                 onClick={() => {
                   setEditingRule(null);
-                  setNewRule({
-                    pattern: "",
-                    matchType: "contains",
-                    categoryId: "",
-                    payeeId: "",
-                    priority: 0,
-                  });
+                  setNewRule(EMPTY_NEW_RULE);
                   setShowNewRule(true);
                 }}
               >
@@ -483,7 +501,7 @@ export default function Categories() {
                                   pattern: r.pattern,
                                   matchType: r.matchType,
                                   categoryId: r.categoryId,
-                                  payeeId: r.payeeId,
+                                  payeeId: r.payeeId ?? null,
                                   priority: r.priority,
                                 });
                                 setShowNewRule(true);

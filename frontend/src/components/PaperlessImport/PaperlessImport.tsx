@@ -1,4 +1,11 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   RefreshCw,
   Loader2,
@@ -18,14 +25,29 @@ import {
 import Checkbox from "../Checkbox/Checkbox";
 import api from "../../api/client";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
+import type {
+  Account,
+  PaperlessDocument,
+  StatementExtractor,
+  ImportTransaction,
+  ValidateTransactionsResponse,
+} from "../../types";
 
-function MultiFilter({ label, options, map, onSet }) {
+interface MultiFilterProps {
+  label: string;
+  options: string[];
+  map: Record<string, string>;
+  onSet: (value: string, mode: string | null) => void;
+}
+
+function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const onClick = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
@@ -144,35 +166,50 @@ const DATE_FORMAT_OPTIONS = [
   { value: "DD Mon YYYY", label: "DD Mon YYYY" },
 ];
 
+interface FilePreview {
+  url: string;
+  title: string;
+}
+
+interface ImportPreview {
+  title: string;
+  transactions: ImportTransaction[];
+  documentIds: number[];
+}
+
 export default function PaperlessImport() {
   const [configured, setConfigured] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(true);
 
-  const [accounts, setAccounts] = useState([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState("");
 
-  const [extractors, setExtractors] = useState([]);
+  const [extractors, setExtractors] = useState<StatementExtractor[]>([]);
   const [extractor, setExtractor] = useState("sbi_cc");
   const [password, setPassword] = useState("");
   const [dateFormat, setDateFormat] = useState("auto");
   const [tagOnImport, setTagOnImport] = useState(false);
   const [tagLabel, setTagLabel] = useState("");
 
-  const [documents, setDocuments] = useState([]);
+  const [documents, setDocuments] = useState<PaperlessDocument[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
-  const [selected, setSelected] = useState(new Set());
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   // Filters
   const [search, setSearch] = useState("");
-  const [correspondentMap, setCorrespondentMap] = useState({});
-  const [documentTypeMap, setDocumentTypeMap] = useState({});
-  const [tagMap, setTagMap] = useState({});
+  const [correspondentMap, setCorrespondentMap] = useState<
+    Record<string, string>
+  >({});
+  const [documentTypeMap, setDocumentTypeMap] = useState<
+    Record<string, string>
+  >({});
+  const [tagMap, setTagMap] = useState<Record<string, string>>({});
 
   // File preview (blob URL of the original PDF)
-  const [filePreview, setFilePreview] = useState(null); // { url, title }
-  const [loadingFileId, setLoadingFileId] = useState(null);
+  const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
+  const [loadingFileId, setLoadingFileId] = useState<number | null>(null);
 
-  const [preview, setPreview] = useState(null); // { title, transactions, documentIds }
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
@@ -180,7 +217,8 @@ export default function PaperlessImport() {
 
   // Validation (read-only duplicate check against the selected account)
   const [validating, setValidating] = useState(false);
-  const [validationResult, setValidationResult] = useState(null);
+  const [validationResult, setValidationResult] =
+    useState<ValidateTransactionsResponse | null>(null);
 
   useEffect(() => {
     api
@@ -215,13 +253,13 @@ export default function PaperlessImport() {
       const res = await api.getPaperlessDocuments();
       setDocuments(res?.documents || []);
     } catch (err) {
-      setError(err.message);
+      setError((err as Error).message);
     } finally {
       setLoadingDocs(false);
     }
   };
 
-  const toggle = (id) => {
+  const toggle = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -230,14 +268,16 @@ export default function PaperlessImport() {
     });
   };
 
-  const setFilter = (setter) => (value, mode) => {
-    setter((prev) => {
-      const next = { ...prev };
-      if (mode) next[value] = mode;
-      else delete next[value];
-      return next;
-    });
-  };
+  const setFilter =
+    (setter: Dispatch<SetStateAction<Record<string, string>>>) =>
+    (value: string, mode: string | null) => {
+      setter((prev) => {
+        const next = { ...prev };
+        if (mode) next[value] = mode;
+        else delete next[value];
+        return next;
+      });
+    };
 
   // Build filter dropdown options from the loaded documents.
   const correspondentOptions = useMemo(() => {
@@ -255,7 +295,10 @@ export default function PaperlessImport() {
     return [...set].sort();
   }, [documents]);
 
-  const applyFilter = (matchValue, map) => {
+  const applyFilter = (
+    matchValue: string | string[],
+    map: Record<string, string>,
+  ) => {
     const inc = Object.keys(map).filter((k) => map[k] === "inc");
     const exc = Object.keys(map).filter((k) => map[k] === "exc");
     const docValues = Array.isArray(matchValue) ? matchValue : [matchValue];
@@ -288,7 +331,7 @@ export default function PaperlessImport() {
     });
   }, [documents, search, correspondentMap, documentTypeMap, tagMap]);
 
-  const openFilePreview = async (doc) => {
+  const openFilePreview = async (doc: PaperlessDocument) => {
     setLoadingFileId(doc.id);
     setError("");
     try {
@@ -296,7 +339,7 @@ export default function PaperlessImport() {
       const url = URL.createObjectURL(blob);
       setFilePreview({ url, title: doc.title || `Document #${doc.id}` });
     } catch (err) {
-      setError("Failed to load document preview: " + err.message);
+      setError("Failed to load document preview: " + (err as Error).message);
     } finally {
       setLoadingFileId(null);
     }
@@ -319,8 +362,8 @@ export default function PaperlessImport() {
     setSuccess("");
     setPreview(null);
 
-    const transactions = [];
-    const titles = [];
+    const transactions: ImportTransaction[] = [];
+    const titles: string[] = [];
     try {
       for (const id of selected) {
         const res = await api.importPaperlessDocument({
@@ -339,7 +382,7 @@ export default function PaperlessImport() {
         documentIds: [...selected],
       });
     } catch (err) {
-      setError(err.message);
+      setError((err as Error).message);
     } finally {
       setParsing(false);
     }
@@ -365,7 +408,7 @@ export default function PaperlessImport() {
       setSelected(new Set());
       loadDocuments();
     } catch (err) {
-      setError("Import failed: " + err.message);
+      setError("Import failed: " + (err as Error).message);
     } finally {
       setImporting(false);
     }
@@ -384,7 +427,7 @@ export default function PaperlessImport() {
       });
       setValidationResult(result);
     } catch (err) {
-      setError("Validation failed: " + err.message);
+      setError("Validation failed: " + (err as Error).message);
     } finally {
       setValidating(false);
     }

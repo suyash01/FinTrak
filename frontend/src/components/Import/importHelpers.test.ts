@@ -11,6 +11,7 @@ import {
   buildParsedTransactions,
   autoDetectMapping,
 } from "./Import";
+import type { Account, AccountType } from "../../types";
 
 describe("targetFieldsFor", () => {
   it("includes the single amount field in single mode", () => {
@@ -233,8 +234,8 @@ describe("buildParsedTransactions", () => {
     },
     amountMode: "single",
     dateFormat: "auto",
-    accounts: [{ id: "acct1", accountTypeId: "bank" }],
-    accountTypes: [{ id: "bank", positiveTxnType: "credit" }],
+    accounts: [{ id: "acct1", accountTypeId: "bank" }] as Account[],
+    accountTypes: [{ id: "bank", positiveTxnType: "credit" }] as AccountType[],
     payees: [],
     selectedAccount: "acct1",
   };

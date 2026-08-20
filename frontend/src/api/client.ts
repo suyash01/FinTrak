@@ -1,3 +1,50 @@
+import type {
+  Account,
+  AccountType,
+  ApplyRulesResult,
+  AuthResponse,
+  BillingCycle,
+  BulkCategorizeRequest,
+  BulkDeleteLinksRequest,
+  BulkDeleteTransactionsRequest,
+  BulkBillingCycleRequest,
+  BulkUpdatePayeeRequest,
+  Category,
+  CreateAccountRequest,
+  CreateAccountTypeRequest,
+  CreateCategoryRequest,
+  CreateLinkRequest,
+  CreatePayeeRequest,
+  CreateRuleRequest,
+  CreateTransactionRequest,
+  DashboardSummary,
+  ImportResult,
+  ImportTransactionsRequest,
+  Link,
+  LoginRequest,
+  PaperlessDocumentsResponse,
+  PaperlessImportRequest,
+  PaperlessImportResult,
+  Payee,
+  QueryParams,
+  RegisterRequest,
+  Rule,
+  StatementExtractor,
+  StatementParseResult,
+  Transaction,
+  TransactionsResponse,
+  UpdateAccountRequest,
+  UpdateAccountTypeRequest,
+  UpdatePayeeRequest,
+  UpdateRuleRequest,
+  UpdateTransactionRequest,
+  UpdateUserSettingsRequest,
+  User,
+  UserSettings,
+  ValidateTransactionsRequest,
+  ValidateTransactionsResponse,
+} from "../types";
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8080/api/v1";
 
 const TOKEN_KEY = "fintrak_token";
@@ -5,11 +52,11 @@ const USER_KEY = "fintrak_user";
 
 const REQUEST_TIMEOUT = 15000;
 
-export function getToken() {
+export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
-export function setToken(token) {
+export function setToken(token: string | null): void {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
   } else {
@@ -17,15 +64,15 @@ export function setToken(token) {
   }
 }
 
-export function getStoredUser() {
+export function getStoredUser(): User | null {
   try {
-    return JSON.parse(localStorage.getItem(USER_KEY));
+    return JSON.parse(localStorage.getItem(USER_KEY) || "null");
   } catch {
     return null;
   }
 }
 
-export function storeUser(user) {
+export function storeUser(user: User | null): void {
   if (user) {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
   } else {
@@ -33,8 +80,31 @@ export function storeUser(user) {
   }
 }
 
-async function request(url, options = {}) {
-  const headers = { "Content-Type": "application/json", ...options.headers };
+interface ApiError extends Error {
+  status?: number;
+}
+
+interface RequestOptions {
+  method?: string;
+  body?: string;
+  signal?: AbortSignal;
+  headers?: Record<string, string>;
+}
+
+function buildQuery(params: QueryParams): string {
+  return new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)]),
+  ).toString();
+}
+
+async function request<T>(
+  url: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -53,7 +123,7 @@ async function request(url, options = {}) {
     controller.abort();
   }, REQUEST_TIMEOUT);
 
-  let res;
+  let res: Response;
   try {
     res = await fetch(`${API_BASE}${url}`, {
       ...options,
@@ -61,7 +131,7 @@ async function request(url, options = {}) {
       headers,
     });
   } catch (err) {
-    if (err.name === "AbortError") {
+    if ((err as Error).name === "AbortError") {
       if (timedOut) throw new Error("Request timed out");
       throw err;
     }
@@ -81,25 +151,30 @@ async function request(url, options = {}) {
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(error.error || "Request failed");
+    const err = new Error(error.error || "Request failed") as ApiError;
     err.status = res.status;
     throw err;
   }
 
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  return text ? (JSON.parse(text) as T) : (null as T);
 }
 
 // requestMultipart POSTs a FormData payload (multipart/form-data) with the auth
 // header but without forcing a JSON content type, which the browser must set
 // itself (including the boundary). Used for statement PDF uploads.
-async function requestMultipart(url, formData) {
+async function requestMultipart<T>(
+  url: string,
+  formData: FormData,
+): Promise<T> {
   const token = getToken();
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-  let res;
+  let res: Response;
   try {
     res = await fetch(`${API_BASE}${url}`, {
       method: "POST",
@@ -108,7 +183,8 @@ async function requestMultipart(url, formData) {
       signal: controller.signal,
     });
   } catch (err) {
-    if (err.name === "AbortError") throw new Error("Request timed out");
+    if ((err as Error).name === "AbortError")
+      throw new Error("Request timed out");
     throw new Error("Network error: could not reach the API server");
   } finally {
     clearTimeout(timer);
@@ -124,15 +200,15 @@ async function requestMultipart(url, formData) {
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(error.error || "Request failed");
+    const err = new Error(error.error || "Request failed") as ApiError;
     err.status = res.status;
     throw err;
   }
 
-  return res.json();
+  return res.json() as Promise<T>;
 }
 
-export async function downloadCSV(path) {
+export async function downloadCSV(path: string): Promise<void> {
   const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -158,90 +234,109 @@ export async function downloadCSV(path) {
 
 const api = {
   // Auth
-  register: (data) =>
+  register: (data: RegisterRequest): Promise<AuthResponse> =>
     request("/auth/register", { method: "POST", body: JSON.stringify(data) }),
-  login: (data) =>
+  login: (data: LoginRequest): Promise<AuthResponse> =>
     request("/auth/login", { method: "POST", body: JSON.stringify(data) }),
 
   // Accounts
-  getAccounts: () => request("/accounts"),
-  createAccount: (data) =>
+  getAccounts: (): Promise<Account[]> => request("/accounts"),
+  createAccount: (data: CreateAccountRequest): Promise<Account> =>
     request("/accounts", { method: "POST", body: JSON.stringify(data) }),
-  updateAccount: (id, data) =>
+  updateAccount: (id: string, data: UpdateAccountRequest): Promise<Account> =>
     request(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-  deleteAccount: (id) => request(`/accounts/${id}`, { method: "DELETE" }),
-  getBillingCycles: (accountId) =>
+  deleteAccount: (id: string): Promise<null> =>
+    request(`/accounts/${id}`, { method: "DELETE" }),
+  getBillingCycles: (accountId: string): Promise<{ data: BillingCycle[] }> =>
     request(`/accounts/${accountId}/billing-cycles`),
 
   // Account Types
-  getAccountTypes: () => request("/account-types"),
-  createAccountType: (data) =>
+  getAccountTypes: (): Promise<AccountType[]> => request("/account-types"),
+  createAccountType: (data: CreateAccountTypeRequest): Promise<AccountType> =>
     request("/account-types", { method: "POST", body: JSON.stringify(data) }),
-  updateAccountType: (id, data) =>
+  updateAccountType: (
+    id: string,
+    data: UpdateAccountTypeRequest,
+  ): Promise<AccountType> =>
     request(`/account-types/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  deleteAccountType: (id) =>
+  deleteAccountType: (id: string): Promise<null> =>
     request(`/account-types/${id}`, { method: "DELETE" }),
 
   // Categories
-  getCategories: () => request("/categories"),
-  createCategory: (data) =>
+  getCategories: (): Promise<Category[]> => request("/categories"),
+  createCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/categories", { method: "POST", body: JSON.stringify(data) }),
 
   // Transactions
-  getTransactions: (params = {}, options = {}) => {
-    const qs = new URLSearchParams(params).toString();
+  getTransactions: (
+    params: QueryParams = {},
+    options: RequestOptions = {},
+  ): Promise<TransactionsResponse> => {
+    const qs = buildQuery(params);
     return request(`/transactions?${qs}`, options);
   },
-  createTransaction: (data) =>
+  createTransaction: (data: CreateTransactionRequest): Promise<Transaction> =>
     request("/transactions", { method: "POST", body: JSON.stringify(data) }),
-  updateTransaction: (id, data) =>
+  updateTransaction: (
+    id: string,
+    data: UpdateTransactionRequest,
+  ): Promise<Transaction> =>
     request(`/transactions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
-  deleteTransaction: (id) =>
+  deleteTransaction: (id: string): Promise<null> =>
     request(`/transactions/${id}`, { method: "DELETE" }),
-  importTransactions: (data) =>
+  importTransactions: (
+    data: ImportTransactionsRequest,
+  ): Promise<ImportResult> =>
     request("/transactions/import", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  validateTransactions: (data) =>
+  validateTransactions: (
+    data: ValidateTransactionsRequest,
+  ): Promise<ValidateTransactionsResponse> =>
     request("/transactions/validate", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkCategorize: (data) =>
+  bulkCategorize: (data: BulkCategorizeRequest): Promise<null> =>
     request("/transactions/bulk-categorize", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkUpdatePayee: (data) =>
+  bulkUpdatePayee: (data: BulkUpdatePayeeRequest): Promise<null> =>
     request("/transactions/bulk-payee", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkUpdateBillingCycle: (data) =>
+  bulkUpdateBillingCycle: (data: BulkBillingCycleRequest): Promise<null> =>
     request("/transactions/bulk-billing-cycle", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkDeleteTransactions: (data) =>
+  bulkDeleteTransactions: (
+    data: BulkDeleteTransactionsRequest,
+  ): Promise<null> =>
     request("/transactions/bulk-delete", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
   // Statement parsing (PDF) — forwarded by the backend to the parser service
-  parseStatement: (formData) => requestMultipart("/statements/parse", formData),
-  getStatementExtractors: () => request("/statements/extractors"),
+  parseStatement: (formData: FormData): Promise<StatementParseResult> =>
+    requestMultipart("/statements/parse", formData),
+  getStatementExtractors: (): Promise<{ extractors: StatementExtractor[] }> =>
+    request("/statements/extractors"),
 
   // Paperless-ngx integration (per-user settings + manual pull)
-  getPaperlessSettings: () => request("/paperless/settings"),
-  updatePaperlessSettings: (data) =>
+  getPaperlessSettings: (): Promise<UserSettings> =>
+    request("/paperless/settings"),
+  updatePaperlessSettings: (data: UpdateUserSettingsRequest): Promise<null> =>
     request("/paperless/settings", {
       method: "PUT",
       body: JSON.stringify(data),
@@ -249,25 +344,28 @@ const api = {
 
   // Generic per-user settings (the same /paperless/settings endpoint also
   // carries the transactions page-size preference).
-  getUserSettings: () => request("/paperless/settings"),
-  updateUserSettings: (data) =>
+  getUserSettings: (): Promise<UserSettings> => request("/paperless/settings"),
+  updateUserSettings: (data: UpdateUserSettingsRequest): Promise<null> =>
     request("/paperless/settings", {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  getPaperlessDocuments: () => request("/paperless/documents"),
-  importPaperlessDocument: (data) =>
+  getPaperlessDocuments: (): Promise<PaperlessDocumentsResponse> =>
+    request("/paperless/documents"),
+  importPaperlessDocument: (
+    data: PaperlessImportRequest,
+  ): Promise<PaperlessImportResult> =>
     request("/paperless/import", {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  getPaperlessDocumentFile: async (id) => {
+  getPaperlessDocumentFile: async (id: number): Promise<Blob> => {
     const token = getToken();
     const res = await fetch(`${API_BASE}/paperless/documents/${id}/file`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
-      const err = new Error("Failed to load document file");
+      const err = new Error("Failed to load document file") as ApiError;
       err.status = res.status;
       throw err;
     }
@@ -275,39 +373,45 @@ const api = {
   },
 
   // Rules
-  getRules: () => request("/rules"),
-  createRule: (data) =>
+  getRules: (): Promise<Rule[]> => request("/rules"),
+  createRule: (data: CreateRuleRequest): Promise<Rule> =>
     request("/rules", { method: "POST", body: JSON.stringify(data) }),
-  updateRule: (id, data) =>
+  updateRule: (id: string, data: UpdateRuleRequest): Promise<Rule> =>
     request(`/rules/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-  deleteRule: (id) => request(`/rules/${id}`, { method: "DELETE" }),
-  applyRules: () => request("/rules/apply", { method: "POST" }),
+  deleteRule: (id: string): Promise<null> =>
+    request(`/rules/${id}`, { method: "DELETE" }),
+  applyRules: (): Promise<ApplyRulesResult> =>
+    request("/rules/apply", { method: "POST" }),
 
   // Payees
-  getPayees: () => request("/payees"),
-  createPayee: (data) =>
+  getPayees: (): Promise<Payee[]> => request("/payees"),
+  createPayee: (data: CreatePayeeRequest): Promise<Payee> =>
     request("/payees", { method: "POST", body: JSON.stringify(data) }),
-  updatePayee: (id, data) =>
+  updatePayee: (id: string, data: UpdatePayeeRequest): Promise<Payee> =>
     request(`/payees/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-  deletePayee: (id) => request(`/payees/${id}`, { method: "DELETE" }),
+  deletePayee: (id: string): Promise<null> =>
+    request(`/payees/${id}`, { method: "DELETE" }),
 
   // Links
-  getLinks: (params = {}) => {
-    const qs = new URLSearchParams(params).toString();
+  getLinks: (params: QueryParams = {}): Promise<Link[]> => {
+    const qs = buildQuery(params);
     return request(`/links${qs ? `?${qs}` : ""}`);
   },
-  createLink: (data) =>
+  createLink: (data: CreateLinkRequest): Promise<Link> =>
     request("/links", { method: "POST", body: JSON.stringify(data) }),
-  deleteLink: (id) => request(`/links/${id}`, { method: "DELETE" }),
-  bulkDeleteLinks: (data) =>
+  deleteLink: (id: string): Promise<null> =>
+    request(`/links/${id}`, { method: "DELETE" }),
+  bulkDeleteLinks: (data: BulkDeleteLinksRequest): Promise<null> =>
     request("/links/bulk-delete", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
   // Dashboard
-  getDashboardSummary: (params = {}) => {
-    const qs = new URLSearchParams(params).toString();
+  getDashboardSummary: (
+    params: QueryParams = {},
+  ): Promise<DashboardSummary> => {
+    const qs = buildQuery(params);
     return request(`/dashboard/summary?${qs}`);
   },
 };

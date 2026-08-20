@@ -1,6 +1,6 @@
 # 🚀 FinTrak
 
-**FinTrak** is a powerful, modern, and high-performance personal finance tracking application built with a **Go** backend and a **React** (Vite) frontend. It simplifies transaction management, categorizes expenses using smart rules, and provides insightful dashboard visualizations to help you stay on top of your finances.
+**FinTrak** is a powerful, modern, and high-performance personal finance tracking application built with a **Go** backend and a **React + TypeScript** (Vite, bun) frontend. It simplifies transaction management, categorizes expenses using smart rules, and provides insightful dashboard visualizations to help you stay on top of your finances.
 
 ---
 
@@ -34,7 +34,7 @@
 
 ### Frontend
 
-- **Library**: React 18+ (Vite)
+- **Library**: React 19 + TypeScript (Vite, bun)
 - **Styling**: **Tailwind CSS 4**
 - **Icons**: Lucide React
 - **Charts**: Recharts
@@ -93,7 +93,7 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 │   ├── handlers     # API Request Handlers
 │   ├── models       # Database Schemas & Types
 │   └── main.go      # Application Entry point
-├── frontend         # React + Vite Application
+├── frontend         # React + TypeScript + Vite Application (bun)
 │   ├── src
 │   │   ├── api      # API Client Calls
 │   │   ├── components # UI Components

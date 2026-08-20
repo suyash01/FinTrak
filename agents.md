@@ -1,14 +1,14 @@
 # AGENTS.md
 
-FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.27 + Gin + PostgreSQL/pgx) and `frontend/` (React 18 + Vite + Tailwind CSS 4). All routes live under `/api/v1`; API docs are in `README.md`.
+FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.27 + Gin + PostgreSQL/pgx) and `frontend/` (React 19 + TypeScript + Vite + Tailwind CSS 4, managed with bun). All routes live under `/api/v1`; API docs are in `README.md`.
 
 ## Commands (run from repo root)
 
 - `make dev` — `docker compose up -d` (db + backend + frontend + adminer). Frontend at :3000, API at :8080, adminer at :8081.
 - `make test` / `make vet` / `make build-backend` / `make build-frontend`
 - `make release VERSION=v1.2.3` — must be on `master` with a clean tree; runs backend tests + frontend build, then tags & pushes. CI then publishes GHCR images. Releases are only cut from `master`.
-- Frontend has **no lint/typecheck/test scripts** — only `dev`, `build`, `preview`. Verification is `npm run build`.
-- CI (`.github/workflows/docker-publish.yml`) also enforces `go mod tidy` leaves `go.mod`/`go.sum` unchanged — keep them tidy.
+- Frontend scripts: `dev`, `build`, `preview`, `test` (vitest), `typecheck` (`tsc --noEmit`). Verification is `bun run build` + `bun run test` + `bun run typecheck`. Install deps with `bun install` (lockfile is `bun.lock`).
+- CI (`.github/workflows/docker-publish.yml`) also enforces `go mod tidy` leaves `go.mod`/`go.sum` unchanged — keep them tidy. The frontend CI job uses `oven-sh/setup-bun` and runs `bun install --frozen-lockfile`, `bun run typecheck`, and `bun run test`.
 
 ## Backend
 
@@ -23,10 +23,10 @@ FinTrak: personal finance tracker. Monorepo with `backend/` (Go 1.27 + Gin + Pos
 
 ## Frontend
 
-- All API calls go through the single `src/api/client.js` (exports one `api` object + `downloadCSV`). Base URL is `VITE_API_URL` or defaults to `http://localhost:8080/api/v1`. Do not call `fetch` elsewhere.
-- Components are PascalCase directories under `src/components/<Feature>/<Feature>.jsx` (e.g. `Dashboard/Dashboard.jsx`, `Transactions/Transactions.jsx`). Routing is in `src/App.jsx`.
+- All API calls go through the single `src/api/client.ts` (exports one `api` object + `downloadCSV`). Base URL is `VITE_API_URL` or defaults to `http://localhost:8080/api/v1`. Do not call `fetch` elsewhere.
+- Components are PascalCase directories under `src/components/<Feature>/<Feature>.tsx` (e.g. `Dashboard/Dashboard.tsx`, `Transactions/Transactions.tsx`). Routing is in `src/App.tsx`; entry point is `src/main.tsx`. All source is TypeScript (`.ts`/`.tsx`); API models live in `src/types.ts`.
 - Global state via React Context in `src/context/` — `AuthContext` (auth + JWT in localStorage) and `SettingsContext` (compact layout, page size). New UI should respect the Compact Layout toggle.
-- CSV import is client-side (PapaParse) in `components/Import/Import.jsx`; bank-statement parsing quirks live there.
+- CSV import is client-side (PapaParse) in `components/Import/Import.tsx`; bank-statement parsing quirks live there.
 - Vite dev server runs on :5173 (`host: true` for Docker). In the Docker/nginx setup the frontend reverse-proxies `/api/v1` to the backend.
 
 ## References

@@ -12,19 +12,30 @@ import {
 import api, { downloadCSV } from "../../api/client";
 import { formatDate, formatCurrency } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import type { Account, AccountType } from "../../types";
+
+interface AccountForm {
+  name: string;
+  accountTypeId: string;
+  bank: string;
+  color: string;
+  currency: string;
+}
+
+const EMPTY_NEW_ACCOUNT = {
+  name: "",
+  accountTypeId: "bank",
+  bank: "",
+  color: "#06b6d4",
+};
 
 export default function Accounts() {
-  const [accounts, setAccounts] = useState([]);
-  const [accountTypes, setAccountTypes] = useState([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [showNew, setShowNew] = useState(false);
-  const [newAcc, setNewAcc] = useState({
-    name: "",
-    accountTypeId: "bank",
-    bank: "",
-    color: "#06b6d4",
-  });
-  const [editingId, setEditingId] = useState(null);
-  const [editAcc, setEditAcc] = useState(null);
+  const [newAcc, setNewAcc] = useState(EMPTY_NEW_ACCOUNT);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editAcc, setEditAcc] = useState<AccountForm | null>(null);
   const { compactLayout } = useSettings();
 
   useEffect(() => {
@@ -37,28 +48,24 @@ export default function Accounts() {
       const acc = await api.createAccount(newAcc);
       setAccounts((prev) => [acc, ...prev]);
       setShowNew(false);
-      setNewAcc({
-        name: "",
-        accountTypeId: "bank",
-        bank: "",
-        color: "#06b6d4",
-      });
+      setNewAcc(EMPTY_NEW_ACCOUNT);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id: string) => {
     if (!confirm("Delete this account and all its transactions?")) return;
     try {
       await api.deleteAccount(id);
       setAccounts((prev) => prev.filter((a) => a.id !== id));
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
   const handleUpdate = async () => {
+    if (!editingId || !editAcc) return;
     try {
       const updated = await api.updateAccount(editingId, editAcc);
       setAccounts((prev) =>
@@ -67,11 +74,11 @@ export default function Accounts() {
       setEditingId(null);
       setEditAcc(null);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const startEdit = (acc) => {
+  const startEdit = (acc: Account) => {
     setEditingId(acc.id);
     setEditAcc({
       name: acc.name,
@@ -82,17 +89,17 @@ export default function Accounts() {
     });
   };
 
-  const handleExport = async (id) => {
+  const handleExport = async (id: string) => {
     try {
       await downloadCSV(`/accounts/${id}/export`);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
   // Mark/unmark an account as the user's default. The backend enforces a single
   // default per user, so when one is set the others are cleared.
-  const handleSetDefault = async (acc) => {
+  const handleSetDefault = async (acc: Account) => {
     try {
       const updated = await api.updateAccount(acc.id, {
         name: acc.name,
@@ -110,11 +117,11 @@ export default function Accounts() {
         }),
       );
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const getTypeIcon = (accountTypeId, color, size) => {
+  const getTypeIcon = (accountTypeId: string, color: string, size: number) => {
     return accountTypeId === "credit_card" ? (
       <CreditCard size={size} style={{ color }} />
     ) : (
@@ -245,11 +252,11 @@ export default function Accounts() {
                 className={`bg-slate-900 border border-slate-800 rounded-xl ${compactLayout ? "p-3" : "p-5"} hover:border-slate-700 transition-colors flex flex-col`}
                 style={{
                   borderLeftColor:
-                    editingId === acc.id ? editAcc.color : acc.color,
+                    editingId === acc.id ? editAcc?.color : acc.color,
                   borderLeftWidth: "3px",
                 }}
               >
-                {editingId === acc.id ? (
+                {editingId === acc.id && editAcc ? (
                   <div className="flex flex-col h-full">
                     <div className="flex justify-between items-center mb-4">
                       <h4 className="text-sm font-semibold">Edit Account</h4>

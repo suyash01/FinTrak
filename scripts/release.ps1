@@ -39,7 +39,7 @@ try {
 # 4. Frontend production build
 Push-Location "$repoRoot\frontend"
 try {
-    npm run build
+    bun run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
 } finally {
     Pop-Location

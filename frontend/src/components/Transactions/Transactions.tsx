@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, useMemo, memo, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  memo,
+  useRef,
+  type CSSProperties,
+} from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Search,
@@ -18,6 +26,29 @@ import Checkbox from "../Checkbox/Checkbox";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import type {
+  Transaction,
+  Account,
+  Category,
+  Payee,
+  BillingCycle,
+  TransactionsResponse,
+  QueryParams,
+} from "../../types";
+
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+interface EditableSelectProps {
+  value?: string | null;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+  placeholder: string;
+  displayText?: string;
+  style?: CSSProperties;
+}
 
 function EditableSelect({
   value,
@@ -26,9 +57,9 @@ function EditableSelect({
   placeholder,
   displayText,
   style,
-}) {
+}: EditableSelectProps) {
   const isPlaceholder = !value;
-  const isMissing = value && !options.some((o) => o.value === value);
+  const isMissing = Boolean(value) && !options.some((o) => o.value === value);
 
   return (
     <select
@@ -43,7 +74,7 @@ function EditableSelect({
       </option>
       {isMissing && (
         <option
-          value={value}
+          value={value ?? ""}
           className="bg-slate-900 text-slate-200 not-italic"
           hidden
         >
@@ -63,6 +94,25 @@ function EditableSelect({
   );
 }
 
+interface TransactionRowProps {
+  t: Transaction;
+  compactLayout: boolean;
+  selected: boolean;
+  toggleSelect: (id: string) => void;
+  categoryOptions: SelectOption[];
+  payeeOptions: SelectOption[];
+  handleCategoryChange: (
+    txnId: string,
+    categoryId: string,
+    txn: Transaction,
+  ) => void;
+  handlePayeeChange: (txnId: string, payeeId: string, txn: Transaction) => void;
+  handleDelete: (id: string) => void;
+  handleUnlink: (t: Transaction) => void;
+  setLinkingTxn: (t: Transaction | null) => void;
+  setEditingTxn: (t: Transaction | null) => void;
+}
+
 const TransactionRow = memo(function TransactionRow({
   t,
   compactLayout,
@@ -76,7 +126,7 @@ const TransactionRow = memo(function TransactionRow({
   handleUnlink,
   setLinkingTxn,
   setEditingTxn,
-}) {
+}: TransactionRowProps) {
   if (t.isSummary) {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
     return (
@@ -174,11 +224,11 @@ const TransactionRow = memo(function TransactionRow({
           >
             <Link2 size={14} />
           </button>
-          {t.linkCount > 0 && (
+          {(t.linkCount ?? 0) > 0 && (
             <button
               className="p-1.5 text-emerald-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors group"
               onClick={() => handleUnlink(t)}
-              title={t.linkCount > 1 ? "Manage links" : "Unlink"}
+              title={(t.linkCount ?? 0) > 1 ? "Manage links" : "Unlink"}
             >
               <Check size={14} className="group-hover:hidden" />
               <Link2Off size={14} className="hidden group-hover:block" />
@@ -217,16 +267,21 @@ const PAGE_SIZE_LS_KEY = "txPageSize";
 export default function Transactions() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [data, setData] = useState({ data: [], total: 0, page: 1, pages: 0 });
+  const [data, setData] = useState<TransactionsResponse>({
+    data: [],
+    total: 0,
+    page: 1,
+    pages: 0,
+  });
   const [loading, setLoading] = useState(true);
-  const [accounts, setAccounts] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [payees, setPayees] = useState([]);
-  const [selected, setSelected] = useState(new Set());
-  const [linkingTxn, setLinkingTxn] = useState(null);
-  const [editingTxn, setEditingTxn] = useState(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [payees, setPayees] = useState<Payee[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [linkingTxn, setLinkingTxn] = useState<Transaction | null>(null);
+  const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
   const [creating, setCreating] = useState(false);
-  const [billingCycles, setBillingCycles] = useState([]);
+  const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
 
@@ -246,7 +301,7 @@ export default function Transactions() {
   // Refs to avoid closures in callbacks
   const categoriesRef = useRef(categories);
   const payeesRef = useRef(payees);
-  const abortRef = useRef(null);
+  const abortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     categoriesRef.current = categories;
   }, [categories]);
@@ -265,34 +320,36 @@ export default function Transactions() {
   );
 
   // Filters (initialized from URL search params)
-  const [filters, setFilters] = useState(() => {
-    const urlToFilters = {
-      search: "",
-      accountId: "",
-      categoryId: "",
-      payeeId: "",
-      type: "",
-      dateFrom: "",
-      dateTo: "",
-      uncategorized: "",
-      linked: "",
-      sortBy: "date",
-      sortOrder: "DESC",
-      page: 1,
-    };
-    URL_PARAMS.forEach((k) => {
-      const v = searchParams.get(k);
-      if (v !== null && v !== "") urlToFilters[k] = v;
-    });
-    return { ...urlToFilters, limit: pageSize || 0 };
-  });
+  const [filters, setFilters] = useState<Record<string, string | number>>(
+    () => {
+      const urlToFilters: Record<string, string | number> = {
+        search: "",
+        accountId: "",
+        categoryId: "",
+        payeeId: "",
+        type: "",
+        dateFrom: "",
+        dateTo: "",
+        uncategorized: "",
+        linked: "",
+        sortBy: "date",
+        sortOrder: "DESC",
+        page: 1,
+      };
+      URL_PARAMS.forEach((k) => {
+        const v = searchParams.get(k);
+        if (v !== null && v !== "") urlToFilters[k] = v;
+      });
+      return { ...urlToFilters, limit: pageSize || 0 };
+    },
+  );
 
   // Keep the URL in sync with the current filters (browser back/forward friendly)
   useEffect(() => {
-    const params = {};
+    const params: Record<string, string> = {};
     URL_PARAMS.forEach((k) => {
       const v = filters[k];
-      if (v !== "" && v !== null && v !== undefined) params[k] = v;
+      if (v !== "" && v !== null && v !== undefined) params[k] = String(v);
     });
     const urlParams = Object.fromEntries(searchParams.entries());
     if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
@@ -302,7 +359,7 @@ export default function Transactions() {
 
   // React to external URL changes (navigation, back/forward, shared links)
   useEffect(() => {
-    const urlToFilters = {};
+    const urlToFilters: Record<string, string> = {};
     let changed = false;
     URL_PARAMS.forEach((k) => {
       const v = searchParams.get(k);
@@ -352,7 +409,7 @@ export default function Transactions() {
       .catch(() => {});
   }, []);
 
-  const applyPageSize = (size) => {
+  const applyPageSize = (size: number) => {
     const n = Number(size);
     if (!Number.isFinite(n) || n < 0) return;
     setPageSize(n);
@@ -361,7 +418,7 @@ export default function Transactions() {
       api.updateUserSettings({ pageSize: n }).catch(() => {});
   };
 
-  const handlePresetChange = (val) => {
+  const handlePresetChange = (val: string) => {
     if (val === "custom") {
       setCustomInput(String(pageSize));
       setPreset("custom");
@@ -378,7 +435,7 @@ export default function Transactions() {
     applyPageSize(n);
   };
 
-  const togglePersist = (checked) => {
+  const togglePersist = (checked: boolean) => {
     setPersistPageSize(checked);
     api
       .updateUserSettings({ pageSize: checked ? pageSize : null })
@@ -392,7 +449,7 @@ export default function Transactions() {
 
     setLoading(true);
     try {
-      const params = {};
+      const params: QueryParams = {};
       Object.entries(filters).forEach(([k, v]) => {
         if (v !== "" && v !== null && v !== undefined) params[k] = v;
       });
@@ -401,7 +458,7 @@ export default function Transactions() {
       });
       if (abortRef.current === controller) setData(res);
     } catch (err) {
-      if (err.name !== "AbortError") console.error(err);
+      if ((err as Error).name !== "AbortError") console.error(err);
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
@@ -445,7 +502,7 @@ export default function Transactions() {
     let cancelled = false;
     setLoadingCycles(true);
     api
-      .getBillingCycles(filters.accountId)
+      .getBillingCycles(String(filters.accountId))
       .then((res) => {
         if (!cancelled) setBillingCycles(res.data || []);
       })
@@ -460,12 +517,12 @@ export default function Transactions() {
     };
   }, [filters.accountId, isCreditCardFilter]);
 
-  const updateFilter = (key, value) => {
+  const updateFilter = (key: string, value: string) => {
     setFilters((f) => ({ ...f, [key]: value, page: 1 }));
     setSelected(new Set());
   };
 
-  const toggleSort = (col) => {
+  const toggleSort = (col: string) => {
     setFilters((f) => ({
       ...f,
       sortBy: col,
@@ -474,12 +531,12 @@ export default function Transactions() {
     setSelected(new Set());
   };
 
-  const goToPage = (page) => {
+  const goToPage = (page: number) => {
     setFilters((f) => ({ ...f, page }));
     setSelected(new Set());
   };
 
-  const SortIcon = ({ col }) => {
+  const SortIcon = ({ col }: { col: string }) => {
     if (filters.sortBy !== col) return null;
     return filters.sortOrder === "ASC" ? (
       <ChevronUp size={14} />
@@ -488,57 +545,63 @@ export default function Transactions() {
     );
   };
 
-  const handleCategoryChange = useCallback(async (txnId, categoryId, txn) => {
-    try {
-      await api.updateTransaction(txnId, {
-        categoryId: categoryId || null,
-        tags: txn.tags || [],
-        notes: txn.notes || "",
-        payeeId: txn.payeeId || null,
-      });
-      setData((prev) => ({
-        ...prev,
-        data: prev.data.map((t) => {
-          if (t.id !== txnId) return t;
-          const cat = categoriesRef.current.find((c) => c.id === categoryId);
-          return {
-            ...t,
-            categoryId,
-            categoryName: cat?.name || "",
-            categoryColor: cat?.color || "",
-            categoryIcon: cat?.icon || "",
-          };
-        }),
-      }));
-    } catch (err) {
-      console.error(err);
-    }
-  }, []);
+  const handleCategoryChange = useCallback(
+    async (txnId: string, categoryId: string, txn: Transaction) => {
+      try {
+        await api.updateTransaction(txnId, {
+          categoryId: categoryId || null,
+          tags: txn.tags || [],
+          notes: txn.notes || "",
+          payeeId: txn.payeeId || null,
+        });
+        setData((prev) => ({
+          ...prev,
+          data: prev.data.map((t) => {
+            if (t.id !== txnId) return t;
+            const cat = categoriesRef.current.find((c) => c.id === categoryId);
+            return {
+              ...t,
+              categoryId,
+              categoryName: cat?.name || "",
+              categoryColor: cat?.color || "",
+              categoryIcon: cat?.icon || "",
+            };
+          }),
+        }));
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [],
+  );
 
-  const handlePayeeChange = useCallback(async (txnId, payeeId, txn) => {
-    try {
-      if (txn.payeeId === payeeId) return;
+  const handlePayeeChange = useCallback(
+    async (txnId: string, payeeId: string, txn: Transaction) => {
+      try {
+        if (txn.payeeId === payeeId) return;
 
-      await api.updateTransaction(txnId, {
-        categoryId: txn.categoryId,
-        tags: txn.tags || [],
-        notes: txn.notes || "",
-        payeeId: payeeId || null,
-      });
-      setData((prev) => ({
-        ...prev,
-        data: prev.data.map((t) => {
-          if (t.id !== txnId) return t;
-          const p = payeesRef.current.find((p) => p.id === payeeId);
-          return { ...t, payeeId, payee: p?.name || "" };
-        }),
-      }));
-    } catch (err) {
-      console.error(err);
-    }
-  }, []);
+        await api.updateTransaction(txnId, {
+          categoryId: txn.categoryId,
+          tags: txn.tags || [],
+          notes: txn.notes || "",
+          payeeId: payeeId || null,
+        });
+        setData((prev) => ({
+          ...prev,
+          data: prev.data.map((t) => {
+            if (t.id !== txnId) return t;
+            const p = payeesRef.current.find((p) => p.id === payeeId);
+            return { ...t, payeeId, payee: p?.name || "" };
+          }),
+        }));
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [],
+  );
 
-  const handleBulkCategorize = async (categoryId) => {
+  const handleBulkCategorize = async (categoryId: string) => {
     if (selected.size === 0) return;
     try {
       await api.bulkCategorize({ transactionIds: [...selected], categoryId });
@@ -549,7 +612,7 @@ export default function Transactions() {
     }
   };
 
-  const handleBulkUpdatePayee = async (payeeId) => {
+  const handleBulkUpdatePayee = async (payeeId: string) => {
     if (selected.size === 0) return;
     try {
       await api.bulkUpdatePayee({ transactionIds: [...selected], payeeId });
@@ -560,7 +623,7 @@ export default function Transactions() {
     }
   };
 
-  const handleBulkSetBillingCycle = async (billingCycleId) => {
+  const handleBulkSetBillingCycle = async (billingCycleId: string) => {
     if (selected.size === 0) return;
     try {
       await api.bulkUpdateBillingCycle({
@@ -587,7 +650,7 @@ export default function Transactions() {
   };
 
   const handleDelete = useCallback(
-    async (id) => {
+    async (id: string) => {
       if (!confirm("Delete this transaction?")) return;
       try {
         await api.deleteTransaction(id);
@@ -600,8 +663,8 @@ export default function Transactions() {
   );
 
   const handleUnlink = useCallback(
-    async (t) => {
-      if (t.linkCount > 1 || !t.linkId) {
+    async (t: Transaction) => {
+      if ((t.linkCount ?? 0) > 1 || !t.linkId) {
         navigate("/linking");
         return;
       }
@@ -616,7 +679,7 @@ export default function Transactions() {
     [loadTransactions, navigate],
   );
 
-  const toggleSelect = useCallback((id) => {
+  const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
@@ -959,7 +1022,7 @@ export default function Transactions() {
                 Prev
               </button>
               {Array.from({ length: Math.min(data.pages, 7) }, (_, i) => {
-                let pageNum;
+                let pageNum: number;
                 if (data.pages <= 7) {
                   pageNum = i + 1;
                 } else if (data.page <= 4) {

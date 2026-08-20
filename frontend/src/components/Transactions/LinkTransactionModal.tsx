@@ -17,20 +17,31 @@ import {
   formatDateOnly,
   parseDateOnly,
 } from "../../utils/formatters";
+import type { Transaction, Account, Link, QueryParams } from "../../types";
 
-export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
+interface LinkTransactionModalProps {
+  txn: Transaction;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+export default function LinkTransactionModal({
+  txn,
+  onClose,
+  onSuccess,
+}: LinkTransactionModalProps) {
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState("");
-  const [accounts, setAccounts] = useState([]);
-  const [results, setResults] = useState([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [results, setResults] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [linkType, setLinkType] = useState("");
-  const [pendingTarget, setPendingTarget] = useState(null);
+  const [pendingTarget, setPendingTarget] = useState<Transaction | null>(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [matchAmount, setMatchAmount] = useState(true);
   const [excludeSameAccount, setExcludeSameAccount] = useState(true);
-  const [existingLinks, setExistingLinks] = useState([]);
+  const [existingLinks, setExistingLinks] = useState<Link[]>([]);
 
   const loadLinks = async () => {
     try {
@@ -63,17 +74,18 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     } else {
       handleSearch();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txn.id, txn.date]);
 
   const handleSearch = async (
-    dFrom = dateFrom,
-    dTo = dateTo,
-    mAmount = matchAmount,
-    exclAccount = excludeSameAccount,
+    dFrom: string = dateFrom,
+    dTo: string = dateTo,
+    mAmount: boolean = matchAmount,
+    exclAccount: boolean = excludeSameAccount,
   ) => {
     setLoading(true);
     try {
-      const params = {
+      const params: QueryParams = {
         search,
         accountId,
         dateFrom: dFrom,
@@ -101,11 +113,11 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     }
   };
 
-  const isSameAccount = (targetTxn) => {
+  const isSameAccount = (targetTxn: Transaction) => {
     return targetTxn.accountId === txn.accountId;
   };
 
-  const handleSelectTarget = (targetTxn) => {
+  const handleSelectTarget = (targetTxn: Transaction) => {
     if (isSameAccount(targetTxn)) {
       // Same account: show confirmation step with cashback/refund choice
       setPendingTarget(targetTxn);
@@ -116,7 +128,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
     }
   };
 
-  const performLink = async (targetTxn, type) => {
+  const performLink = async (targetTxn: Transaction, type: string) => {
     try {
       let fromId = txn.id;
       let toId = targetTxn.id;
@@ -133,11 +145,11 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
       });
       onSuccess();
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const handleUnlinkLink = async (linkId) => {
+  const handleUnlinkLink = async (linkId: string) => {
     if (!confirm("Remove this link?")) return;
     try {
       await api.deleteLink(linkId);
@@ -372,7 +384,7 @@ export default function LinkTransactionModal({ txn, onClose, onSuccess }) {
             </div>
             <div className="space-y-1.5">
               {existingLinks.map((l) => {
-                const other = l.fromTxnID === txn.id ? l.toTxn : l.fromTxn;
+                const other = l.fromTxnId === txn.id ? l.toTxn : l.fromTxn;
                 const typeClass =
                   l.type === "transfer"
                     ? "bg-blue-500/10 text-blue-400"

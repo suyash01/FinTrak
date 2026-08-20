@@ -1,11 +1,20 @@
 import { Check } from "lucide-react";
+import type { ButtonHTMLAttributes } from "react";
+
+interface CheckboxProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "onChange"
+> {
+  checked: boolean;
+  onChange?: (checked: boolean) => void;
+}
 
 export default function Checkbox({
   checked,
   onChange,
   className = "",
   ...props
-}) {
+}: CheckboxProps) {
   return (
     <button
       type="button"

@@ -1,15 +1,15 @@
 # --- Build Stage ---
-FROM node:24-alpine AS builder
+FROM oven/bun:1 AS builder
 
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
 # Default API URL; override at build time with: docker build --build-arg VITE_API_URL=...
 ARG VITE_API_URL=/api/v1
 ENV VITE_API_URL=${VITE_API_URL}
-RUN npm run build
+RUN bun run build
 
 # --- Runtime Stage ---
 FROM nginx:stable-alpine

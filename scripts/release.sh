@@ -45,7 +45,7 @@ echo "==> Running backend tests"
 
 # 4. Frontend production build
 echo "==> Building frontend"
-(cd "$ROOT/frontend" && npm run build)
+(cd "$ROOT/frontend" && bun run build)
 
 # 5. Tag and push (triggers the publish workflow)
 echo "==> Tagging $VERSION"

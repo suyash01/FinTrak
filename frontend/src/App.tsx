@@ -12,9 +12,10 @@ import Login from "./components/Auth/Login";
 import { SettingsProvider, useSettings } from "./context/SettingsContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import "./index.css";
-import { useState, useEffect } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import api from "./api/client";
 import { Trash2, Edit2, Plus, X } from "lucide-react";
+import type { AccountType } from "./types";
 
 function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
@@ -80,15 +81,25 @@ function Settings() {
   );
 }
 
+interface AccountTypeForm {
+  id: string;
+  name: string;
+  positiveTxnType: string;
+}
+
+const EMPTY_ACCOUNT_TYPE_FORM: AccountTypeForm = {
+  id: "",
+  name: "",
+  positiveTxnType: "credit",
+};
+
 function AccountTypesManager() {
-  const [types, setTypes] = useState([]);
+  const [types, setTypes] = useState<AccountType[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState(null);
-  const [formData, setFormData] = useState({
-    id: "",
-    name: "",
-    positiveTxnType: "credit",
-  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<AccountTypeForm>(
+    EMPTY_ACCOUNT_TYPE_FORM,
+  );
 
   useEffect(() => {
     fetchTypes();
@@ -105,7 +116,7 @@ function AccountTypesManager() {
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
       if (editingId) {
@@ -117,14 +128,14 @@ function AccountTypesManager() {
         await api.createAccountType(formData);
       }
       setEditingId(null);
-      setFormData({ id: "", name: "", positiveTxnType: "credit" });
+      setFormData(EMPTY_ACCOUNT_TYPE_FORM);
       fetchTypes();
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id: string) => {
     if (
       !confirm("Delete this account type? This will fail if accounts use it.")
     )
@@ -133,7 +144,7 @@ function AccountTypesManager() {
       await api.deleteAccountType(id);
       fetchTypes();
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
@@ -227,7 +238,7 @@ function AccountTypesManager() {
         <button
           onClick={() => {
             setEditingId("new");
-            setFormData({ id: "", name: "", positiveTxnType: "credit" });
+            setFormData(EMPTY_ACCOUNT_TYPE_FORM);
           }}
           className="text-sm text-cyan-500 hover:text-cyan-400 flex items-center gap-1 font-medium"
         >
@@ -322,7 +333,7 @@ function PaperlessSettingsManager() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleSave = async (e) => {
+  const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setSaved(false);
@@ -334,7 +345,7 @@ function PaperlessSettingsManager() {
       });
       setSaved(true);
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     } finally {
       setSaving(false);
     }

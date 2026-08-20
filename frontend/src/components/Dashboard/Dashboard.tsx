@@ -16,25 +16,31 @@ import { useSearchParams } from "react-router-dom";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import type {
+  DashboardSummary,
+  Account,
+  CategorySpend,
+  QueryParams,
+} from "../../types";
 
-function toISODate(d) {
+function toISODate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
-function lastTwelveMonthsRange() {
+function lastTwelveMonthsRange(): { dateFrom: string; dateTo: string } {
   const to = new Date();
   const from = new Date(to.getFullYear(), to.getMonth() - 12, to.getDate() + 1);
   return { dateFrom: toISODate(from), dateTo: toISODate(to) };
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [accounts, setAccounts] = useState([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const defaultRange = lastTwelveMonthsRange();
   const [searchParams, setSearchParams] = useSearchParams();
   const [accountId, setAccountId] = useState(
@@ -67,7 +73,7 @@ export default function Dashboard() {
 
   // Keep filters in the URL for easy sharing / navigation
   useEffect(() => {
-    const params = {};
+    const params: Record<string, string> = {};
     if (accountId) params.accountId = accountId;
     if (dateFrom) params.dateFrom = dateFrom;
     if (dateTo) params.dateTo = dateTo;
@@ -89,14 +95,14 @@ export default function Dashboard() {
     setLoading(true);
     setError("");
     try {
-      const params = {};
+      const params: QueryParams = {};
       if (accountId) params.accountId = accountId;
       if (dateFrom) params.dateFrom = dateFrom;
       if (dateTo) params.dateTo = dateTo;
       const res = await api.getDashboardSummary(params);
       setData(res);
     } catch (err) {
-      setError(err.message || "Failed to load dashboard");
+      setError((err as Error).message || "Failed to load dashboard");
     } finally {
       setLoading(false);
     }
@@ -261,7 +267,7 @@ export default function Dashboard() {
                         borderRadius: "8px",
                         color: "#f1f5f9",
                       }}
-                      formatter={(v) => formatCurrency(v)}
+                      formatter={(v) => formatCurrency(Number(v))}
                     />
                     <Bar
                       dataKey="income"
@@ -416,7 +422,15 @@ export default function Dashboard() {
   );
 }
 
-function CategoryPieSection({ title, categories, emptyMessage }) {
+function CategoryPieSection({
+  title,
+  categories,
+  emptyMessage,
+}: {
+  title: string;
+  categories: CategorySpend[];
+  emptyMessage: string;
+}) {
   const { compactLayout } = useSettings();
   return (
     <div
@@ -455,7 +469,7 @@ function CategoryPieSection({ title, categories, emptyMessage }) {
                       borderRadius: "8px",
                       color: "#f1f5f9",
                     }}
-                    formatter={(v) => formatCurrency(v)}
+                    formatter={(v) => formatCurrency(Number(v))}
                   />
                 </PieChart>
               </ResponsiveContainer>

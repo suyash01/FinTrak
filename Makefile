@@ -48,7 +48,7 @@ build-backend:
 	cd backend && go build ./...
 
 build-frontend:
-	cd frontend && npm run build
+	cd frontend && bun run build
 
 release:
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v1.2.3"; exit 1; fi

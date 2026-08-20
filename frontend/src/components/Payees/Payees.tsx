@@ -1,15 +1,33 @@
-import { useState, useEffect } from 'react';
-import { Plus, Search, Trash2, Edit2, Users, ReceiptText, X, Wallet, AlertCircle } from 'lucide-react';
-import api from '../../api/client';
+import { useState, useEffect, type FormEvent } from "react";
+import {
+  Plus,
+  Search,
+  Trash2,
+  Edit2,
+  Users,
+  ReceiptText,
+  X,
+  Wallet,
+  AlertCircle,
+} from "lucide-react";
+import api from "../../api/client";
+import type { Payee, Account } from "../../types";
+
+interface PayeeForm {
+  name: string;
+  accountId: string;
+}
+
+const EMPTY_FORM: PayeeForm = { name: "", accountId: "" };
 
 export default function Payees() {
-  const [payees, setPayees] = useState([]);
+  const [payees, setPayees] = useState<Payee[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
-  const [editingPayee, setEditingPayee] = useState(null);
-  const [accounts, setAccounts] = useState([]);
-  const [formData, setFormData] = useState({ name: '', accountId: '' });
+  const [editingPayee, setEditingPayee] = useState<Payee | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [formData, setFormData] = useState<PayeeForm>(EMPTY_FORM);
 
   useEffect(() => {
     fetchPayees();
@@ -37,41 +55,46 @@ export default function Payees() {
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
       if (editingPayee) {
         await api.updatePayee(editingPayee.id, {
           name: formData.name,
-          accountId: formData.accountId || null
+          accountId: formData.accountId || null,
         });
       } else {
         await api.createPayee({
           name: formData.name,
-          accountId: formData.accountId || null
+          accountId: formData.accountId || null,
         });
       }
       setShowModal(false);
       setEditingPayee(null);
-      setFormData({ name: '', accountId: '' });
+      setFormData(EMPTY_FORM);
       fetchPayees();
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!confirm('Are you sure you want to delete this payee? This will NOT delete transactions but will remove the link.')) return;
+  const handleDelete = async (id: string) => {
+    if (
+      !confirm(
+        "Are you sure you want to delete this payee? This will NOT delete transactions but will remove the link.",
+      )
+    )
+      return;
     try {
       await api.deletePayee(id);
       fetchPayees();
     } catch (err) {
-      alert(err.message);
+      alert((err as Error).message);
     }
   };
 
-  const filteredPayees = payees.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase())
+  const filteredPayees = payees.filter((p) =>
+    p.name.toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
@@ -83,10 +106,16 @@ export default function Payees() {
               <Users className="text-cyan-500" />
               Payees
             </h1>
-            <p className="text-slate-400 text-sm mt-1">Manage entities you pay or receive money from</p>
+            <p className="text-slate-400 text-sm mt-1">
+              Manage entities you pay or receive money from
+            </p>
           </div>
-          <button 
-            onClick={() => { setEditingPayee(null); setFormData({ name: '', accountId: '' }); setShowModal(true); }}
+          <button
+            onClick={() => {
+              setEditingPayee(null);
+              setFormData(EMPTY_FORM);
+              setShowModal(true);
+            }}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-cyan-500/20 transition-all hover:scale-105 active:scale-95"
           >
             <Plus size={18} />
@@ -98,7 +127,10 @@ export default function Payees() {
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full space-y-6">
         {/* Search Bar */}
         <div className="relative group max-w-2xl">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-500 transition-colors" size={18} />
+          <Search
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-500 transition-colors"
+            size={18}
+          />
           <input
             type="text"
             placeholder="Search payees..."
@@ -115,40 +147,62 @@ export default function Payees() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {filteredPayees.map(payee => (
-              <div key={payee.id} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl hover:border-slate-700 transition-all group relative shadow-md">
+            {filteredPayees.map((payee) => (
+              <div
+                key={payee.id}
+                className="bg-slate-900 border border-slate-800 p-5 rounded-2xl hover:border-slate-700 transition-all group relative shadow-md"
+              >
                 <div className="flex justify-between items-start">
                   <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${payee.accountId ? 'bg-violet-500/10 text-violet-400 border-violet-500/20' : 'bg-slate-950 text-cyan-500 border-slate-800'}`}>
-                      {payee.accountId ? <Wallet size={20} /> : <ReceiptText size={20} />}
+                    <div
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${payee.accountId ? "bg-violet-500/10 text-violet-400 border-violet-500/20" : "bg-slate-950 text-cyan-500 border-slate-800"}`}
+                    >
+                      {payee.accountId ? (
+                        <Wallet size={20} />
+                      ) : (
+                        <ReceiptText size={20} />
+                      )}
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-bold text-slate-200">{payee.name}</h3>
+                        <h3 className="font-bold text-slate-200">
+                          {payee.name}
+                        </h3>
                         {payee.accountId && (
-                          <span className="text-[9px] font-bold bg-violet-500/20 text-violet-400 px-1.5 py-0.5 rounded uppercase tracking-wider">Account</span>
+                          <span className="text-[9px] font-bold bg-violet-500/20 text-violet-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                            Account
+                          </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-0.5 font-mono">ID: {payee.id.slice(0, 8)}</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                        ID: {payee.id.slice(0, 8)}
+                      </p>
                     </div>
                   </div>
                   <div className="flex gap-1">
-                     <button 
-                      onClick={() => { setEditingPayee(payee); setFormData({ name: payee.name, accountId: payee.accountId || '' }); setShowModal(true); }}
+                    <button
+                      onClick={() => {
+                        setEditingPayee(payee);
+                        setFormData({
+                          name: payee.name,
+                          accountId: payee.accountId || "",
+                        });
+                        setShowModal(true);
+                      }}
                       className="p-2 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded-lg transition-all"
                       title="Edit Payee"
                     >
                       <Edit2 size={16} />
-                     </button>
-                     {!payee.accountId && (
-                       <button 
+                    </button>
+                    {!payee.accountId && (
+                      <button
                         onClick={() => handleDelete(payee.id)}
                         className="p-2 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-all"
                         title="Delete Payee"
                       >
                         <Trash2 size={16} />
-                       </button>
-                     )}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -168,14 +222,21 @@ export default function Payees() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-               <h3 className="text-lg font-bold">{editingPayee ? 'Edit Payee' : 'Add New Payee'}</h3>
-               <button onClick={() => setShowModal(false)} className="text-slate-500 hover:text-white transition-colors">
-                  <X size={20} />
-               </button>
+              <h3 className="text-lg font-bold">
+                {editingPayee ? "Edit Payee" : "Add New Payee"}
+              </h3>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-slate-500 hover:text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Payee Name</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Payee Name
+                </label>
                 <input
                   type="text"
                   required
@@ -184,24 +245,31 @@ export default function Payees() {
                   placeholder="e.g. Amazon, Google, etc."
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
                 />
                 {editingPayee?.accountId && (
                   <p className="text-[10px] text-slate-500 mt-2 flex items-center gap-1">
-                    <AlertCircle size={12} /> Account-linked payees must be renamed via the Accounts page.
+                    <AlertCircle size={12} /> Account-linked payees must be
+                    renamed via the Accounts page.
                   </p>
                 )}
               </div>
-              
+
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Link to Account (Optional)</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Link to Account (Optional)
+                </label>
                 <select
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-cyan-500 transition-all font-medium"
                   value={formData.accountId}
-                  onChange={(e) => setFormData({ ...formData, accountId: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, accountId: e.target.value })
+                  }
                 >
                   <option value="">No linked account</option>
-                  {accounts.map(acc => (
+                  {accounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
                       {acc.name} ({acc.bank || acc.accountTypeName})
                     </option>
@@ -223,7 +291,7 @@ export default function Payees() {
                   type="submit"
                   className="bg-cyan-500 hover:bg-cyan-600 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-cyan-500/20 transition-all hover:scale-105 active:scale-95"
                 >
-                  {editingPayee ? 'Save Changes' : 'Create Payee'}
+                  {editingPayee ? "Save Changes" : "Create Payee"}
                 </button>
               </div>
             </form>
