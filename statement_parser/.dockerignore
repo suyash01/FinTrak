@@ -1,0 +1,39 @@
+.env
+.env.*
+.git
+.gitignore
+Dockerfile
+README.md
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.eggs
+.Python
+build
+dist
+
+# Virtual environments
+venv
+.venv
+env
+
+# Testing/coverage
+.pytest_cache
+.coverage
+htmlcov
+.tox
+
+# Editor/IDE
+.idea
+.vscode
+
+# OS cruft
+.DS_Store
+
+# Logs/temp
+*.log
+tmp

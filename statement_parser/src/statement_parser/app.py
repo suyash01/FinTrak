@@ -53,6 +53,12 @@ def index():
     return render_template("./index.html")
 
 
+@app.route("/health")
+def health():
+    # Liveness probe used by the Docker HEALTHCHECK.
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/extractors")
 def api_extractors():
     return jsonify({"extractors": list_extractors()})

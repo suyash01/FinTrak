@@ -30,6 +30,11 @@ class AppTests(unittest.TestCase):
         self.assertIn("text/html", resp.content_type)
         self.assertIn(b"<html", resp.data.lower())
 
+    def test_health_returns_ok(self):
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json(), {"status": "ok"})
+
     def test_api_extractors_lists_registered(self):
         resp = self.client.get("/api/extractors")
         self.assertEqual(resp.status_code, 200)
