@@ -10,6 +10,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -33,7 +34,7 @@ func GetBillingCycles(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -44,12 +45,12 @@ func GetBillingCycles(c *gin.Context) {
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
 		accountID, userID).Scan(&acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		log.Printf("Error in GetBillingCycles (account lookup): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -60,14 +61,14 @@ func GetBillingCycles(c *gin.Context) {
 
 	if err := ensureBillingCycles(c, db.Pool, userID, accountID); err != nil {
 		log.Printf("Error in GetBillingCycles (ensure cycles): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {
 		log.Printf("Error in GetBillingCycles (list cycles): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

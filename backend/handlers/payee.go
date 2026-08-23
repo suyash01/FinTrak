@@ -7,6 +7,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,7 +19,7 @@ func GetPayees(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees WHERE user_id = $1 ORDER BY name", auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetPayees: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -28,7 +29,7 @@ func GetPayees(c *gin.Context) {
 		var p models.Payee
 		if err := rows.Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			log.Printf("Error in GetPayees scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		payees = append(payees, p)
@@ -40,7 +41,7 @@ func GetPayees(c *gin.Context) {
 func CreatePayee(c *gin.Context) {
 	var req models.CreatePayeeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -53,11 +54,11 @@ func CreatePayee(c *gin.Context) {
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			c.JSON(http.StatusConflict, gin.H{"error": "a payee with this name already exists"})
+			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
 		log.Printf("Error in CreatePayee: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -67,13 +68,13 @@ func CreatePayee(c *gin.Context) {
 func UpdatePayee(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	var req models.CreatePayeeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -85,16 +86,16 @@ func UpdatePayee(c *gin.Context) {
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "payee not found"})
+			validation.RespondError(c, "payee not found", http.StatusNotFound)
 			return
 		}
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			c.JSON(http.StatusConflict, gin.H{"error": "a payee with this name already exists"})
+			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
 		log.Printf("Error in UpdatePayee: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -104,7 +105,7 @@ func UpdatePayee(c *gin.Context) {
 func DeletePayee(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -112,12 +113,12 @@ func DeletePayee(c *gin.Context) {
 	result, err := db.Pool.Exec(c, "DELETE FROM payees WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeletePayee: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if result.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "payee not found"})
+		validation.RespondError(c, "payee not found", http.StatusNotFound)
 		return
 	}
 

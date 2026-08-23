@@ -9,6 +9,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,7 +45,7 @@ func GetLinks(c *gin.Context) {
 	rows, err := db.Pool.Query(c, query, args...)
 	if err != nil {
 		log.Printf("Error in GetLinks: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -58,7 +59,7 @@ func GetLinks(c *gin.Context) {
 			&l.FromTxn.Date, &l.FromTxn.Description, &l.FromTxn.Amount, &l.FromTxn.Type, &l.FromTxn.AccountName,
 			&l.ToTxn.Date, &l.ToTxn.Description, &l.ToTxn.Amount, &l.ToTxn.Type, &l.ToTxn.AccountName); err != nil {
 			log.Printf("Error in GetLinks scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		l.FromTxn.ID = l.FromTxnID
@@ -72,19 +73,20 @@ func GetLinks(c *gin.Context) {
 func CreateLink(c *gin.Context) {
 	var req models.CreateLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error starting transaction in CreateLink: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
 
 	if req.Type != "transfer" && req.Type != "cashback" && req.Type != "refund" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid link type"})
+		validation.RespondError(c, "invalid link type", http.StatusBadRequest)
 		return
 	}
 
@@ -97,11 +99,11 @@ func CreateLink(c *gin.Context) {
 		[]uuid.UUID{req.FromTxnID, req.ToTxnID}, userID,
 	).Scan(&owned); err != nil {
 		log.Printf("Error checking transaction ownership in CreateLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if owned != 2 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
+		validation.RespondError(c, "one or both transactions not found", http.StatusNotFound)
 		return
 	}
 
@@ -113,11 +115,11 @@ func CreateLink(c *gin.Context) {
 		userID, req.Type, req.FromTxnID, req.ToTxnID,
 	).Scan(&dupCount); err != nil {
 		log.Printf("Error checking duplicate link in CreateLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if dupCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "link already exists"})
+		validation.RespondError(c, "link already exists", http.StatusConflict)
 		return
 	}
 
@@ -129,7 +131,7 @@ func CreateLink(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error inserting link in CreateLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -141,7 +143,8 @@ func CreateLink(c *gin.Context) {
 			req.FromTxnID, req.ToTxnID, userID,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			log.Printf("Error updating category for transfer in CreateLink: %v\n", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -157,7 +160,8 @@ func CreateLink(c *gin.Context) {
 			req.FromTxnID, req.ToTxnID, userID,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			log.Printf("Error updating payee for FromTxn in CreateLink: %v\n", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -171,13 +175,14 @@ func CreateLink(c *gin.Context) {
 		)
 		if err != nil {
 			log.Printf("Error updating payee for ToTxn: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
 
 	if err := tx.Commit(c); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error committing transaction in CreateLink: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -187,13 +192,14 @@ func CreateLink(c *gin.Context) {
 func BulkCreateLinks(c *gin.Context) {
 	var req models.BulkCreateLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error starting transaction in BulkCreateLinks: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
@@ -202,7 +208,7 @@ func BulkCreateLinks(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	for _, l := range req.Links {
 		if l.Type != "transfer" && l.Type != "cashback" && l.Type != "refund" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid link type"})
+			validation.RespondError(c, "invalid link type", http.StatusBadRequest)
 			return
 		}
 
@@ -213,11 +219,11 @@ func BulkCreateLinks(c *gin.Context) {
 			[]uuid.UUID{l.FromTxnID, l.ToTxnID}, userID,
 		).Scan(&owned); err != nil {
 			log.Printf("Error checking transaction ownership in BulkCreateLinks: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if owned != 2 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "one or both transactions not found"})
+			validation.RespondError(c, "one or both transactions not found", http.StatusNotFound)
 			return
 		}
 
@@ -228,7 +234,7 @@ func BulkCreateLinks(c *gin.Context) {
 			userID, l.Type, l.FromTxnID, l.ToTxnID,
 		).Scan(&dupCount); err != nil {
 			log.Printf("Error checking duplicate link in BulkCreateLinks: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if dupCount > 0 {
@@ -241,7 +247,7 @@ func BulkCreateLinks(c *gin.Context) {
 		)
 		if err != nil {
 			log.Printf("Error inserting link in BulkCreateLinks loop: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -252,7 +258,8 @@ func BulkCreateLinks(c *gin.Context) {
 				l.FromTxnID, l.ToTxnID, userID,
 			)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				log.Printf("Error updating category for transfer in BulkCreateLinks: %v\n", err)
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 
@@ -266,7 +273,8 @@ func BulkCreateLinks(c *gin.Context) {
 				l.FromTxnID, l.ToTxnID, userID,
 			)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				log.Printf("Error updating payee in BulkCreateLinks (from txn): %v\n", err)
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 
@@ -279,7 +287,8 @@ func BulkCreateLinks(c *gin.Context) {
 				l.ToTxnID, l.FromTxnID, userID,
 			)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				log.Printf("Error updating payee in BulkCreateLinks (to txn): %v\n", err)
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -287,7 +296,8 @@ func BulkCreateLinks(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error committing transaction in BulkCreateLinks: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -297,13 +307,14 @@ func BulkCreateLinks(c *gin.Context) {
 func DeleteLink(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error starting transaction in DeleteLink: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
@@ -312,7 +323,8 @@ func DeleteLink(c *gin.Context) {
 	var fromTxnID, toTxnID uuid.UUID
 	err = tx.QueryRow(c, "SELECT from_txn_id, to_txn_id FROM links WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c)).Scan(&fromTxnID, &toTxnID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "link not found"})
+		log.Printf("Error looking up link in DeleteLink: %v\n", err)
+		validation.RespondError(c, "link not found", http.StatusNotFound)
 		return
 	}
 
@@ -320,7 +332,7 @@ func DeleteLink(c *gin.Context) {
 	_, err = tx.Exec(c, "DELETE FROM links WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error deleting link in DeleteLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -339,13 +351,13 @@ func DeleteLink(c *gin.Context) {
 	)
 	if err != nil {
 		log.Printf("Error resetting transactions in DeleteLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := tx.Commit(c); err != nil {
 		log.Printf("Error committing transaction in DeleteLink: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -355,7 +367,7 @@ func DeleteLink(c *gin.Context) {
 func BulkDeleteLinks(c *gin.Context) {
 	var req models.BulkDeleteLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -367,7 +379,7 @@ func BulkDeleteLinks(c *gin.Context) {
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
 		log.Printf("Error starting transaction in BulkDeleteLinks: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
@@ -376,7 +388,7 @@ func BulkDeleteLinks(c *gin.Context) {
 	rows, err := tx.Query(c, "SELECT from_txn_id, to_txn_id FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error querying links in BulkDeleteLinks: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -392,7 +404,7 @@ func BulkDeleteLinks(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("Error iterating links in BulkDeleteLinks: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -400,7 +412,7 @@ func BulkDeleteLinks(c *gin.Context) {
 	_, err = tx.Exec(c, "DELETE FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error deleting links in BulkDeleteLinks: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -418,13 +430,14 @@ func BulkDeleteLinks(c *gin.Context) {
 		)
 		if err != nil {
 			log.Printf("Error resetting transactions in BulkDeleteLinks: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
 
 	if err := tx.Commit(c); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		log.Printf("Error committing transaction in BulkDeleteLinks: %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -456,7 +469,7 @@ func GetTransferSuggestions(c *gin.Context) {
 	`, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetTransferSuggestions: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -533,7 +546,7 @@ func GetCashbackSuggestions(c *gin.Context) {
 	`, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetCashbackSuggestions: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -546,7 +559,7 @@ func GetCashbackSuggestions(c *gin.Context) {
 			&s.DebitTxn.ID, &s.DebitTxn.AccountID, &s.DebitTxn.Date, &s.DebitTxn.Description, &s.DebitTxn.Amount, &s.DebitTxn.Type, &s.DebitTxn.AccountName,
 		); err != nil {
 			log.Printf("Error in GetCashbackSuggestions scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		s.Score = 70

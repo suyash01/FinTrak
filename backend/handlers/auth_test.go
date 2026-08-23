@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
@@ -49,8 +48,8 @@ func TestRegister(t *testing.T) {
 
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs(reqBody.Email, pgxmock.AnyArg()).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "created_at"}).
-			AddRow(userID, reqBody.Email, time.Now()))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email"}).
+			AddRow(userID, reqBody.Email))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -135,10 +134,10 @@ func TestLogin(t *testing.T) {
 
 	reqBody := models.LoginRequest{Email: "test@example.com", Password: password}
 
-	mock.ExpectQuery("SELECT id, email, password_hash, created_at FROM users").
+	mock.ExpectQuery("SELECT id, email, password_hash FROM users").
 		WithArgs(reqBody.Email).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "created_at"}).
-			AddRow(userID, reqBody.Email, hash, time.Now()))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash"}).
+			AddRow(userID, reqBody.Email, hash))
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
@@ -179,10 +178,10 @@ func TestLoginInvalidPassword(t *testing.T) {
 
 	reqBody := models.LoginRequest{Email: "test@example.com", Password: "wrong-password"}
 
-	mock.ExpectQuery("SELECT id, email, password_hash, created_at FROM users").
+	mock.ExpectQuery("SELECT id, email, password_hash FROM users").
 		WithArgs(reqBody.Email).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "created_at"}).
-			AddRow(userID, reqBody.Email, hash, time.Now()))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash"}).
+			AddRow(userID, reqBody.Email, hash))
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
@@ -210,9 +209,9 @@ func TestLoginUnknownUser(t *testing.T) {
 
 	reqBody := models.LoginRequest{Email: "missing@example.com", Password: "whatever"}
 
-	mock.ExpectQuery("SELECT id, email, password_hash, created_at FROM users").
+	mock.ExpectQuery("SELECT id, email, password_hash FROM users").
 		WithArgs(reqBody.Email).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "created_at"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash"}))
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))

@@ -8,6 +8,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -25,7 +26,7 @@ func GetRules(c *gin.Context) {
 		 ORDER BY r.priority DESC`, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetRules: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -35,7 +36,7 @@ func GetRules(c *gin.Context) {
 		var r models.Rule
 		if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Payee, &r.Priority, &r.CategoryName); err != nil {
 			log.Printf("Error in GetRules scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		rules = append(rules, r)
@@ -47,7 +48,7 @@ func GetRules(c *gin.Context) {
 func CreateRule(c *gin.Context) {
 	var req models.CreateRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -64,7 +65,7 @@ func CreateRule(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error in CreateRule: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -74,7 +75,7 @@ func CreateRule(c *gin.Context) {
 func DeleteRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -82,12 +83,12 @@ func DeleteRule(c *gin.Context) {
 	result, err := db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteRule: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if result.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
+		validation.RespondError(c, "rule not found", http.StatusNotFound)
 		return
 	}
 
@@ -97,13 +98,13 @@ func DeleteRule(c *gin.Context) {
 func UpdateRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	var req models.UpdateRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -116,11 +117,11 @@ func UpdateRule(c *gin.Context) {
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
+			validation.RespondError(c, "rule not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("Error in UpdateRule: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -134,7 +135,7 @@ func ApplyRules(c *gin.Context) {
 	rules, err := loadRules(c, userID)
 	if err != nil {
 		log.Printf("Error in ApplyRules (getting rules): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -154,7 +155,7 @@ func ApplyRules(c *gin.Context) {
 	txnRows, err := db.Pool.Query(c, query, args...)
 	if err != nil {
 		log.Printf("Error in ApplyRules (getting transactions): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer txnRows.Close()
@@ -163,7 +164,7 @@ func ApplyRules(c *gin.Context) {
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
 		log.Printf("Error in ApplyRules (starting transaction): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
@@ -201,7 +202,7 @@ func ApplyRules(c *gin.Context) {
 
 	if err := tx.Commit(c); err != nil {
 		log.Printf("Error in ApplyRules (committing transaction): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

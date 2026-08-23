@@ -14,6 +14,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -174,7 +175,7 @@ func GetTransactions(c *gin.Context) {
 	rows, err := db.Pool.Query(c, query, args...)
 	if err != nil {
 		log.Printf("Error in GetTransactions: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -187,7 +188,7 @@ func GetTransactions(c *gin.Context) {
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkCount, &t.LinkID,
 			&t.BillingCycleID, &t.BillingCycleLabel); err != nil {
 			log.Printf("Error in GetTransactions scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		transactions = append(transactions, t)
@@ -219,20 +220,20 @@ func GetTransactions(c *gin.Context) {
 func CreateTransaction(c *gin.Context) {
 	var req models.CreateTransactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	if req.Type != "debit" && req.Type != "credit" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 'debit' or 'credit'"})
+		validation.RespondError(c, "type must be 'debit' or 'credit'", http.StatusBadRequest)
 		return
 	}
 	if req.Amount <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be positive"})
+		validation.RespondError(c, "amount must be positive", http.StatusBadRequest)
 		return
 	}
 	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (expected YYYY-MM-DD)"})
+		validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
 		return
 	}
 
@@ -246,16 +247,16 @@ func CreateTransaction(c *gin.Context) {
 		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID, &acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		log.Printf("Error in CreateTransaction (checking account): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if ownerID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		validation.RespondError(c, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -265,7 +266,7 @@ func CreateTransaction(c *gin.Context) {
 		rules, err := loadRules(c, userID)
 		if err != nil {
 			log.Printf("Error in CreateTransaction (getting rules): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		matchedCat, matchedPayee := autoCategorize(rules, req.Description)
@@ -282,7 +283,7 @@ func CreateTransaction(c *gin.Context) {
 		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
 	if err != nil {
 		log.Printf("Error in CreateTransaction (insert): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -292,7 +293,7 @@ func CreateTransaction(c *gin.Context) {
 	if acctTypeID == "credit_card" {
 		if err := ensureBillingCycles(c, db.Pool, userID, req.AccountID); err != nil {
 			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if req.BillingCycleID != nil {
@@ -300,7 +301,7 @@ func CreateTransaction(c *gin.Context) {
 				"UPDATE transactions SET billing_cycle_id = $1 WHERE id = $2 AND user_id = $3",
 				*req.BillingCycleID, id, userID); err != nil {
 				log.Printf("Error in CreateTransaction (set billing cycle): %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -312,13 +313,13 @@ func CreateTransaction(c *gin.Context) {
 func UpdateTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	var req models.UpdateTransactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -375,7 +376,7 @@ func UpdateTransaction(c *gin.Context) {
 	}
 	if req.Type != nil {
 		if *req.Type != "debit" && *req.Type != "credit" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "type must be 'debit' or 'credit'"})
+			validation.RespondError(c, "type must be 'debit' or 'credit'", http.StatusBadRequest)
 			return
 		}
 		setClauses = append(setClauses, fmt.Sprintf("type = $%d", paramIdx))
@@ -398,7 +399,7 @@ func UpdateTransaction(c *gin.Context) {
 	}
 
 	if len(setClauses) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		validation.RespondError(c, "no fields to update", http.StatusBadRequest)
 		return
 	}
 
@@ -410,12 +411,12 @@ func UpdateTransaction(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
 		log.Printf("Error in UpdateTransaction: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if result.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "transaction not found"})
+		validation.RespondError(c, "transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -425,7 +426,7 @@ func UpdateTransaction(c *gin.Context) {
 func BulkCategorize(c *gin.Context) {
 	var req models.BulkCategorizeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -433,7 +434,7 @@ func BulkCategorize(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, req.CategoryID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkCategorize: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -443,7 +444,7 @@ func BulkCategorize(c *gin.Context) {
 func BulkUpdatePayee(c *gin.Context) {
 	var req models.BulkUpdatePayeeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -451,7 +452,7 @@ func BulkUpdatePayee(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdatePayee: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -461,7 +462,7 @@ func BulkUpdatePayee(c *gin.Context) {
 func BulkUpdateBillingCycle(c *gin.Context) {
 	var req models.BulkBillingCycleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -469,7 +470,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdateBillingCycle: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -479,7 +480,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 func BulkDeleteTransactions(c *gin.Context) {
 	var req models.BulkDeleteTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -487,7 +488,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkDeleteTransactions: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -497,7 +498,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 func DeleteTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -505,12 +506,12 @@ func DeleteTransaction(c *gin.Context) {
 	result, err := db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		log.Printf("Error in DeleteTransaction: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if result.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "transaction not found"})
+		validation.RespondError(c, "transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -520,7 +521,7 @@ func DeleteTransaction(c *gin.Context) {
 func ImportTransactions(c *gin.Context) {
 	var req models.ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -528,29 +529,29 @@ func ImportTransactions(c *gin.Context) {
 
 	// Validate payload before touching the database.
 	if len(req.Transactions) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no transactions to import"})
+		validation.RespondError(c, "no transactions to import", http.StatusBadRequest)
 		return
 	}
 	if len(req.Transactions) > maxImportBatch {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many transactions (max %d per import)", maxImportBatch)})
+		validation.RespondError(c, fmt.Sprintf("too many transactions (max %d per import)", maxImportBatch), http.StatusBadRequest)
 		return
 	}
 	action := req.DuplicateAction
 	if action != "" && action != "skip" && action != "keep" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "duplicateAction must be 'skip' or 'keep'"})
+		validation.RespondError(c, "duplicateAction must be 'skip' or 'keep'", http.StatusBadRequest)
 		return
 	}
 	for i, t := range req.Transactions {
 		if t.Type != "debit" && t.Type != "credit" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type), http.StatusBadRequest)
 			return
 		}
 		if t.Amount <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount), http.StatusBadRequest)
 			return
 		}
 		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date), http.StatusBadRequest)
 			return
 		}
 	}
@@ -563,16 +564,16 @@ func ImportTransactions(c *gin.Context) {
 		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID, &acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		log.Printf("Error in ImportTransactions (checking account): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if ownerID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		validation.RespondError(c, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -580,7 +581,7 @@ func ImportTransactions(c *gin.Context) {
 	rules, err := loadRules(c, userID)
 	if err != nil {
 		log.Printf("Error in ImportTransactions (getting rules): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -588,7 +589,7 @@ func ImportTransactions(c *gin.Context) {
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
 		log.Printf("Error in ImportTransactions (begin): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(c)
@@ -602,7 +603,7 @@ func ImportTransactions(c *gin.Context) {
 			req.AccountID, userID)
 		if err != nil {
 			log.Printf("Error in ImportTransactions (loading existing transactions): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		for rows.Next() {
@@ -612,7 +613,7 @@ func ImportTransactions(c *gin.Context) {
 			if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
 				rows.Close()
 				log.Printf("Error in ImportTransactions (scanning existing transactions): %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
@@ -620,7 +621,7 @@ func ImportTransactions(c *gin.Context) {
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			log.Printf("Error in ImportTransactions (iterating existing transactions): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -660,7 +661,7 @@ func ImportTransactions(c *gin.Context) {
 			if err := br.QueryRow().Scan(&id); err != nil {
 				br.Close()
 				log.Printf("Error in ImportTransactions: %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			ids = append(ids, id)
@@ -678,20 +679,20 @@ func ImportTransactions(c *gin.Context) {
 			if req.BillingCycleID != nil {
 				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
 					log.Printf("Error in ImportTransactions (set billing cycle): %v\n", err)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 					return
 				}
 			}
 			if err := ensureBillingCycles(c, tx, userID, req.AccountID); err != nil {
 				log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
 
 		if err := tx.Commit(c); err != nil {
 			log.Printf("Error in ImportTransactions (commit): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -724,31 +725,31 @@ func transactionFingerprint(date string, amount float64, typ, description string
 func ValidateTransactions(c *gin.Context) {
 	var req models.ValidateTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	userID := auth.GetUserID(c)
 
 	if len(req.Transactions) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no transactions to validate"})
+		validation.RespondError(c, "no transactions to validate", http.StatusBadRequest)
 		return
 	}
 	if len(req.Transactions) > maxImportBatch {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many transactions (max %d per request)", maxImportBatch)})
+		validation.RespondError(c, fmt.Sprintf("too many transactions (max %d per request)", maxImportBatch), http.StatusBadRequest)
 		return
 	}
 	for i, t := range req.Transactions {
 		if t.Type != "debit" && t.Type != "credit" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type), http.StatusBadRequest)
 			return
 		}
 		if t.Amount <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount), http.StatusBadRequest)
 			return
 		}
 		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date)})
+			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date), http.StatusBadRequest)
 			return
 		}
 	}
@@ -759,16 +760,16 @@ func ValidateTransactions(c *gin.Context) {
 		"SELECT user_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		log.Printf("Error in ValidateTransactions (checking account): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if ownerID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		validation.RespondError(c, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -780,7 +781,7 @@ func ValidateTransactions(c *gin.Context) {
 		req.AccountID, userID)
 	if err != nil {
 		log.Printf("Error in ValidateTransactions (loading existing transactions): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	for rows.Next() {
@@ -790,7 +791,7 @@ func ValidateTransactions(c *gin.Context) {
 		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
 			rows.Close()
 			log.Printf("Error in ValidateTransactions (scanning existing transactions): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
@@ -798,7 +799,7 @@ func ValidateTransactions(c *gin.Context) {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		log.Printf("Error in ValidateTransactions (iterating existing transactions): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

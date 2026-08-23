@@ -6,6 +6,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 )
@@ -14,7 +15,7 @@ func GetCategories(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, icon, color, parent_id, type FROM categories WHERE user_id = $1 ORDER BY type, name", auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetCategories: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -24,7 +25,7 @@ func GetCategories(c *gin.Context) {
 		var cat models.Category
 		if err := rows.Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.Type); err != nil {
 			log.Printf("Error in GetCategories scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		categories = append(categories, cat)
@@ -36,7 +37,7 @@ func GetCategories(c *gin.Context) {
 func CreateCategory(c *gin.Context) {
 	var cat models.Category
 	if err := c.ShouldBindJSON(&cat); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -48,7 +49,7 @@ func CreateCategory(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error in CreateCategory: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

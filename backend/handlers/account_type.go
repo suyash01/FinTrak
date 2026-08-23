@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -15,7 +16,7 @@ func GetAccountTypes(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
 	if err != nil {
 		log.Printf("Error in GetAccountTypes: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -25,7 +26,7 @@ func GetAccountTypes(c *gin.Context) {
 		var at models.AccountType
 		if err := rows.Scan(&at.ID, &at.Name, &at.PositiveTxnType); err != nil {
 			log.Printf("Error in GetAccountTypes scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		types = append(types, at)
@@ -37,12 +38,12 @@ func GetAccountTypes(c *gin.Context) {
 func CreateAccountType(c *gin.Context) {
 	var req models.CreateAccountTypeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	if req.PositiveTxnType != "credit" && req.PositiveTxnType != "debit" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "positiveTxnType must be 'credit' or 'debit'"})
+		validation.RespondError(c, "positiveTxnType must be 'credit' or 'debit'", http.StatusBadRequest)
 		return
 	}
 
@@ -55,7 +56,7 @@ func CreateAccountType(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error in CreateAccountType: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -65,18 +66,18 @@ func CreateAccountType(c *gin.Context) {
 func UpdateAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	var req models.UpdateAccountTypeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	if req.PositiveTxnType != "" && req.PositiveTxnType != "credit" && req.PositiveTxnType != "debit" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "positiveTxnType must be 'credit' or 'debit'"})
+		validation.RespondError(c, "positiveTxnType must be 'credit' or 'debit'", http.StatusBadRequest)
 		return
 	}
 
@@ -91,11 +92,11 @@ func UpdateAccountType(c *gin.Context) {
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "account type not found"})
+			validation.RespondError(c, "account type not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("Error in UpdateAccountType: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -105,7 +106,7 @@ func UpdateAccountType(c *gin.Context) {
 func DeleteAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -113,19 +114,19 @@ func DeleteAccountType(c *gin.Context) {
 	var count int
 	db.Pool.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count)
 	if count > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "cannot delete: account type is in use by existing accounts"})
+		validation.RespondError(c, "cannot delete: account type is in use by existing accounts", http.StatusConflict)
 		return
 	}
 
 	result, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
 	if err != nil {
 		log.Printf("Error in DeleteAccountType: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if result.RowsAffected() == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account type not found"})
+		validation.RespondError(c, "account type not found", http.StatusNotFound)
 		return
 	}
 

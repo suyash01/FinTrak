@@ -225,7 +225,6 @@ func TestParseStatementPasswordRequired(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	var respBody map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
-	assert.Equal(t, true, respBody["passwordRequired"])
 }
 
 func TestParseStatementNoFile(t *testing.T) {

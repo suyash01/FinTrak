@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 )
@@ -65,24 +66,24 @@ type rawParserResponse struct {
 func ParseStatement(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no file provided. Attach it as 'file'."})
+		validation.RespondError(c, "no file provided. Attach it as 'file'.", http.StatusBadRequest)
 		return
 	}
 
 	if !strings.HasSuffix(strings.ToLower(file.Filename), ".pdf") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only PDF files are supported."})
+		validation.RespondError(c, "only PDF files are supported.", http.StatusBadRequest)
 		return
 	}
 
 	if file.Size > maxStatementUpload {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large. Max upload size is 20 MB."})
+		validation.RespondError(c, "file too large. Max upload size is 20 MB.", http.StatusRequestEntityTooLarge)
 		return
 	}
 
 	src, err := file.Open()
 	if err != nil {
 		log.Printf("Error in ParseStatement (open upload): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer src.Close()
@@ -90,7 +91,7 @@ func ParseStatement(c *gin.Context) {
 	pdf, err := io.ReadAll(src)
 	if err != nil {
 		log.Printf("Error in ParseStatement (read upload): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -101,9 +102,9 @@ func ParseStatement(c *gin.Context) {
 	}
 	dateFormat := c.PostForm("date_format")
 
-	result, status, errMsg, passwordRequired := forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
+	result, status, errMsg, _ := forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
 	if errMsg != "" {
-		c.JSON(status, gin.H{"error": errMsg, "passwordRequired": passwordRequired})
+		validation.RespondError(c, errMsg, status)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -269,7 +270,7 @@ func ListStatementExtractors(c *gin.Context) {
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {
 		log.Printf("Error in ListStatementExtractors (build request): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -277,7 +278,7 @@ func ListStatementExtractors(c *gin.Context) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Error in ListStatementExtractors (calling parser): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser is unavailable"})
+		validation.RespondError(c, "statement parser is unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -285,13 +286,13 @@ func ListStatementExtractors(c *gin.Context) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Error in ListStatementExtractors (read parser response): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser returned an unreadable response"})
+		validation.RespondError(c, "statement parser returned an unreadable response", http.StatusBadGateway)
 		return
 	}
 
 	if resp.StatusCode >= 500 {
 		log.Printf("Error in ListStatementExtractors (parser error status %d): %s\n", resp.StatusCode, string(respBody))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser failed to list extractors"})
+		validation.RespondError(c, "statement parser failed to list extractors", http.StatusBadGateway)
 		return
 	}
 
@@ -304,7 +305,7 @@ func ListStatementExtractors(c *gin.Context) {
 	}
 	if err := json.Unmarshal(respBody, &raw); err != nil {
 		log.Printf("Error in ListStatementExtractors (unmarshal parser response): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "statement parser returned an invalid response"})
+		validation.RespondError(c, "statement parser returned an invalid response", http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode >= 400 || raw.Error != "" {
@@ -312,7 +313,7 @@ func ListStatementExtractors(c *gin.Context) {
 		if msg == "" {
 			msg = "failed to list extractors"
 		}
-		c.JSON(resp.StatusCode, gin.H{"error": msg})
+		validation.RespondError(c, msg, resp.StatusCode)
 		return
 	}
 

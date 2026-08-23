@@ -14,6 +14,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,7 +45,7 @@ func GetPaperlessSettings(c *gin.Context) {
 	settings, err := paperlessConfig(c, userID)
 	if err != nil {
 		log.Printf("Error in GetPaperlessSettings: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	c.JSON(http.StatusOK, settings)
@@ -57,7 +58,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	var req models.UpdateUserSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -87,7 +88,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 	}
 
 	if len(updates) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no settings provided"})
+		validation.RespondError(c, "no settings provided", http.StatusBadRequest)
 		return
 	}
 
@@ -95,7 +96,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(updates, ", "), argIdx)
 	if _, err := db.Pool.Exec(c, query, args...); err != nil {
 		log.Printf("Error in UpdatePaperlessSettings: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -197,11 +198,11 @@ func ListPaperlessDocuments(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in ListPaperlessDocuments (config): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !paperlessConfigured(settings) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Paperless is not configured"})
+		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
 
@@ -218,7 +219,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, current, nil)
 		if err != nil {
 			log.Printf("Error in ListPaperlessDocuments (build request): %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		req.Header.Set("Authorization", "Token "+settings.PaperlessToken)
@@ -226,24 +227,24 @@ func ListPaperlessDocuments(c *gin.Context) {
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("Error in ListPaperlessDocuments (calling paperless): %v\n", err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless is unavailable"})
+			validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 			return
 		}
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
 			log.Printf("Error in ListPaperlessDocuments (read response): %v\n", readErr)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless returned an unreadable response"})
+			validation.RespondError(c, "Paperless returned an unreadable response", http.StatusBadGateway)
 			return
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless rejected the API token"})
+			validation.RespondError(c, "Paperless rejected the API token", http.StatusBadGateway)
 			return
 		}
 		if resp.StatusCode >= 500 {
 			log.Printf("Error in ListPaperlessDocuments (status %d): %s\n", resp.StatusCode, string(body))
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless failed to list documents"})
+			validation.RespondError(c, "Paperless failed to list documents", http.StatusBadGateway)
 			return
 		}
 
@@ -254,7 +255,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		}
 		if err := json.Unmarshal(body, &raw); err != nil {
 			log.Printf("Error in ListPaperlessDocuments (unmarshal): %v\n", err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless returned an invalid response"})
+			validation.RespondError(c, "Paperless returned an invalid response", http.StatusBadGateway)
 			return
 		}
 		if resp.StatusCode >= 400 || raw.Error != "" {
@@ -262,7 +263,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 			if msg == "" {
 				msg = "failed to list Paperless documents"
 			}
-			c.JSON(resp.StatusCode, gin.H{"error": msg})
+			validation.RespondError(c, msg, resp.StatusCode)
 			return
 		}
 
@@ -299,17 +300,17 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetPaperlessDocumentFile (config): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !paperlessConfigured(settings) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Paperless is not configured"})
+		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
 
 	docID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document id"})
+		validation.RespondError(c, "invalid document id", http.StatusBadRequest)
 		return
 	}
 
@@ -318,7 +319,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 	getReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, dlURL, nil)
 	if err != nil {
 		log.Printf("Error in GetPaperlessDocumentFile (build request): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	getReq.Header.Set("Authorization", "Token "+settings.PaperlessToken)
@@ -327,21 +328,21 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 	resp, err := client.Do(getReq)
 	if err != nil {
 		log.Printf("Error in GetPaperlessDocumentFile (calling paperless): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless is unavailable"})
+		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		validation.RespondError(c, "document not found", http.StatusNotFound)
 		return
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless rejected the API token"})
+		validation.RespondError(c, "Paperless rejected the API token", http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode >= 400 {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless failed to download the document"})
+		validation.RespondError(c, "Paperless failed to download the document", http.StatusBadGateway)
 		return
 	}
 
@@ -361,17 +362,17 @@ func ImportPaperlessDocument(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in ImportPaperlessDocument (config): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !paperlessConfigured(settings) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Paperless is not configured"})
+		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
 
 	var req models.PaperlessImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -380,7 +381,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 	getReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, dlURL, nil)
 	if err != nil {
 		log.Printf("Error in ImportPaperlessDocument (build request): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	getReq.Header.Set("Authorization", "Token "+settings.PaperlessToken)
@@ -389,28 +390,28 @@ func ImportPaperlessDocument(c *gin.Context) {
 	resp, err := client.Do(getReq)
 	if err != nil {
 		log.Printf("Error in ImportPaperlessDocument (calling paperless): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless is unavailable"})
+		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		validation.RespondError(c, "document not found", http.StatusNotFound)
 		return
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless rejected the API token"})
+		validation.RespondError(c, "Paperless rejected the API token", http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode >= 400 {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless failed to download the document"})
+		validation.RespondError(c, "Paperless failed to download the document", http.StatusBadGateway)
 		return
 	}
 
 	pdf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Error in ImportPaperlessDocument (read download): %v\n", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Paperless returned an unreadable file"})
+		validation.RespondError(c, "Paperless returned an unreadable file", http.StatusBadGateway)
 		return
 	}
 
@@ -421,7 +422,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 
 	result, status, errMsg, _ := forwardStatementToParser(c.Request.Context(), pdf, filename, req.Extractor, req.Password, req.DateFormat)
 	if errMsg != "" {
-		c.JSON(status, gin.H{"error": errMsg})
+		validation.RespondError(c, errMsg, status)
 		return
 	}
 

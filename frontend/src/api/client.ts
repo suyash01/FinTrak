@@ -84,6 +84,25 @@ interface ApiError extends Error {
   status?: number;
 }
 
+// extractErrorMessage normalizes API error payloads. Handlers return the
+// field-error envelope ({ errors: [{ message }] }); some paths (and network
+// failures) still surface a flat { error } string.
+function extractErrorMessage(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object") {
+    const p = payload as Record<string, unknown>;
+    if (Array.isArray(p.errors) && p.errors.length > 0) {
+      const first = p.errors[0] as { message?: unknown } | undefined;
+      if (first && typeof first.message === "string" && first.message) {
+        return first.message;
+      }
+    }
+    if (typeof p.error === "string" && p.error) {
+      return p.error;
+    }
+  }
+  return fallback;
+}
+
 interface RequestOptions {
   method?: string;
   body?: string;
@@ -151,7 +170,9 @@ async function request<T>(
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(error.error || "Request failed") as ApiError;
+    const err = new Error(
+      extractErrorMessage(error, "Request failed"),
+    ) as ApiError;
     err.status = res.status;
     throw err;
   }
@@ -200,7 +221,9 @@ async function requestMultipart<T>(
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(error.error || "Request failed") as ApiError;
+    const err = new Error(
+      extractErrorMessage(error, "Request failed"),
+    ) as ApiError;
     err.status = res.status;
     throw err;
   }

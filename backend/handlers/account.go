@@ -11,6 +11,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -46,7 +47,7 @@ func GetAccounts(c *gin.Context) {
 	rows, err := db.Pool.Query(c, query, userID)
 	if err != nil {
 		log.Printf("Error in GetAccounts: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -56,7 +57,7 @@ func GetAccounts(c *gin.Context) {
 		var a models.Account
 		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.IsDefault, &a.Balance); err != nil {
 			log.Printf("Error in GetAccounts scan: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		accounts = append(accounts, a)
@@ -68,7 +69,7 @@ func GetAccounts(c *gin.Context) {
 func CreateAccount(c *gin.Context) {
 	var req models.CreateAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -120,7 +121,7 @@ func CreateAccount(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error in CreateAccount: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -131,7 +132,7 @@ func CreateAccount(c *gin.Context) {
 func DeleteAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -152,11 +153,11 @@ func DeleteAccount(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, errAccountNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+			validation.RespondError(c, "account not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("Error in DeleteAccount: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -166,13 +167,13 @@ func DeleteAccount(c *gin.Context) {
 func UpdateAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	var req models.UpdateAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -217,11 +218,11 @@ func UpdateAccount(c *gin.Context) {
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+			validation.RespondError(c, "account not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("Error in UpdateAccount: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -231,7 +232,7 @@ func UpdateAccount(c *gin.Context) {
 func ExportAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
@@ -243,7 +244,7 @@ func ExportAccount(c *gin.Context) {
 		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in ExportAccount: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
