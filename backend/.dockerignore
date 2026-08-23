@@ -6,4 +6,19 @@ main
 backend
 *.exe
 Dockerfile
-README.md
+*.md
+
+# Editor/IDE
+.idea
+.vscode
+
+# Test/coverage artifacts
+*.test
+coverage.out
+
+# OS cruft
+.DS_Store
+
+# Local tooling/temp
+tmp
+*.log

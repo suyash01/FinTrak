@@ -7,6 +7,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -16,7 +17,12 @@ import (
 func Register(c *gin.Context) {
 	var req models.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if fieldErrs := validation.FormatValidationErrors(err); fieldErrs != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"errors": fieldErrs})
+			return
+		}
+		// malformed JSON, wrong types, etc. — not a validator.ValidationErrors
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
@@ -30,9 +36,9 @@ func Register(c *gin.Context) {
 	var user models.User
 	err = db.Pool.QueryRow(c,
 		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
-		 RETURNING id, email, created_at`,
+		 RETURNING id, email`,
 		req.Email, hash,
-	).Scan(&user.ID, &user.Email, &user.CreatedAt)
+	).Scan(&user.ID, &user.Email)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -59,16 +65,21 @@ func Register(c *gin.Context) {
 func Login(c *gin.Context) {
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if fieldErrs := validation.FormatValidationErrors(err); fieldErrs != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"errors": fieldErrs})
+			return
+		}
+		// malformed JSON, wrong types, etc. — not a validator.ValidationErrors
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
 	var user models.User
 	var passwordHash string
 	err := db.Pool.QueryRow(c,
-		"SELECT id, email, password_hash, created_at FROM users WHERE LOWER(email) = LOWER($1)",
+		"SELECT id, email, password_hash FROM users WHERE LOWER(email) = LOWER($1)",
 		req.Email,
-	).Scan(&user.ID, &user.Email, &passwordHash, &user.CreatedAt)
+	).Scan(&user.ID, &user.Email, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
 		return

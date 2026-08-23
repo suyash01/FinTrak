@@ -8,6 +8,7 @@ import (
 	"github.com/fintrak/backend/config"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/handlers"
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
@@ -17,6 +18,8 @@ import (
 var Version = "0.1.0-alpha"
 
 func main() {
+	validation.Init()
+
 	cfg := config.Load()
 
 	// Connect to database
@@ -64,13 +67,13 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		AllowCredentials: true,
 	}))
 
-	// Health check endpoint for Docker/orchestrators
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
-
 	// API Routes
 	api := r.Group("/api/v1")
+
+	// Health check endpoint for Docker/orchestrators
+	api.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
 
 	// Public: authentication
 	api.POST("/auth/register", handlers.Register)

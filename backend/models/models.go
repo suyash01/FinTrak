@@ -110,9 +110,8 @@ type Link struct {
 // Request/Response types
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
 }
 
 // UserSettings holds per-user integration configuration, stored against the
@@ -156,7 +155,7 @@ type RegisterRequest struct {
 
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Password string `json:"password" binding:"required,min=6"`
 }
 
 type AuthResponse struct {

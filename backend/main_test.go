@@ -25,7 +25,7 @@ func TestHealthEndpoint(t *testing.T) {
 	r := testRouter()
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -59,7 +59,7 @@ func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	r := testRouter()
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
 	r.ServeHTTP(w, req)
 
@@ -71,7 +71,7 @@ func TestCORSCoveredByWildcard(t *testing.T) {
 	r := testRouter()
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	req.Header.Set("Origin", "https://anything.example.com")
 	r.ServeHTTP(w, req)
 
@@ -89,7 +89,7 @@ func TestCORSRejectsUnknownOrigin(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	req.Header.Set("Origin", "https://evil.example.com")
 	r.ServeHTTP(w, req)
 
@@ -106,7 +106,7 @@ func TestRouterRegistersExpectedRoutes(t *testing.T) {
 	}
 
 	expected := []string{
-		"GET /health",
+		"GET /api/v1/health",
 		"POST /api/v1/auth/register",
 		"POST /api/v1/auth/login",
 		"GET /api/v1/accounts",

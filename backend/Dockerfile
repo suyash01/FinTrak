@@ -1,9 +1,9 @@
 # --- Build Stage ---
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27-alpine3.24 AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOFLAGS=-mod=readonly go mod download
 
 COPY . .
 # Override at build time with: docker build --build-arg VERSION=v1.2.3
@@ -11,15 +11,15 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o main .
 
 # --- Runtime Stage ---
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
-COPY --from=builder /app/main .
+COPY --from=builder --chown=appuser:appgroup /app/main .
 
 USER appuser
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:8080/api/v1/health || exit 1
 CMD ["./main"]

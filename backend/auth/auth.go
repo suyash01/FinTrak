@@ -33,11 +33,9 @@ func CheckPassword(hash, password string) bool {
 
 func GenerateToken(userID uuid.UUID, secret string) (string, error) {
 	claims := Claims{
-		UserID: userID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
+		UserID:    userID,
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))

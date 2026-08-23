@@ -14,7 +14,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U fintrak" ]
+      test: ["CMD-SHELL", "pg_isready -U fintrak"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -39,7 +39,7 @@ services:
       statement-parser:
         condition: service_started
     healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 10s
       timeout: 3s
       retries: 5

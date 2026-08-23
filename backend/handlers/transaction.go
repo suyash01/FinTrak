@@ -44,16 +44,15 @@ func GetTransactions(c *gin.Context) {
 		page = 1
 	}
 	// limit of 0 means "no pagination" (return everything); cap at 200.
-	if limit < 0 || limit > 200 {
-		limit = 50
+	if limit < 0 {
+		limit = 0
 	}
 
 	// Validate sort column
 	validSorts := map[string]string{
-		"date":        "t.date",
-		"amount":      "t.amount",
-		"description": "t.description",
-		"createdAt":   "t.created_at",
+		"date":      "t.date",
+		"amount":    "t.amount",
+		"createdAt": "t.created_at",
 	}
 	sortCol, ok := validSorts[sortBy]
 	if !ok {
@@ -63,11 +62,9 @@ func GetTransactions(c *gin.Context) {
 		sortOrder = "DESC"
 	}
 
-	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, 
-			  t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
-			  a.name as account_name,
-			  COALESCE(c.name, '') as category_name,
-			  COALESCE(c.icon, '') as category_icon,
+	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
+				t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
+				COALESCE(c.name, '') as category_name, COALESCE(c.icon, '') as category_icon,
 			  COALESCE(c.color, '') as category_color,
 			  EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as is_linked,
 			  (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as link_count,
@@ -84,8 +81,8 @@ func GetTransactions(c *gin.Context) {
 			  WHERE t.user_id = $1`
 
 	countQuery := `SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1`
-	args := []interface{}{userID}
-	countArgs := []interface{}{userID}
+	args := []any{userID}
+	countArgs := []any{userID}
 	paramIdx := 2
 
 	if accountID != "" {

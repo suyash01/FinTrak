@@ -1,0 +1,2533 @@
+openapi: 3.0.3
+info:
+  title: FinTrak
+  description: |
+    Personal finance tracker API. All API endpoints are prefixed with `/api/v1`.
+
+    ## Authentication
+    Protected routes require a Bearer token in the `Authorization` header:
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    Tokens are obtained via `/auth/register` or `/auth/login`.
+  version: 0.1.0-alpha
+  contact:
+    name: FinTrak
+  license:
+    name: AGPL v3.0
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Development server
+
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      summary: Health check
+      description: Returns the health status of the API
+      operationId: getHealth
+      responses:
+        "200":
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # ============= Authentication =============
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user
+      description: Create a new user account and receive a JWT token
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: An account with this email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Login a user
+      description: Authenticate a user and receive a JWT token
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Accounts =============
+  /accounts:
+    get:
+      tags:
+        - Accounts
+      summary: List all accounts
+      description: Get all accounts belonging to the authenticated user
+      operationId: getAccounts
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Accounts
+      summary: Create a new account
+      description: Create a new bank or credit-card account
+      operationId: createAccount
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}:
+    put:
+      tags:
+        - Accounts
+      summary: Update an account
+      description: Update account details (name, type, bank, currency, color, default status)
+      operationId: updateAccount
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccountRequest"
+      responses:
+        "200":
+          description: Account updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Accounts
+      summary: Delete an account
+      description: Delete an account and its associated payee
+      operationId: deleteAccount
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Account ID
+      responses:
+        "200":
+          description: Account deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/export:
+    get:
+      tags:
+        - Accounts
+      summary: Export account transactions as CSV
+      description: Download all transactions for an account as a CSV file
+      operationId: exportAccount
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Account ID
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/billing-cycles:
+    get:
+      tags:
+        - Accounts
+      summary: Get billing cycles for a credit card account
+      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals
+      operationId: getBillingCycles
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Account ID
+      responses:
+        "200":
+          description: Billing cycles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BillingCycle"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Account Types =============
+  /account-types:
+    get:
+      tags:
+        - Account Types
+      summary: List account types
+      description: Get all available account types (e.g., bank, credit_card)
+      operationId: getAccountTypes
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of account types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountType"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Account Types
+      summary: Create a new account type
+      description: Create a new custom account type
+      operationId: createAccountType
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountTypeRequest"
+      responses:
+        "201":
+          description: Account type created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /account-types/{id}:
+    put:
+      tags:
+        - Account Types
+      summary: Update an account type
+      operationId: updateAccountType
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Account type ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccountTypeRequest"
+      responses:
+        "200":
+          description: Account type updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Account Types
+      summary: Delete an account type
+      operationId: deleteAccountType
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Account type ID
+      responses:
+        "200":
+          description: Account type deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Transactions =============
+  /transactions:
+    get:
+      tags:
+        - Transactions
+      summary: List transactions
+      description: Get transactions with optional filtering, sorting, and pagination
+      operationId: getTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by account ID
+        - in: query
+          name: categoryId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by category ID
+        - in: query
+          name: payeeId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by payee ID
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: Search in description (case-insensitive)
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter transactions from this date (YYYY-MM-DD)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter transactions until this date (YYYY-MM-DD)
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [debit, credit]
+          description: Filter by transaction type
+        - in: query
+          name: amount
+          schema:
+            type: number
+          description: Filter by exact amount
+        - in: query
+          name: uncategorized
+          schema:
+            type: string
+            enum: ["true", "false"]
+          description: Filter for uncategorized transactions only
+        - in: query
+          name: linked
+          schema:
+            type: string
+            enum: ["true", "false"]
+          description: Filter by link status
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [date, amount, createdAt]
+            default: date
+          description: Sort column
+        - in: query
+          name: sortOrder
+          schema:
+            type: string
+            enum: [ASC, DESC]
+            default: DESC
+          description: Sort direction
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+          description: Page number (1-indexed)
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+          description: Items per page (0 = no pagination, return all)
+      responses:
+        "200":
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Transactions
+      summary: Create a new transaction
+      operationId: createTransaction
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransactionRequest"
+      responses:
+        "201":
+          description: Transaction created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/{id}:
+    patch:
+      tags:
+        - Transactions
+      summary: Update a transaction
+      description: Update transaction fields (category, tags, notes, payee, date, description, amount, type, billing cycle)
+      operationId: updateTransaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Transaction ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTransactionRequest"
+      responses:
+        "200":
+          description: Transaction updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Transactions
+      summary: Delete a transaction
+      operationId: deleteTransaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Transaction ID
+      responses:
+        "200":
+          description: Transaction deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/import:
+    post:
+      tags:
+        - Transactions
+      summary: Import transactions
+      description: Import a batch of transactions into an account with optional duplicate detection
+      operationId: importTransactions
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportRequest"
+      responses:
+        "200":
+          description: Import completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/validate:
+    post:
+      tags:
+        - Transactions
+      summary: Validate transactions
+      description: Check which transactions would be considered duplicates without importing them
+      operationId: validateTransactions
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateTransactionsRequest"
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateTransactionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/bulk-categorize:
+    post:
+      tags:
+        - Transactions
+      summary: Bulk categorize transactions
+      operationId: bulkCategorize
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkCategorizeRequest"
+      responses:
+        "200":
+          description: Categorization completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/bulk-payee:
+    post:
+      tags:
+        - Transactions
+      summary: Bulk update payees
+      operationId: bulkUpdatePayee
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkUpdatePayeeRequest"
+      responses:
+        "200":
+          description: Update completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/bulk-billing-cycle:
+    post:
+      tags:
+        - Transactions
+      summary: Bulk update billing cycles
+      operationId: bulkUpdateBillingCycle
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkBillingCycleRequest"
+      responses:
+        "200":
+          description: Update completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/bulk-delete:
+    post:
+      tags:
+        - Transactions
+      summary: Bulk delete transactions
+      operationId: bulkDeleteTransactions
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkDeleteTransactionsRequest"
+      responses:
+        "200":
+          description: Deletion completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Categories =============
+  /categories:
+    get:
+      tags:
+        - Categories
+      summary: List all categories
+      description: Get all categories for the authenticated user
+      operationId: getCategories
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Category"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Categories
+      summary: Create a new category
+      operationId: createCategory
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Category"
+      responses:
+        "201":
+          description: Category created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Payees =============
+  /payees:
+    get:
+      tags:
+        - Payees
+      summary: List all payees
+      operationId: getPayees
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of payees
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Payee"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Payees
+      summary: Create a new payee
+      operationId: createPayee
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePayeeRequest"
+      responses:
+        "201":
+          description: Payee created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payee"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: A payee with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /payees/{id}:
+    put:
+      tags:
+        - Payees
+      summary: Update a payee
+      operationId: updatePayee
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePayeeRequest"
+      responses:
+        "200":
+          description: Payee updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payee"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A payee with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Payees
+      summary: Delete a payee
+      operationId: deletePayee
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Payee deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Rules =============
+  /rules:
+    get:
+      tags:
+        - Rules
+      summary: List all rules
+      operationId: getRules
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Rule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Rules
+      summary: Create a new rule
+      operationId: createRule
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRuleRequest"
+      responses:
+        "201":
+          description: Rule created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Rule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /rules/{id}:
+    put:
+      tags:
+        - Rules
+      summary: Update a rule
+      operationId: updateRule
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRuleRequest"
+      responses:
+        "200":
+          description: Rule updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Rule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Rules
+      summary: Delete a rule
+      operationId: deleteRule
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Rule deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /rules/apply:
+    post:
+      tags:
+        - Rules
+      summary: Apply all rules to uncategorized transactions
+      operationId: applyRules
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Rules applied successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Links =============
+  /links:
+    get:
+      tags:
+        - Links
+      summary: List all transaction links
+      operationId: getLinks
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [transfer, cashback, refund]
+          description: Filter by link type
+      responses:
+        "200":
+          description: List of links
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Link"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Links
+      summary: Create a new link
+      description: Link two transactions (e.g., transfer between accounts, cashback, refund)
+      operationId: createLink
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLinkRequest"
+      responses:
+        "201":
+          description: Link created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Link"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Link already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/{id}:
+    delete:
+      tags:
+        - Links
+      summary: Delete a link
+      operationId: deleteLink
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Link deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/bulk:
+    post:
+      tags:
+        - Links
+      summary: Create multiple links at once
+      operationId: bulkCreateLinks
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkCreateLinksRequest"
+      responses:
+        "200":
+          description: Bulk creation completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  createdCount:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/bulk-delete:
+    post:
+      tags:
+        - Links
+      summary: Delete multiple links at once
+      operationId: bulkDeleteLinks
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkDeleteLinksRequest"
+      responses:
+        "200":
+          description: Bulk deletion completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  deletedCount:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/transfer-suggestions:
+    get:
+      tags:
+        - Links
+      summary: Get transfer link suggestions
+      description: Get suggested transfers between accounts based on matching amounts
+      operationId: getTransferSuggestions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of suggested transfers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TransferSuggestion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/cashback-suggestions:
+    get:
+      tags:
+        - Links
+      summary: Get cashback link suggestions
+      description: Get suggested cashback links based on matching amounts
+      operationId: getCashbackSuggestions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of suggested cashbacks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TransferSuggestion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Statement Parsing =============
+  /statements/parse:
+    post:
+      tags:
+        - Statements
+      summary: Parse a bank statement PDF
+      description: |
+        Upload a bank or credit-card statement PDF for automatic extraction.
+        The PDF is forwarded to the standalone statement-parser service.
+      operationId: parseStatement
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF file to parse
+                extractor:
+                  type: string
+                  description: Extractor name (e.g., "sbi_cc", "icici_cc")
+                password:
+                  type: string
+                  description: PDF password if encrypted
+                date_format:
+                  type: string
+                  description: Date format hint for the parser
+              required:
+                - file
+      responses:
+        "200":
+          description: Statement parsed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParseStatementResult"
+        "400":
+          description: Invalid file or parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  passwordRequired:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: File too large (max 20 MB)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Statement parser service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /statements/extractors:
+    get:
+      tags:
+        - Statements
+      summary: List available statement extractors
+      description: Get the list of available parsers from the statement-parser service
+      operationId: listStatementExtractors
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of extractors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  extractors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        display_name:
+                          type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Statement parser service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Paperless Integration =============
+  /paperless/settings:
+    get:
+      tags:
+        - Paperless
+      summary: Get Paperless settings
+      description: Retrieve the current user's Paperless-ngx integration configuration
+      operationId: getPaperlessSettings
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Settings retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags:
+        - Paperless
+      summary: Update Paperless settings
+      description: Update Paperless-ngx configuration (URL, API token, tag label, page size)
+      operationId: updatePaperlessSettings
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserSettingsRequest"
+      responses:
+        "200":
+          description: Settings updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /paperless/documents:
+    get:
+      tags:
+        - Paperless
+      summary: List Paperless documents
+      description: Fetch a list of documents from the user's Paperless-ngx instance
+      operationId: listPaperlessDocuments
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PaperlessDocument"
+        "400":
+          description: Paperless is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Paperless or parser service is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /paperless/documents/{id}/file:
+    get:
+      tags:
+        - Paperless
+      summary: Download a Paperless document file
+      description: Download the original file for a Paperless document
+      operationId: getPaperlessDocumentFile
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Paperless document ID
+      responses:
+        "200":
+          description: Document file
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Paperless is not configured or invalid document ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Paperless is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /paperless/import:
+    post:
+      tags:
+        - Paperless
+      summary: Import a Paperless document
+      description: Download and parse a document from Paperless-ngx for import
+      operationId: importPaperlessDocument
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaperlessImportRequest"
+      responses:
+        "200":
+          description: Document parsed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParseStatementResult"
+        "400":
+          description: Invalid request or Paperless not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Paperless or parser service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ============= Dashboard =============
+  /dashboard/summary:
+    get:
+      tags:
+        - Dashboard
+      summary: Get dashboard summary
+      description: Get aggregate financial data with optional date range and account filters
+      operationId: getDashboardSummary
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter from date (YYYY-MM-DD)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter to date (YYYY-MM-DD)
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by account ID
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  schemas:
+    # ============= Requests =============
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+
+    CreateAccountRequest:
+      type: object
+      required:
+        - name
+        - accountTypeId
+      properties:
+        name:
+          type: string
+        accountTypeId:
+          type: string
+        bank:
+          type: string
+        currency:
+          type: string
+          default: INR
+        color:
+          type: string
+          default: "#06b6d4"
+        isDefault:
+          type: boolean
+
+    UpdateAccountRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        accountTypeId:
+          type: string
+        bank:
+          type: string
+        currency:
+          type: string
+        color:
+          type: string
+        isDefault:
+          type: boolean
+
+    CreateAccountTypeRequest:
+      type: object
+      required:
+        - id
+        - name
+        - positiveTxnType
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        positiveTxnType:
+          type: string
+          enum: [credit, debit]
+
+    UpdateAccountTypeRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        positiveTxnType:
+          type: string
+          enum: [credit, debit]
+
+    CreateTransactionRequest:
+      type: object
+      required:
+        - accountId
+        - date
+        - description
+        - amount
+        - type
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        type:
+          type: string
+          enum: [debit, credit]
+        categoryId:
+          type: string
+          format: uuid
+        payeeId:
+          type: string
+          format: uuid
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+        billingCycleId:
+          type: string
+          format: uuid
+
+    UpdateTransactionRequest:
+      type: object
+      properties:
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        accountId:
+          type: string
+          format: uuid
+        billingCycleId:
+          type: string
+          format: uuid
+          nullable: true
+
+    ImportTransaction:
+      type: object
+      required:
+        - date
+        - description
+        - amount
+        - type
+      properties:
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        type:
+          type: string
+          enum: [debit, credit]
+        payeeId:
+          type: string
+          format: uuid
+
+    ImportRequest:
+      type: object
+      required:
+        - accountId
+        - transactions
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportTransaction"
+        duplicateAction:
+          type: string
+          enum: [skip, keep]
+          default: skip
+        billingCycleId:
+          type: string
+          format: uuid
+        paperlessDocumentIds:
+          type: array
+          items:
+            type: integer
+
+    ValidateTransactionsRequest:
+      type: object
+      required:
+        - accountId
+        - transactions
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportTransaction"
+
+    BulkCategorizeRequest:
+      type: object
+      required:
+        - transactionIds
+        - categoryId
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        categoryId:
+          type: string
+          format: uuid
+
+    BulkUpdatePayeeRequest:
+      type: object
+      required:
+        - transactionIds
+        - payeeId
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        payeeId:
+          type: string
+          format: uuid
+
+    BulkBillingCycleRequest:
+      type: object
+      required:
+        - transactionIds
+        - billingCycleId
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        billingCycleId:
+          type: string
+          format: uuid
+
+    BulkDeleteTransactionsRequest:
+      type: object
+      required:
+        - transactionIds
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    CreatePayeeRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+
+    CreateRuleRequest:
+      type: object
+      required:
+        - pattern
+        - categoryId
+      properties:
+        pattern:
+          type: string
+        matchType:
+          type: string
+          enum: [contains, starts_with, exact]
+          default: contains
+        categoryId:
+          type: string
+          format: uuid
+        payeeId:
+          type: string
+          format: uuid
+        priority:
+          type: integer
+
+    UpdateRuleRequest:
+      type: object
+      properties:
+        pattern:
+          type: string
+        matchType:
+          type: string
+          enum: [contains, starts_with, exact]
+        categoryId:
+          type: string
+          format: uuid
+        payeeId:
+          type: string
+          format: uuid
+        priority:
+          type: integer
+
+    CreateLinkRequest:
+      type: object
+      required:
+        - type
+        - fromTxnId
+        - toTxnId
+      properties:
+        type:
+          type: string
+          enum: [transfer, cashback, refund]
+        fromTxnId:
+          type: string
+          format: uuid
+        toTxnId:
+          type: string
+          format: uuid
+        notes:
+          type: string
+
+    BulkCreateLinksRequest:
+      type: object
+      required:
+        - links
+      properties:
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreateLinkRequest"
+
+    BulkDeleteLinksRequest:
+      type: object
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    PaperlessImportRequest:
+      type: object
+      required:
+        - documentId
+      properties:
+        documentId:
+          type: integer
+        extractor:
+          type: string
+        password:
+          type: string
+        dateFormat:
+          type: string
+
+    UpdateUserSettingsRequest:
+      type: object
+      properties:
+        paperlessUrl:
+          type: string
+        paperlessToken:
+          type: string
+        paperlessTag:
+          type: string
+        pageSize:
+          type: integer
+          nullable: true
+
+    # ============= Responses =============
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT bearer token
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+
+    Account:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        accountTypeId:
+          type: string
+        accountTypeName:
+          type: string
+        bank:
+          type: string
+        currency:
+          type: string
+        color:
+          type: string
+        isDefault:
+          type: boolean
+        balance:
+          type: number
+          format: double
+
+    AccountType:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        positiveTxnType:
+          type: string
+          enum: [credit, debit]
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        date:
+          type: string
+          format: date-time
+        description:
+          type: string
+        amount:
+          type: number
+          format: double
+        type:
+          type: string
+          enum: [debit, credit]
+        categoryId:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+        categoryIcon:
+          type: string
+        categoryColor:
+          type: string
+        payeeId:
+          type: string
+          format: uuid
+        payee:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+        isLinked:
+          type: boolean
+        linkCount:
+          type: integer
+        linkId:
+          type: string
+          format: uuid
+        billingCycleId:
+          type: string
+          format: uuid
+        billingCycleLabel:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        isSummary:
+          type: boolean
+
+    TransactionListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        pages:
+          type: integer
+
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        icon:
+          type: string
+        color:
+          type: string
+        parentId:
+          type: string
+          format: uuid
+        type:
+          type: string
+
+    Payee:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Rule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        pattern:
+          type: string
+        matchType:
+          type: string
+          enum: [contains, starts_with, exact]
+        categoryId:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+        payeeId:
+          type: string
+          format: uuid
+        payee:
+          type: string
+        priority:
+          type: integer
+
+    Link:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [transfer, cashback, refund]
+        fromTxnId:
+          type: string
+          format: uuid
+        toTxnId:
+          type: string
+          format: uuid
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        fromTxn:
+          $ref: "#/components/schemas/Transaction"
+        toTxn:
+          $ref: "#/components/schemas/Transaction"
+
+    BillingCycle:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        label:
+          type: string
+        totalOutstanding:
+          type: number
+          format: double
+        transactionCount:
+          type: integer
+
+    PaperlessDocument:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        correspondent:
+          type: string
+        documentType:
+          type: string
+        created:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    UserSettings:
+      type: object
+      properties:
+        paperlessUrl:
+          type: string
+        paperlessToken:
+          type: string
+        paperlessTag:
+          type: string
+        pageSize:
+          type: integer
+
+    ParseStatementTransaction:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+
+    ImportResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+        duplicates:
+          type: integer
+        total:
+          type: integer
+
+    ValidateTransactionResult:
+      type: object
+      properties:
+        index:
+          type: integer
+        exists:
+          type: boolean
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+
+    ValidateTransactionsResponse:
+      type: object
+      properties:
+        total:
+          type: integer
+        existingCount:
+          type: integer
+        missingCount:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidateTransactionResult"
+
+    ParseStatementResult:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParseStatementTransaction"
+        summary:
+          type: object
+          additionalProperties:
+            type: string
+        pageCount:
+          type: integer
+        transactionCount:
+          type: integer
+
+    TransferSuggestion:
+      type: object
+      properties:
+        debitTxn:
+          $ref: "#/components/schemas/Transaction"
+        creditTxn:
+          $ref: "#/components/schemas/Transaction"
+        score:
+          type: number
+
+    CategorySpend:
+      type: object
+      properties:
+        categoryId:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+        categoryColor:
+          type: string
+        categoryIcon:
+          type: string
+        total:
+          type: number
+        count:
+          type: integer
+
+    MonthlyData:
+      type: object
+      properties:
+        month:
+          type: string
+          format: date
+        income:
+          type: number
+        expense:
+          type: number
+
+    DashboardSummary:
+      type: object
+      properties:
+        totalAccounts:
+          type: integer
+        totalTransactions:
+          type: integer
+        totalIncome:
+          type: number
+        totalExpense:
+          type: number
+        byCategory:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategorySpend"
+        incomeByCategory:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategorySpend"
+        monthlyTrend:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonthlyData"
+        recentTransactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+
+    # ============= Common =============
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Bad request (invalid input)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: User does not have permission to access this resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /auth/register or /auth/login

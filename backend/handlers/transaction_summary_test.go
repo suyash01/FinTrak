@@ -32,7 +32,7 @@ func TestComputeCreditCardSummaryRows(t *testing.T) {
 	acctID := uuid.New()
 
 	cycleID := func(n int) uuid.UUID {
-		return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("cycle-%d", n)))
+		return uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "cycle-%d", n))
 	}
 
 	// listBillingCycles: Jan 6–Feb 5 (150, 2), Feb 6–Mar 5 (200, 2),
@@ -86,7 +86,7 @@ func TestComputeCreditCardSummaryRowsFirstOfMonth(t *testing.T) {
 	acctID := uuid.New()
 
 	cycleID := func(n int) uuid.UUID {
-		return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("cycle-%d", n)))
+		return uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "cycle-%d", n))
 	}
 
 	// Billing day defaults to the 1st: Dec 2–Jan 1 (0, 0), Jan 2–Feb 1 (100, 1),
