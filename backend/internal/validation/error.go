@@ -3,26 +3,46 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/fintrak/backend/models"
+	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 )
 
-type FieldError struct {
-	Field   string `json:"field"`
-	Tag     string `json:"tag"`
-	Message string `json:"message"`
+// RespondBindError writes a consistent error envelope for any ShouldBindJSON error.
+func RespondBindError(c *gin.Context, err error) {
+	if fieldErrs := FormatValidationErrors(err); fieldErrs != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Errors: fieldErrs})
+		return
+	}
+	c.JSON(http.StatusBadRequest, models.ErrorResponse{
+		Errors: []models.FieldError{{Message: "invalid request body"}},
+	})
+}
+
+func RespondError(c *gin.Context, message string, status int) {
+	c.JSON(status, models.ErrorResponse{
+		Errors: []models.FieldError{{Message: message}},
+	})
+}
+
+func RespondAuthError(c *gin.Context, message string) {
+	c.AbortWithStatusJSON(http.StatusUnauthorized, models.ErrorResponse{
+		Errors: []models.FieldError{{Message: message}},
+	})
 }
 
 // FormatValidationErrors converts validator errors into a client-friendly slice.
-func FormatValidationErrors(err error) []FieldError {
+func FormatValidationErrors(err error) []models.FieldError {
 	var ve validator.ValidationErrors
 	if !errors.As(err, &ve) {
 		return nil
 	}
 
-	out := make([]FieldError, 0, len(ve))
+	out := make([]models.FieldError, 0, len(ve))
 	for _, fe := range ve {
-		out = append(out, FieldError{
+		out = append(out, models.FieldError{
 			Field:   fe.Field(),
 			Tag:     fe.Tag(),
 			Message: message(fe),

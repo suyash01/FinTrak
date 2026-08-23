@@ -17,19 +17,14 @@ import (
 func Register(c *gin.Context) {
 	var req models.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		if fieldErrs := validation.FormatValidationErrors(err); fieldErrs != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"errors": fieldErrs})
-			return
-		}
-		// malformed JSON, wrong types, etc. — not a validator.ValidationErrors
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		validation.RespondBindError(c, err)
 		return
 	}
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		log.Printf("Error hashing password in Register: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -42,11 +37,11 @@ func Register(c *gin.Context) {
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			c.JSON(http.StatusConflict, gin.H{"error": "an account with this email already exists"})
+			validation.RespondError(c, "an account with this email already exists", http.StatusConflict)
 			return
 		}
 		log.Printf("Error in Register: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -55,7 +50,7 @@ func Register(c *gin.Context) {
 	token, err := auth.GenerateToken(user.ID, c.MustGet("jwtSecret").(string))
 	if err != nil {
 		log.Printf("Error generating token in Register: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -65,12 +60,7 @@ func Register(c *gin.Context) {
 func Login(c *gin.Context) {
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		if fieldErrs := validation.FormatValidationErrors(err); fieldErrs != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"errors": fieldErrs})
-			return
-		}
-		// malformed JSON, wrong types, etc. — not a validator.ValidationErrors
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		validation.RespondBindError(c, err)
 		return
 	}
 
@@ -81,24 +71,24 @@ func Login(c *gin.Context) {
 		req.Email,
 	).Scan(&user.ID, &user.Email, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+		validation.RespondError(c, "invalid email or password", http.StatusUnauthorized)
 		return
 	}
 	if err != nil {
 		log.Printf("Error in Login (query): %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if !auth.CheckPassword(passwordHash, req.Password) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+		validation.RespondError(c, "invalid email or password", http.StatusUnauthorized)
 		return
 	}
 
 	token, err := auth.GenerateToken(user.ID, c.MustGet("jwtSecret").(string))
 	if err != nil {
 		log.Printf("Error generating token in Login: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

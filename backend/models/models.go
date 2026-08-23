@@ -7,6 +7,16 @@ import (
 	"github.com/google/uuid"
 )
 
+type FieldError struct {
+	Field   string `json:"field,omitempty"`
+	Tag     string `json:"tag,omitempty"`
+	Message string `json:"message"`
+}
+
+type ErrorResponse struct {
+	Errors []FieldError `json:"errors"`
+}
+
 type AccountType struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`

@@ -2,10 +2,10 @@ package auth
 
 import (
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/internal/validation"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -46,13 +46,13 @@ func RequireAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if header == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
+			validation.RespondAuthError(c, "missing authorization header")
 			return
 		}
 
 		parts := strings.SplitN(header, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header"})
+			validation.RespondAuthError(c, "invalid authorization header")
 			return
 		}
 
@@ -63,13 +63,13 @@ func RequireAuth(secret string) gin.HandlerFunc {
 			return []byte(secret), nil
 		})
 		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+			validation.RespondAuthError(c, "invalid or expired token")
 			return
 		}
 
 		claims, ok := token.Claims.(*Claims)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token claims"})
+			validation.RespondAuthError(c, "invalid token claims")
 			return
 		}
 
