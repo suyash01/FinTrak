@@ -23,33 +23,25 @@ import (
 // caller can translate it to a 404.
 var errAccountNotFound = errors.New("account not found")
 
-// balanceExpr builds the per-account balance/outstanding expression as an
-// accumulative net sum: credits are added and debits subtracted, according to
-// the account type's positive_txn_type convention.
-// `alias` is the accounts table alias referenced in the query.
-func balanceExpr(alias string) string {
-	return `COALESCE((
-		SELECT SUM(CASE
-			WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-			WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
-			ELSE 0 END)
-		FROM transactions t WHERE t.account_id = ` + alias + `.id
-	), 0)`
-}
-
 // GetAccounts lists the authenticated user's accounts, newest first, each with
 // a computed running balance based on its account type's positive_txn_type.
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
 		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.is_default,
-		` + balanceExpr("a") + ` as balance
+		COALESCE((
+			SELECT SUM(CASE
+				WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+				WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+				ELSE 0 END)
+			FROM transactions t WHERE t.account_id = a.id AND t.user_id = $1
+		), 0) as balance
 		FROM accounts a
 		JOIN account_types at ON a.account_type_id = at.id
-		WHERE a.user_id = $1
+		WHERE a.user_id = $2
 		ORDER BY a.created_at DESC`
 
-	rows, err := db.Pool.Query(c, query, userID)
+	rows, err := db.Pool.Query(c, query, userID, userID)
 	if err != nil {
 		log.Printf("Error in GetAccounts: %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -207,7 +199,13 @@ func UpdateAccount(c *gin.Context) {
 				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default
 			)
 			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default,
-			`+balanceExpr("u")+` as balance
+			COALESCE((
+				SELECT SUM(CASE
+					WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+					WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+					ELSE 0 END)
+				FROM transactions t WHERE t.account_id = u.id AND t.user_id = $1
+			), 0) as balance
 			FROM updated u
 			JOIN account_types at ON u.account_type_id = at.id`,
 			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID,
@@ -219,8 +217,8 @@ func UpdateAccount(c *gin.Context) {
 
 		// Synchronize with Payees: Update the corresponding payee name
 		_, err = tx.Exec(c,
-			`UPDATE payees SET name = $1 WHERE account_id = $2`,
-			account.Name, account.ID,
+			`UPDATE payees SET name = $1 WHERE account_id = $2 AND user_id = $3`,
+			account.Name, account.ID, userID,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to update linked payee: %w", err)
@@ -255,7 +253,7 @@ func ExportAccount(c *gin.Context) {
 		`SELECT t.date, t.description, t.amount, t.type, t.tags, t.notes
 		 FROM transactions t
 		 WHERE t.account_id = $1
-		   AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = t.account_id AND a.user_id = $2)
+		 	 AND t.user_id = $2
 		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in ExportAccount: %v\n", err)
