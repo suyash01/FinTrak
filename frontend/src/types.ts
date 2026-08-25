@@ -105,12 +105,13 @@ export interface Link {
 export interface User {
   id: string;
   email: string;
+  role?: string;
   createdAt?: string;
 }
 
 export interface UserSettings {
   paperlessUrl?: string;
-  paperlessToken?: string;
+  hasToken?: boolean;
   paperlessTag?: string;
   pageSize?: number | null;
 }

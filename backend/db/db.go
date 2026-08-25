@@ -1,3 +1,6 @@
+// Package db owns the PostgreSQL connection pool, schema migrations, and
+// idempotent seeders. Tests swap the package-level Pool for a pgxmock so
+// handlers can be exercised without a real database.
 package db
 
 import (
@@ -29,8 +32,12 @@ type DBPool interface {
 	Close()
 }
 
+// Pool is the shared connection pool used by all handlers and seeders. Tests
+// replace it with a mock before exercising handlers.
 var Pool DBPool
 
+// Connect opens a pgx connection pool against the given URL and verifies it
+// with a ping. It exits the process on failure.
 func Connect(databaseURL string) {
 	var err error
 	Pool, err = pgxpool.New(context.Background(), databaseURL)
@@ -45,12 +52,15 @@ func Connect(databaseURL string) {
 	fmt.Println("✓ Connected to PostgreSQL")
 }
 
+// Close releases the shared connection pool. Safe to call more than once.
 func Close() {
 	if Pool != nil {
 		Pool.Close()
 	}
 }
 
+// RunMigrations applies any pending SQL migrations embedded in the binary via
+// golang-migrate. No-op when the schema is already up to date; exits on error.
 func RunMigrations(databaseURL string) {
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {

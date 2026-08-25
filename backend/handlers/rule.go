@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// GetRules lists the user's categorization rules, highest priority first, with
+// the joined category name and payee name.
 func GetRules(c *gin.Context) {
 	rows, err := db.Pool.Query(c,
 		`SELECT r.id, r.pattern, r.match_type, r.category_id, r.payee_id, COALESCE(p.name, '') as payee, r.priority,
@@ -45,6 +47,8 @@ func GetRules(c *gin.Context) {
 	c.JSON(http.StatusOK, rules)
 }
 
+// CreateRule inserts a categorization rule, defaulting MatchType to "contains"
+// and rejecting references to categories/payees the user doesn't own.
 func CreateRule(c *gin.Context) {
 	var req models.CreateRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -58,12 +62,19 @@ func CreateRule(c *gin.Context) {
 
 	var rule models.Rule
 	err := db.Pool.QueryRow(c,
-		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority) VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority)
+		 SELECT $1, $2, $3, $4, $5, $6
+		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND c.user_id = $1)
+		   AND ($5 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		auth.GetUserID(c), req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority,
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
+			return
+		}
 		log.Printf("Error in CreateRule: %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -72,6 +83,7 @@ func CreateRule(c *gin.Context) {
 	c.JSON(http.StatusCreated, rule)
 }
 
+// DeleteRule removes a rule owned by the user.
 func DeleteRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -95,6 +107,8 @@ func DeleteRule(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// UpdateRule edits a rule's fields, enforcing ownership of any referenced
+// category/payee and returning 404 when the rule isn't found.
 func UpdateRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -111,7 +125,10 @@ func UpdateRule(c *gin.Context) {
 	var rule models.Rule
 	err = db.Pool.QueryRow(c,
 		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5
-		 WHERE id = $6 AND user_id = $7 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
+		 WHERE id = $6 AND user_id = $7
+		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND c.user_id = $7)
+		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $7))
+		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority, id, auth.GetUserID(c),
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
@@ -128,6 +145,10 @@ func UpdateRule(c *gin.Context) {
 	c.JSON(http.StatusOK, rule)
 }
 
+// ApplyRules re-runs all of the user's rules against uncategorized transactions
+// (category_id IS NULL or the "Uncategorized" category), applying the first
+// matching rule's category and payee. Returns the number of transactions
+// updated.
 func ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
@@ -209,6 +230,8 @@ func ApplyRules(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"updated": updated})
 }
 
+// ruleEntry is the minimal rule representation used for in-memory matching
+// during transaction creation, imports, and ApplyRules.
 type ruleEntry struct {
 	Pattern   string
 	MatchType string
@@ -216,6 +239,7 @@ type ruleEntry struct {
 	PayeeID   *uuid.UUID
 }
 
+// loadRules fetches the user's rules ordered by descending priority.
 func loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
 	rows, err := db.Pool.Query(c,
 		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
@@ -235,6 +259,9 @@ func loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
 	return rules, rows.Err()
 }
 
+// matchRule reports whether a transaction description matches a rule pattern
+// for the given match type ("contains", "starts_with", or "exact"). Matching is
+// case-insensitive.
 func matchRule(desc, pattern, matchType string) bool {
 	descLower := strings.ToLower(desc)
 	patternLower := strings.ToLower(pattern)

@@ -1,3 +1,7 @@
+// Package models defines the shared request, response, and persistence types
+// used across the FinTrak API. JSON tags mirror the shapes the frontend expects,
+// and optional-field types (OptionalUUID, OptionalInt) encode the difference
+// between "key absent" and "key explicitly null" on partial updates.
 package models
 
 import (
@@ -7,22 +11,29 @@ import (
 	"github.com/google/uuid"
 )
 
+// FieldError describes a single invalid field in a request body.
 type FieldError struct {
 	Field   string `json:"field,omitempty"`
 	Tag     string `json:"tag,omitempty"`
 	Message string `json:"message"`
 }
 
+// ErrorResponse is the standard error envelope returned by all API handlers.
 type ErrorResponse struct {
 	Errors []FieldError `json:"errors"`
 }
 
+// AccountType describes how an account category behaves. PositiveTxnType
+// ("credit" or "debit") defines which transaction type is added when computing
+// an account's balance/outstanding. Types are shared reference data across all
+// users; the built-in "bank" and "credit_card" types are immutable.
 type AccountType struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	PositiveTxnType string `json:"positiveTxnType"`
 }
 
+// Account is a user's bank account or credit card.
 type Account struct {
 	ID              uuid.UUID `json:"id"`
 	Name            string    `json:"name"`
@@ -35,6 +46,9 @@ type Account struct {
 	Balance         float64   `json:"balance"`
 }
 
+// Payee is a merchant or party a transaction is associated with. Payees can be
+// linked to an account (AccountID) so transfers between the user's own accounts
+// resolve to the counterpart account's payee.
 type Payee struct {
 	ID        uuid.UUID  `json:"id"`
 	Name      string     `json:"name"`
@@ -43,6 +57,8 @@ type Payee struct {
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
+// Category is a user-scoped grouping for transactions. ParentID supports a
+// hierarchical taxonomy; Type is "income", "expense", or "transfer".
 type Category struct {
 	ID       uuid.UUID  `json:"id"`
 	Name     string     `json:"name"`
@@ -52,6 +68,9 @@ type Category struct {
 	Type     string     `json:"type"`
 }
 
+// Transaction is a single debit or credit entry on an account. The joined
+// fields (AccountName, CategoryName, ...) are populated by read queries and are
+// absent on writes.
 type Transaction struct {
 	ID          uuid.UUID  `json:"id"`
 	AccountID   uuid.UUID  `json:"accountId"`
@@ -93,6 +112,10 @@ type BillingCycle struct {
 	TransactionCount int       `json:"transactionCount"`
 }
 
+// Rule automatically assigns a category (and optionally a payee) to a
+// transaction whose description matches Pattern. Rules are evaluated in
+// priority order (highest first) during transaction creation, imports, and
+// ApplyRules.
 type Rule struct {
 	ID         uuid.UUID  `json:"id"`
 	Pattern    string     `json:"pattern"`
@@ -105,6 +128,9 @@ type Rule struct {
 	CategoryName string `json:"categoryName,omitempty"`
 }
 
+// Link pairs two transactions that belong together — typically a transfer
+// between the user's own accounts, or a cashback/refund that corresponds to an
+// earlier purchase. FromTxn/ToTxn carry the joined transaction details.
 type Link struct {
 	ID        uuid.UUID `json:"id"`
 	Type      string    `json:"type"`
@@ -119,9 +145,11 @@ type Link struct {
 
 // Request/Response types
 
+// User is the public view of an account (never includes the password hash).
 type User struct {
 	ID    uuid.UUID `json:"id"`
 	Email string    `json:"email"`
+	Role  string    `json:"role"`
 }
 
 // UserSettings holds per-user integration configuration, stored against the
@@ -133,6 +161,19 @@ type UserSettings struct {
 	PageSize       *int   `json:"pageSize"`
 }
 
+// PaperlessSettingsResponse is the safe view of a user's Paperless-ngx
+// integration. It never contains the API token — callers learn whether a token
+// is configured via HasToken and supply a replacement explicitly on save.
+type PaperlessSettingsResponse struct {
+	PaperlessURL string `json:"paperlessUrl"`
+	HasToken     bool   `json:"hasToken"`
+	PaperlessTag string `json:"paperlessTag"`
+	PageSize     *int   `json:"pageSize"`
+}
+
+// UpdateUserSettingsRequest is a partial update for a user's integration
+// settings. Pointer fields distinguish "not provided" from "set to empty", and
+// PageSize uses OptionalInt so an explicit null clears the stored value.
 type UpdateUserSettingsRequest struct {
 	PaperlessURL   *string     `json:"paperlessUrl"`
 	PaperlessToken *string     `json:"paperlessToken"`
@@ -151,6 +192,8 @@ type PaperlessDocument struct {
 	Tags          []string `json:"tags"`
 }
 
+// PaperlessImportRequest asks the backend to pull a single Paperless document,
+// parse it with the statement parser, and return the normalized transactions.
 type PaperlessImportRequest struct {
 	DocumentID int    `json:"documentId" binding:"required"`
 	Extractor  string `json:"extractor"`
@@ -158,21 +201,25 @@ type PaperlessImportRequest struct {
 	DateFormat string `json:"dateFormat"`
 }
 
+// RegisterRequest is the body for POST /api/v1/auth/register.
 type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
 }
 
+// LoginRequest is the body for POST /api/v1/auth/login.
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
 }
 
+// AuthResponse is returned by the register and login endpoints.
 type AuthResponse struct {
 	Token string `json:"token"`
 	User  User   `json:"user"`
 }
 
+// CreateAccountRequest is the body for POST /api/v1/accounts.
 type CreateAccountRequest struct {
 	Name          string `json:"name" binding:"required"`
 	AccountTypeID string `json:"accountTypeId" binding:"required"`
@@ -194,12 +241,14 @@ type UpdateAccountRequest struct {
 	IsDefault     *bool  `json:"isDefault"`
 }
 
+// CreateAccountTypeRequest is the admin-only body for POST /api/v1/account-types.
 type CreateAccountTypeRequest struct {
 	ID              string `json:"id" binding:"required"`
 	Name            string `json:"name" binding:"required"`
 	PositiveTxnType string `json:"positiveTxnType" binding:"required"`
 }
 
+// UpdateAccountTypeRequest is the admin-only body for PUT /api/v1/account-types/:id.
 type UpdateAccountTypeRequest struct {
 	Name            string `json:"name"`
 	PositiveTxnType string `json:"positiveTxnType"`
@@ -212,6 +261,9 @@ type OptionalUUID struct {
 	value   *uuid.UUID
 }
 
+// UnmarshalJSON records the key as present in the body and parses the value:
+// an explicit "null" clears the field (value becomes nil) while a UUID string
+// is parsed normally.
 func (o *OptionalUUID) UnmarshalJSON(data []byte) error {
 	o.present = true
 	if string(data) == "null" {
@@ -244,6 +296,9 @@ type OptionalInt struct {
 	value   *int
 }
 
+// UnmarshalJSON records the key as present in the body and parses the value:
+// an explicit "null" clears the field (value becomes nil) while a number is
+// parsed normally.
 func (o *OptionalInt) UnmarshalJSON(data []byte) error {
 	o.present = true
 	if string(data) == "null" {
@@ -269,6 +324,9 @@ func (o *OptionalInt) Value() *int {
 	return o.value
 }
 
+// UpdateTransactionRequest is a partial update for a transaction. OptionalUUID
+// fields allow an explicit null to clear a foreign key while an absent key
+// leaves it untouched.
 type UpdateTransactionRequest struct {
 	CategoryID     OptionalUUID `json:"categoryId"`
 	Tags           *[]string    `json:"tags"`
@@ -282,6 +340,7 @@ type UpdateTransactionRequest struct {
 	BillingCycleID OptionalUUID `json:"billingCycleId"`
 }
 
+// CreateTransactionRequest is the body for POST /api/v1/transactions.
 type CreateTransactionRequest struct {
 	AccountID      uuid.UUID  `json:"accountId" binding:"required"`
 	Date           string     `json:"date" binding:"required"`
@@ -295,25 +354,33 @@ type CreateTransactionRequest struct {
 	BillingCycleID *uuid.UUID `json:"billingCycleId"`
 }
 
+// BulkCategorizeRequest reassigns one category to many transactions at once.
 type BulkCategorizeRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 	CategoryID     uuid.UUID   `json:"categoryId" binding:"required"`
 }
 
+// BulkUpdatePayeeRequest reassigns one payee to many transactions at once.
 type BulkUpdatePayeeRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 	PayeeID        uuid.UUID   `json:"payeeId" binding:"required"`
 }
 
+// BulkBillingCycleRequest attaches one billing cycle to many transactions.
 type BulkBillingCycleRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 	BillingCycleID uuid.UUID   `json:"billingCycleId" binding:"required"`
 }
 
+// BulkDeleteTransactionsRequest lists the transactions to delete in one call.
 type BulkDeleteTransactionsRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 }
 
+// ImportRequest is the body for POST /api/v1/transactions/import. DuplicateAction
+// is "skip" (drop rows that already exist) or "keep" (insert everything);
+// BillingCycleID attaches credit-card imports to a specific cycle; and
+// PaperlessDocumentIDs are tagged after a successful import.
 type ImportRequest struct {
 	AccountID            uuid.UUID           `json:"accountId"`
 	Transactions         []ImportTransaction `json:"transactions"`
@@ -342,6 +409,8 @@ type ValidateTransactionResult struct {
 	Type        string  `json:"type"`
 }
 
+// ValidateTransactionsResponse summarizes a validation run for the frontend's
+// import preview.
 type ValidateTransactionsResponse struct {
 	Total         int                         `json:"total"`
 	ExistingCount int                         `json:"existingCount"`
@@ -349,6 +418,7 @@ type ValidateTransactionsResponse struct {
 	Results       []ValidateTransactionResult `json:"results"`
 }
 
+// ImportTransaction is a single candidate row in an import or validation batch.
 type ImportTransaction struct {
 	Date        string     `json:"date"`
 	Description string     `json:"description"`
@@ -357,6 +427,7 @@ type ImportTransaction struct {
 	PayeeID     *uuid.UUID `json:"payeeId"`
 }
 
+// CreateRuleRequest is the body for POST /api/v1/rules.
 type CreateRuleRequest struct {
 	Pattern    string     `json:"pattern" binding:"required"`
 	MatchType  string     `json:"matchType"`
@@ -365,6 +436,7 @@ type CreateRuleRequest struct {
 	Priority   int        `json:"priority"`
 }
 
+// UpdateRuleRequest is the body for PUT /api/v1/rules/:id.
 type UpdateRuleRequest struct {
 	Pattern    string     `json:"pattern"`
 	MatchType  string     `json:"matchType"`
@@ -373,11 +445,13 @@ type UpdateRuleRequest struct {
 	Priority   int        `json:"priority"`
 }
 
+// CreatePayeeRequest is the body for POST /api/v1/payees.
 type CreatePayeeRequest struct {
 	Name      string     `json:"name" binding:"required"`
 	AccountID *uuid.UUID `json:"accountId"`
 }
 
+// CreateLinkRequest is the body for POST /api/v1/links.
 type CreateLinkRequest struct {
 	Type      string    `json:"type" binding:"required"`
 	FromTxnID uuid.UUID `json:"fromTxnId" binding:"required"`
@@ -385,14 +459,19 @@ type CreateLinkRequest struct {
 	Notes     string    `json:"notes"`
 }
 
+// BulkCreateLinksRequest creates many links in one call.
 type BulkCreateLinksRequest struct {
 	Links []CreateLinkRequest `json:"links" binding:"required"`
 }
 
+// BulkDeleteLinksRequest lists the link IDs to delete in one call.
 type BulkDeleteLinksRequest struct {
 	IDs []uuid.UUID `json:"ids" binding:"required"`
 }
 
+// DashboardSummary aggregates a user's financial overview for the dashboard:
+// account/transaction counts, income and expense totals, spending and income
+// breakdowns by category, a monthly trend, and the most recent transactions.
 type DashboardSummary struct {
 	TotalAccounts      int             `json:"totalAccounts"`
 	TotalTransactions  int             `json:"totalTransactions"`
@@ -404,6 +483,7 @@ type DashboardSummary struct {
 	RecentTransactions []Transaction   `json:"recentTransactions"`
 }
 
+// CategorySpend aggregates spend/income for a single category.
 type CategorySpend struct {
 	CategoryID    uuid.UUID `json:"categoryId"`
 	CategoryName  string    `json:"categoryName"`
@@ -413,12 +493,16 @@ type CategorySpend struct {
 	Count         int       `json:"count"`
 }
 
+// MonthlyData holds income and expense totals for one month (keyed "YYYY-MM").
 type MonthlyData struct {
 	Month   string  `json:"month"`
 	Income  float64 `json:"income"`
 	Expense float64 `json:"expense"`
 }
 
+// TransferSuggestion proposes that two transactions be linked, e.g. a debit and
+// a matching credit in different accounts. Score (0-100) estimates how
+// confident the suggestion is.
 type TransferSuggestion struct {
 	DebitTxn  Transaction `json:"debitTxn"`
 	CreditTxn Transaction `json:"creditTxn"`

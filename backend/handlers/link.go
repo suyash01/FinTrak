@@ -15,6 +15,9 @@ import (
 	"github.com/google/uuid"
 )
 
+// GetLinks lists the user's links, optionally filtered by type and/or a
+// transaction ID, newest first. Both linked transactions are joined in with
+// their account names for display.
 func GetLinks(c *gin.Context) {
 	linkType := c.Query("type")
 	txnID := c.Query("txnId")
@@ -70,6 +73,10 @@ func GetLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, links)
 }
 
+// CreateLink links two transactions owned by the user, rejecting invalid types,
+// missing transactions, and exact duplicates. For "transfer" links it also
+// re-categorizes both transactions as "Transfer" and swaps their payees to the
+// counterpart account's linked payee. Runs in a transaction.
 func CreateLink(c *gin.Context) {
 	var req models.CreateLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -189,6 +196,9 @@ func CreateLink(c *gin.Context) {
 	c.JSON(http.StatusCreated, link)
 }
 
+// BulkCreateLinks creates many links in one transaction, validating each entry,
+// skipping exact duplicates, and applying the same transfer re-categorization
+// as CreateLink. Returns the number of links actually created.
 func BulkCreateLinks(c *gin.Context) {
 	var req models.BulkCreateLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -304,6 +314,8 @@ func BulkCreateLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"createdCount": createdCount})
 }
 
+// DeleteLink removes a link and clears the transfer-derived category/payee from
+// its two transactions — but only when no other link still references them.
 func DeleteLink(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -364,6 +376,8 @@ func DeleteLink(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// BulkDeleteLinks removes many links at once and resets the transfer-derived
+// category/payee on any transaction no longer referenced by a remaining link.
 func BulkDeleteLinks(c *gin.Context) {
 	var req models.BulkDeleteLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -444,6 +458,9 @@ func BulkDeleteLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted", "deletedCount": len(req.IDs)})
 }
 
+// GetTransferSuggestions proposes debit/credit pairs across different accounts
+// that are likely transfers: same amount within ±3 days, not already linked.
+// Each suggestion carries a confidence score.
 func GetTransferSuggestions(c *gin.Context) {
 	// Find debit transactions that might match credit transactions in other accounts
 	// within ±3 days and same amounts
@@ -491,6 +508,9 @@ func GetTransferSuggestions(c *gin.Context) {
 	c.JSON(http.StatusOK, suggestions)
 }
 
+// calculateTransferScore ranks a transfer suggestion from 0-100. It starts at
+// 100 and subtracts for amount mismatch and date distance, then bumps the score
+// (capped at 100) when the descriptions contain transfer-related keywords.
 func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
 	// Calculate score based on amount match and date proximity
 	amountDiff := math.Abs(debitTxn.Amount - creditTxn.Amount)
@@ -515,6 +535,10 @@ func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
 	return score
 }
 
+// GetCashbackSuggestions finds credit transactions whose description suggests a
+// cashback/reward/refund and pairs each with up to three prior debits on the
+// same account (within 90 days) as the likely originating purchase, excluding
+// already-linked cashbacks.
 func GetCashbackSuggestions(c *gin.Context) {
 	rows, err := db.Pool.Query(c, `
 		SELECT cb.id, cb.account_id, cb.date, cb.description, cb.amount, cb.type, ca.name,

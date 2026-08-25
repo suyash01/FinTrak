@@ -18,6 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// errAccountNotFound is returned by account helpers when a delete/update
+// targets an account that doesn't exist (or isn't owned by the user), so the
+// caller can translate it to a 404.
 var errAccountNotFound = errors.New("account not found")
 
 // balanceExpr builds the per-account balance/outstanding expression as an
@@ -34,6 +37,8 @@ func balanceExpr(alias string) string {
 	), 0)`
 }
 
+// GetAccounts lists the authenticated user's accounts, newest first, each with
+// a computed running balance based on its account type's positive_txn_type.
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
@@ -66,6 +71,9 @@ func GetAccounts(c *gin.Context) {
 	c.JSON(http.StatusOK, accounts)
 }
 
+// CreateAccount inserts a new account for the user, clears the default flag on
+// any other account when the new one is the default, and keeps the payee table
+// in sync by creating/updating a payee named after the account.
 func CreateAccount(c *gin.Context) {
 	var req models.CreateAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -129,6 +137,8 @@ func CreateAccount(c *gin.Context) {
 	c.JSON(http.StatusCreated, account)
 }
 
+// DeleteAccount removes an account owned by the user along with its
+// account-linked payee, so no orphaned payees are left behind.
 func DeleteAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -164,6 +174,9 @@ func DeleteAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// UpdateAccount edits an account's fields, preserves the current default flag
+// when the request omits it (via *bool), keeps only one default account, and
+// renames the account-linked payee to match.
 func UpdateAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -229,6 +242,8 @@ func UpdateAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, account)
 }
 
+// ExportAccount streams all transactions for an account as a CSV attachment,
+// scoped to the authenticated user via an ownership EXISTS check.
 func ExportAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

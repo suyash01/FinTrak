@@ -376,3 +376,64 @@ func TestDeletePayee(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+func TestCreatePayeeAccountNotOwned(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newPayeeTestRouter()
+	otherAccountID := uuid.New()
+	reqBody := models.CreatePayeeRequest{Name: "Amazon", AccountID: &otherAccountID}
+
+	// Account belongs to another user -> INSERT...SELECT matches no rows.
+	mock.ExpectQuery("INSERT INTO payees").
+		WithArgs(testUserID(), reqBody.Name, &otherAccountID).
+		WillReturnError(pgx.ErrNoRows)
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest(http.MethodPost, "/payees", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePayeeAccountNotOwned(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newPayeeTestRouter()
+	payeeID := uuid.New()
+	otherAccountID := uuid.New()
+	reqBody := models.CreatePayeeRequest{Name: "Renamed", AccountID: &otherAccountID}
+
+	// Account belongs to another user -> no row matches.
+	mock.ExpectQuery("UPDATE payees").
+		WithArgs(reqBody.Name, &otherAccountID, payeeID, testUserID()).
+		WillReturnError(pgx.ErrNoRows)
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest(http.MethodPut, "/payees/"+payeeID.String(), bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

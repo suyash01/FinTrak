@@ -1,3 +1,6 @@
+// Command backend is the FinTrak API server. It loads configuration, connects
+// to PostgreSQL, runs migrations and seeders, then serves the /api/v1 REST
+// endpoints consumed by the FinTrak frontend.
 package main
 
 import (
@@ -17,6 +20,9 @@ import (
 // Falls back to a dev version for local builds.
 var Version = "0.1.0-alpha"
 
+// main boots the FinTrak API: it initializes request validation, loads
+// configuration, connects to the database (applying migrations and seeders),
+// and finally starts the HTTP server on the configured port.
 func main() {
 	validation.Init()
 
@@ -29,6 +35,7 @@ func main() {
 	// Run migrations and seed
 	db.RunMigrations(cfg.DatabaseURL)
 	db.SeedAccountTypes()
+	db.PromoteAdminUsers(cfg.AdminEmails)
 
 	// Setup Gin
 	r := setupRouter(cfg)
@@ -46,9 +53,13 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// Point the statement handler at the standalone parser service.
 	handlers.SetStatementParserURL(cfg.ParserURL)
 
-	// Expose JWT secret to auth handlers via context
+	// Expose JWT secret, admin allowlist, environment, and the token
+	// encryption key to handlers via the request context.
 	r.Use(func(c *gin.Context) {
 		c.Set("jwtSecret", cfg.JWTSecret)
+		c.Set("adminEmails", cfg.AdminEmails)
+		c.Set("appEnv", cfg.Env)
+		c.Set("tokenEncryptionKey", cfg.TokenEncryptionKey)
 		c.Next()
 	})
 
@@ -91,12 +102,13 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accounts.GET("/:id/export", handlers.ExportAccount)
 		accounts.GET("/:id/billing-cycles", handlers.GetBillingCycles)
 
-		// Account Types
+		// Account Types (mutations are admin-only; the type list is shared
+		// reference data that affects balance semantics for every user)
 		accountTypes := api.Group("/account-types")
 		accountTypes.GET("", handlers.GetAccountTypes)
-		accountTypes.POST("", handlers.CreateAccountType)
-		accountTypes.PUT("/:id", handlers.UpdateAccountType)
-		accountTypes.DELETE("/:id", handlers.DeleteAccountType)
+		accountTypes.POST("", auth.RequireAdmin(), handlers.CreateAccountType)
+		accountTypes.PUT("/:id", auth.RequireAdmin(), handlers.UpdateAccountType)
+		accountTypes.DELETE("/:id", auth.RequireAdmin(), handlers.DeleteAccountType)
 
 		// Categories
 		api.GET("/categories", handlers.GetCategories)

@@ -224,7 +224,7 @@ export default function PaperlessImport() {
     api
       .getPaperlessSettings()
       .then((s) => {
-        setConfigured(Boolean(s.paperlessUrl && s.paperlessToken));
+        setConfigured(Boolean(s.paperlessUrl && s.hasToken));
         setTagLabel(s.paperlessTag || "");
       })
       .catch(() => setConfigured(false))

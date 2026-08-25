@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
+// SeedCategory describes one row in the default category set created for each
+// new user.
 type SeedCategory struct {
 	Name  string
 	Icon  string
@@ -16,6 +18,9 @@ type SeedCategory struct {
 	Type  string
 }
 
+// SeedDefaultCategories inserts the stock income/expense/transfer categories for
+// a user, but only when the user has none yet (so it is safe to call on every
+// registration and boot). Errors are logged and swallowed.
 func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	var count int
 	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
@@ -75,12 +80,38 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	fmt.Println("✓ Seeded default categories")
 }
 
+// SeedAccountType describes one built-in account type row.
 type SeedAccountType struct {
 	ID              string
 	Name            string
 	PositiveTxnType string
 }
 
+// PromoteAdminUsers grants the 'admin' role to any existing user whose email is
+// in the given allowlist. It is idempotent and safe to call on every boot.
+func PromoteAdminUsers(emails []string) {
+	if len(emails) == 0 {
+		return
+	}
+	ctx := context.Background()
+	for _, email := range emails {
+		email = strings.TrimSpace(email)
+		if email == "" {
+			continue
+		}
+		_, err := Pool.Exec(ctx,
+			"UPDATE users SET role = 'admin' WHERE LOWER(email) = LOWER($1)",
+			email,
+		)
+		if err != nil {
+			log.Printf("Failed to promote user %s to admin: %v", email, err)
+		}
+	}
+	fmt.Println("✓ Ensured admin users")
+}
+
+// SeedAccountTypes inserts the built-in "bank" and "credit_card" account types.
+// It is idempotent (ON CONFLICT DO NOTHING) and runs on every boot.
 func SeedAccountTypes() {
 	ctx := context.Background()
 

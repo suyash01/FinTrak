@@ -324,7 +324,7 @@ paths:
       tags:
         - Account Types
       summary: Create a new account type
-      description: Create a new custom account type
+      description: Create a new custom account type (admin only)
       operationId: createAccountType
       security:
         - BearerAuth: []
@@ -345,6 +345,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -353,6 +355,7 @@ paths:
       tags:
         - Account Types
       summary: Update an account type
+      description: Update a custom account type (admin only)
       operationId: updateAccountType
       security:
         - BearerAuth: []
@@ -380,6 +383,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -389,6 +394,7 @@ paths:
       tags:
         - Account Types
       summary: Delete an account type
+      description: Delete a custom account type (admin only)
       operationId: deleteAccountType
       security:
         - BearerAuth: []
@@ -410,8 +416,16 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: Account type is in use by existing accounts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1154,6 +1168,12 @@ paths:
             type: string
             enum: [transfer, cashback, refund]
           description: Filter by link type
+        - in: query
+          name: txnId
+          schema:
+            type: string
+            format: uuid
+          description: Filter links involving a specific transaction
       responses:
         "200":
           description: List of links
@@ -1391,14 +1411,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  passwordRequired:
-                    type: boolean
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          description: Password required or incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "413":
           description: File too large (max 20 MB)
           content:
@@ -1467,7 +1486,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UserSettings"
+                $ref: "#/components/schemas/PaperlessSettingsResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1493,7 +1512,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UserSettings"
+                $ref: "#/components/schemas/PaperlessSettingsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1747,6 +1766,8 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[a-z][a-z0-9_]{1,29}$"
+          description: Custom type slug (2-30 chars, starts with a letter, lowercase letters/digits/underscores only)
         name:
           type: string
         positiveTxnType:
@@ -2091,6 +2112,10 @@ components:
         email:
           type: string
           format: email
+        role:
+          type: string
+          enum: [user, admin]
+          description: The user's role (admin when their email is in the configured admin allowlist)
 
     Account:
       type: object
@@ -2329,13 +2354,14 @@ components:
           items:
             type: string
 
-    UserSettings:
+    PaperlessSettingsResponse:
       type: object
       properties:
         paperlessUrl:
           type: string
-        paperlessToken:
-          type: string
+        hasToken:
+          type: boolean
+          description: Whether a Paperless API token is configured (the token itself is never returned)
         paperlessTag:
           type: string
         pageSize:
@@ -2379,6 +2405,9 @@ components:
           type: string
         amount:
           type: number
+        type:
+          type: string
+          enum: [debit, credit]
 
     ValidateTransactionsResponse:
       type: object

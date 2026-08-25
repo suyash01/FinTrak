@@ -400,3 +400,92 @@ func TestUpdateRuleBadJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestCreateRuleCategoryNotOwned(t *testing.T) {
+	r, mock := newRuleTestRouter(t)
+	r.POST("/rules", CreateRule)
+
+	userID := testUserID()
+	otherCatID := uuid.New()
+
+	reqBody := models.CreateRuleRequest{
+		Pattern:    "Swiggy",
+		MatchType:  "contains",
+		CategoryID: otherCatID,
+		Priority:   5,
+	}
+
+	// Category belongs to another user -> INSERT...SELECT matches no rows.
+	mock.ExpectQuery("INSERT INTO rules").
+		WithArgs(userID, "Swiggy", "contains", otherCatID, (*uuid.UUID)(nil), 5).
+		WillReturnError(pgx.ErrNoRows)
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateRulePayeeNotOwned(t *testing.T) {
+	r, mock := newRuleTestRouter(t)
+	r.POST("/rules", CreateRule)
+
+	userID := testUserID()
+	catID := uuid.New()
+	otherPayeeID := uuid.New()
+
+	reqBody := models.CreateRuleRequest{
+		Pattern:    "Swiggy",
+		MatchType:  "contains",
+		CategoryID: catID,
+		PayeeID:    &otherPayeeID,
+		Priority:   5,
+	}
+
+	mock.ExpectQuery("INSERT INTO rules").
+		WithArgs(userID, "Swiggy", "contains", catID, &otherPayeeID, 5).
+		WillReturnError(pgx.ErrNoRows)
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateRuleCategoryNotOwned(t *testing.T) {
+	r, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", UpdateRule)
+
+	userID := testUserID()
+	ruleID := uuid.New()
+	otherCatID := uuid.New()
+
+	reqBody := models.UpdateRuleRequest{
+		Pattern:    "Netflix",
+		MatchType:  "starts_with",
+		CategoryID: otherCatID,
+		Priority:   3,
+	}
+
+	// Category belongs to another user -> ownership predicate fails -> no rows.
+	mock.ExpectQuery("UPDATE rules SET pattern").
+		WithArgs("Netflix", "starts_with", otherCatID, (*uuid.UUID)(nil), 3, ruleID, userID).
+		WillReturnError(pgx.ErrNoRows)
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("PUT", "/rules/"+ruleID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

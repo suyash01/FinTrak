@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
@@ -12,6 +13,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// builtInAccountTypeIDs are seeded by db.SeedAccountTypes and shared by every
+// user; changing their balance semantics or deleting them would corrupt all
+// accounts, so they are immutable even for admins.
+var builtInAccountTypeIDs = map[string]bool{"bank": true, "credit_card": true}
+
+// accountTypeIDPattern restricts custom type IDs to a safe lowercase slug.
+var accountTypeIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,29}$`)
+
+// rejectBuiltInAccountType forbids create/update/delete of seeded IDs.
+func rejectBuiltInAccountType(c *gin.Context, id string) bool {
+	if builtInAccountTypeIDs[id] {
+		validation.RespondError(c, "account type is a built-in and cannot be changed", http.StatusForbidden)
+		return true
+	}
+	return false
+}
+
+// GetAccountTypes lists all account types. The list is shared reference data
+// (the same types apply to every user) and is safe for any authenticated user
+// to read.
 func GetAccountTypes(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
 	if err != nil {
@@ -35,6 +56,8 @@ func GetAccountTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, types)
 }
 
+// CreateAccountType adds a custom account type (admin only), enforcing the slug
+// pattern, valid positiveTxnType, and that built-in IDs are not reused.
 func CreateAccountType(c *gin.Context) {
 	var req models.CreateAccountTypeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -42,6 +65,13 @@ func CreateAccountType(c *gin.Context) {
 		return
 	}
 
+	if rejectBuiltInAccountType(c, req.ID) {
+		return
+	}
+	if !accountTypeIDPattern.MatchString(req.ID) {
+		validation.RespondError(c, "invalid id: must start with a letter and use only lowercase letters, digits, and underscores", http.StatusBadRequest)
+		return
+	}
 	if req.PositiveTxnType != "credit" && req.PositiveTxnType != "debit" {
 		validation.RespondError(c, "positiveTxnType must be 'credit' or 'debit'", http.StatusBadRequest)
 		return
@@ -63,10 +93,16 @@ func CreateAccountType(c *gin.Context) {
 	c.JSON(http.StatusCreated, at)
 }
 
+// UpdateAccountType edits a custom account type (admin only). Empty fields keep
+// their current value; built-in types are immutable.
 func UpdateAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if rejectBuiltInAccountType(c, id) {
 		return
 	}
 
@@ -103,10 +139,16 @@ func UpdateAccountType(c *gin.Context) {
 	c.JSON(http.StatusOK, at)
 }
 
+// DeleteAccountType removes a custom account type (admin only) and refuses to
+// delete built-in types or types still referenced by existing accounts.
 func DeleteAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if rejectBuiltInAccountType(c, id) {
 		return
 	}
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/crypto"
+	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
@@ -55,17 +58,34 @@ func TestGetPaperlessSettings(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/settings", nil))
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	var res map[string]string
+	var res map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	assert.Equal(t, "http://paperless.local", res["paperlessUrl"])
-	assert.Equal(t, "tok123", res["paperlessToken"])
+	assert.Equal(t, true, res["hasToken"])
+	// The token must never be returned.
+	assert.NotContains(t, res, "paperlessToken")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetPaperlessSettingsNoToken(t *testing.T) {
+	mock := setupPaperlessMock(t, "http://paperless.local", "")
+	expectPaperlessConfigQuery(mock, "http://paperless.local", "", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/settings", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, false, res["hasToken"])
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestUpdatePaperlessSettings(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 	mock.ExpectExec("UPDATE users SET paperless_url = \\$1, paperless_token = \\$2 WHERE id = \\$3").
-		WithArgs("http://paperless.local", "tok456", testUserID()).
+		WithArgs("http://paperless.local", pgxmock.AnyArg(), testUserID()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	r := newPaperlessTestRouter()
@@ -74,6 +94,23 @@ func TestUpdatePaperlessSettings(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, true, res["hasToken"])
+	assert.NotContains(t, res, "paperlessToken")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePaperlessSettingsInvalidURL(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	r := newPaperlessTestRouter()
+	for _, bad := range []string{"not-a-url", "ftp://paperless", "http://", "http://user:pass@example.com"} {
+		body := bytes.NewBufferString(`{"paperlessUrl":"` + bad + `"}`)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
+		assert.Equal(t, http.StatusBadRequest, w.Code, "url %q should be rejected", bad)
+	}
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -405,4 +442,157 @@ func TestListPaperlessDocumentsPagination(t *testing.T) {
 	assert.Equal(t, 1, res.Documents[0].ID)
 	assert.Equal(t, 2, res.Documents[1].ID)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListPaperlessDocumentsIgnoresCrossOriginNext(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/api/correspondents"),
+			strings.Contains(r.URL.Path, "/api/document_types"),
+			strings.Contains(r.URL.Path, "/api/tags"):
+			w.Write([]byte(`{"results":[]}`))
+		default:
+			// next points at a different host: it must NOT be followed, so the
+			// token is never forwarded to another origin.
+			w.Write([]byte(`{"results":[{"id":1,"title":"Doc One"}],"next":"http://evil.example.com/api/documents/?page=2"}`))
+		}
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res struct {
+		Documents []struct {
+			ID int `json:"id"`
+		} `json:"documents"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	require.Len(t, res.Documents, 1)
+	assert.Equal(t, 1, res.Documents[0].ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListPaperlessDocumentsRejectsCrossOriginRedirect(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/api/correspondents"),
+			strings.Contains(r.URL.Path, "/api/document_types"),
+			strings.Contains(r.URL.Path, "/api/tags"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"results":[]}`))
+		default:
+			http.Redirect(w, r, "http://evil.example.com/steal", http.StatusFound)
+		}
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetPaperlessDocumentFileRejectsOversized(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write(bytes.Repeat([]byte("x"), maxPaperlessDocument+1))
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents/42/file", nil))
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportPaperlessDocumentRejectsOversized(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), maxPaperlessDocument+1))
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestValidatePaperlessURL(t *testing.T) {
+	for _, u := range []string{
+		"http://paperless.local",
+		"https://paperless.example.com/",
+		"https://sub.example.com/paperless",
+	} {
+		assert.NoError(t, validatePaperlessURL(u), "url %q should be valid", u)
+	}
+	for _, u := range []string{"", "not a url", "ftp://x", "http://", "http://user:pass@example.com"} {
+		assert.Error(t, validatePaperlessURL(u), "url %q should be rejected", u)
+	}
+}
+
+func TestPaperlessOrigin(t *testing.T) {
+	o, err := paperlessOrigin(models.UserSettings{PaperlessURL: "https://paperless.example.com/paperless"})
+	assert.NoError(t, err)
+	assert.Equal(t, "https://paperless.example.com", o)
+}
+
+func TestValidatePaperlessHost(t *testing.T) {
+	dev := models.UserSettings{PaperlessURL: "http://localhost:8000"}
+	assert.NoError(t, validatePaperlessHost(context.Background(), dev, "development"))
+
+	// In production, plain http and private/loopback hosts are rejected.
+	err := validatePaperlessHost(context.Background(), models.UserSettings{PaperlessURL: "http://paperless.example.com"}, "production")
+	assert.Error(t, err)
+	err = validatePaperlessHost(context.Background(), models.UserSettings{PaperlessURL: "https://localhost:8000"}, "production")
+	assert.Error(t, err)
+}
+
+func TestReadAllLimited(t *testing.T) {
+	small, err := readAllLimited(strings.NewReader("hello"), 10)
+	assert.NoError(t, err)
+	assert.Equal(t, "hello", string(small))
+
+	_, err = readAllLimited(strings.NewReader(strings.Repeat("x", 11)), 10)
+	assert.Error(t, err)
+}
+
+func TestPaperlessToken(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Set("tokenEncryptionKey", "test-key")
+
+	enc, err := crypto.Encrypt("secret", "test-key")
+	require.NoError(t, err)
+	dec, err := paperlessToken(c, models.UserSettings{PaperlessToken: enc})
+	assert.NoError(t, err)
+	assert.Equal(t, "secret", dec)
+
+	// Legacy plaintext tokens pass through unchanged.
+	plain, err := paperlessToken(c, models.UserSettings{PaperlessToken: "legacy"})
+	assert.NoError(t, err)
+	assert.Equal(t, "legacy", plain)
 }

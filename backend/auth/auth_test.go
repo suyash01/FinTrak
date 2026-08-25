@@ -40,7 +40,7 @@ func TestCheckPassword(t *testing.T) {
 func TestGenerateToken(t *testing.T) {
 	userID := uuid.New()
 
-	token, err := GenerateToken(userID, testSecret)
+	token, err := GenerateToken(userID, "admin", testSecret)
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 	assert.Equal(t, 3, len(strings.Split(token, ".")))
@@ -57,6 +57,7 @@ func TestGenerateToken(t *testing.T) {
 	claims, ok := parsed.Claims.(*Claims)
 	require.True(t, ok)
 	assert.Equal(t, userID, claims.UserID)
+	assert.Equal(t, "admin", claims.Role)
 	assert.NotNil(t, claims.ExpiresAt)
 	assert.NotNil(t, claims.IssuedAt)
 	assert.True(t, claims.ExpiresAt.After(claims.IssuedAt.Time))
@@ -94,7 +95,7 @@ func TestRequireAuth(t *testing.T) {
 
 	t.Run("valid token", func(t *testing.T) {
 		userID := uuid.New()
-		token, err := GenerateToken(userID, testSecret)
+		token, err := GenerateToken(userID, "user", testSecret)
 		require.NoError(t, err)
 
 		w := httptest.NewRecorder()
@@ -107,7 +108,7 @@ func TestRequireAuth(t *testing.T) {
 	})
 
 	t.Run("token signed with wrong secret", func(t *testing.T) {
-		otherToken, err := GenerateToken(uuid.New(), "some-other-secret")
+		otherToken, err := GenerateToken(uuid.New(), "user", "some-other-secret")
 		require.NoError(t, err)
 
 		w := httptest.NewRecorder()
@@ -142,5 +143,70 @@ func TestGetUserID(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Set(ctxUserIDKey, userID)
 		assert.Equal(t, userID, GetUserID(c))
+	})
+}
+
+func TestRequireAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newRouter := func() *gin.Engine {
+		r := gin.New()
+		r.GET("/admin", RequireAuth(testSecret), RequireAdmin(), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"role": GetUserRole(c)})
+		})
+		return r
+	}
+
+	t.Run("admin token allowed", func(t *testing.T) {
+		token, err := GenerateToken(uuid.New(), "admin", testSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), `"role":"admin"`)
+	})
+
+	t.Run("user token forbidden", func(t *testing.T) {
+		token, err := GenerateToken(uuid.New(), "user", testSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assert.Contains(t, w.Body.String(), "admin access required")
+	})
+
+	t.Run("missing role forbidden", func(t *testing.T) {
+		token, err := GenerateToken(uuid.New(), "", testSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+}
+
+func TestGetUserRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("returns empty when not set", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		assert.Equal(t, "", GetUserRole(c))
+	})
+
+	t.Run("returns set role", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Set(ctxUserRoleKey, "admin")
+		assert.Equal(t, "admin", GetUserRole(c))
 	})
 }

@@ -73,3 +73,27 @@ func TestSeedAccountTypes(t *testing.T) {
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestPromoteAdminUsers(t *testing.T) {
+	mock := setupMock(t)
+
+	mock.ExpectExec("UPDATE users SET role = 'admin'").
+		WithArgs("admin@example.com").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE users SET role = 'admin'").
+		WithArgs("owner@example.com").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	PromoteAdminUsers([]string{"admin@example.com", "owner@example.com"})
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPromoteAdminUsersEmptyListIsNoop(t *testing.T) {
+	mock := setupMock(t)
+
+	PromoteAdminUsers(nil)
+	PromoteAdminUsers([]string{"", "  "})
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

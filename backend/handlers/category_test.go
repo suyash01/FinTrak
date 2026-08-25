@@ -11,6 +11,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
 )
@@ -168,4 +169,33 @@ func TestCreateCategory(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+func TestCreateCategoryParentNotOwned(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newCategoryTestRouter()
+	parentID := uuid.New()
+
+	// Parent belongs to another user -> INSERT...SELECT matches no rows.
+	mock.ExpectQuery("INSERT INTO categories").
+		WithArgs(testUserID(), "Rent", "home", "#6366f1", &parentID, "expense").
+		WillReturnError(pgx.ErrNoRows)
+
+	body := `{"name":"Rent","icon":"home","color":"#6366f1","type":"expense","parentId":"` + parentID.String() + `"}`
+	req, _ := http.NewRequest(http.MethodPost, "/categories", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

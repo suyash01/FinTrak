@@ -12,6 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// GetDashboardSummary aggregates the user's financial overview in one response:
+// account and transaction counts, income/expense totals, per-category spend and
+// income (top 15 each), a monthly income/expense trend, and the 10 most recent
+// transactions. An optional date range and account filter apply to every
+// transaction-backed section.
 func GetDashboardSummary(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)

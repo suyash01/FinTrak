@@ -1,3 +1,6 @@
+// Package validation centralizes request-body validation and error responses.
+// It configures the Gin validator to report JSON field names and renders a
+// consistent ErrorResponse envelope for binding and business-rule failures.
 package validation
 
 import (

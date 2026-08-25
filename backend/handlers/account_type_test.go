@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -15,15 +16,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newAccountTypeTestRouter() *gin.Engine {
+func newAccountTypeRoleRouter(role string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
-	r.Use(testAuthMiddleware())
+	r.Use(func(c *gin.Context) {
+		c.Set("userID", testUserID())
+		c.Set("userRole", role)
+		c.Next()
+	})
 	r.GET("/account-types", GetAccountTypes)
-	r.POST("/account-types", CreateAccountType)
-	r.PUT("/account-types/:id", UpdateAccountType)
-	r.DELETE("/account-types/:id", DeleteAccountType)
+	admin := r.Group("/account-types")
+	admin.Use(auth.RequireAdmin())
+	admin.POST("", CreateAccountType)
+	admin.PUT("/:id", UpdateAccountType)
+	admin.DELETE("/:id", DeleteAccountType)
 	return r
+}
+
+func newAccountTypeTestRouter() *gin.Engine {
+	return newAccountTypeRoleRouter("admin")
+}
+
+func newAccountTypeUserRouter() *gin.Engine {
+	return newAccountTypeRoleRouter("user")
 }
 
 func TestGetAccountTypes(t *testing.T) {
@@ -100,7 +115,7 @@ func TestCreateAccountType(t *testing.T) {
 		defer func() { db.Pool = oldPool }()
 
 		r := newAccountTypeTestRouter()
-		reqBody := models.CreateAccountTypeRequest{ID: "bank", Name: "Bank Account", PositiveTxnType: "credit"}
+		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("INSERT INTO account_types").
 			WithArgs(reqBody.ID, reqBody.Name, reqBody.PositiveTxnType).
@@ -118,8 +133,8 @@ func TestCreateAccountType(t *testing.T) {
 		var at models.AccountType
 		err = json.Unmarshal(w.Body.Bytes(), &at)
 		assert.NoError(t, err)
-		assert.Equal(t, "bank", at.ID)
-		assert.Equal(t, "Bank Account", at.Name)
+		assert.Equal(t, "savings", at.ID)
+		assert.Equal(t, "Savings", at.Name)
 
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -161,7 +176,7 @@ func TestCreateAccountType(t *testing.T) {
 		defer func() { db.Pool = oldPool }()
 
 		r := newAccountTypeTestRouter()
-		reqBody := models.CreateAccountTypeRequest{ID: "bank", Name: "Bank Account", PositiveTxnType: "credit"}
+		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("INSERT INTO account_types").
 			WithArgs(reqBody.ID, reqBody.Name, reqBody.PositiveTxnType).
@@ -194,12 +209,12 @@ func TestUpdateAccountType(t *testing.T) {
 		reqBody := models.UpdateAccountTypeRequest{Name: "Bank", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("UPDATE account_types").
-			WithArgs(reqBody.Name, reqBody.PositiveTxnType, "bank").
+			WithArgs(reqBody.Name, reqBody.PositiveTxnType, "savings").
 			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "positive_txn_type"}).
-				AddRow("bank", reqBody.Name, reqBody.PositiveTxnType))
+				AddRow("savings", reqBody.Name, reqBody.PositiveTxnType))
 
 		jsonBody, _ := json.Marshal(reqBody)
-		req, _ := http.NewRequest(http.MethodPut, "/account-types/bank", bytes.NewBuffer(jsonBody))
+		req, _ := http.NewRequest(http.MethodPut, "/account-types/savings", bytes.NewBuffer(jsonBody))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -239,7 +254,7 @@ func TestUpdateAccountType(t *testing.T) {
 	t.Run("invalid json", func(t *testing.T) {
 		r := newAccountTypeTestRouter()
 
-		req, _ := http.NewRequest(http.MethodPut, "/account-types/bank", bytes.NewBufferString("{"))
+		req, _ := http.NewRequest(http.MethodPut, "/account-types/savings", bytes.NewBufferString("{"))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -252,7 +267,7 @@ func TestUpdateAccountType(t *testing.T) {
 		reqBody := models.UpdateAccountTypeRequest{PositiveTxnType: "invalid"}
 
 		jsonBody, _ := json.Marshal(reqBody)
-		req, _ := http.NewRequest(http.MethodPut, "/account-types/bank", bytes.NewBuffer(jsonBody))
+		req, _ := http.NewRequest(http.MethodPut, "/account-types/savings", bytes.NewBuffer(jsonBody))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -276,13 +291,13 @@ func TestDeleteAccountType(t *testing.T) {
 		r := newAccountTypeTestRouter()
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
-			WithArgs("bank").
+			WithArgs("savings").
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("DELETE FROM account_types WHERE id").
-			WithArgs("bank").
+			WithArgs("savings").
 			WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
-		req, _ := http.NewRequest(http.MethodDelete, "/account-types/bank", nil)
+		req, _ := http.NewRequest(http.MethodDelete, "/account-types/savings", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -305,10 +320,10 @@ func TestDeleteAccountType(t *testing.T) {
 		r := newAccountTypeTestRouter()
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
-			WithArgs("bank").
+			WithArgs("savings").
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(3))
 
-		req, _ := http.NewRequest(http.MethodDelete, "/account-types/bank", nil)
+		req, _ := http.NewRequest(http.MethodDelete, "/account-types/savings", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -343,4 +358,70 @@ func TestDeleteAccountType(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
+	r := newAccountTypeUserRouter()
+
+	createBody := `{"id":"savings","name":"Savings","positiveTxnType":"credit"}`
+	updateBody := `{"name":"Savings"}`
+
+	tests := []struct {
+		name string
+		req  *http.Request
+	}{
+		{name: "create", req: mustJSONRequest(http.MethodPost, "/account-types", createBody)},
+		{name: "update", req: mustJSONRequest(http.MethodPut, "/account-types/savings", updateBody)},
+		{name: "delete", req: mustJSONRequest(http.MethodDelete, "/account-types/savings", "")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, tt.req)
+			assert.Equal(t, http.StatusForbidden, w.Code)
+		})
+	}
+}
+
+func TestAccountTypeBuiltInProtected(t *testing.T) {
+	createBody := `{"id":"bank","name":"Bank","positiveTxnType":"credit"}`
+	updateBody := `{"name":"Bank"}`
+
+	tests := []struct {
+		name string
+		req  *http.Request
+	}{
+		{name: "create", req: mustJSONRequest(http.MethodPost, "/account-types", createBody)},
+		{name: "update", req: mustJSONRequest(http.MethodPut, "/account-types/credit_card", updateBody)},
+		{name: "delete", req: mustJSONRequest(http.MethodDelete, "/account-types/bank", "")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newAccountTypeTestRouter()
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, tt.req)
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			assert.Contains(t, w.Body.String(), "built-in")
+		})
+	}
+}
+
+func TestCreateAccountTypeInvalidID(t *testing.T) {
+	r := newAccountTypeTestRouter()
+
+	for _, id := range []string{"1savings", "Bad-ID", "savings account", "x"} {
+		body := `{"id":"` + id + `","name":"X","positiveTxnType":"credit"}`
+		req := mustJSONRequest(http.MethodPost, "/account-types", body)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "id %q should be rejected", id)
+	}
+}
+
+func mustJSONRequest(method, path, body string) *http.Request {
+	req, _ := http.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }

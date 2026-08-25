@@ -25,6 +25,12 @@ import (
 // that a malformed or malicious request can't queue an unbounded batch.
 const maxImportBatch = 10000
 
+// GetTransactions returns a paginated, filterable list of the user's
+// transactions. Filters cover account, category, payee, free-text description,
+// date range, type, exact amount, and linked state; sorting and pagination are
+// validated/clamped server-side. For bank/credit-card account filters, synthetic
+// summary rows (month-end balances / cycle outstanding totals) are merged into
+// the response.
 func GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID := c.Query("accountId")
@@ -217,6 +223,11 @@ func GetTransactions(c *gin.Context) {
 	})
 }
 
+// CreateTransaction validates and inserts a single transaction. It auto-applies
+// the first matching categorization rule when no category is supplied, enforces
+// ownership of the account/category/payee/billing cycle, and attaches
+// credit-card transactions to a (possibly auto-generated) billing cycle. The
+// whole write runs in one transaction.
 func CreateTransaction(c *gin.Context) {
 	var req models.CreateTransactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -239,11 +250,22 @@ func CreateTransaction(c *gin.Context) {
 
 	userID := auth.GetUserID(c)
 
+	// Run the whole write (account check, insert, billing-cycle generation and
+	// assignment) inside one database transaction so a failure never leaves a
+	// half-persisted transaction behind.
+	tx, err := db.Pool.Begin(c)
+	if err != nil {
+		log.Printf("Error in CreateTransaction (begin): %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(c)
+
 	// The account must exist and belong to the authenticated user. Also fetch
 	// its type so credit-card transactions can be attached to a billing cycle.
 	var ownerID uuid.UUID
 	var acctTypeID string
-	err := db.Pool.QueryRow(c,
+	err = tx.QueryRow(c,
 		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID, &acctTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -276,11 +298,39 @@ func CreateTransaction(c *gin.Context) {
 		}
 	}
 
+	// The explicitly chosen billing cycle (credit cards) must belong to this
+	// user, otherwise the assignment below would silently no-op.
+	if acctTypeID == "credit_card" && req.BillingCycleID != nil {
+		var owned bool
+		err := tx.QueryRow(c,
+			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
+			*req.BillingCycleID, userID).Scan(&owned)
+		if err != nil {
+			log.Printf("Error in CreateTransaction (checking billing cycle): %v\n", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !owned {
+			validation.RespondError(c, "billing cycle not found", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Insert, but only when any supplied category/payee belongs to this user.
+	// Rules-derived values are already user-scoped, so the predicates only
+	// reject explicit cross-user references.
 	var id uuid.UUID
-	err = db.Pool.QueryRow(c,
+	err = tx.QueryRow(c,
 		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		 WHERE ($7 IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND c.user_id = $2))
+		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
+		 RETURNING id`,
 		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		log.Printf("Error in CreateTransaction (insert): %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -291,13 +341,13 @@ func CreateTransaction(c *gin.Context) {
 	// cycle matching the transaction date (the suggested default), or the
 	// explicitly chosen cycle when the client supplied one.
 	if acctTypeID == "credit_card" {
-		if err := ensureBillingCycles(c, db.Pool, userID, req.AccountID); err != nil {
+		if err := ensureBillingCycles(c, tx, userID, req.AccountID); err != nil {
 			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if req.BillingCycleID != nil {
-			if _, err := db.Pool.Exec(c,
+			if _, err := tx.Exec(c,
 				"UPDATE transactions SET billing_cycle_id = $1 WHERE id = $2 AND user_id = $3",
 				*req.BillingCycleID, id, userID); err != nil {
 				log.Printf("Error in CreateTransaction (set billing cycle): %v\n", err)
@@ -307,9 +357,19 @@ func CreateTransaction(c *gin.Context) {
 		}
 	}
 
+	if err := tx.Commit(c); err != nil {
+		log.Printf("Error in CreateTransaction (commit): %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": id})
 }
 
+// UpdateTransaction applies a partial update to a transaction. Only fields
+// present in the request are changed; OptionalUUID fields let an explicit null
+// clear a foreign key. Any account/category/payee/billing cycle referenced must
+// belong to the user, otherwise the update is rejected.
 func UpdateTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -328,6 +388,10 @@ func UpdateTransaction(c *gin.Context) {
 	args := []interface{}{}
 	paramIdx := 1
 
+	// Record the parameter index of each ownership-checked FK being set to a
+	// non-null value so the WHERE clause can constrain it to the same user.
+	var accountParam, categoryParam, payeeParam, cycleParam int
+
 	// Conditionally update fields based on presence in the request.
 	// CategoryID/PayeeID use OptionalUUID so that an explicit `null`
 	// (clear the field) can be distinguished from an absent key.
@@ -335,6 +399,7 @@ func UpdateTransaction(c *gin.Context) {
 		setClauses = append(setClauses, fmt.Sprintf("category_id = $%d", paramIdx))
 		if v := req.CategoryID.Value(); v != nil {
 			args = append(args, *v)
+			categoryParam = paramIdx
 		} else {
 			args = append(args, nil)
 		}
@@ -354,6 +419,7 @@ func UpdateTransaction(c *gin.Context) {
 		setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
 		if v := req.PayeeID.Value(); v != nil {
 			args = append(args, *v)
+			payeeParam = paramIdx
 		} else {
 			args = append(args, nil)
 		}
@@ -386,12 +452,14 @@ func UpdateTransaction(c *gin.Context) {
 	if req.AccountID != nil {
 		setClauses = append(setClauses, fmt.Sprintf("account_id = $%d", paramIdx))
 		args = append(args, *req.AccountID)
+		accountParam = paramIdx
 		paramIdx++
 	}
 	if req.BillingCycleID.Set() {
 		setClauses = append(setClauses, fmt.Sprintf("billing_cycle_id = $%d", paramIdx))
 		if v := req.BillingCycleID.Value(); v != nil {
 			args = append(args, *v)
+			cycleParam = paramIdx
 		} else {
 			args = append(args, nil)
 		}
@@ -403,10 +471,30 @@ func UpdateTransaction(c *gin.Context) {
 		return
 	}
 
-	// WHERE id = $N AND user_id = $N+1
-	args = append(args, id, auth.GetUserID(c))
-	query := fmt.Sprintf("UPDATE transactions SET %s WHERE id = $%d AND user_id = $%d",
-		strings.Join(setClauses, ", "), paramIdx, paramIdx+1)
+	// WHERE id = $N AND user_id = $N+1, plus an ownership predicate for each
+	// FK being set to a non-null value so a user can't point their transaction
+	// at another user's account/category/payee/billing cycle.
+	idIdx := paramIdx
+	args = append(args, id)
+	paramIdx++
+	userIdx := paramIdx
+	args = append(args, auth.GetUserID(c))
+
+	where := fmt.Sprintf("WHERE id = $%d AND user_id = $%d", idIdx, userIdx)
+	if accountParam != 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d)", accountParam, userIdx)
+	}
+	if categoryParam != 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories ct WHERE ct.id = $%d AND ct.user_id = $%d)", categoryParam, userIdx)
+	}
+	if payeeParam != 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM payees py WHERE py.id = $%d AND py.user_id = $%d)", payeeParam, userIdx)
+	}
+	if cycleParam != 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $%d AND bc.user_id = $%d)", cycleParam, userIdx)
+	}
+
+	query := fmt.Sprintf("UPDATE transactions SET %s %s", strings.Join(setClauses, ", "), where)
 
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
@@ -416,13 +504,15 @@ func UpdateTransaction(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		validation.RespondError(c, "transaction not found", http.StatusNotFound)
+		validation.RespondError(c, "transaction or referenced resource not found", http.StatusNotFound)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "updated"})
 }
 
+// BulkCategorize assigns one category to many of the user's transactions in a
+// single UPDATE.
 func BulkCategorize(c *gin.Context) {
 	var req models.BulkCategorizeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -430,7 +520,9 @@ func BulkCategorize(c *gin.Context) {
 		return
 	}
 
-	query := "UPDATE transactions SET category_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	query := `UPDATE transactions SET category_id = $1
+	          WHERE id = ANY($2) AND user_id = $3
+	            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND c.user_id = $3)`
 	result, err := db.Pool.Exec(c, query, req.CategoryID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkCategorize: %v\n", err)
@@ -441,6 +533,8 @@ func BulkCategorize(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"updated": result.RowsAffected()})
 }
 
+// BulkUpdatePayee assigns one payee to many of the user's transactions in a
+// single UPDATE.
 func BulkUpdatePayee(c *gin.Context) {
 	var req models.BulkUpdatePayeeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -448,7 +542,9 @@ func BulkUpdatePayee(c *gin.Context) {
 		return
 	}
 
-	query := "UPDATE transactions SET payee_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	query := `UPDATE transactions SET payee_id = $1
+	          WHERE id = ANY($2) AND user_id = $3
+	            AND EXISTS (SELECT 1 FROM payees p WHERE p.id = $1 AND p.user_id = $3)`
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdatePayee: %v\n", err)
@@ -459,6 +555,8 @@ func BulkUpdatePayee(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"updated": result.RowsAffected()})
 }
 
+// BulkUpdateBillingCycle attaches one billing cycle to many of the user's
+// transactions in a single UPDATE.
 func BulkUpdateBillingCycle(c *gin.Context) {
 	var req models.BulkBillingCycleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -466,7 +564,9 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 		return
 	}
 
-	query := "UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3"
+	query := `UPDATE transactions SET billing_cycle_id = $1
+	          WHERE id = ANY($2) AND user_id = $3
+	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)`
 	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in BulkUpdateBillingCycle: %v\n", err)
@@ -477,6 +577,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"updated": result.RowsAffected()})
 }
 
+// BulkDeleteTransactions deletes many of the user's transactions in one call.
 func BulkDeleteTransactions(c *gin.Context) {
 	var req models.BulkDeleteTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -495,6 +596,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": result.RowsAffected()})
 }
 
+// DeleteTransaction removes a single transaction owned by the user.
 func DeleteTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -518,6 +620,12 @@ func DeleteTransaction(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// ImportTransactions batch-inserts a validated list of transactions for an
+// account. It enforces payload bounds and ownership of the account, billing
+// cycle, and any explicit payees, deduplicates rows when duplicateAction is
+// "skip", applies categorization rules in memory, and commits everything in one
+// transaction. Credit-card imports are attached to billing cycles, and source
+// Paperless documents are tagged only after the commit succeeds.
 func ImportTransactions(c *gin.Context) {
 	var req models.ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -575,6 +683,50 @@ func ImportTransactions(c *gin.Context) {
 	if ownerID != userID {
 		validation.RespondError(c, "forbidden", http.StatusForbidden)
 		return
+	}
+
+	// Validate that any explicitly supplied billing cycle and payees belong to
+	// this user, so a client can't import against another user's records.
+	if req.BillingCycleID != nil {
+		var owned bool
+		err := db.Pool.QueryRow(c,
+			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
+			*req.BillingCycleID, userID).Scan(&owned)
+		if err != nil {
+			log.Printf("Error in ImportTransactions (checking billing cycle): %v\n", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !owned {
+			validation.RespondError(c, "billing cycle not found", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Collect the distinct explicitly supplied payees (rules-derived payees are
+	// user-scoped already) and confirm every one belongs to this user.
+	payeeIDs := make([]uuid.UUID, 0, len(req.Transactions))
+	seen := map[uuid.UUID]bool{}
+	for _, t := range req.Transactions {
+		if t.PayeeID != nil && !seen[*t.PayeeID] {
+			seen[*t.PayeeID] = true
+			payeeIDs = append(payeeIDs, *t.PayeeID)
+		}
+	}
+	if len(payeeIDs) > 0 {
+		var owned int
+		err := db.Pool.QueryRow(c,
+			"SELECT COUNT(*) FROM payees WHERE id = ANY($1) AND user_id = $2",
+			payeeIDs, userID).Scan(&owned)
+		if err != nil {
+			log.Printf("Error in ImportTransactions (checking payees): %v\n", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if owned != len(payeeIDs) {
+			validation.RespondError(c, "referenced payee not found", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Load rules once and match in memory to avoid N+1 queries.
@@ -857,6 +1009,9 @@ func dedupeTransactions(txns []models.ImportTransaction, existing map[string]boo
 	return kept, duplicates
 }
 
+// autoCategorize returns the category (and optional payee) of the first rule
+// matching the transaction description, or nil/nil when no rule matches. Rules
+// are expected to be pre-sorted by descending priority.
 func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UUID) {
 	for _, r := range rules {
 		if matchRule(description, r.Pattern, r.MatchType) {

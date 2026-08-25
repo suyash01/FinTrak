@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,6 +56,38 @@ func TestProtectedRoutesRequireAuth(t *testing.T) {
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code, "expected 401 for %s", path)
 	}
+}
+
+func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
+	r := testRouter()
+
+	userID := uuid.New()
+	userToken, err := auth.GenerateToken(userID, "user", "test-secret")
+	require.NoError(t, err)
+
+	// No auth -> 401.
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/account-types", nil)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	// Authenticated non-admin -> 403.
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/account-types", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	// Admin token passes the middleware and reaches the handler (missing body
+	// fields -> binding error 400, no DB touched).
+	adminToken, err := auth.GenerateToken(userID, "admin", "test-secret")
+	require.NoError(t, err)
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/account-types", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestCORSAllowsConfiguredOrigin(t *testing.T) {

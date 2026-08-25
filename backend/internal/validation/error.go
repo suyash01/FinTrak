@@ -21,12 +21,15 @@ func RespondBindError(c *gin.Context, err error) {
 	})
 }
 
+// RespondError writes a plain (non-field) error in the standard envelope.
 func RespondError(c *gin.Context, message string, status int) {
 	c.JSON(status, models.ErrorResponse{
 		Errors: []models.FieldError{{Message: message}},
 	})
 }
 
+// RespondAuthError aborts the request with a 401 in the standard envelope,
+// aborting any remaining middleware/handlers.
 func RespondAuthError(c *gin.Context, message string) {
 	c.AbortWithStatusJSON(http.StatusUnauthorized, models.ErrorResponse{
 		Errors: []models.FieldError{{Message: message}},
@@ -51,6 +54,7 @@ func FormatValidationErrors(err error) []models.FieldError {
 	return out
 }
 
+// message renders a human-readable message for a single validator error.
 func message(fe validator.FieldError) string {
 	switch fe.Tag() {
 	case "required":

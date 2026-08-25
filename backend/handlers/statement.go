@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -33,6 +32,9 @@ func SetStatementParserURL(url string) {
 // maxStatementUpload caps the size of a statement PDF we are willing to forward.
 const maxStatementUpload = 20 * 1024 * 1024 // 20 MB
 
+// maxParserResponse caps the statement-parser response body.
+const maxParserResponse = 20 * 1024 * 1024 // 20 MB
+
 // parseStatementResult is the normalized payload returned to the frontend after
 // the backend has forwarded a statement PDF to the parser service.
 type parseStatementResult struct {
@@ -50,6 +52,8 @@ type rawParserTransaction struct {
 	Type        string  `json:"type"` // "Credit" | "Debit"
 }
 
+// rawParserResponse is the full envelope returned by the statement-parser
+// service, including error and password-required signals.
 type rawParserResponse struct {
 	Transactions     []rawParserTransaction `json:"transactions"`
 	Summary          map[string]string      `json:"summary"`
@@ -88,10 +92,9 @@ func ParseStatement(c *gin.Context) {
 	}
 	defer src.Close()
 
-	pdf, err := io.ReadAll(src)
+	pdf, err := readAllLimited(src, maxStatementUpload)
 	if err != nil {
-		log.Printf("Error in ParseStatement (read upload): %v\n", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		validation.RespondError(c, "file too large. Max upload size is 20 MB.", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -154,10 +157,10 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readAllLimited(resp.Body, maxParserResponse)
 	if err != nil {
 		log.Printf("Error forwarding statement (read parser response): %v\n", err)
-		return nil, http.StatusBadGateway, "statement parser returned an unreadable response", false
+		return nil, http.StatusBadGateway, "statement parser returned an oversized response", false
 	}
 
 	if resp.StatusCode >= 500 {
@@ -283,10 +286,10 @@ func ListStatementExtractors(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readAllLimited(resp.Body, maxParserResponse)
 	if err != nil {
 		log.Printf("Error in ListStatementExtractors (read parser response): %v\n", err)
-		validation.RespondError(c, "statement parser returned an unreadable response", http.StatusBadGateway)
+		validation.RespondError(c, "statement parser returned an oversized response", http.StatusBadGateway)
 		return
 	}
 

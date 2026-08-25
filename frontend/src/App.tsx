@@ -19,6 +19,7 @@ import type { AccountType } from "./types";
 
 function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
+  const { user } = useAuth();
 
   return (
     <>
@@ -49,11 +50,13 @@ function Settings() {
           </div>
         </div>
 
-        {/* Account Types Management */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
-          <h3 className="text-base font-semibold mb-4">Account Types</h3>
-          <AccountTypesManager />
-        </div>
+        {/* Account Types Management (admin-only) */}
+        {user?.role === "admin" && (
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
+            <h3 className="text-base font-semibold mb-4">Account Types</h3>
+            <AccountTypesManager />
+          </div>
+        )}
 
         {/* Paperless-ngx integration */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 transition-colors hover:border-slate-700 max-w-125">
@@ -316,6 +319,7 @@ function AccountTypesManager() {
 function PaperlessSettingsManager() {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
+  const [tokenSet, setTokenSet] = useState(false);
   const [tag, setTag] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -326,7 +330,8 @@ function PaperlessSettingsManager() {
       .getPaperlessSettings()
       .then((s) => {
         setUrl(s.paperlessUrl || "");
-        setToken(s.paperlessToken || "");
+        setToken("");
+        setTokenSet(Boolean(s.hasToken));
         setTag(s.paperlessTag || "");
       })
       .catch(() => {})
@@ -338,11 +343,20 @@ function PaperlessSettingsManager() {
     setSaving(true);
     setSaved(false);
     try {
-      await api.updatePaperlessSettings({
+      const payload: {
+        paperlessUrl: string;
+        paperlessTag: string;
+        paperlessToken?: string;
+      } = {
         paperlessUrl: url,
-        paperlessToken: token,
         paperlessTag: tag,
-      });
+      };
+      if (token.trim() !== "") {
+        payload.paperlessToken = token;
+      }
+      await api.updatePaperlessSettings(payload);
+      setToken("");
+      setTokenSet(Boolean(token.trim() !== "" || tokenSet));
       setSaved(true);
     } catch (err) {
       alert((err as Error).message);
@@ -373,11 +387,16 @@ function PaperlessSettingsManager() {
         </label>
         <input
           type="password"
-          placeholder="Paperless-ngx API token"
+          placeholder={tokenSet ? "Leave blank to keep the saved token" : "Paperless-ngx API token"}
           className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded text-sm text-white focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
           value={token}
           onChange={(e) => setToken(e.target.value)}
         />
+        <p className="text-[11px] text-slate-500 mt-1">
+          {tokenSet
+            ? "An API token is saved. Enter a new one only to replace it."
+            : "The token is stored encrypted and is never shown again."}
+        </p>
       </div>
       <div>
         <label className="block text-xs font-medium text-slate-400 mb-1">

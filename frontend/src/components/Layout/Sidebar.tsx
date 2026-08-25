@@ -29,7 +29,7 @@ export default function Sidebar() {
     api
       .getPaperlessSettings()
       .then((s) =>
-        setPaperlessEnabled(Boolean(s.paperlessUrl && s.paperlessToken)),
+        setPaperlessEnabled(Boolean(s.paperlessUrl && s.hasToken)),
       )
       .catch(() => setPaperlessEnabled(false));
   }, [location.pathname]);

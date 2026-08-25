@@ -1,7 +1,11 @@
+// Package auth provides password hashing, JWT issuance/validation, and the Gin
+// middleware that protects authenticated routes. Authenticated user IDs and
+// roles are stashed in the request context for handlers to consume.
 package auth
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,27 +17,36 @@ import (
 )
 
 const (
-	ctxUserIDKey = "userID"
-	tokenTTL     = 24 * time.Hour
+	ctxUserIDKey   = "userID"
+	ctxUserRoleKey = "userRole"
+	// tokenTTL is how long an issued JWT stays valid.
+	tokenTTL = 24 * time.Hour
 )
 
+// Claims is the JWT payload for FinTrak tokens: the user ID, role, and standard
+// registered claims.
 type Claims struct {
 	UserID uuid.UUID `json:"user_id"`
+	Role   string    `json:"role"`
 	jwt.RegisteredClaims
 }
 
+// HashPassword returns a bcrypt hash of the given password.
 func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	return string(hash), err
 }
 
+// CheckPassword reports whether the plaintext password matches the bcrypt hash.
 func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-func GenerateToken(userID uuid.UUID, secret string) (string, error) {
+// GenerateToken signs an HS256 JWT for the given user and role using the secret.
+func GenerateToken(userID uuid.UUID, role, secret string) (string, error) {
 	claims := Claims{
 		UserID:    userID,
+		Role:      role,
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}
@@ -74,6 +87,21 @@ func RequireAuth(secret string) gin.HandlerFunc {
 		}
 
 		c.Set(ctxUserIDKey, claims.UserID)
+		c.Set(ctxUserRoleKey, claims.Role)
+		c.Next()
+	}
+}
+
+// RequireAdmin rejects the request unless the authenticated user has the
+// 'admin' role. It must run after RequireAuth (or another middleware that
+// populated the role from the token).
+func RequireAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if GetUserRole(c) != "admin" {
+			validation.RespondError(c, "forbidden: admin access required", http.StatusForbidden)
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }
@@ -87,4 +115,15 @@ func GetUserID(c *gin.Context) uuid.UUID {
 		}
 	}
 	return uuid.Nil
+}
+
+// GetUserRole returns the authenticated user's role from the request context.
+// Returns "" when the middleware has not populated the context.
+func GetUserRole(c *gin.Context) string {
+	if v, ok := c.Get(ctxUserRoleKey); ok {
+		if role, ok := v.(string); ok {
+			return role
+		}
+	}
+	return ""
 }
