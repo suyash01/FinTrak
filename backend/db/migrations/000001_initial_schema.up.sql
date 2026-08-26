@@ -1,7 +1,9 @@
 -- FinTrak initial schema (squashed).
 -- Single migration combining the full migration history: the original schema,
--- billing cycles, user roles, and the composite ownership FKs that enforce that
--- every user-owned reference points at a row owned by the same user.
+-- billing cycles, user roles, the composite ownership FKs that enforce that
+-- every user-owned reference points at a row owned by the same user, category
+-- groups (replacing the legacy categories.type column), and the removal of the
+-- never-used categories.parent_id column.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -61,17 +63,47 @@ CREATE TABLE IF NOT EXISTS billing_cycles (
     UNIQUE (id, user_id)
 );
 
--- Categories
+-- Category groups: a first-class, user-manageable grouping concept.
+-- The four immutable base groups (income, expense, transfer, cashback) are
+-- seeded globally by db.SeedCategoryGroups on every boot (see
+-- backend/db/seed.go) rather than in this migration. Users may add their own
+-- custom groups; a NULL user_id marks a global row.
+CREATE TABLE IF NOT EXISTS category_groups (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    icon VARCHAR(50),
+    color VARCHAR(7),
+    is_base BOOLEAN NOT NULL DEFAULT FALSE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- A global/base group must be unique by id; a user's custom groups are unique
+-- per (id, user_id). Postgres treats NULLs as distinct in unique indexes, so use
+-- partial indexes.
+CREATE UNIQUE INDEX IF NOT EXISTS category_groups_global_id_uq
+    ON category_groups (id) WHERE user_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS category_groups_user_id_uq
+    ON category_groups (id, user_id) WHERE user_id IS NOT NULL;
+
+-- Categories. user_id is nullable so a global (admin-created) category can be
+-- added by an admin; a NULL user_id marks a global row. Categories are flat:
+-- they belong to exactly one group (group_id), with no parent/child hierarchy.
 CREATE TABLE IF NOT EXISTS categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     icon VARCHAR(50),
     color VARCHAR(7),
-    parent_id UUID,
-    type VARCHAR(20) CHECK (type IN ('income', 'expense', 'transfer')),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id VARCHAR(50) NOT NULL REFERENCES category_groups(id),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS categories_global_id_uq
+    ON categories (id) WHERE user_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS categories_user_id_uq
+    ON categories (id, user_id) WHERE user_id IS NOT NULL;
 
 -- Payees
 CREATE TABLE IF NOT EXISTS payees (

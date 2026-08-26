@@ -2240,9 +2240,6 @@ components:
           type: string
         color:
           type: string
-        parentId:
-          type: string
-          format: uuid
         type:
           type: string
 

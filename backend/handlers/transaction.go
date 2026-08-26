@@ -35,6 +35,7 @@ func GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID := c.Query("accountId")
 	categoryID := c.Query("categoryId")
+	groupId := c.Query("groupId")
 	search := c.Query("search")
 	dateFrom := c.Query("dateFrom")
 	dateTo := c.Query("dateTo")
@@ -114,20 +115,10 @@ func GetTransactions(c *gin.Context) {
 			countArgs = append(countArgs, categoryID)
 			paramIdx++
 		} else {
-			// Filter to the selected category and, because categories form a
-			// hierarchy (parent_id), also to every descendant so picking a parent
-			// category surfaces the transactions of its children too. The CTE is
-			// scoped to the user to avoid matching another user's categories.
-			categoryFilter := fmt.Sprintf(` AND t.category_id IN (
-			WITH RECURSIVE cat_tree AS (
-				SELECT id FROM categories WHERE id = $%d AND user_id = $1
-				UNION ALL
-				SELECT c.id FROM categories c JOIN cat_tree ct ON c.parent_id = ct.id
-			)
-			SELECT id FROM cat_tree
-		)`, paramIdx)
-			query += categoryFilter
-			countQuery += categoryFilter
+			// Filter to the selected category (scoped to the user). Categories
+			// are flat, so this is a plain equality against the category id.
+			query += fmt.Sprintf(" AND t.category_id = $%d", paramIdx)
+			countQuery += fmt.Sprintf(" AND t.category_id = $%d", paramIdx)
 			args = append(args, categoryID)
 			countArgs = append(countArgs, categoryID)
 			paramIdx++
@@ -136,6 +127,16 @@ func GetTransactions(c *gin.Context) {
 	if uncategorized == "true" {
 		query += " AND t.category_id IS NULL"
 		countQuery += " AND t.category_id IS NULL"
+	}
+	if groupId != "" {
+		// Group-level filter: every transaction whose category belongs to the
+		// given group. Works for base group slugs ("expense") and custom group
+		// ids alike, unlike the non-UUID fallback on categoryId.
+		query += fmt.Sprintf(" AND c.group_id = $%d", paramIdx)
+		countQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", paramIdx)
+		args = append(args, groupId)
+		countArgs = append(countArgs, groupId)
+		paramIdx++
 	}
 	if search != "" {
 		query += fmt.Sprintf(" AND LOWER(t.description) LIKE LOWER($%d)", paramIdx)

@@ -72,15 +72,14 @@ type CategoryGroup struct {
 	SortOrder int       `json:"sortOrder"`
 }
 
-// Category is a user-scoped (or global) grouping for transactions. ParentID
-// supports a hierarchical taxonomy; GroupID references a CategoryGroup
-// ("income", "expense", "transfer", "cashback", or a user's custom group).
+// Category is a user-scoped (or global) grouping for transactions. GroupID
+// references a CategoryGroup ("income", "expense", "transfer", "cashback", or a
+// user's custom group).
 type Category struct {
 	ID       uuid.UUID  `json:"id"`
 	Name     string     `json:"name"`
 	Icon     string     `json:"icon"`
 	Color    string     `json:"color"`
-	ParentID *uuid.UUID `json:"parentId"`
 	GroupID  string     `json:"groupId"`
 	IsGlobal bool       `json:"isGlobal"`
 	// Joined
@@ -263,20 +262,18 @@ type UpdateAccountRequest struct {
 
 // CreateCategoryRequest is the body for POST /api/v1/categories.
 type CreateCategoryRequest struct {
-	Name    string     `json:"name" binding:"required"`
-	Icon    string     `json:"icon"`
-	Color   string     `json:"color"`
-	GroupID string     `json:"groupId" binding:"required"`
-	ParentID *uuid.UUID `json:"parentId"`
+	Name    string `json:"name" binding:"required"`
+	Icon    string `json:"icon"`
+	Color   string `json:"color"`
+	GroupID string `json:"groupId" binding:"required"`
 }
 
 // UpdateCategoryRequest is the body for PUT /api/v1/categories/:id.
 type UpdateCategoryRequest struct {
-	Name     string     `json:"name"`
-	Icon     string     `json:"icon"`
-	Color    string     `json:"color"`
-	GroupID  string     `json:"groupId"`
-	ParentID *uuid.UUID `json:"parentId"`
+	Name    string `json:"name"`
+	Icon    string `json:"icon"`
+	Color   string `json:"color"`
+	GroupID string `json:"groupId"`
 }
 
 // DeleteCategoryResult reports the side effects of deleting a category: how

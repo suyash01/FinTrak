@@ -19,6 +19,7 @@ import {
   Check,
   Pencil,
   Plus,
+  Folder,
 } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
@@ -31,7 +32,6 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -290,6 +290,7 @@ const URL_PARAMS = [
   "search",
   "accountId",
   "categoryId",
+  "groupId",
   "payeeId",
   "type",
   "dateFrom",
@@ -299,6 +300,21 @@ const URL_PARAMS = [
   "sortOrder",
   "page",
 ];
+
+const DEFAULT_FILTERS: Record<string, string | number> = {
+  search: "",
+  accountId: "",
+  categoryId: "",
+  groupId: "",
+  payeeId: "",
+  type: "",
+  dateFrom: "",
+  dateTo: "",
+  linked: "",
+  sortBy: "date",
+  sortOrder: "DESC",
+  page: 1,
+};
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 0]; // 0 = show all
 const PAGE_SIZE_LS_KEY = "txPageSize";
@@ -328,7 +344,7 @@ export default function Transactions() {
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
 
-  // Page size: remembered locally, with an opt-in to persist against the user.
+  // Page size: remembered locally and persisted against the user's account.
   const savedPageSize = () => {
     const v = Number(localStorage.getItem(PAGE_SIZE_LS_KEY));
     return Number.isNaN(v) ? 50 : v;
@@ -339,12 +355,15 @@ export default function Transactions() {
     return PAGE_SIZE_OPTIONS.includes(v) ? String(v) : "custom";
   });
   const [customInput, setCustomInput] = useState(() => String(savedPageSize()));
-  const [persistPageSize, setPersistPageSize] = useState(false);
 
   // Refs to avoid closures in callbacks
   const categoriesRef = useRef(categories);
   const payeesRef = useRef(payees);
   const abortRef = useRef<AbortController | null>(null);
+  // URL that the current filters already correspond to. Used by the two URL
+  // sync effects below to tell "URL change we caused" apart from external
+  // navigation, which is what keeps them from fighting each other in a loop.
+  const syncedUrlRef = useRef<string>(searchParams.toString());
   useEffect(() => {
     categoriesRef.current = categories;
   }, [categories]);
@@ -368,22 +387,15 @@ export default function Transactions() {
     () => buildCategorySections(groups, categories),
     [groups, categories],
   );
+  // Lookup of every group id so the filter can tell a group selection apart
+  // from a category selection (both live in the same dropdown).
+  const groupIds = useMemo(() => new Set(groups.map((g) => g.id)), [groups]);
 
   // Filters (initialized from URL search params)
   const [filters, setFilters] = useState<Record<string, string | number>>(
     () => {
       const urlToFilters: Record<string, string | number> = {
-        search: "",
-        accountId: "",
-        categoryId: "",
-        payeeId: "",
-        type: "",
-        dateFrom: "",
-        dateTo: "",
-        linked: "",
-        sortBy: "date",
-        sortOrder: "DESC",
-        page: 1,
+        ...DEFAULT_FILTERS,
       };
       URL_PARAMS.forEach((k) => {
         const v = searchParams.get(k);
@@ -393,33 +405,46 @@ export default function Transactions() {
     },
   );
 
-  // Keep the URL in sync with the current filters (browser back/forward friendly)
+  // Keep the URL in sync with user-driven filter changes (browser back/forward
+  // friendly). Only non-default filters are written, so an empty URL and the
+  // default filter state stay equivalent. The syncedUrlRef comparison makes
+  // this effect a no-op when the URL already reflects the filters, so it never
+  // overwrites an external navigation that lands on the current state.
   useEffect(() => {
     const params: Record<string, string> = {};
     URL_PARAMS.forEach((k) => {
       const v = filters[k];
-      if (v !== "" && v !== null && v !== undefined) params[k] = String(v);
+      if (v === "" || v === null || v === undefined) return;
+      if (String(v) === String(DEFAULT_FILTERS[k])) return;
+      params[k] = String(v);
     });
-    const urlParams = Object.fromEntries(searchParams.entries());
-    if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
-      setSearchParams(params, { replace: true });
-    }
-  }, [filters, searchParams, setSearchParams]);
+    const desiredQs = new URLSearchParams(params).toString();
+    if (desiredQs === syncedUrlRef.current) return;
+    syncedUrlRef.current = desiredQs;
+    setSearchParams(params, { replace: true });
+  }, [filters]);
 
-  // React to external URL changes (navigation, back/forward, shared links)
+  // React to external URL changes (navigation, back/forward, shared links).
+  // URLs this component wrote itself (tracked in syncedUrlRef) are ignored so
+  // user-driven filter edits are never clobbered. A param missing from the URL
+  // resets its filter back to the default.
   useEffect(() => {
+    const currentQs = searchParams.toString();
+    if (currentQs === syncedUrlRef.current) return;
+
     const urlToFilters: Record<string, string> = {};
     let changed = false;
     URL_PARAMS.forEach((k) => {
       const v = searchParams.get(k);
       const current = filters[k];
+      const defaultValue = DEFAULT_FILTERS[k];
       if (v !== null && v !== "") {
         if (String(current) !== v) {
           urlToFilters[k] = v;
           changed = true;
         }
-      } else if (current !== "" && current !== undefined && current !== null) {
-        urlToFilters[k] = "";
+      } else if (String(current) !== String(defaultValue)) {
+        urlToFilters[k] = String(defaultValue);
         changed = true;
       }
     });
@@ -427,10 +452,11 @@ export default function Transactions() {
       setFilters((f) => ({
         ...f,
         ...urlToFilters,
-        page: urlToFilters.page || "1",
+        page: urlToFilters.page || DEFAULT_FILTERS.page,
       }));
       setSelected(new Set());
     }
+    syncedUrlRef.current = currentQs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -440,14 +466,13 @@ export default function Transactions() {
     setSelected(new Set());
   }, [pageSize]);
 
-  // Restore a persisted page size from the server if the user opted in.
+  // Restore the persisted page size from the server.
   useEffect(() => {
     api
       .getUserSettings()
       .then((s) => {
         if (typeof s.pageSize !== "number") return;
         setPageSize(s.pageSize);
-        setPersistPageSize(true);
         if (PAGE_SIZE_OPTIONS.includes(s.pageSize)) {
           setPreset(String(s.pageSize));
         } else {
@@ -463,8 +488,7 @@ export default function Transactions() {
     if (!Number.isFinite(n) || n < 0) return;
     setPageSize(n);
     localStorage.setItem(PAGE_SIZE_LS_KEY, String(n));
-    if (persistPageSize)
-      api.updateUserSettings({ pageSize: n }).catch(() => {});
+    api.updateUserSettings({ pageSize: n }).catch(() => {});
   };
 
   const handlePresetChange = (val: string) => {
@@ -482,13 +506,6 @@ export default function Transactions() {
     const n = Number(customInput);
     if (!Number.isFinite(n) || n < 0) return;
     applyPageSize(n);
-  };
-
-  const togglePersist = (checked: boolean) => {
-    setPersistPageSize(checked);
-    api
-      .updateUserSettings({ pageSize: checked ? pageSize : null })
-      .catch(() => {});
   };
 
   const loadTransactions = useCallback(async () => {
@@ -810,8 +827,19 @@ export default function Transactions() {
             </SelectContent>
           </Select>
           <Select
-            value={String(filters.categoryId || "all")}
-            onValueChange={(v) => updateFilter("categoryId", v === "all" ? "" : v)}
+            value={String(filters.groupId || filters.categoryId || "all")}
+            onValueChange={(v) => {
+              if (v === "all") {
+                updateFilter("categoryId", "");
+                updateFilter("groupId", "");
+              } else if (groupIds.has(v)) {
+                updateFilter("categoryId", "");
+                updateFilter("groupId", v);
+              } else {
+                updateFilter("groupId", "");
+                updateFilter("categoryId", v);
+              }
+            }}
           >
             <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
               <SelectValue placeholder="All Categories" />
@@ -823,7 +851,12 @@ export default function Transactions() {
               </SelectItem>
               {categorySections.map((s) => (
                 <SelectGroup key={s.group.id}>
-                  <SelectLabel>{s.group.name}</SelectLabel>
+                  <SelectItem value={s.group.id} className="font-semibold">
+                    <span className="flex items-center gap-2">
+                      <Folder size={12} className="text-muted-foreground" />
+                      {s.group.name}
+                    </span>
+                  </SelectItem>
                   {s.items.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {c.name}
@@ -889,11 +922,9 @@ export default function Transactions() {
             onChange={(e) => updateFilter("dateTo", e.target.value)}
             title="To date"
           />
-        </div>
 
-        {/* Page size control */}
-        <div className="flex flex-wrap items-center justify-end gap-3 mb-4">
-          <div className="flex items-center gap-2">
+          {/* Page size control, floated right to stay visually separate */}
+          <div className={`ml-auto flex items-center gap-2`}>
             <label className="text-sm text-muted-foreground">Rows per page</label>
             <Select value={preset} onValueChange={handlePresetChange}>
               <SelectTrigger className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}>
@@ -920,13 +951,6 @@ export default function Transactions() {
                 className={`w-24 ${compactLayout ? "h-8" : "h-9"} bg-background`}
               />
             )}
-            <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer select-none">
-              <Checkbox
-                checked={persistPageSize}
-                onCheckedChange={(checked) => togglePersist(checked === true)}
-              />
-              Remember for my account
-            </label>
           </div>
         </div>
 

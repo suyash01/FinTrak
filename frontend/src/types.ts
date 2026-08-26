@@ -46,7 +46,6 @@ export interface Category {
   name: string;
   icon: string;
   color: string;
-  parentId?: string | null;
   groupId: string;
   isGlobal?: boolean;
   // Joined
@@ -281,7 +280,6 @@ export interface CreateCategoryRequest {
   icon: string;
   color: string;
   groupId: string;
-  parentId?: string | null;
 }
 
 export interface UpdateCategoryRequest {
@@ -289,7 +287,6 @@ export interface UpdateCategoryRequest {
   icon?: string;
   color?: string;
   groupId?: string;
-  parentId?: string | null;
 }
 
 export interface CreateCategoryGroupRequest {

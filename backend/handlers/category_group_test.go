@@ -273,9 +273,9 @@ func TestCreateGlobalGroupAndCategory(t *testing.T) {
 
 		catID := uuid.New()
 		mock.ExpectQuery("INSERT INTO categories").
-			WithArgs("Amazon Voucher", "gift", "#e11d48", pgxmock.AnyArg(), "cashback").
-			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "parent_id", "group_id"}).
-				AddRow(catID, "Amazon Voucher", "gift", "#e11d48", nil, "cashback"))
+			WithArgs("Amazon Voucher", "gift", "#e11d48", "cashback").
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+				AddRow(catID, "Amazon Voucher", "gift", "#e11d48", "cashback"))
 
 		body := `{"name":"Amazon Voucher","icon":"gift","color":"#e11d48","groupId":"cashback"}`
 		req, _ := http.NewRequest(http.MethodPost, "/admin/categories", bytes.NewBufferString(body))
@@ -307,9 +307,6 @@ func TestDeleteGlobalCategory(t *testing.T) {
 	catID := uuid.New()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE categories SET parent_id = NULL").
-		WithArgs(catID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectExec("UPDATE transactions SET category_id = NULL").
 		WithArgs(catID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 5))

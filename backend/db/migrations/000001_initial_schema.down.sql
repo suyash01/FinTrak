@@ -2,6 +2,7 @@ DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS rules;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS category_groups;
 DROP TABLE IF EXISTS payees;
 DROP TABLE IF EXISTS billing_cycles;
 DROP TABLE IF EXISTS accounts;

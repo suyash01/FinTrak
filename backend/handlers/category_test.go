@@ -41,12 +41,11 @@ func TestGetCategories(t *testing.T) {
 	r := newCategoryTestRouter()
 	userID := testUserID()
 
-	parentID := uuid.New()
-	rows := pgxmock.NewRows([]string{"id", "name", "icon", "color", "parent_id", "group_id", "is_global", "group_name", "group_is_base"}).
-		AddRow(uuid.New(), "Food & Dining", "utensils", "#f97316", nil, "expense", false, "Expense", true).
-		AddRow(uuid.New(), "Salary", "wallet", "#22c55e", &parentID, "income", false, "Income", true)
+	rows := pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id", "is_global", "group_name", "group_is_base"}).
+		AddRow(uuid.New(), "Food & Dining", "utensils", "#f97316", "expense", false, "Expense", true).
+		AddRow(uuid.New(), "Salary", "wallet", "#22c55e", "income", false, "Income", true)
 
-	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.parent_id, c.group_id").
+	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.group_id").
 		WithArgs(userID).
 		WillReturnRows(rows)
 
@@ -61,11 +60,9 @@ func TestGetCategories(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, categories, 2)
 	assert.Equal(t, "Food & Dining", categories[0].Name)
-	assert.Nil(t, categories[0].ParentID)
 	assert.Equal(t, "expense", categories[0].GroupID)
 	assert.False(t, categories[0].IsGlobal)
 	assert.Equal(t, "income", categories[1].GroupID)
-	assert.Equal(t, parentID, *categories[1].ParentID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -83,7 +80,7 @@ func TestGetCategoriesQueryError(t *testing.T) {
 
 	r := newCategoryTestRouter()
 
-	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.parent_id, c.group_id").
+	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.group_id").
 		WithArgs(testUserID()).
 		WillReturnError(assert.AnError)
 
@@ -115,9 +112,9 @@ func TestCreateCategory(t *testing.T) {
 		expected := models.Category{ID: catID, Name: "Rent", Icon: "home", Color: "#6366f1", GroupID: "expense"}
 
 		mock.ExpectQuery("INSERT INTO categories").
-			WithArgs(userID, "Rent", "home", "#6366f1", pgxmock.AnyArg(), "expense").
-			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "parent_id", "group_id"}).
-				AddRow(expected.ID, expected.Name, expected.Icon, expected.Color, nil, expected.GroupID))
+			WithArgs(userID, "Rent", "home", "#6366f1", "expense").
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+				AddRow(expected.ID, expected.Name, expected.Icon, expected.Color, expected.GroupID))
 
 		req, _ := http.NewRequest(http.MethodPost, "/categories", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -161,7 +158,7 @@ func TestCreateCategory(t *testing.T) {
 		r := newCategoryTestRouter()
 
 		mock.ExpectQuery("INSERT INTO categories").
-			WithArgs(testUserID(), "Rent", "home", "#6366f1", pgxmock.AnyArg(), "expense").
+			WithArgs(testUserID(), "Rent", "home", "#6366f1", "expense").
 			WillReturnError(pgx.ErrNoRows)
 
 		body := `{"name":"Rent","icon":"home","color":"#6366f1","groupId":"expense"}`
@@ -188,7 +185,7 @@ func TestCreateCategory(t *testing.T) {
 		r := newCategoryTestRouter()
 
 		mock.ExpectQuery("INSERT INTO categories").
-			WithArgs(testUserID(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs(testUserID(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(assert.AnError)
 
 		body := `{"name":"Rent","groupId":"expense"}`
@@ -223,9 +220,9 @@ func TestUpdateCategory(t *testing.T) {
 			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 		mock.ExpectQuery("UPDATE categories").
-			WithArgs(catID, "Groceries", "shopping-cart", "#84cc16", "expense", pgxmock.AnyArg(), userID).
-			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "parent_id", "group_id"}).
-				AddRow(catID, "Groceries", "shopping-cart", "#84cc16", nil, "expense"))
+			WithArgs(catID, "Groceries", "shopping-cart", "#84cc16", "expense", userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+				AddRow(catID, "Groceries", "shopping-cart", "#84cc16", "expense"))
 
 		body := `{"name":"Groceries","icon":"shopping-cart","color":"#84cc16","groupId":"expense"}`
 		req, _ := http.NewRequest(http.MethodPut, "/categories/"+catID.String(), bytes.NewBufferString(body))
@@ -257,7 +254,7 @@ func TestUpdateCategory(t *testing.T) {
 			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 		mock.ExpectQuery("UPDATE categories").
-			WithArgs(catID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), "expense", pgxmock.AnyArg(), userID).
+			WithArgs(catID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), "expense", userID).
 			WillReturnError(pgx.ErrNoRows)
 
 		body := `{"name":"Nope","groupId":"expense"}`
@@ -287,9 +284,6 @@ func TestDeleteCategory(t *testing.T) {
 	catID := uuid.New()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE categories SET parent_id = NULL").
-		WithArgs(catID, userID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectExec("UPDATE transactions SET category_id = NULL").
 		WithArgs(catID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
@@ -332,9 +326,6 @@ func TestDeleteCategoryNotFound(t *testing.T) {
 	catID := uuid.New()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE categories SET parent_id = NULL").
-		WithArgs(catID, userID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectExec("UPDATE transactions SET category_id = NULL").
 		WithArgs(catID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))

@@ -740,7 +740,7 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestGetTransactionsCategoryFilterIncludesDescendants(t *testing.T) {
+func TestGetTransactionsCategoryFilter(t *testing.T) {
 	r, mock := newTransactionTestRouter(t)
 	r.GET("/transactions", GetTransactions)
 
@@ -750,12 +750,12 @@ func TestGetTransactionsCategoryFilterIncludesDescendants(t *testing.T) {
 	accountID := uuid.New()
 	now := time.Now()
 
-	// Count query with category filter (recursive CTE includes descendants).
+	// Count query with the category filter.
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
 		WithArgs(userID, catID.String()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	// Main query with category filter.
+	// Main query with the category filter.
 	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id", "billing_cycle_id", "billing_cycle_label"}).
 		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, 0, nil, nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
@@ -835,6 +835,44 @@ func TestGetTransactionsCategoryFilterByType(t *testing.T) {
 		WillReturnRows(rows)
 
 	req, _ := http.NewRequest("GET", "/transactions?categoryId=expense", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var res struct {
+		Data []models.Transaction `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 1)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransactionsGroupFilter(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", GetTransactions)
+
+	userID := testUserID()
+	groupID := uuid.New()
+	catID := uuid.New()
+	txnID := uuid.New()
+	accountID := uuid.New()
+	now := time.Now()
+
+	// Count query with a group filter. Unlike categoryId, groupId works with
+	// UUID ids too, so custom (user-created) groups can be filtered on.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
+		WithArgs(userID, groupID.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id", "billing_cycle_id", "billing_cycle_label"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, 0, nil, nil, "")
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, groupID.String(), 50, 0).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET", "/transactions?groupId="+groupID.String(), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

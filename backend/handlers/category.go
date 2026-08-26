@@ -19,7 +19,7 @@ import (
 // plus the global (admin-created) ones, in group order (base groups first, then
 // custom groups) and alphabetically by name within each group.
 func GetCategories(c *gin.Context) {
-	rows, err := db.Pool.Query(c, `SELECT c.id, c.name, c.icon, c.color, c.parent_id, c.group_id,
+	rows, err := db.Pool.Query(c, `SELECT c.id, c.name, c.icon, c.color, c.group_id,
 		       (c.user_id IS NULL) as is_global, g.name, g.is_base
 		 FROM categories c
 		 JOIN category_groups g ON c.group_id = g.id
@@ -35,7 +35,7 @@ func GetCategories(c *gin.Context) {
 	categories := []models.Category{}
 	for rows.Next() {
 		var cat models.Category
-		if err := rows.Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.GroupID, &cat.IsGlobal, &cat.GroupName, &cat.GroupIsBase); err != nil {
+		if err := rows.Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID, &cat.IsGlobal, &cat.GroupName, &cat.GroupIsBase); err != nil {
 			log.Printf("Error in GetCategories scan: %v\n", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
@@ -48,7 +48,7 @@ func GetCategories(c *gin.Context) {
 
 // CreateCategory inserts a user-scoped category, validating that the target
 // group is usable by the user (a base/global group or one of their own custom
-// groups) and that any ParentID points at a category they own or a global one.
+// groups).
 func CreateCategory(c *gin.Context) {
 	var req models.CreateCategoryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -58,16 +58,15 @@ func CreateCategory(c *gin.Context) {
 
 	var cat models.Category
 	err := db.Pool.QueryRow(c,
-		`INSERT INTO categories (user_id, name, icon, color, parent_id, group_id)
-		 SELECT $1, $2, $3, $4, $5, $6
-		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $6 AND (g.user_id IS NULL OR g.user_id = $1))
-		   AND ($5 IS NULL OR EXISTS (SELECT 1 FROM categories p WHERE p.id = $5 AND (p.user_id = $1 OR p.user_id IS NULL)))
-		 RETURNING id, name, icon, color, parent_id, group_id`,
-		auth.GetUserID(c), req.Name, req.Icon, req.Color, req.ParentID, req.GroupID,
-	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.GroupID)
+		`INSERT INTO categories (user_id, name, icon, color, group_id)
+		 SELECT $1, $2, $3, $4, $5
+		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $5 AND (g.user_id IS NULL OR g.user_id = $1))
+		 RETURNING id, name, icon, color, group_id`,
+		auth.GetUserID(c), req.Name, req.Icon, req.Color, req.GroupID,
+	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		validation.RespondError(c, "referenced group or parent category not found", http.StatusBadRequest)
+		validation.RespondError(c, "referenced group not found", http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -120,12 +119,11 @@ func UpdateCategory(c *gin.Context) {
 		 SET name = COALESCE(NULLIF($2, ''), name),
 		     icon = COALESCE(NULLIF($3, ''), icon),
 		     color = COALESCE(NULLIF($4, ''), color),
-		     group_id = COALESCE(NULLIF($5, ''), group_id),
-		     parent_id = $6
-		 WHERE id = $1 AND user_id = $7
-		 RETURNING id, name, icon, color, parent_id, group_id`,
-		id, req.Name, req.Icon, req.Color, req.GroupID, req.ParentID, userID,
-	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.GroupID)
+		     group_id = COALESCE(NULLIF($5, ''), group_id)
+		 WHERE id = $1 AND user_id = $6
+		 RETURNING id, name, icon, color, group_id`,
+		id, req.Name, req.Icon, req.Color, req.GroupID, userID,
+	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -156,11 +154,6 @@ func DeleteCategory(c *gin.Context) {
 	result := models.DeleteCategoryResult{}
 
 	err = db.WithTx(c, func(tx pgx.Tx) error {
-		// Orphaned children (this category was a parent) lose their parent link.
-		if _, err := tx.Exec(c, `UPDATE categories SET parent_id = NULL WHERE parent_id = $1 AND user_id = $2`, id, userID); err != nil {
-			return err
-		}
-
 		cleared, err := tx.Exec(c, `UPDATE transactions SET category_id = NULL WHERE category_id = $1 AND user_id = $2`, id, userID)
 		if err != nil {
 			return err
@@ -208,10 +201,6 @@ func DeleteGlobalCategory(c *gin.Context) {
 	result := models.DeleteCategoryResult{}
 
 	err = db.WithTx(c, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(c, `UPDATE categories SET parent_id = NULL WHERE parent_id = $1 AND user_id IS NULL`, id); err != nil {
-			return err
-		}
-
 		cleared, err := tx.Exec(c, `UPDATE transactions SET category_id = NULL WHERE category_id = $1`, id)
 		if err != nil {
 			return err
@@ -258,16 +247,15 @@ func CreateGlobalCategory(c *gin.Context) {
 
 	var cat models.Category
 	err := db.Pool.QueryRow(c,
-		`INSERT INTO categories (user_id, name, icon, color, parent_id, group_id)
-		 SELECT NULL, $1, $2, $3, $4, $5
-		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $5 AND g.user_id IS NULL)
-		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM categories p WHERE p.id = $4 AND p.user_id IS NULL))
-		 RETURNING id, name, icon, color, parent_id, group_id`,
-		req.Name, req.Icon, req.Color, req.ParentID, req.GroupID,
-	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.GroupID)
+		`INSERT INTO categories (user_id, name, icon, color, group_id)
+		 SELECT NULL, $1, $2, $3, $4
+		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $4 AND g.user_id IS NULL)
+		 RETURNING id, name, icon, color, group_id`,
+		req.Name, req.Icon, req.Color, req.GroupID,
+	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		validation.RespondError(c, "referenced global group or parent category not found", http.StatusBadRequest)
+		validation.RespondError(c, "referenced global group not found", http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -321,12 +309,11 @@ func UpdateGlobalCategory(c *gin.Context) {
 		 SET name = COALESCE(NULLIF($2, ''), name),
 		     icon = COALESCE(NULLIF($3, ''), icon),
 		     color = COALESCE(NULLIF($4, ''), color),
-		     group_id = COALESCE(NULLIF($5, ''), group_id),
-		     parent_id = $6
+		     group_id = COALESCE(NULLIF($5, ''), group_id)
 		 WHERE id = $1 AND user_id IS NULL
-		 RETURNING id, name, icon, color, parent_id, group_id`,
-		id, req.Name, req.Icon, req.Color, req.GroupID, req.ParentID,
-	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.ParentID, &cat.GroupID)
+		 RETURNING id, name, icon, color, group_id`,
+		id, req.Name, req.Icon, req.Color, req.GroupID,
+	).Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

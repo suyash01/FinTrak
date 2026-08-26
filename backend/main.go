@@ -35,6 +35,7 @@ func main() {
 	// Run migrations and seed
 	db.RunMigrations(cfg.DatabaseURL)
 	db.SeedAccountTypes()
+	db.SeedCategoryGroups()
 	db.PromoteAdminUsers(cfg.AdminEmails)
 
 	// Setup Gin

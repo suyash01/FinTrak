@@ -79,6 +79,44 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	fmt.Println("✓ Seeded default categories")
 }
 
+// SeedCategoryGroup describes one immutable base category group row.
+type SeedCategoryGroup struct {
+	ID        string
+	Name      string
+	Icon      string
+	Color     string
+	SortOrder int
+}
+
+// SeedCategoryGroups inserts the four immutable base category groups (income,
+// expense, transfer, cashback). They are global (user_id NULL), marked is_base
+// so they can never be deleted, and shared by every user. It is idempotent
+// (ON CONFLICT DO NOTHING) and runs on every boot.
+func SeedCategoryGroups() {
+	ctx := context.Background()
+
+	groups := []SeedCategoryGroup{
+		{"income", "Income", "wallet", "#22c55e", 1},
+		{"expense", "Expense", "shopping-bag", "#f97316", 2},
+		{"transfer", "Transfer", "arrow-left-right", "#94a3b8", 3},
+		{"cashback", "Cashback", "badge-indian-rupee", "#eab308", 4},
+	}
+
+	for _, g := range groups {
+		_, err := Pool.Exec(ctx,
+			`INSERT INTO category_groups (id, name, icon, color, is_base, user_id, sort_order)
+			 VALUES ($1, $2, $3, $4, TRUE, NULL, $5)
+			 ON CONFLICT (id) WHERE user_id IS NULL DO NOTHING`,
+			g.ID, g.Name, g.Icon, g.Color, g.SortOrder,
+		)
+		if err != nil {
+			log.Printf("Failed to seed category group %s: %v", g.ID, err)
+		}
+	}
+
+	fmt.Println("✓ Seeded default category groups")
+}
+
 // SeedAccountType describes one built-in account type row.
 type SeedAccountType struct {
 	ID              string

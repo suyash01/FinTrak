@@ -59,6 +59,27 @@ func TestSeedDefaultCategoriesLogsOnCountError(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSeedCategoryGroups(t *testing.T) {
+	mock := setupMock(t)
+
+	mock.ExpectExec("INSERT INTO category_groups").
+		WithArgs("income", "Income", "wallet", "#22c55e", 1).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO category_groups").
+		WithArgs("expense", "Expense", "shopping-bag", "#f97316", 2).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO category_groups").
+		WithArgs("transfer", "Transfer", "arrow-left-right", "#94a3b8", 3).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO category_groups").
+		WithArgs("cashback", "Cashback", "badge-indian-rupee", "#eab308", 4).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	SeedCategoryGroups()
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSeedAccountTypes(t *testing.T) {
 	mock := setupMock(t)
 
