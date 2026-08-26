@@ -5,6 +5,7 @@ import {
   useMemo,
   memo,
   useRef,
+  Fragment,
   type CSSProperties,
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -40,6 +41,20 @@ interface SelectOption {
   value: string;
   label: string;
 }
+
+interface CategoryGroup {
+  type: string;
+  label: string;
+  items: Category[];
+}
+
+// Sections match the grouping used on the Categories page so the filter and the
+// category pickers stay consistent: expenses, then income, then transfers.
+const CATEGORY_SECTION_LABELS: { type: string; label: string }[] = [
+  { type: "expense", label: "Expenses" },
+  { type: "income", label: "Income" },
+  { type: "transfer", label: "Transfers" },
+];
 
 interface EditableSelectProps {
   value?: string | null;
@@ -254,7 +269,6 @@ const URL_PARAMS = [
   "type",
   "dateFrom",
   "dateTo",
-  "uncategorized",
   "linked",
   "sortBy",
   "sortOrder",
@@ -318,6 +332,23 @@ export default function Transactions() {
     () => payees.map((p) => ({ value: p.id, label: p.name })),
     [payees],
   );
+  // Categories grouped by type, in a stable order, so the filter and pickers can
+  // render all categories under the appropriate section. The "Uncategorized"
+  // category is pulled out into its own group (see the filter/bulk pickers).
+  const uncategorizedCategory = categories.find(
+    (c) => c.name.toLowerCase() === "uncategorized",
+  );
+  const categoryGroups = useMemo(
+    () =>
+      CATEGORY_SECTION_LABELS.map(({ type, label }) => ({
+        type,
+        label,
+        items: categories.filter(
+          (c) => c.type === type && c.name.toLowerCase() !== "uncategorized",
+        ),
+      })).filter((g) => g.items.length > 0),
+    [categories],
+  );
 
   // Filters (initialized from URL search params)
   const [filters, setFilters] = useState<Record<string, string | number>>(
@@ -330,7 +361,6 @@ export default function Transactions() {
         type: "",
         dateFrom: "",
         dateTo: "",
-        uncategorized: "",
         linked: "",
         sortBy: "date",
         sortOrder: "DESC",
@@ -748,10 +778,27 @@ export default function Transactions() {
             onChange={(e) => updateFilter("categoryId", e.target.value)}
           >
             <option value="">All Categories</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
+            <option
+              value="uncategorized"
+              className="bg-slate-900 text-slate-300 font-semibold"
+            >
+              Uncategorized
+            </option>
+            {categoryGroups.map((g) => (
+              <Fragment key={g.label}>
+                <option
+                  value={g.type}
+                  className="bg-slate-900 text-slate-300 font-semibold"
+                >
+                  {g.label}
+                </option>
+                {g.items.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {"\u00A0\u00A0\u00A0"}
+                    {c.name}
+                  </option>
+                ))}
+              </Fragment>
             ))}
           </select>
           <select
@@ -774,14 +821,6 @@ export default function Transactions() {
             <option value="">All Types</option>
             <option value="debit">Debit</option>
             <option value="credit">Credit</option>
-          </select>
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.uncategorized}
-            onChange={(e) => updateFilter("uncategorized", e.target.value)}
-          >
-            <option value="">All Categories Status</option>
-            <option value="true">Uncategorized Only</option>
           </select>
           <select
             className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
@@ -861,10 +900,26 @@ export default function Transactions() {
               }}
             >
               <option value="">Categorize as...</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
+              {uncategorizedCategory && (
+                <option
+                  value={uncategorizedCategory.id}
+                  className="bg-slate-900 text-slate-300 font-semibold"
+                >
+                  Uncategorized
                 </option>
+              )}
+              {categoryGroups.map((g) => (
+                <optgroup
+                  key={g.label}
+                  label={g.label}
+                  className="bg-slate-900 text-slate-300"
+                >
+                  {g.items.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
             <select

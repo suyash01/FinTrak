@@ -13,9 +13,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// GetCategories lists the user's categories ordered by type then name.
+// GetCategories lists the user's categories in a canonical grouped order
+// (expense, income, transfer — matching the frontend's sectioned filter) and
+// alphabetically by name within each group.
 func GetCategories(c *gin.Context) {
-	rows, err := db.Pool.Query(c, "SELECT id, name, icon, color, parent_id, type FROM categories WHERE user_id = $1 ORDER BY type, name", auth.GetUserID(c))
+	rows, err := db.Pool.Query(c, `SELECT id, name, icon, color, parent_id, type FROM categories
+		 WHERE user_id = $1
+		 ORDER BY CASE type WHEN 'expense' THEN 1 WHEN 'income' THEN 2 ELSE 3 END, name`, auth.GetUserID(c))
 	if err != nil {
 		log.Printf("Error in GetCategories: %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
