@@ -30,13 +30,33 @@ export interface Payee {
   updatedAt?: string;
 }
 
+export interface CategoryGroup {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  isBase: boolean;
+  isGlobal: boolean;
+  userId?: string;
+  sortOrder: number;
+}
+
 export interface Category {
   id: string;
   name: string;
   icon: string;
   color: string;
   parentId?: string | null;
-  type: string;
+  groupId: string;
+  isGlobal?: boolean;
+  // Joined
+  groupName?: string;
+  groupIsBase?: boolean;
+}
+
+export interface DeleteCategoryResult {
+  clearedTransactions: number;
+  deletedRules: number;
 }
 
 export type TransactionType = "debit" | "credit";
@@ -260,7 +280,29 @@ export interface CreateCategoryRequest {
   name: string;
   icon: string;
   color: string;
-  type: string;
+  groupId: string;
+  parentId?: string | null;
+}
+
+export interface UpdateCategoryRequest {
+  name?: string;
+  icon?: string;
+  color?: string;
+  groupId?: string;
+  parentId?: string | null;
+}
+
+export interface CreateCategoryGroupRequest {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+}
+
+export interface UpdateCategoryGroupRequest {
+  name?: string;
+  icon?: string;
+  color?: string;
 }
 
 export interface CreateTransactionRequest {

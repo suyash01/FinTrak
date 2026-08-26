@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FinTrak</title>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("fintrak_theme");
+          var stored = raw ? JSON.parse(raw) : {};
+          var modes = ["light", "dark", "system"];
+          var mode = modes.indexOf(stored.mode) !== -1 ? stored.mode : "system";
+          var dark =
+            mode === "dark" ||
+            (mode === "system" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var root = document.documentElement;
+          root.classList.toggle("dark", dark);
+          if (stored.accent) root.dataset.theme = stored.accent;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

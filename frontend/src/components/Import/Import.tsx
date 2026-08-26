@@ -6,10 +6,8 @@ import {
   ArrowRight,
   AlertCircle,
   AlertTriangle,
-  X,
   FileSpreadsheet,
   FileText,
-  Loader2,
   ShieldCheck,
   CheckCircle2,
   PlusCircle,
@@ -33,6 +31,35 @@ import type {
   TransactionType,
   ValidateTransactionsResponse,
 } from "../../types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
 
 type CsvRow = Record<string, string>;
 
@@ -471,7 +498,7 @@ export default function Import() {
       setShowNewAccount(false);
       setNewAccount(EMPTY_NEW_ACCOUNT);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -504,7 +531,7 @@ export default function Import() {
         setStep(3);
       },
       error: (err) => {
-        alert("Failed to parse CSV: " + err.message);
+        toast.error("Failed to parse CSV: " + err.message);
       },
     });
   };
@@ -524,7 +551,7 @@ export default function Import() {
       setStatementSummary(result.summary || null);
       setStep(4);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setParsing(false);
     }
@@ -623,7 +650,9 @@ export default function Import() {
     setImporting(true);
     try {
       if (parsedTransactions.length === 0) {
-        alert("No valid transactions found. Please check your column mapping.");
+        toast.error(
+          "No valid transactions found. Please check your column mapping.",
+        );
         return;
       }
 
@@ -641,7 +670,7 @@ export default function Import() {
       setImportResult(result);
       setStep(5);
     } catch (err) {
-      alert("Import failed: " + (err as Error).message);
+      toast.error("Import failed: " + (err as Error).message);
     } finally {
       setImporting(false);
     }
@@ -661,7 +690,9 @@ export default function Import() {
     setValidating(true);
     try {
       if (parsedTransactions.length === 0) {
-        alert("No valid transactions found. Please check your column mapping.");
+        toast.error(
+          "No valid transactions found. Please check your column mapping.",
+        );
         return;
       }
       const result = await api.validateTransactions({
@@ -670,7 +701,7 @@ export default function Import() {
       });
       setValidationResult(result);
     } catch (err) {
-      alert("Validation failed: " + (err as Error).message);
+      toast.error("Validation failed: " + (err as Error).message);
     } finally {
       setValidating(false);
     }
@@ -688,7 +719,7 @@ export default function Import() {
     <>
       <div className="shrink-0 px-8 pt-6">
         <h1 className="text-2xl font-bold mb-1">Import Statement</h1>
-        <p className="text-slate-400 text-sm">
+        <p className="text-muted-foreground text-sm">
           Upload and map your CSV bank or credit card statement
         </p>
       </div>
@@ -698,12 +729,12 @@ export default function Import() {
           {steps.map((s) => (
             <div
               key={s.num}
-              className={`flex items-center gap-2 text-sm font-medium whitespace-nowrap px-3 py-1.5 rounded-lg transition-colors ${step === s.num ? "bg-cyan-500/10 text-cyan-400" : step > s.num ? "text-emerald-500" : "text-slate-500"}`}
+              className={`flex items-center gap-2 text-sm font-medium whitespace-nowrap px-3 py-1.5 rounded-lg transition-colors ${step === s.num ? "bg-primary/10 text-primary" : step > s.num ? "text-emerald-500" : "text-muted-foreground"}`}
               onClick={() => step > s.num && setStep(s.num)}
               style={{ cursor: step > s.num ? "pointer" : "default" }}
             >
               <span
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${step === s.num ? "bg-cyan-500 text-slate-950" : step > s.num ? "bg-emerald-500/20 text-emerald-500" : "bg-slate-800 text-slate-400"}`}
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${step === s.num ? "bg-primary text-primary-foreground" : step > s.num ? "bg-emerald-500/20 text-emerald-500" : "bg-muted text-muted-foreground"}`}
               >
                 {step > s.num ? <Check size={12} /> : s.num}
               </span>
@@ -715,54 +746,59 @@ export default function Import() {
         {/* Step 1: Select Account */}
         {step === 1 && (
           <div
-            className="bg-slate-900 border border-slate-800 rounded-xl p-6"
+            className="bg-card border border-border rounded-xl p-6"
             style={{ maxWidth: "600px" }}
           >
-            <h3 className="text-lg font-semibold mb-4 text-slate-100">
+            <h3 className="text-lg font-semibold mb-4 text-foreground">
               Select Account
             </h3>
             {accounts.length > 0 && !showNewAccount && (
               <div className="flex flex-col gap-1.5 mb-5">
-                <label className="text-sm font-medium text-slate-400">
+                <Label className="text-muted-foreground">
                   Existing Account
-                </label>
-                <select
-                  className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                  value={selectedAccount}
-                  onChange={(e) => setSelectedAccount(e.target.value)}
+                </Label>
+                <Select
+                  value={selectedAccount || "none"}
+                  onValueChange={(v) =>
+                    setSelectedAccount(v === "none" ? "" : v)
+                  }
                 >
-                  <option value="">Choose an account...</option>
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.accountTypeName}
-                      {a.bank ? `, ${a.bank}` : ""})
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full h-10 bg-background">
+                    <SelectValue placeholder="Choose an account..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Choose an account...</SelectItem>
+                    {accounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.name} ({a.accountTypeName}
+                        {a.bank ? `, ${a.bank}` : ""})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
 
             {!showNewAccount && (
-              <button
-                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all mb-4"
+              <Button
+                variant="outline"
+                className="mb-4"
                 onClick={() => setShowNewAccount(true)}
               >
                 + Create New Account
-              </button>
+              </Button>
             )}
 
             {showNewAccount && (
-              <div className="bg-slate-950 p-5 rounded-lg border border-slate-800 mb-4">
-                <h4 className="mb-4 text-sm font-semibold text-slate-200">
+              <div className="bg-background p-5 rounded-lg border border-border mb-4">
+                <h4 className="mb-4 text-sm font-semibold text-foreground">
                   New Account
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Name
-                    </label>
-                    <input
-                      className="px-3.5 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    <Label className="text-muted-foreground">Name</Label>
+                    <Input
+                      className="h-10 bg-card"
                       placeholder="e.g. HDFC Savings"
                       value={newAccount.name}
                       onChange={(e) =>
@@ -771,34 +807,34 @@ export default function Import() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Type
-                    </label>
-                    <select
-                      className="px-3.5 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    <Label className="text-muted-foreground">Type</Label>
+                    <Select
                       value={newAccount.accountTypeId}
-                      onChange={(e) =>
+                      onValueChange={(v) =>
                         setNewAccount({
                           ...newAccount,
-                          accountTypeId: e.target.value,
+                          accountTypeId: v,
                         })
                       }
                     >
-                      {accountTypes.map((at) => (
-                        <option key={at.id} value={at.id}>
-                          {at.name}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="w-full h-10 bg-card">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {accountTypes.map((at) => (
+                          <SelectItem key={at.id} value={at.id}>
+                            {at.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Bank Name
-                    </label>
-                    <input
-                      className="px-3.5 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    <Label className="text-muted-foreground">Bank Name</Label>
+                    <Input
+                      className="h-10 bg-card"
                       placeholder="e.g. HDFC, ICICI, SBI"
                       value={newAccount.bank}
                       onChange={(e) =>
@@ -807,45 +843,45 @@ export default function Import() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Color
-                    </label>
+                    <Label className="text-muted-foreground">Color</Label>
                     <input
                       type="color"
                       value={newAccount.color}
                       onChange={(e) =>
                         setNewAccount({ ...newAccount, color: e.target.value })
                       }
-                      className="w-full h-10.5 cursor-pointer bg-slate-900 border border-slate-800 rounded-lg p-1"
+                      className="w-full h-10.5 cursor-pointer bg-card border border-border rounded-lg p-1"
                     />
                   </div>
                 </div>
                 <div className="flex gap-3">
-                  <button
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 shadow-md shadow-cyan-500/20"
+                  <Button
+                    size="lg"
+                    className="px-5"
                     onClick={handleCreateAccount}
                     disabled={!newAccount.name}
                   >
                     Create
-                  </button>
-                  <button
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+                  </Button>
+                  <Button
+                    variant="outline"
                     onClick={() => setShowNewAccount(false)}
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
 
-            <div className="pt-4 mt-2 border-t border-slate-800">
-              <button
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            <div className="pt-4 mt-2 border-t border-border">
+              <Button
+                size="lg"
+                className="px-5"
                 disabled={!selectedAccount}
                 onClick={() => setStep(2)}
               >
                 Continue <ChevronRight size={16} />
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -853,47 +889,51 @@ export default function Import() {
         {/* Step 2: Upload */}
         {step === 2 && (
           <div
-            className="bg-slate-900 border border-slate-800 rounded-xl p-6"
+            className="bg-card border border-border rounded-xl p-6"
             style={{ maxWidth: "600px" }}
           >
             <div className="flex gap-2 mb-6">
-              <button
-                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${statementMode === "csv" ? "bg-cyan-500 border-cyan-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"}`}
+              <Button
+                size="lg"
+                className={`flex-1 ${statementMode === "csv" ? "" : "text-muted-foreground hover:text-foreground"}`}
+                variant={statementMode === "csv" ? "default" : "outline"}
                 onClick={() => setStatementMode("csv")}
               >
                 <FileSpreadsheet size={18} /> CSV
-              </button>
-              <button
-                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-all ${statementMode === "pdf" ? "bg-cyan-500 border-cyan-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"}`}
+              </Button>
+              <Button
+                size="lg"
+                className={`flex-1 ${statementMode === "pdf" ? "" : "text-muted-foreground hover:text-foreground"}`}
+                variant={statementMode === "pdf" ? "default" : "outline"}
                 onClick={() => setStatementMode("pdf")}
               >
                 <FileText size={18} /> Statement PDF
-              </button>
+              </Button>
             </div>
 
             {statementMode === "csv" ? (
               <>
                 <div
-                  className="border-2 border-dashed border-slate-700 bg-slate-950/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-cyan-500/50 hover:bg-slate-900/50 group"
+                  className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
                   onClick={() => fileInputRef.current?.click()}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.add(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     );
                   }}
                   onDragLeave={(e) =>
                     e.currentTarget.classList.remove(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     )
                   }
                   onDrop={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.remove(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     );
                     const file = e.dataTransfer?.files[0];
                     if (file) {
@@ -906,13 +946,13 @@ export default function Import() {
                     }
                   }}
                 >
-                  <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 text-slate-400 group-hover:text-cyan-400 transition-colors">
+                  <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4 group-hover:bg-primary/20 text-muted-foreground group-hover:text-primary transition-colors">
                     <FileSpreadsheet size={32} />
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-200 mb-2">
+                  <h3 className="text-lg font-semibold text-foreground mb-2">
                     Drop your CSV file here
                   </h3>
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-muted-foreground">
                     or click to browse. Supports .csv files from any bank.
                   </p>
                 </div>
@@ -927,26 +967,26 @@ export default function Import() {
             ) : (
               <>
                 <div
-                  className="border-2 border-dashed border-slate-700 bg-slate-950/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-cyan-500/50 hover:bg-slate-900/50 group"
+                  className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
                   onClick={() => pdfInputRef.current?.click()}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.add(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     );
                   }}
                   onDragLeave={(e) =>
                     e.currentTarget.classList.remove(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     )
                   }
                   onDrop={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.remove(
-                      "border-cyan-500",
-                      "bg-slate-900/80",
+                      "border-primary",
+                      "bg-card/80",
                     );
                     const file = e.dataTransfer?.files[0];
                     if (file) {
@@ -959,19 +999,19 @@ export default function Import() {
                     }
                   }}
                 >
-                  <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 text-slate-400 group-hover:text-cyan-400 transition-colors">
+                  <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4 group-hover:bg-primary/20 text-muted-foreground group-hover:text-primary transition-colors">
                     {parsing ? (
-                      <Loader2 size={32} className="animate-spin" />
+                      <Spinner className="size-8 text-primary" />
                     ) : (
                       <FileText size={32} />
                     )}
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-200 mb-2">
+                  <h3 className="text-lg font-semibold text-foreground mb-2">
                     {parsing
                       ? "Parsing statement..."
                       : "Drop your statement PDF here"}
                   </h3>
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-muted-foreground">
                     {parsing
                       ? "Extracting transactions from your statement."
                       : "or click to browse. The extracted transactions will be shown for review."}
@@ -985,31 +1025,30 @@ export default function Import() {
                   onChange={handlePdfUpload}
                 />
                 <div className="mt-4 flex flex-col gap-1.5">
-                  <label className="text-sm font-medium text-slate-400">
-                    Extractor
-                  </label>
-                  <select
-                    className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                    value={extractor}
-                    onChange={(e) => setExtractor(e.target.value)}
-                  >
-                    {extractors.length === 0 && (
-                      <option value="sbi_cc">SBI Credit Card</option>
-                    )}
-                    {extractors.map((ex) => (
-                      <option key={ex.name} value={ex.name}>
-                        {ex.display_name || ex.name}
-                      </option>
-                    ))}
-                  </select>
+                  <Label className="text-muted-foreground">Extractor</Label>
+                  <Select value={extractor} onValueChange={setExtractor}>
+                    <SelectTrigger className="w-full h-10 bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {extractors.length === 0 && (
+                        <SelectItem value="sbi_cc">SBI Credit Card</SelectItem>
+                      )}
+                      {extractors.map((ex) => (
+                        <SelectItem key={ex.name} value={ex.name}>
+                          {ex.display_name || ex.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="mt-4 flex flex-col gap-1.5">
-                  <label className="text-sm font-medium text-slate-400">
+                  <Label className="text-muted-foreground">
                     Password (if the PDF is protected)
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="password"
-                    className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    className="h-10 bg-background"
                     placeholder="Optional"
                     value={pdfPassword}
                     onChange={(e) => setPdfPassword(e.target.value)}
@@ -1023,110 +1062,142 @@ export default function Import() {
         {/* Step 3: Column Mapping */}
         {step === 3 && (
           <div
-            className="bg-slate-900 border border-slate-800 rounded-xl p-6"
+            className="bg-card border border-border rounded-xl p-6"
             style={{ maxWidth: "800px" }}
           >
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-              <h3 className="text-lg font-bold text-slate-100">
+              <h3 className="text-lg font-bold text-foreground">
                 Map CSV Columns
               </h3>
               <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="flex items-center gap-2">
-                  <label
+                  <Label
                     htmlFor="import-date-format"
-                    className="text-xs font-semibold text-slate-500 whitespace-nowrap"
+                    className="text-xs font-semibold text-muted-foreground whitespace-nowrap"
                   >
                     Date Format
-                  </label>
-                  <select
-                    id="import-date-format"
-                    className="px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-md text-slate-200 text-xs focus:outline-none focus:border-cyan-500 transition-all"
-                    value={dateFormat}
-                    onChange={(e) => setDateFormat(e.target.value)}
-                  >
-                    {DATE_FORMAT_OPTIONS.map((f) => (
-                      <option key={f.value} value={f.value}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
+                  </Label>
+                  <Select value={dateFormat} onValueChange={setDateFormat}>
+                    <SelectTrigger
+                      id="import-date-format"
+                      size="sm"
+                      className="bg-background"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DATE_FORMAT_OPTIONS.map((f) => (
+                        <SelectItem key={f.value} value={f.value}>
+                          {f.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex gap-2">
-                  <button
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === "single" ? "bg-cyan-500 border-cyan-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"}`}
+                  <Button
+                    size="sm"
+                    variant={amountMode === "single" ? "default" : "outline"}
+                    className={
+                      amountMode === "single" ? "" : "text-muted-foreground"
+                    }
                     onClick={() => setAmountMode("single")}
                   >
                     Single Amount
-                  </button>
-                  <button
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${amountMode === "separate" ? "bg-cyan-500 border-cyan-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"}`}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={amountMode === "separate" ? "default" : "outline"}
+                    className={
+                      amountMode === "separate" ? "" : "text-muted-foreground"
+                    }
                     onClick={() => setAmountMode("separate")}
                   >
                     Debit / Credit
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
 
-            <p className="text-sm text-slate-400 mb-6">
+            <p className="text-sm text-muted-foreground mb-6">
               Select which CSV column supplies each field below. Columns you
               don't map are ignored.
             </p>
 
-            <div className="bg-slate-950 border border-slate-800 rounded-lg overflow-hidden">
-              {targetFieldsFor(amountMode).map((f) => (
-                <div
-                  key={f.key}
-                  className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 p-4 border-b border-slate-800 last:border-0 hover:bg-slate-900/50 transition-colors"
-                >
-                  <div className="flex flex-col gap-1 min-w-0">
-                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      Field
-                    </div>
-                    <div className="font-medium text-sm text-slate-200">
-                      {f.label}
-                      {f.required && (
-                        <span className="ml-2 text-[10px] font-bold text-red-400 uppercase tracking-wide">
-                          Required
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate mt-0.5">
-                      {columnMapping[f.key]
-                        ? `e.g. "${csvData?.[0]?.[columnMapping[f.key] ?? ""] || "—"}"`
-                        : "No CSV column selected"}
-                    </div>
-                  </div>
-                  <ArrowRight className="text-slate-600 shrink-0" size={20} />
-                  <div className="flex flex-col gap-1 min-w-0">
-                    <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      From CSV Column
-                    </div>
-                    <select
-                      className="mt-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 w-full"
-                      value={columnMapping[f.key] || ""}
-                      onChange={(e) => updateMapping(f.key, e.target.value)}
-                    >
-                      <option value="">
-                        {f.required ? "— Select a column —" : "— Not mapped —"}
-                      </option>
-                      {csvHeaders.map((h) => (
-                        <option key={h} value={h}>
-                          {h}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ))}
+            <div className="bg-background border border-border rounded-lg overflow-hidden">
+              <Table>
+                <TableBody>
+                  {targetFieldsFor(amountMode).map((f) => (
+                    <TableRow key={f.key} className="hover:bg-card/50">
+                      <TableCell className="py-4 px-4 w-2/5 align-top">
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                          Field
+                        </div>
+                        <div className="font-medium text-sm text-foreground mt-0.5">
+                          {f.label}
+                          {f.required && (
+                            <span className="ml-2 text-[10px] font-bold text-destructive uppercase tracking-wide">
+                              Required
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground truncate mt-0.5">
+                          {columnMapping[f.key]
+                            ? `e.g. "${csvData?.[0]?.[columnMapping[f.key] ?? ""] || "—"}"`
+                            : "No CSV column selected"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="py-4 px-2 align-middle w-12">
+                        <ArrowRight
+                          className="text-muted-foreground shrink-0"
+                          size={20}
+                        />
+                      </TableCell>
+                      <TableCell className="py-4 px-4 w-2/5 align-top">
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                          From CSV Column
+                        </div>
+                        <Select
+                          value={columnMapping[f.key] || "none"}
+                          onValueChange={(v) =>
+                            updateMapping(f.key, v === "none" ? "" : v)
+                          }
+                        >
+                          <SelectTrigger className="mt-1 w-full h-10 bg-card">
+                            <SelectValue
+                              placeholder={
+                                f.required
+                                  ? "— Select a column —"
+                                  : "— Not mapped —"
+                              }
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">
+                              {f.required
+                                ? "— Select a column —"
+                                : "— Not mapped —"}
+                            </SelectItem>
+                            {csvHeaders.map((h) => (
+                              <SelectItem key={h} value={h}>
+                                {h}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
 
             {mappingErrors.length > 0 && (
-              <div className="mt-5 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+              <div className="mt-5 p-4 bg-destructive/10 border border-destructive/30 rounded-lg">
                 {mappingErrors.map((err, i) => (
                   <div
                     key={i}
-                    className="flex gap-2 items-center text-red-500 text-sm py-0.5"
+                    className="flex gap-2 items-center text-destructive text-sm py-0.5"
                   >
                     <AlertCircle size={14} className="shrink-0" /> {err}
                   </div>
@@ -1136,73 +1207,68 @@ export default function Import() {
 
             {/* Preview first 5 rows */}
             {csvData && (
-              <div className="mt-6 border border-slate-800 rounded-lg overflow-x-auto bg-slate-900">
-                <table className="w-full text-left border-collapse min-w-max">
-                  <thead>
-                    <tr>
+              <div className="mt-6 border border-border rounded-lg bg-card">
+                <Table className="min-w-max">
+                  <TableHeader>
+                    <TableRow className="bg-background hover:bg-background">
                       {csvHeaders.map((h) => (
-                        <th
+                        <TableHead
                           key={h}
-                          className="py-2.5 px-4 text-xs font-semibold text-slate-400 bg-slate-950 border-b border-slate-800 whitespace-nowrap"
+                          className="py-2.5 px-4 h-auto text-xs font-semibold text-muted-foreground bg-background border-b border-border whitespace-nowrap"
                         >
                           {h}
                           {csvTarget[h] && (
-                            <div className="text-[10px] font-medium text-cyan-500 mt-0.5 tracking-wide">
+                            <div className="text-[10px] font-medium text-primary mt-0.5 tracking-wide">
                               → {csvTarget[h].toUpperCase()}
                             </div>
                           )}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {csvData.slice(0, 5).map((row, i) => (
-                      <tr
-                        key={i}
-                        className="border-b border-slate-800 last:border-0 hover:bg-slate-800/30"
-                      >
+                      <TableRow key={i} className="hover:bg-accent/30">
                         {csvHeaders.map((h) => (
-                          <td
+                          <TableCell
                             key={h}
-                            className={`py-2 px-4 text-xs max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap ${csvTarget[h] ? "text-slate-300" : "opacity-40 text-slate-500"}`}
+                            className={`py-2 px-4 text-xs max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap ${csvTarget[h] ? "text-muted-foreground" : "opacity-40 text-muted-foreground"}`}
                           >
                             {row[h]}
-                          </td>
+                          </TableCell>
                         ))}
-                      </tr>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             )}
 
-            <div className="pt-5 mt-6 border-t border-slate-800 flex justify-between gap-4">
-              <button
-                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
-                onClick={() => setStep(2)}
-              >
+            <div className="pt-5 mt-6 border-t border-border flex justify-between gap-4">
+              <Button variant="outline" onClick={() => setStep(2)}>
                 Back
-              </button>
-              <button
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              </Button>
+              <Button
+                size="lg"
+                className="px-5"
                 disabled={mappingErrors.length > 0}
                 onClick={() => setStep(4)}
               >
                 Preview Transactions <ChevronRight size={16} />
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {/* Step 4: Preview & Confirm Import */}
         {step === 4 && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <div className="bg-card border border-border rounded-xl p-6">
             <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-2 mb-4">
-              <h3 className="text-xl font-bold text-slate-100">
+              <h3 className="text-xl font-bold text-foreground">
                 Preview — {parsedTransactions.length} transactions
               </h3>
               {!statementTxns && csvData && (
-                <div className="text-sm text-slate-400 font-medium">
+                <div className="text-sm text-muted-foreground font-medium">
                   {csvData.length - parsedTransactions.length} rows skipped
                   (empty/invalid)
                 </div>
@@ -1210,25 +1276,33 @@ export default function Import() {
             </div>
 
             {selectedAccountType === "credit_card" && (
-              <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg">
+              <div className="mb-5 p-4 bg-background border border-border rounded-lg">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
                     Billing Cycle — attach all imported transactions
-                  </label>
-                  <select
-                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                    value={importBillingCycleId}
-                    onChange={(e) => setImportBillingCycleId(e.target.value)}
+                  </Label>
+                  <Select
+                    value={importBillingCycleId || "auto"}
+                    onValueChange={(v) =>
+                      setImportBillingCycleId(v === "auto" ? "" : v)
+                    }
                   >
-                    <option value="">Auto (by transaction date)</option>
-                    {billingCycles.map((bc) => (
-                      <option key={bc.id} value={bc.id}>
-                        {bc.label} ({formatDate(bc.startDate)} –{" "}
-                        {formatDate(bc.endDate)})
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-slate-500">
+                    <SelectTrigger className="w-full bg-card">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">
+                        Auto (by transaction date)
+                      </SelectItem>
+                      {billingCycles.map((bc) => (
+                        <SelectItem key={bc.id} value={bc.id}>
+                          {bc.label} ({formatDate(bc.startDate)} –{" "}
+                          {formatDate(bc.endDate)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
                     Leave on "Auto" to attach each transaction to the cycle
                     matching its date, or pick a cycle to force every imported
                     transaction into it.
@@ -1238,54 +1312,58 @@ export default function Import() {
             )}
 
             {statementTxns && pdfFile && (
-              <div className="mb-5 p-4 bg-slate-950 border border-slate-800 rounded-lg flex flex-wrap items-end gap-3">
+              <div className="mb-5 p-4 bg-background border border-border rounded-lg flex flex-wrap items-end gap-3">
                 <div className="flex flex-col gap-1.5 min-w-45">
-                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
                     Reparse with extractor
-                  </label>
-                  <select
-                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                    value={extractor}
-                    onChange={(e) => setExtractor(e.target.value)}
-                  >
-                    {extractors.map((ex) => (
-                      <option key={ex.name} value={ex.name}>
-                        {ex.display_name || ex.name}
-                      </option>
-                    ))}
-                  </select>
+                  </Label>
+                  <Select value={extractor} onValueChange={setExtractor}>
+                    <SelectTrigger className="w-full bg-card">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {extractors.map((ex) => (
+                        <SelectItem key={ex.name} value={ex.name}>
+                          {ex.display_name || ex.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex flex-col gap-1.5 min-w-45">
-                  <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
                     Date Format
-                  </label>
-                  <select
-                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                  </Label>
+                  <Select
                     value={pdfDateFormat}
-                    onChange={(e) => setPdfDateFormat(e.target.value)}
+                    onValueChange={setPdfDateFormat}
                   >
-                    {DATE_FORMAT_OPTIONS.map((f) => (
-                      <option key={f.value} value={f.value}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full bg-card">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DATE_FORMAT_OPTIONS.map((f) => (
+                        <SelectItem key={f.value} value={f.value}>
+                          {f.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <button
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                <Button
+                  variant="outline"
                   onClick={() => parsePdf(pdfFile, extractor)}
                   disabled={parsing}
                 >
                   {parsing ? (
                     <>
-                      <Loader2 size={15} className="animate-spin" />{" "}
-                      Reparsing...
+                      <Spinner className="size-4" /> Reparsing...
                     </>
                   ) : (
                     <>Reparse PDF</>
                   )}
-                </button>
-                <p className="text-xs text-slate-500 w-full">
+                </Button>
+                <p className="text-xs text-muted-foreground w-full">
                   Parsing didn't look right? Try a different extractor or date
                   format to reprocess the same file.
                 </p>
@@ -1293,17 +1371,17 @@ export default function Import() {
             )}
 
             {statementSummary && (
-              <div className="mb-5 p-4 bg-cyan-500/5 border border-cyan-500/20 rounded-lg">
-                <div className="text-xs font-semibold text-cyan-400 uppercase tracking-wider mb-2">
+              <div className="mb-5 p-4 bg-primary/10 border border-primary/20 rounded-lg">
+                <div className="text-xs font-semibold text-primary uppercase tracking-wider mb-2">
                   Statement Summary
                 </div>
-                <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-slate-300">
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
                   {Object.entries(statementSummary).map(([k, v]) => (
                     <div key={k}>
-                      <span className="text-slate-500 capitalize">
+                      <span className="text-muted-foreground capitalize">
                         {k.replace(/_/g, " ")}:{" "}
                       </span>
-                      <span className="font-medium">{v}</span>
+                      <span className="font-medium text-foreground">{v}</span>
                     </div>
                   ))}
                 </div>
@@ -1341,118 +1419,116 @@ export default function Import() {
               </div>
             )}
 
-            <div className="border border-slate-800 rounded-lg overflow-y-auto max-h-125 bg-slate-950">
-              <table className="w-full text-left border-collapse min-w-150">
-                <thead className="sticky top-0 bg-slate-900 z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-slate-800">
-                  <tr>
-                    <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-28">
+            <div className="border border-border rounded-lg overflow-y-auto max-h-125 bg-background">
+              <Table className="min-w-150">
+                <TableHeader className="sticky top-0 bg-card z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-border">
+                  <TableRow className="hover:bg-card">
+                    <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground w-28">
                       Date
-                    </th>
-                    <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    </TableHead>
+                    <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       Description
-                    </th>
-                    <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    </TableHead>
+                    <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       Payee
-                    </th>
-                    <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-24">
+                    </TableHead>
+                    <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground w-24">
                       Type
-                    </th>
-                    <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-right w-32">
+                    </TableHead>
+                    <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right w-32">
                       Amount
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/50">
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {parsedTransactions.slice(0, 100).map((t, i) => (
-                    <tr
-                      key={i}
-                      className="hover:bg-slate-900/50 transition-colors"
-                    >
-                      <td className="py-2.5 px-4 text-sm text-slate-300 whitespace-nowrap">
+                    <TableRow key={i} className="hover:bg-card/50">
+                      <TableCell className="py-2.5 px-4 text-sm text-muted-foreground whitespace-nowrap">
                         {t.date}
-                      </td>
-                      <td className="py-2.5 px-4 text-sm text-slate-200 max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
+                      </TableCell>
+                      <TableCell className="py-2.5 px-4 text-sm text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
                         {t.description}
-                      </td>
-                      <td className="py-2.5 px-4 text-sm text-slate-400 max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap">
+                      </TableCell>
+                      <TableCell className="py-2.5 px-4 text-sm text-muted-foreground max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap">
                         {t.payeeId ? (
-                          <span className="text-cyan-500 font-medium">
+                          <span className="text-primary font-medium">
                             {payees.find((p) => p.id === t.payeeId)?.name}
                           </span>
                         ) : (
                           <span className="opacity-30 italic">Not found</span>
                         )}
-                      </td>
-                      <td className="py-2.5 px-4">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold tracking-wide uppercase ${t.type === "debit" ? "bg-red-500/10 text-red-500 border border-red-500/20" : "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"}`}
+                      </TableCell>
+                      <TableCell className="py-2.5 px-4">
+                        <Badge
+                          variant="outline"
+                          className={`${t.type === "debit" ? "bg-destructive/10 text-destructive border-destructive/30" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"}`}
                         >
                           {t.type}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-medium whitespace-nowrap">
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="py-2.5 px-4 text-right font-medium whitespace-nowrap">
                         <span
                           className={
                             t.type === "debit"
-                              ? "text-red-500"
+                              ? "text-destructive"
                               : "text-emerald-500"
                           }
                         >
                           {t.type === "debit" ? "−" : "+"}
                           {formatCurrency(t.amount)}
                         </span>
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
             {parsedTransactions.length > 100 && (
-              <p className="text-sm text-center text-slate-500 mt-4">
+              <p className="text-sm text-center text-muted-foreground mt-4">
                 Showing first 100 of {parsedTransactions.length} transactions
               </p>
             )}
 
-            <div className="pt-5 mt-6 border-t border-slate-800 flex justify-between gap-4">
-              <button
-                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+            <div className="pt-5 mt-6 border-t border-border flex justify-between gap-4">
+              <Button
+                variant="outline"
                 onClick={() => setStep(statementTxns ? 2 : 3)}
               >
                 {statementTxns ? "Back to Upload" : "Back to Mapping"}
-              </button>
+              </Button>
               <div className="flex gap-3">
-                <button
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                <Button
+                  variant="outline"
+                  className="bg-muted text-primary border-primary/30"
                   onClick={runValidation}
                   disabled={validating || parsedTransactions.length === 0}
                   title="Check which of these transactions already exist in this account (no data is written)"
                 >
                   {validating ? (
                     <>
-                      <Loader2 size={15} className="animate-spin" />{" "}
-                      Validating...
+                      <Spinner className="size-4" /> Validating...
                     </>
                   ) : (
                     <>
                       <ShieldCheck size={15} /> Validate
                     </>
                   )}
-                </button>
-                <button
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                </Button>
+                <Button
+                  size="lg"
+                  className="px-5"
                   onClick={handleImport}
                   disabled={importing || parsedTransactions.length === 0}
                 >
                   {importing ? (
                     <div className="flex gap-2 items-center">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>{" "}
-                      Importing...
+                      <Spinner className="size-4" /> Importing...
                     </div>
                   ) : (
                     <>Import {parsedTransactions.length} Transactions</>
                   )}
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -1460,15 +1536,15 @@ export default function Import() {
 
         {/* Step 5: Done */}
         {step === 5 && importResult && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 max-w-125 text-center mx-auto mt-10">
+          <div className="bg-card border border-border rounded-xl p-10 max-w-125 text-center mx-auto mt-10">
             <div className="w-16 h-16 rounded-full bg-emerald-500/15 flex items-center justify-center mx-auto mb-6 text-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.2)]">
               <Check size={32} />
             </div>
-            <h2 className="text-2xl font-bold text-slate-100 mb-2">
+            <h2 className="text-2xl font-bold text-foreground mb-2">
               Import Complete!
             </h2>
-            <p className="text-slate-400 mb-8 max-w-[80%] mx-auto leading-relaxed">
-              <span className="font-semibold text-slate-200">
+            <p className="text-muted-foreground mb-8 max-w-[80%] mx-auto leading-relaxed">
+              <span className="font-semibold text-foreground">
                 {importResult.imported}
               </span>{" "}
               of {importResult.total} transactions
@@ -1477,8 +1553,9 @@ export default function Import() {
                 : " imported."}
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button
-                className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+              <Button
+                variant="outline"
+                className="px-6"
                 onClick={() => {
                   setStep(1);
                   setCsvData(null);
@@ -1501,138 +1578,124 @@ export default function Import() {
                 }}
               >
                 Import Another
-              </button>
-              <button
-                className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
+              </Button>
+              <Button
+                size="lg"
+                className="px-6"
                 onClick={() => (window.location.href = "/transactions")}
               >
                 View Transactions
-              </button>
-              <button
-                className="inline-flex justify-center items-center gap-2 px-6 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+              </Button>
+              <Button
+                variant="outline"
+                className="px-6"
                 onClick={() => (window.location.href = "/linking")}
               >
                 Transfer Suggestions
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {/* Duplicate handling dialog */}
-        {dupDialogOpen && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
-            onClick={() => setDupDialogOpen(false)}
-          >
-            <div
-              className="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-md"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-2.5 text-amber-400">
-                  <AlertTriangle size={20} />
-                  <h3 className="text-lg font-bold text-slate-100">
-                    Duplicate transactions found
-                  </h3>
-                </div>
-                <button
-                  className="text-slate-500 hover:text-slate-300 transition-colors"
-                  onClick={() => setDupDialogOpen(false)}
-                  aria-label="Close"
-                >
-                  <X size={18} />
-                </button>
+        <Dialog open={dupDialogOpen} onOpenChange={setDupDialogOpen}>
+          <DialogContent className="max-w-md sm:max-w-md">
+            <DialogHeader>
+              <div className="flex items-center gap-2.5 text-amber-400">
+                <AlertTriangle size={20} />
+                <DialogTitle className="text-lg font-bold">
+                  Duplicate transactions found
+                </DialogTitle>
               </div>
-              <p className="text-sm text-slate-300 mb-4">
-                {dupCount} of the {parsedTransactions.length} transactions match
-                an existing transaction or repeat within this file.
-              </p>
-              <ul className="text-sm text-slate-400 mb-6 list-disc pl-5 space-y-1">
-                {existingDupCount > 0 && (
-                  <li>
-                    {existingDupCount} already{" "}
-                    {existingDupCount === 1 ? "exists in" : "exist in"} this
-                    account
-                  </li>
-                )}
-                {inFileDupCount > 0 && (
-                  <li>
-                    {inFileDupCount} repeat{inFileDupCount === 1 ? "s" : ""}{" "}
-                    within this file
-                  </li>
-                )}
-              </ul>
-              <p className="text-sm text-slate-500 mb-5">
-                How would you like to handle them?
-              </p>
-              <div className="flex flex-col gap-3">
-                <button
-                  className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-md shadow-cyan-500/20"
-                  onClick={() => runImport("skip")}
-                  disabled={importing}
-                >
-                  Skip duplicates
-                </button>
-                <button
-                  className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
-                  onClick={() => runImport("keep")}
-                  disabled={importing}
-                >
-                  Keep all (import everything)
-                </button>
-                <button
-                  className="inline-flex justify-center items-center gap-2 px-4 py-2.5 text-slate-400 text-sm font-medium hover:text-slate-200 transition-colors"
-                  onClick={() => setDupDialogOpen(false)}
-                  disabled={importing}
-                >
-                  Cancel
-                </button>
-              </div>
+              <DialogDescription>
+                {dupCount} of the {parsedTransactions.length} transactions
+                match an existing transaction or repeat within this file.
+              </DialogDescription>
+            </DialogHeader>
+            <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1">
+              {existingDupCount > 0 && (
+                <li>
+                  {existingDupCount} already{" "}
+                  {existingDupCount === 1 ? "exists in" : "exist in"} this
+                  account
+                </li>
+              )}
+              {inFileDupCount > 0 && (
+                <li>
+                  {inFileDupCount} repeat{inFileDupCount === 1 ? "s" : ""}{" "}
+                  within this file
+                </li>
+              )}
+            </ul>
+            <p className="text-sm text-muted-foreground">
+              How would you like to handle them?
+            </p>
+            <div className="flex flex-col gap-3">
+              <Button
+                size="lg"
+                className="w-full"
+                onClick={() => runImport("skip")}
+                disabled={importing}
+              >
+                Skip duplicates
+              </Button>
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full"
+                onClick={() => runImport("keep")}
+                disabled={importing}
+              >
+                Keep all (import everything)
+              </Button>
+              <Button
+                variant="ghost"
+                size="lg"
+                className="w-full"
+                onClick={() => setDupDialogOpen(false)}
+                disabled={importing}
+              >
+                Cancel
+              </Button>
             </div>
-          </div>
-        )}
+          </DialogContent>
+        </Dialog>
 
         {/* Validation results dialog */}
         {validationResult && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
-            onClick={() => setValidationResult(null)}
+          <Dialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setValidationResult(null);
+            }}
           >
-            <div
-              className="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-2xl max-h-[85vh] flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between mb-4">
+            <DialogContent className="max-w-2xl sm:max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+              <DialogHeader>
                 <div className="flex items-center gap-2.5">
-                  <ShieldCheck size={20} className="text-cyan-400" />
-                  <h3 className="text-lg font-bold text-slate-100">
+                  <ShieldCheck size={20} className="text-primary" />
+                  <DialogTitle className="text-lg font-bold">
                     Validation Results
-                  </h3>
+                  </DialogTitle>
                 </div>
-                <button
-                  className="text-slate-500 hover:text-slate-300 transition-colors"
-                  onClick={() => setValidationResult(null)}
-                  aria-label="Close"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-              <p className="text-sm text-slate-400 mb-4">
-                Checked against{" "}
-                <span className="font-medium text-slate-200">
-                  {accounts.find((a) => a.id === selectedAccount)?.name ||
-                    "this account"}
-                </span>
-                . Nothing was imported.
-              </p>
+                <DialogDescription>
+                  Checked against{" "}
+                  <span className="font-medium text-foreground">
+                    {accounts.find((a) => a.id === selectedAccount)?.name ||
+                      "this account"}
+                  </span>
+                  . Nothing was imported.
+                </DialogDescription>
+              </DialogHeader>
 
               {/* Summary */}
-              <div className="grid grid-cols-3 gap-3 mb-5">
-                <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
-                  <div className="text-2xl font-bold text-slate-200">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3 bg-background border border-border rounded-lg text-center">
+                  <div className="text-2xl font-bold text-foreground">
                     {validationResult.total}
                   </div>
-                  <div className="text-xs text-slate-500 mt-0.5">Total</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Total
+                  </div>
                 </div>
                 <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-center">
                   <div className="text-2xl font-bold text-amber-400">
@@ -1651,85 +1714,89 @@ export default function Import() {
               </div>
 
               {/* Per-transaction list */}
-              <div className="border border-slate-800 rounded-lg overflow-y-auto flex-1 bg-slate-950">
-                <table className="w-full text-left border-collapse min-w-150">
-                  <thead className="sticky top-0 bg-slate-900 z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-slate-800">
-                    <tr>
-                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-28">
+              <div className="border border-border rounded-lg overflow-y-auto flex-1 min-h-0 bg-background">
+                <Table className="min-w-150">
+                  <TableHeader className="sticky top-0 bg-card z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-border">
+                    <TableRow className="hover:bg-card">
+                      <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground w-28">
                         Date
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      </TableHead>
+                      <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                         Description
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-24">
+                      </TableHead>
+                      <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground w-24">
                         Type
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-right w-32">
+                      </TableHead>
+                      <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right w-32">
                         Amount
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold uppercase tracking-wider text-slate-400 w-32">
+                      </TableHead>
+                      <TableHead className="py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground w-32">
                         Status
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/50">
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {validationResult.results.map((r) => (
-                      <tr
-                        key={r.index}
-                        className="hover:bg-slate-900/50 transition-colors"
-                      >
-                        <td className="py-2.5 px-4 text-sm text-slate-300 whitespace-nowrap">
+                      <TableRow key={r.index} className="hover:bg-card/50">
+                        <TableCell className="py-2.5 px-4 text-sm text-muted-foreground whitespace-nowrap">
                           {r.date}
-                        </td>
-                        <td className="py-2.5 px-4 text-sm text-slate-200 max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
+                        </TableCell>
+                        <TableCell className="py-2.5 px-4 text-sm text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
                           {r.description}
-                        </td>
-                        <td className="py-2.5 px-4">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold tracking-wide uppercase ${r.type === "debit" ? "bg-red-500/10 text-red-500 border border-red-500/20" : "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"}`}
+                        </TableCell>
+                        <TableCell className="py-2.5 px-4">
+                          <Badge
+                            variant="outline"
+                            className={`${r.type === "debit" ? "bg-destructive/10 text-destructive border-destructive/30" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"}`}
                           >
                             {r.type}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-medium whitespace-nowrap">
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="py-2.5 px-4 text-right font-medium whitespace-nowrap">
                           <span
                             className={
                               r.type === "debit"
-                                ? "text-red-500"
+                                ? "text-destructive"
                                 : "text-emerald-500"
                             }
                           >
                             {r.type === "debit" ? "−" : "+"}
                             {formatCurrency(r.amount)}
                           </span>
-                        </td>
-                        <td className="py-2.5 px-4">
+                        </TableCell>
+                        <TableCell className="py-2.5 px-4">
                           {r.exists ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/25">
+                            <Badge
+                              variant="outline"
+                              className="bg-amber-500/10 text-amber-400 border-amber-500/25"
+                            >
                               <CheckCircle2 size={12} /> Already exists
-                            </span>
+                            </Badge>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                            <Badge
+                              variant="outline"
+                              className="bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
+                            >
                               <PlusCircle size={12} /> New
-                            </span>
+                            </Badge>
                           )}
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
 
-              <div className="pt-5 mt-5 border-t border-slate-800 flex justify-end gap-3">
-                <button
-                  className="inline-flex justify-center items-center gap-2 px-5 py-2.5 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
+              <DialogFooter>
+                <Button
+                  variant="outline"
                   onClick={() => setValidationResult(null)}
                 >
                   Close
-                </button>
-              </div>
-            </div>
-          </div>
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         )}
       </div>
     </>

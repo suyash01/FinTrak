@@ -105,10 +105,11 @@ func GetTransactions(c *gin.Context) {
 		if categoryID == "uncategorized" {
 			query += " AND t.category_id IS NULL"
 			countQuery += " AND t.category_id IS NULL"
-		} else if categoryID == "expense" || categoryID == "income" || categoryID == "transfer" {
-			// Group-level filter: every category of the given type.
-			query += fmt.Sprintf(" AND c.type = $%d", paramIdx)
-			countQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.type = $%d)", paramIdx)
+		} else if _, err := uuid.Parse(categoryID); err != nil {
+			// Not a UUID -> group-level filter: every category in the given
+			// group (a base group slug like "expense" or a custom group id).
+			query += fmt.Sprintf(" AND c.group_id = $%d", paramIdx)
+			countQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", paramIdx)
 			args = append(args, categoryID)
 			countArgs = append(countArgs, categoryID)
 			paramIdx++
@@ -546,10 +547,23 @@ func BulkCategorize(c *gin.Context) {
 		return
 	}
 
-	query := `UPDATE transactions SET category_id = $1
-	          WHERE id = ANY($2) AND user_id = $3
-	            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND c.user_id = $3)`
-	result, err := db.Pool.Exec(c, query, req.CategoryID, req.TransactionIDs, auth.GetUserID(c))
+	// The "uncategorized" sentinel clears the category on every selected
+	// transaction; otherwise the target category must exist and be the user's.
+	query := `UPDATE transactions SET category_id = NULL
+	          WHERE id = ANY($1) AND user_id = $2`
+	args := []interface{}{req.TransactionIDs, auth.GetUserID(c)}
+	if req.CategoryID != "uncategorized" {
+		catUUID, err := uuid.Parse(req.CategoryID)
+		if err != nil {
+			validation.RespondError(c, "invalid category id", http.StatusBadRequest)
+			return
+		}
+		query = `UPDATE transactions SET category_id = $1
+		          WHERE id = ANY($2) AND user_id = $3
+		            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND c.user_id = $3)`
+		args = []interface{}{catUUID, req.TransactionIDs, auth.GetUserID(c)}
+	}
+	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
 		log.Printf("Error in BulkCategorize: %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

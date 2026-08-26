@@ -5,7 +5,6 @@ import {
   useMemo,
   memo,
   useRef,
-  Fragment,
   type CSSProperties,
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -23,7 +22,37 @@ import {
 } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
-import Checkbox from "../Checkbox/Checkbox";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -31,30 +60,18 @@ import type {
   Transaction,
   Account,
   Category,
+  CategoryGroup,
   Payee,
   BillingCycle,
   TransactionsResponse,
   QueryParams,
 } from "../../types";
+import { buildCategorySections } from "../../lib/categories";
 
 interface SelectOption {
   value: string;
   label: string;
 }
-
-interface CategoryGroup {
-  type: string;
-  label: string;
-  items: Category[];
-}
-
-// Sections match the grouping used on the Categories page so the filter and the
-// category pickers stay consistent: expenses, then income, then transfers.
-const CATEGORY_SECTION_LABELS: { type: string; label: string }[] = [
-  { type: "expense", label: "Expenses" },
-  { type: "income", label: "Income" },
-  { type: "transfer", label: "Transfers" },
-];
 
 interface EditableSelectProps {
   value?: string | null;
@@ -78,19 +95,19 @@ function EditableSelect({
 
   return (
     <select
-      className={`bg-transparent border-none text-[13px] outline-none focus:ring-0 w-full rounded px-1 py-0.5 cursor-pointer appearance-none hover:bg-slate-800/50 transition-all block truncate ${isPlaceholder ? "text-slate-500 italic" : ""}`}
+      className={`bg-transparent border-none text-[13px] outline-none focus:ring-0 w-full rounded px-1 py-0.5 cursor-pointer appearance-none hover:bg-accent transition-all block truncate ${isPlaceholder ? "text-muted-foreground italic" : ""}`}
       style={{ ...style, backgroundImage: "none" }}
       value={value || ""}
       onChange={(e) => onChange(e.target.value)}
       title="Click to edit"
     >
-      <option value="" className="bg-slate-900 text-slate-500 not-italic">
+      <option value="" className="bg-popover text-muted-foreground not-italic">
         {placeholder}
       </option>
       {isMissing && (
         <option
           value={value ?? ""}
-          className="bg-slate-900 text-slate-200 not-italic"
+          className="bg-popover text-foreground not-italic"
           hidden
         >
           {displayText}
@@ -100,7 +117,7 @@ function EditableSelect({
         <option
           key={o.value}
           value={o.value}
-          className="bg-slate-900 text-slate-200 not-italic"
+          className="bg-popover text-foreground not-italic"
         >
           {o.label}
         </option>
@@ -145,47 +162,47 @@ const TransactionRow = memo(function TransactionRow({
   if (t.isSummary) {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
     return (
-      <tr className="bg-cyan-500/10 border-b border-slate-800 last:border-0">
-        <td className={pad}></td>
-        <td className={`${pad} text-sm text-slate-400 whitespace-nowrap`}>
+      <TableRow className="bg-primary/10 border-border">
+        <TableCell className={pad}></TableCell>
+        <TableCell className={`${pad} text-sm text-muted-foreground whitespace-nowrap`}>
           {formatDate(t.date)}
-        </td>
-        <td className={`${pad} text-sm font-semibold text-cyan-300`}>
+        </TableCell>
+        <TableCell className={`${pad} text-sm font-semibold text-primary`}>
           {t.description}
-        </td>
-        <td className={pad}></td>
-        <td className={`${pad} text-sm text-slate-400 whitespace-nowrap`}>
+        </TableCell>
+        <TableCell className={pad}></TableCell>
+        <TableCell className={`${pad} text-sm text-muted-foreground whitespace-nowrap`}>
           {t.accountName}
-        </td>
-        <td className={pad}></td>
-        <td
-          className={`${pad} text-sm text-right font-bold text-slate-100 font-mono whitespace-nowrap`}
+        </TableCell>
+        <TableCell className={pad}></TableCell>
+        <TableCell
+          className={`${pad} text-sm text-right font-bold text-foreground font-mono whitespace-nowrap`}
         >
           {formatCurrency(t.amount)}
-        </td>
-        <td className={pad}></td>
-      </tr>
+        </TableCell>
+        <TableCell className={pad}></TableCell>
+      </TableRow>
     );
   }
   return (
-    <tr
-      className={`transition-colors border-b border-slate-800 last:border-0 ${selected ? "bg-cyan-500/10" : "hover:bg-slate-800/30"}`}
+    <TableRow
+      className={`transition-colors border-border ${selected ? "bg-primary/10" : "hover:bg-muted/50"}`}
     >
-      <td className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
-        <Checkbox checked={selected} onChange={() => toggleSelect(t.id)} />
-      </td>
-      <td
+      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
+        <Checkbox checked={selected} onCheckedChange={() => toggleSelect(t.id)} />
+      </TableCell>
+      <TableCell
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm whitespace-nowrap`}
       >
         {formatDate(t.date)}
-      </td>
-      <td
+      </TableCell>
+      <TableCell
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap`}
         title={t.description}
       >
         {t.description}
-      </td>
-      <td
+      </TableCell>
+      <TableCell
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm min-w-25`}
       >
         <EditableSelect
@@ -195,13 +212,13 @@ const TransactionRow = memo(function TransactionRow({
           placeholder="No Payee"
           displayText={t.payee}
         />
-      </td>
-      <td
+      </TableCell>
+      <TableCell
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm whitespace-nowrap`}
       >
         {t.accountName}
-      </td>
-      <td className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}>
+      </TableCell>
+      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}>
         <EditableSelect
           value={t.categoryId}
           options={categoryOptions}
@@ -210,54 +227,62 @@ const TransactionRow = memo(function TransactionRow({
           displayText={t.categoryId ? t.categoryName : ""}
           style={t.categoryColor ? { color: t.categoryColor } : undefined}
         />
-      </td>
-      <td
+      </TableCell>
+      <TableCell
         className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-right font-semibold whitespace-nowrap`}
       >
         <span
-          className={t.type === "debit" ? "text-red-500" : "text-emerald-500"}
+          className={t.type === "debit" ? "text-destructive" : "text-emerald-500"}
         >
           {t.type === "debit" ? "−" : "+"}
           {formatCurrency(t.amount)}
         </span>
-      </td>
-      <td className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
+      </TableCell>
+      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
         <div className="flex items-center gap-1">
-          <button
-            className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-primary hover:bg-primary/10"
             onClick={() => setEditingTxn(t)}
             title="Edit transaction"
           >
             <Pencil size={14} />
-          </button>
-          <button
-            className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-primary hover:bg-primary/10"
             onClick={() => setLinkingTxn(t)}
             title={
               t.isLinked ? "Link more transactions" : "Find match and link"
             }
           >
             <Link2 size={14} />
-          </button>
+          </Button>
           {(t.linkCount ?? 0) > 0 && (
-            <button
-              className="p-1.5 text-emerald-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors group"
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="group text-emerald-500 hover:text-destructive hover:bg-destructive/10"
               onClick={() => handleUnlink(t)}
               title={(t.linkCount ?? 0) > 1 ? "Manage links" : "Unlink"}
             >
               <Check size={14} className="group-hover:hidden" />
               <Link2Off size={14} className="hidden group-hover:block" />
-            </button>
+            </Button>
           )}
-          <button
-            className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             onClick={() => handleDelete(t.id)}
           >
             <Trash2 size={14} />
-          </button>
+          </Button>
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 });
 
@@ -290,11 +315,15 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [groups, setGroups] = useState<CategoryGroup[]>([]);
   const [payees, setPayees] = useState<Payee[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [linkingTxn, setLinkingTxn] = useState<Transaction | null>(null);
   const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deleteTxnId, setDeleteTxnId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [unlinkTxn, setUnlinkTxn] = useState<Transaction | null>(null);
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
@@ -332,22 +361,12 @@ export default function Transactions() {
     () => payees.map((p) => ({ value: p.id, label: p.name })),
     [payees],
   );
-  // Categories grouped by type, in a stable order, so the filter and pickers can
-  // render all categories under the appropriate section. The "Uncategorized"
-  // category is pulled out into its own group (see the filter/bulk pickers).
-  const uncategorizedCategory = categories.find(
-    (c) => c.name.toLowerCase() === "uncategorized",
-  );
-  const categoryGroups = useMemo(
-    () =>
-      CATEGORY_SECTION_LABELS.map(({ type, label }) => ({
-        type,
-        label,
-        items: categories.filter(
-          (c) => c.type === type && c.name.toLowerCase() !== "uncategorized",
-        ),
-      })).filter((g) => g.items.length > 0),
-    [categories],
+  // Categories grouped by their group, in a stable order, so the filter and
+  // pickers render each group with its categories. Groups without any categories
+  // are hidden; the "Uncategorized" option is always shown separately.
+  const categorySections = useMemo(
+    () => buildCategorySections(groups, categories),
+    [groups, categories],
   );
 
   // Filters (initialized from URL search params)
@@ -513,6 +532,7 @@ export default function Transactions() {
       })
       .catch(console.error);
     api.getCategories().then(setCategories).catch(console.error);
+    api.getGroups().then(setGroups).catch(console.error);
     api.getPayees().then(setPayees).catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -667,9 +687,12 @@ export default function Transactions() {
     }
   };
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     if (selected.size === 0) return;
-    if (!confirm(`Delete ${selected.size} selected transactions?`)) return;
+    setBulkDeleteOpen(true);
+  };
+
+  const confirmBulkDelete = async () => {
     try {
       await api.bulkDeleteTransactions({ transactionIds: [...selected] });
       loadTransactions();
@@ -679,9 +702,12 @@ export default function Transactions() {
     }
   };
 
-  const handleDelete = useCallback(
+  const handleDelete = useCallback((id: string) => {
+    setDeleteTxnId(id);
+  }, []);
+
+  const confirmDelete = useCallback(
     async (id: string) => {
-      if (!confirm("Delete this transaction?")) return;
       try {
         await api.deleteTransaction(id);
         loadTransactions();
@@ -693,12 +719,19 @@ export default function Transactions() {
   );
 
   const handleUnlink = useCallback(
-    async (t: Transaction) => {
+    (t: Transaction) => {
       if ((t.linkCount ?? 0) > 1 || !t.linkId) {
         navigate("/linking");
         return;
       }
-      if (!confirm("Unlink these transactions?")) return;
+      setUnlinkTxn(t);
+    },
+    [navigate],
+  );
+
+  const confirmUnlink = useCallback(
+    async (t: Transaction) => {
+      if (!t.linkId) return;
       try {
         await api.deleteLink(t.linkId);
         loadTransactions();
@@ -706,7 +739,7 @@ export default function Transactions() {
         console.error(err);
       }
     },
-    [loadTransactions, navigate],
+    [loadTransactions],
   );
 
   const toggleSelect = useCallback((id: string) => {
@@ -733,25 +766,25 @@ export default function Transactions() {
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-bold mb-1">Transactions</h1>
-            <p className="text-slate-400 text-sm">
+            <p className="text-muted-foreground text-sm">
               {data.total.toLocaleString()} transactions across all accounts
             </p>
           </div>
-          <button
-            className="flex items-center gap-2 px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-all shadow-lg shadow-cyan-500/20"
+          <Button
+            className="px-4 shadow-lg shadow-primary/20"
             onClick={() => setCreating(true)}
           >
             <Plus size={16} />
             Add Transaction
-          </button>
+          </Button>
         </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
         {/* Filters */}
         <div className={`relative w-full ${compactLayout ? "mb-3" : "mb-5"}`}>
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-          <input
-            className={`pl-9 w-full px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all`}
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            className={`pl-9 ${compactLayout ? "h-8" : "h-10"} bg-background`}
             placeholder="Search descriptions..."
             value={filters.search}
             onChange={(e) => updateFilter("search", e.target.value)}
@@ -760,87 +793,98 @@ export default function Transactions() {
         <div
           className={`flex flex-wrap items-center ${compactLayout ? "gap-2 mb-3" : "gap-3 mb-5"}`}
         >
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.accountId}
-            onChange={(e) => updateFilter("accountId", e.target.value)}
+          <Select
+            value={String(filters.accountId || "all")}
+            onValueChange={(v) => updateFilter("accountId", v === "all" ? "" : v)}
           >
-            <option value="">All Accounts</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.categoryId}
-            onChange={(e) => updateFilter("categoryId", e.target.value)}
+            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+              <SelectValue placeholder="All Accounts" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Accounts</SelectItem>
+              {accounts.map((a) => (
+                <SelectItem key={a.id} value={a.id}>
+                  {a.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={String(filters.categoryId || "all")}
+            onValueChange={(v) => updateFilter("categoryId", v === "all" ? "" : v)}
           >
-            <option value="">All Categories</option>
-            <option
-              value="uncategorized"
-              className="bg-slate-900 text-slate-300 font-semibold"
-            >
-              Uncategorized
-            </option>
-            {categoryGroups.map((g) => (
-              <Fragment key={g.label}>
-                <option
-                  value={g.type}
-                  className="bg-slate-900 text-slate-300 font-semibold"
-                >
-                  {g.label}
-                </option>
-                {g.items.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {"\u00A0\u00A0\u00A0"}
-                    {c.name}
-                  </option>
-                ))}
-              </Fragment>
-            ))}
-          </select>
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.payeeId}
-            onChange={(e) => updateFilter("payeeId", e.target.value)}
+            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+              <SelectValue placeholder="All Categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Categories</SelectItem>
+              <SelectItem value="uncategorized" className="font-semibold">
+                Uncategorized
+              </SelectItem>
+              {categorySections.map((s) => (
+                <SelectGroup key={s.group.id}>
+                  <SelectLabel>{s.group.name}</SelectLabel>
+                  {s.items.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={String(filters.payeeId || "all")}
+            onValueChange={(v) => updateFilter("payeeId", v === "all" ? "" : v)}
           >
-            <option value="">All Payees</option>
-            {payees.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.type}
-            onChange={(e) => updateFilter("type", e.target.value)}
+            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+              <SelectValue placeholder="All Payees" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Payees</SelectItem>
+              {payees.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={String(filters.type || "all")}
+            onValueChange={(v) => updateFilter("type", v === "all" ? "" : v)}
           >
-            <option value="">All Types</option>
-            <option value="debit">Debit</option>
-            <option value="credit">Credit</option>
-          </select>
-          <select
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
-            value={filters.linked}
-            onChange={(e) => updateFilter("linked", e.target.value)}
+            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+              <SelectValue placeholder="All Types" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Types</SelectItem>
+              <SelectItem value="debit">Debit</SelectItem>
+              <SelectItem value="credit">Credit</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={String(filters.linked || "all")}
+            onValueChange={(v) => updateFilter("linked", v === "all" ? "" : v)}
           >
-            <option value="">All Link Status</option>
-            <option value="true">Linked Only</option>
-            <option value="false">Not Linked Only</option>
-          </select>
-          <input
+            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+              <SelectValue placeholder="All Link Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Link Status</SelectItem>
+              <SelectItem value="true">Linked Only</SelectItem>
+              <SelectItem value="false">Not Linked Only</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input
             type="date"
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`}
+            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
             value={filters.dateFrom}
             onChange={(e) => updateFilter("dateFrom", e.target.value)}
             title="From date"
           />
-          <input
+          <Input
             type="date"
-            className={`px-3.5 ${compactLayout ? "py-1.5" : "py-2.5"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all scheme-dark`}
+            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
             value={filters.dateTo}
             onChange={(e) => updateFilter("dateTo", e.target.value)}
             title="To date"
@@ -850,21 +894,22 @@ export default function Transactions() {
         {/* Page size control */}
         <div className="flex flex-wrap items-center justify-end gap-3 mb-4">
           <div className="flex items-center gap-2">
-            <label className="text-sm text-slate-400">Rows per page</label>
-            <select
-              value={preset}
-              onChange={(e) => handlePresetChange(e.target.value)}
-              className={`px-3 ${compactLayout ? "py-1.5" : "py-2"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all cursor-pointer`}
-            >
-              {PAGE_SIZE_OPTIONS.map((o) => (
-                <option key={o} value={o}>
-                  {o === 0 ? "Show all" : o}
-                </option>
-              ))}
-              <option value="custom">Custom...</option>
-            </select>
+            <label className="text-sm text-muted-foreground">Rows per page</label>
+            <Select value={preset} onValueChange={handlePresetChange}>
+              <SelectTrigger className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((o) => (
+                  <SelectItem key={o} value={String(o)}>
+                    {o === 0 ? "Show all" : o}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">Custom...</SelectItem>
+              </SelectContent>
+            </Select>
             {preset === "custom" && (
-              <input
+              <Input
                 type="number"
                 min="0"
                 value={customInput}
@@ -872,13 +917,13 @@ export default function Transactions() {
                 onBlur={commitCustom}
                 onKeyDown={(e) => e.key === "Enter" && commitCustom()}
                 placeholder="Custom"
-                className={`w-24 px-3 ${compactLayout ? "py-1.5" : "py-2"} bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 transition-all`}
+                className={`w-24 ${compactLayout ? "h-8" : "h-9"} bg-background`}
               />
             )}
-            <label className="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
+            <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer select-none">
               <Checkbox
                 checked={persistPageSize}
-                onChange={(checked) => togglePersist(checked)}
+                onCheckedChange={(checked) => togglePersist(checked === true)}
               />
               Remember for my account
             </label>
@@ -887,34 +932,32 @@ export default function Transactions() {
 
         {/* Bulk actions */}
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 px-4 py-3 bg-cyan-500/10 border border-cyan-500/20 rounded-lg mb-4">
-            <Tags size={16} className="text-cyan-500" />
-            <span className="text-sm font-medium text-slate-200">
+          <div className="flex items-center gap-3 px-4 py-3 bg-primary/10 border border-primary/20 rounded-lg mb-4">
+            <Tags size={16} className="text-primary" />
+            <span className="text-sm font-medium text-foreground">
               {selected.size} selected
             </span>
             <select
-              className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-slate-200 text-[13px] focus:outline-none focus:border-cyan-500 transition-all ml-2"
+              className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
               onChange={(e) => {
                 if (e.target.value) handleBulkCategorize(e.target.value);
                 e.target.value = "";
               }}
             >
               <option value="">Categorize as...</option>
-              {uncategorizedCategory && (
-                <option
-                  value={uncategorizedCategory.id}
-                  className="bg-slate-900 text-slate-300 font-semibold"
-                >
-                  Uncategorized
-                </option>
-              )}
-              {categoryGroups.map((g) => (
+              <option
+                value="uncategorized"
+                className="bg-popover text-muted-foreground font-semibold"
+              >
+                Uncategorized
+              </option>
+              {categorySections.map((s) => (
                 <optgroup
-                  key={g.label}
-                  label={g.label}
-                  className="bg-slate-900 text-slate-300"
+                  key={s.group.id}
+                  label={s.group.name}
+                  className="bg-popover text-muted-foreground"
                 >
-                  {g.items.map((c) => (
+                  {s.items.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
@@ -923,7 +966,7 @@ export default function Transactions() {
               ))}
             </select>
             <select
-              className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-slate-200 text-[13px] focus:outline-none focus:border-cyan-500 transition-all ml-2"
+              className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
               onChange={(e) => {
                 if (e.target.value) handleBulkUpdatePayee(e.target.value);
                 e.target.value = "";
@@ -938,7 +981,7 @@ export default function Transactions() {
             </select>
             {isCreditCardFilter && (
               <select
-                className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-slate-200 text-[13px] focus:outline-none focus:border-cyan-500 transition-all ml-2"
+                className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
                 onChange={(e) => {
                   if (e.target.value) handleBulkSetBillingCycle(e.target.value);
                   e.target.value = "";
@@ -957,88 +1000,92 @@ export default function Transactions() {
                 ))}
               </select>
             )}
-            <button
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors ml-2"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive ml-2"
               onClick={handleBulkDelete}
             >
               <Trash2 size={14} />
               Delete
-            </button>
-            <button
-              className="px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors ml-auto"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
               onClick={() => setSelected(new Set())}
             >
               Clear
-            </button>
+            </Button>
           </div>
         )}
 
-        {/* Table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-10`}
+{/* Table */}
+        <div className="bg-card border border-border rounded-xl overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 w-10`}
                 >
                   <Checkbox
                     checked={
                       data.data.length > 0 && selected.size === data.data.length
                     }
-                    onChange={toggleSelectAll}
+                    onCheckedChange={() => toggleSelectAll()}
                   />
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap cursor-pointer hover:text-slate-400 select-none`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none`}
                   onClick={() => toggleSort("date")}
                 >
                   Date <SortIcon col="date" />
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap cursor-pointer hover:text-slate-400 select-none`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none`}
                   onClick={() => toggleSort("description")}
                 >
                   Description <SortIcon col="description" />
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
                 >
                   Payee
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
                 >
                   Account
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
                 >
                   Category
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap cursor-pointer hover:text-slate-400 select-none text-right`}
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none text-right`}
                   onClick={() => toggleSort("amount")}
                 >
                   Amount <SortIcon col="amount" />
-                </th>
-                <th
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-12.5`}
-                ></th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+                <TableHead
+                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 w-12.5`}
+                ></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {loading ? (
-                <tr>
-                  <td colSpan={8} className="text-center p-10">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto"></div>
-                  </td>
-                </tr>
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center p-10">
+                    <Spinner className="mx-auto size-8 text-primary" />
+                  </TableCell>
+                </TableRow>
               ) : data.data.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center p-10 text-slate-500">
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center p-10 text-muted-foreground">
                     No transactions found
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ) : (
                 data.data.map((t) => (
                   <TransactionRow
@@ -1058,24 +1105,25 @@ export default function Transactions() {
                   />
                 ))
               )}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
 
         {/* Pagination */}
         {pageSize > 0 && data.pages > 1 && (
           <div className="flex items-center justify-between mt-4 mb-4">
-            <div className="text-sm text-slate-400">
+            <div className="text-sm text-muted-foreground">
               Page {data.page} of {data.pages} ({data.total} total)
             </div>
             <div className="flex gap-1.5">
-              <button
-                className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400"
+              <Button
+                size="sm"
+                variant="ghost"
                 disabled={data.page <= 1}
                 onClick={() => goToPage(data.page - 1)}
               >
                 Prev
-              </button>
+              </Button>
               {Array.from({ length: Math.min(data.pages, 7) }, (_, i) => {
                 let pageNum: number;
                 if (data.pages <= 7) {
@@ -1088,22 +1136,24 @@ export default function Transactions() {
                   pageNum = data.page - 3 + i;
                 }
                 return (
-                  <button
+                  <Button
                     key={pageNum}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${data.page === pageNum ? "bg-cyan-500 text-white" : "hover:bg-slate-800 hover:text-slate-200 text-slate-400"}`}
+                    size="sm"
+                    variant={data.page === pageNum ? "default" : "ghost"}
                     onClick={() => goToPage(pageNum)}
                   >
                     {pageNum}
-                  </button>
+                  </Button>
                 );
               })}
-              <button
-                className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800 hover:text-slate-200 text-slate-400"
+              <Button
+                size="sm"
+                variant="ghost"
                 disabled={data.page >= data.pages}
                 onClick={() => goToPage(data.page + 1)}
               >
                 Next
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -1122,6 +1172,7 @@ export default function Transactions() {
         <EditTransactionModal
           accounts={accounts}
           categories={categories}
+          groups={groups}
           payees={payees}
           onClose={() => setCreating(false)}
           onSaved={() => {
@@ -1135,6 +1186,7 @@ export default function Transactions() {
           transaction={editingTxn}
           accounts={accounts}
           categories={categories}
+          groups={groups}
           payees={payees}
           onClose={() => setEditingTxn(null)}
           onSaved={() => {
@@ -1143,6 +1195,84 @@ export default function Transactions() {
           }}
         />
       )}
+      <AlertDialog
+        open={deleteTxnId !== null}
+        onOpenChange={(open) => !open && setDeleteTxnId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this transaction?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the transaction. This action cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const id = deleteTxnId;
+                setDeleteTxnId(null);
+                if (id) confirmDelete(id);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {selected.size} selected transactions?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the selected transactions. This
+              action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setBulkDeleteOpen(false);
+                confirmBulkDelete();
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={unlinkTxn !== null}
+        onOpenChange={(open) => !open && setUnlinkTxn(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unlink these transactions?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the link between these transactions.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const t = unlinkTxn;
+                setUnlinkTxn(null);
+                if (t) confirmUnlink(t);
+              }}
+            >
+              Unlink
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -127,6 +127,14 @@ The backend exposes a RESTful API under `/api/v1`:
 - `POST /paperless/import`: Pull a document's original file from the user's Paperless-ngx (`POST { documentId, extractor?, password?, dateFormat?, tagOnImport? }`), feed it through the statement parser, and return the same normalized result as `/statements/parse` for preview and import. When `tagOnImport` is true and a `paperlessTag` label is configured, the document is tagged (created if needed) in Paperless-ngx after a successful parse.
 - `POST /rules/apply`: Manually trigger categorization rules.
 - `GET /dashboard/summary`: Retrieve aggregated data for charts.
+- `GET /groups`: List the category groups visible to the user — the four immutable base groups (`income`, `expense`, `transfer`, `cashback`) plus the user's own custom groups.
+- `POST /groups`: Create a user-owned custom group. Body: `{ id, name, icon?, color? }`.
+- `PUT /groups/:id` / `DELETE /groups/:id`: Rename/restyle or delete a user's own custom group. Base/global groups are immutable, and a group that still has categories cannot be deleted.
+- `GET /categories`: List the user's categories plus global (admin-created) ones, in group order.
+- `POST /categories`: Create a user-owned category in a group they may use (a base/global group or one of their own). Body: `{ name, icon?, color?, groupId }`.
+- `PUT /categories/:id`: Edit a user's own category (name, icon, color, group).
+- `DELETE /categories/:id`: Delete a user's category. In the same transaction its transactions are uncategorized (`category_id` cleared to NULL) and any rules pointing at it are removed. Returns `{ clearedTransactions, deletedRules }`.
+- `POST /admin/groups` / `POST /admin/categories` / `PUT /admin/categories/:id` / `DELETE /admin/categories/:id`: Admin-only management of global groups and global categories shared by every user (requires the `admin` role).
 
 All endpoints except `/auth/register` and `/auth/login` require an `Authorization: Bearer <token>` header. Set the signing secret via the `JWT_SECRET` environment variable (a dev default is used when unset).
 

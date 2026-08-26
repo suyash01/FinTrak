@@ -1037,11 +1037,38 @@ func TestBulkCategorize(t *testing.T) {
 
 	reqBody := models.BulkCategorizeRequest{
 		TransactionIDs: txnIDs,
-		CategoryID:     catID,
+		CategoryID:     catID.String(),
 	}
 
 	mock.ExpectExec("UPDATE transactions SET category_id").
 		WithArgs(catID, txnIDs, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/transactions/bulk-categorize", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"updated":2`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBulkCategorizeUncategorizedSentinel(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-categorize", BulkCategorize)
+
+	userID := testUserID()
+	txnIDs := []uuid.UUID{uuid.New(), uuid.New()}
+
+	reqBody := models.BulkCategorizeRequest{
+		TransactionIDs: txnIDs,
+		CategoryID:     "uncategorized",
+	}
+
+	mock.ExpectExec("UPDATE transactions SET category_id = NULL").
+		WithArgs(txnIDs, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
 	body, _ := json.Marshal(reqBody)

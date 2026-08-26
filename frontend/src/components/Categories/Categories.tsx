@@ -1,20 +1,62 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Trash2, Play, X, Edit2 } from "lucide-react";
+import { Plus, Trash2, Play, Edit2, Globe, Lock } from "lucide-react";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
+import { useAuth } from "../../context/AuthContext";
+import { buildCategorySections } from "../../lib/categories";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "sonner";
 import type {
   Category,
+  CategoryGroup,
   Rule,
   Payee,
   ApplyRulesResult,
   CreateRuleRequest,
 } from "../../types";
 
-interface NewCategoryForm {
+interface CategoryForm {
   name: string;
   icon: string;
   color: string;
-  type: string;
+  groupId: string;
+}
+
+interface GroupForm {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
 }
 
 interface NewRuleForm {
@@ -25,11 +67,18 @@ interface NewRuleForm {
   priority: number;
 }
 
-const EMPTY_NEW_CATEGORY: NewCategoryForm = {
+const EMPTY_CATEGORY_FORM: CategoryForm = {
   name: "",
   icon: "tag",
   color: "#06b6d4",
-  type: "expense",
+  groupId: "",
+};
+
+const EMPTY_GROUP_FORM: GroupForm = {
+  id: "",
+  name: "",
+  icon: "folder",
+  color: "#64748b",
 };
 
 const EMPTY_NEW_RULE: NewRuleForm = {
@@ -40,36 +89,176 @@ const EMPTY_NEW_RULE: NewRuleForm = {
   priority: 0,
 };
 
+const NO_GROUP = "none";
+const NO_PAYEE = "none";
+const NO_CATEGORY = "none";
+
 export default function Categories() {
   const [categories, setCategories] = useState<Category[]>([]);
+  const [groups, setGroups] = useState<CategoryGroup[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [payees, setPayees] = useState<Payee[]>([]);
-  const [tab, setTab] = useState<"categories" | "rules">("categories");
+  const [tab, setTab] = useState<"groups" | "categories" | "rules">("groups");
   const [showNewCategory, setShowNewCategory] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [globalCategoryMode, setGlobalCategoryMode] = useState(false);
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<CategoryGroup | null>(null);
+  const [globalGroupMode, setGlobalGroupMode] = useState(false);
   const [showNewRule, setShowNewRule] = useState(false);
   const [editingRule, setEditingRule] = useState<Rule | null>(null);
-  const [newCat, setNewCat] = useState<NewCategoryForm>(EMPTY_NEW_CATEGORY);
+  const [catForm, setCatForm] = useState<CategoryForm>(EMPTY_CATEGORY_FORM);
+  const [groupForm, setGroupForm] = useState<GroupForm>(EMPTY_GROUP_FORM);
   const [newRule, setNewRule] = useState<NewRuleForm>(EMPTY_NEW_RULE);
   const [applyResult, setApplyResult] = useState<ApplyRulesResult | null>(null);
+  const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const { compactLayout } = useSettings();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadCategories = () =>
+    api.getCategories().then(setCategories).catch(console.error);
+  const loadGroups = () => api.getGroups().then(setGroups).catch(console.error);
 
   useEffect(() => {
-    api.getCategories().then(setCategories).catch(console.error);
+    loadCategories();
+    loadGroups();
     api.getRules().then(setRules).catch(console.error);
     api.getPayees().then(setPayees).catch(console.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleCreateCategory = async () => {
+  useEffect(() => {
+    return () => {
+      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    };
+  }, []);
+
+  const flash = (msg: string) => {
+    setDeleteResult(msg);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = setTimeout(() => setDeleteResult(null), 4000);
+  };
+
+  // ---- Categories CRUD ----
+
+  const openNewCategory = () => {
+    setEditingCategory(null);
+    setGlobalCategoryMode(false);
+    setCatForm({
+      ...EMPTY_CATEGORY_FORM,
+      groupId: groups[0]?.id || "",
+    });
+    setShowNewCategory(true);
+  };
+
+  const openEditCategory = (cat: Category) => {
+    setEditingCategory(cat);
+    setGlobalCategoryMode(false);
+    setCatForm({
+      name: cat.name,
+      icon: cat.icon || "tag",
+      color: cat.color || "#06b6d4",
+      groupId: cat.groupId,
+    });
+    setShowNewCategory(true);
+  };
+
+  const handleSaveCategory = async () => {
     try {
-      const cat = await api.createCategory(newCat);
-      setCategories((prev) => [...prev, cat]);
+      if (editingCategory) {
+        if (editingCategory.isGlobal) {
+          await api.updateGlobalCategory(editingCategory.id, catForm);
+        } else {
+          await api.updateCategory(editingCategory.id, catForm);
+        }
+      } else if (globalCategoryMode) {
+        await api.createGlobalCategory(catForm);
+      } else {
+        await api.createCategory(catForm);
+      }
       setShowNewCategory(false);
-      setNewCat(EMPTY_NEW_CATEGORY);
+      setEditingCategory(null);
+      setGlobalCategoryMode(false);
+      loadCategories();
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
+
+  const handleDeleteCategory = async (cat: Category) => {
+    try {
+      const result = cat.isGlobal
+        ? await api.deleteGlobalCategory(cat.id)
+        : await api.deleteCategory(cat.id);
+      loadCategories();
+      if (result.clearedTransactions > 0) {
+        flash(
+          `Deleted "${cat.name}" — ${result.clearedTransactions} transaction(s) uncategorized, ${result.deletedRules} rule(s) removed.`,
+        );
+      } else {
+        flash(`Deleted "${cat.name}".`);
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  // ---- Groups CRUD ----
+
+  const openNewGroup = (globalMode: boolean) => {
+    setEditingGroup(null);
+    setGlobalGroupMode(globalMode);
+    setGroupForm(EMPTY_GROUP_FORM);
+    setShowGroupForm(true);
+  };
+
+  const openEditGroup = (g: CategoryGroup) => {
+    setEditingGroup(g);
+    setGlobalGroupMode(false);
+    setGroupForm({
+      id: g.id,
+      name: g.name,
+      icon: g.icon,
+      color: g.color,
+    });
+    setShowGroupForm(true);
+  };
+
+  const handleSaveGroup = async () => {
+    try {
+      if (editingGroup) {
+        await api.updateGroup(editingGroup.id, {
+          name: groupForm.name,
+          icon: groupForm.icon,
+          color: groupForm.color,
+        });
+      } else if (globalGroupMode) {
+        await api.createGlobalGroup(groupForm);
+      } else {
+        await api.createGroup(groupForm);
+      }
+      setShowGroupForm(false);
+      setEditingGroup(null);
+      loadGroups();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  const handleDeleteGroup = async (g: CategoryGroup) => {
+    try {
+      await api.deleteGroup(g.id);
+      loadGroups();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  // ---- Rules ----
 
   const handleUpsertRule = async () => {
     const payload: CreateRuleRequest = {
@@ -89,17 +278,16 @@ export default function Categories() {
       const updatedRules = await api.getRules();
       setRules(updatedRules);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
   const handleDeleteRule = async (id: string) => {
-    if (!confirm("Delete this rule?")) return;
     try {
       await api.deleteRule(id);
       setRules((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -110,214 +298,495 @@ export default function Categories() {
       if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
       applyTimerRef.current = setTimeout(() => setApplyResult(null), 3000);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
-  useEffect(() => {
-    return () => {
-      if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
-    };
-  }, []);
-
-  const expenseCategories = categories.filter((c) => c.type === "expense");
-  const incomeCategories = categories.filter((c) => c.type === "income");
-  const transferCategories = categories.filter((c) => c.type === "transfer");
+  const categorySections = buildCategorySections(groups, categories);
 
   return (
     <>
       <div className="shrink-0 px-8 pt-6">
-        <h1 className="text-2xl font-bold mb-1">Categories & Rules</h1>
-        <p className="text-slate-400 text-sm">
-          Manage transaction categories and auto-categorization rules
+        <h1 className="text-2xl font-bold mb-1 text-foreground">
+          Categories & Rules
+        </h1>
+        <p className="text-muted-foreground text-sm">
+          Manage transaction groups, categories and auto-categorization rules
         </p>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
-        <div
-          className={`flex gap-4 ${compactLayout ? "mb-4" : "mb-6"} border-b border-slate-800`}
+        <Tabs
+          className="gap-0"
+          value={tab}
+          onValueChange={(v) => setTab(v as typeof tab)}
         >
-          <button
-            className={`${compactLayout ? "px-3 py-2" : "px-4 py-3"} text-sm font-medium border-b-2 transition-colors ${tab === "categories" ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700"}`}
-            onClick={() => setTab("categories")}
+          <div
+            className={`${compactLayout ? "mb-4" : "mb-6"} border-b border-border`}
           >
-            Categories
-          </button>
-          <button
-            className={`${compactLayout ? "px-3 py-2" : "px-4 py-3"} text-sm font-medium border-b-2 transition-colors ${tab === "rules" ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700"}`}
-            onClick={() => setTab("rules")}
-          >
-            Auto-Categorization Rules
-          </button>
-        </div>
+            <TabsList
+              variant="line"
+              className={`${compactLayout ? "gap-1" : "gap-2"}`}
+            >
+              <TabsTrigger value="groups">Groups</TabsTrigger>
+              <TabsTrigger value="categories">Categories</TabsTrigger>
+              <TabsTrigger value="rules">Rules</TabsTrigger>
+            </TabsList>
+          </div>
 
-        {tab === "categories" && (
-          <>
-            <div className="flex justify-between items-center mb-5">
-              <span className="text-sm text-slate-400">
-                {categories.length} categories
+          {deleteResult && (
+            <div className="mb-4 px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-sm text-emerald-400">
+              {deleteResult}
+            </div>
+          )}
+
+          <TabsContent value="groups">
+            <div className="flex justify-between items-center mb-5 flex-wrap gap-4">
+              <span className="text-sm text-muted-foreground">
+                {groups.length} groups
               </span>
-              <button
-                className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
-                onClick={() => setShowNewCategory(true)}
-              >
-                <Plus size={16} /> Add Category
-              </button>
+              <div className="flex gap-3">
+                {isAdmin && (
+                  <Button variant="outline" onClick={() => openNewGroup(true)}>
+                    <Globe /> Add Global Group
+                  </Button>
+                )}
+                <Button onClick={() => openNewGroup(false)}>
+                  <Plus /> Add Group
+                </Button>
+              </div>
             </div>
 
-            {showNewCategory && (
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h4 className="text-base font-semibold">New Category</h4>
-                  <button
-                    className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-                    onClick={() => setShowNewCategory(false)}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+            <Dialog
+              open={showGroupForm}
+              onOpenChange={(open) => {
+                setShowGroupForm(open);
+                if (!open) {
+                  setEditingGroup(null);
+                  setGlobalGroupMode(false);
+                }
+              }}
+            >
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>
+                    {editingGroup
+                      ? "Edit Group"
+                      : globalGroupMode
+                        ? "New Global Group"
+                        : "New Group"}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
                       Name
-                    </label>
-                    <input
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                      placeholder="e.g. Gym"
-                      value={newCat.name}
+                    </Label>
+                    <Input
+                      placeholder="e.g. Vacation"
+                      value={groupForm.name}
                       onChange={(e) =>
-                        setNewCat({ ...newCat, name: e.target.value })
+                        setGroupForm({ ...groupForm, name: e.target.value })
                       }
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Type
-                    </label>
-                    <select
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                      value={newCat.type}
+                    <Label className="text-xs text-muted-foreground">
+                      Icon
+                    </Label>
+                    <Input
+                      placeholder="e.g. plane"
+                      value={groupForm.icon}
                       onChange={(e) =>
-                        setNewCat({ ...newCat, type: e.target.value })
+                        setGroupForm({ ...groupForm, icon: e.target.value })
                       }
-                    >
-                      <option value="expense">Expense</option>
-                      <option value="income">Income</option>
-                      <option value="transfer">Transfer</option>
-                    </select>
+                    />
                   </div>
+                  {!editingGroup && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-xs text-muted-foreground">
+                        ID (slug)
+                      </Label>
+                      <Input
+                        placeholder="e.g. vacation"
+                        value={groupForm.id}
+                        onChange={(e) =>
+                          setGroupForm({
+                            ...groupForm,
+                            id: e.target.value
+                              .toLowerCase()
+                              .replace(/\s+/g, "_"),
+                          })
+                        }
+                      />
+                    </div>
+                  )}
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
                       Color
-                    </label>
+                    </Label>
                     <input
                       type="color"
-                      value={newCat.color}
+                      value={groupForm.color}
                       onChange={(e) =>
-                        setNewCat({ ...newCat, color: e.target.value })
+                        setGroupForm({ ...groupForm, color: e.target.value })
                       }
-                      className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
+                      className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                     />
                   </div>
                 </div>
-                <button
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                  onClick={handleCreateCategory}
-                  disabled={!newCat.name}
-                >
-                  Create Category
-                </button>
-              </div>
-            )}
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleSaveGroup}
+                    disabled={
+                      !groupForm.name || (!editingGroup && !groupForm.id)
+                    }
+                  >
+                    {editingGroup ? "Update Group" : "Create Group"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
 
-            {[
-              { label: "Expenses", items: expenseCategories },
-              { label: "Income", items: incomeCategories },
-              { label: "Transfers", items: transferCategories },
-            ].map(
-              ({ label, items }) =>
-                items.length > 0 && (
-                  <div key={label} className="mb-8">
-                    <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-3">
-                      {label}
-                    </h4>
-                    <div
-                      className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 ${compactLayout ? "gap-2" : "gap-3"}`}
-                    >
-                      {items.map((cat) => (
-                        <div
-                          key={cat.id}
-                          className={`flex items-center gap-3 ${compactLayout ? "px-3 py-1.5" : "px-4 py-3"} bg-slate-900 border border-slate-800 rounded-lg`}
+            <div
+              className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 ${compactLayout ? "gap-2" : "gap-3"}`}
+            >
+              {groups.map((g) => {
+                const editable = !g.isBase && !g.isGlobal;
+                return (
+                  <div
+                    key={g.id}
+                    className={`flex items-center gap-3 ${compactLayout ? "px-3 py-1.5" : "px-4 py-3"} bg-card border border-border rounded-lg`}
+                  >
+                    <span
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ background: g.color }}
+                    />
+                    <span className="flex-1 text-sm font-medium text-foreground min-w-0">
+                      <span className="block truncate">{g.name}</span>
+                      <span className="text-xs font-normal text-muted-foreground flex items-center gap-1">
+                        {g.isBase ? (
+                          <>
+                            <Lock size={10} /> Base
+                          </>
+                        ) : g.isGlobal ? (
+                          <>
+                            <Globe size={10} /> Global
+                          </>
+                        ) : (
+                          "Custom"
+                        )}
+                      </span>
+                    </span>
+                    {editable && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-muted-foreground hover:text-primary"
+                          onClick={() => openEditGroup(g)}
                         >
-                          <span
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ background: cat.color }}
-                          />
-                          <span className="text-sm font-medium text-slate-200">
-                            {cat.name}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                          <Edit2 />
+                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-muted-foreground hover:text-destructive"
+                            >
+                              <Trash2 />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete group?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Delete group "{g.name}"? Only empty groups can
+                                be deleted — move or remove its categories
+                                first.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                variant="destructive"
+                                onClick={() => handleDeleteGroup(g)}
+                              >
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </>
+                    )}
                   </div>
-                ),
-            )}
-          </>
-        )}
+                );
+              })}
+            </div>
+          </TabsContent>
 
-        {tab === "rules" && (
-          <>
+          <TabsContent value="categories">
+            <div className="flex justify-between items-center mb-5 flex-wrap gap-4">
+              <span className="text-sm text-muted-foreground">
+                {categories.length} categories
+              </span>
+              <div className="flex gap-3">
+                {isAdmin && (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setEditingCategory(null);
+                      setGlobalCategoryMode(true);
+                      setCatForm({
+                        ...EMPTY_CATEGORY_FORM,
+                        groupId: groups.find((g) => g.isGlobal)?.id || "",
+                      });
+                      setShowNewCategory(true);
+                    }}
+                  >
+                    <Globe /> Add Global Category
+                  </Button>
+                )}
+                <Button onClick={openNewCategory}>
+                  <Plus /> Add Category
+                </Button>
+              </div>
+            </div>
+
+            <Dialog
+              open={showNewCategory}
+              onOpenChange={(open) => {
+                setShowNewCategory(open);
+                if (!open) {
+                  setEditingCategory(null);
+                  setGlobalCategoryMode(false);
+                }
+              }}
+            >
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>
+                    {editingCategory
+                      ? editingCategory.isGlobal
+                        ? "Edit Global Category"
+                        : "Edit Category"
+                      : globalCategoryMode
+                        ? "New Global Category"
+                        : "New Category"}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      Name
+                    </Label>
+                    <Input
+                      placeholder="e.g. Gym"
+                      value={catForm.name}
+                      onChange={(e) =>
+                        setCatForm({ ...catForm, name: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      Group
+                    </Label>
+                    <Select
+                      value={catForm.groupId || NO_GROUP}
+                      onValueChange={(v) =>
+                        setCatForm({
+                          ...catForm,
+                          groupId: v === NO_GROUP ? "" : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select group" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>
+                            {g.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      Color
+                    </Label>
+                    <input
+                      type="color"
+                      value={catForm.color}
+                      onChange={(e) =>
+                        setCatForm({ ...catForm, color: e.target.value })
+                      }
+                      className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      Icon
+                    </Label>
+                    <Input
+                      placeholder="e.g. dumbbell"
+                      value={catForm.icon}
+                      onChange={(e) =>
+                        setCatForm({ ...catForm, icon: e.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleSaveCategory}
+                    disabled={!catForm.name || !catForm.groupId}
+                  >
+                    {editingCategory ? "Update Category" : "Create Category"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            {categorySections.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No categories yet. Add one above.
+              </p>
+            ) : (
+              categorySections.map((s) => (
+                <div key={s.group.id} className="mb-8">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span
+                      className="w-3 h-3 rounded-full"
+                      style={{ background: s.group.color }}
+                    />
+                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+                      {s.group.name}
+                    </h4>
+                  </div>
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 ${compactLayout ? "gap-2" : "gap-3"}`}
+                  >
+                    {s.items.map((cat) => (
+                      <div
+                        key={cat.id}
+                        className={`flex items-center gap-3 ${compactLayout ? "px-3 py-1.5" : "px-4 py-3"} bg-card border border-border rounded-lg`}
+                      >
+                        <span
+                          className="w-3 h-3 rounded-full shrink-0"
+                          style={{ background: cat.color }}
+                        />
+                        <span className="flex-1 text-sm font-medium text-foreground min-w-0">
+                          <span className="block truncate">{cat.name}</span>
+                          {cat.isGlobal && (
+                            <span className="text-xs font-normal text-muted-foreground flex items-center gap-1">
+                              <Globe size={10} /> Global
+                            </span>
+                          )}
+                        </span>
+                        {(isAdmin || !cat.isGlobal) && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-muted-foreground hover:text-primary"
+                              onClick={() => openEditCategory(cat)}
+                            >
+                              <Edit2 />
+                            </Button>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="text-muted-foreground hover:text-destructive"
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>
+                                    Delete category?
+                                  </AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    Delete category "{cat.name}"? Any
+                                    transactions using it will be uncategorized,
+                                    and any rules pointing to it will be
+                                    removed.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    variant="destructive"
+                                    onClick={() => handleDeleteCategory(cat)}
+                                  >
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))
+            )}
+          </TabsContent>
+
+          <TabsContent value="rules">
             <div className="flex justify-between items-center mb-5 flex-wrap gap-4">
               <div className="flex items-center gap-4">
-                <span className="text-sm text-slate-400">
+                <span className="text-sm text-muted-foreground">
                   {rules.length} rules
                 </span>
-                <button
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-sm font-medium hover:bg-slate-700 transition-all"
-                  onClick={handleApplyRules}
-                >
-                  <Play size={14} /> Apply Rules to Uncategorized
-                </button>
+                <Button variant="outline" onClick={handleApplyRules}>
+                  <Play /> Apply Rules to Uncategorized
+                </Button>
                 {applyResult && (
                   <span className="text-sm font-medium text-emerald-500">
                     {applyResult.updated} transactions updated
                   </span>
                 )}
               </div>
-              <button
-                className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
+              <Button
                 onClick={() => {
                   setEditingRule(null);
                   setNewRule(EMPTY_NEW_RULE);
                   setShowNewRule(true);
                 }}
               >
-                <Plus size={16} /> Add Rule
-              </button>
+                <Plus /> Add Rule
+              </Button>
             </div>
 
-            {showNewRule && (
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h4 className="text-base font-semibold">
+            <Dialog
+              open={showNewRule}
+              onOpenChange={(open) => {
+                setShowNewRule(open);
+                if (!open) {
+                  setEditingRule(null);
+                  setNewRule(EMPTY_NEW_RULE);
+                }
+              }}
+            >
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>
                     {editingRule ? "Edit Rule" : "New Rule"}
-                  </h4>
-                  <button
-                    className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-                    onClick={() => {
-                      setShowNewRule(false);
-                      setEditingRule(null);
-                    }}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
                       Pattern
-                    </label>
-                    <input
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    </Label>
+                    <Input
                       placeholder="e.g. SWIGGY, AMAZON, UBER"
                       value={newRule.pattern}
                       onChange={(e) =>
@@ -326,71 +795,92 @@ export default function Categories() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
                       Match Type
-                    </label>
-                    <select
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                    </Label>
+                    <Select
                       value={newRule.matchType}
-                      onChange={(e) =>
-                        setNewRule({ ...newRule, matchType: e.target.value })
+                      onValueChange={(v) =>
+                        setNewRule({ ...newRule, matchType: v })
                       }
                     >
-                      <option value="contains">Contains</option>
-                      <option value="starts_with">Starts With</option>
-                      <option value="exact">Exact Match</option>
-                    </select>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="contains">Contains</SelectItem>
+                        <SelectItem value="starts_with">
+                          Starts With
+                        </SelectItem>
+                        <SelectItem value="exact">Exact Match</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
                       Assign Category
-                    </label>
-                    <select
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                      value={newRule.categoryId}
-                      onChange={(e) =>
-                        setNewRule({ ...newRule, categoryId: e.target.value })
-                      }
-                    >
-                      <option value="">Choose category...</option>
-                      {categories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
-                      Assign Payee (optional)
-                    </label>
-                    <select
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
-                      value={newRule.payeeId || ""}
-                      onChange={(e) =>
+                    </Label>
+                    <Select
+                      value={newRule.categoryId || NO_CATEGORY}
+                      onValueChange={(v) =>
                         setNewRule({
                           ...newRule,
-                          payeeId: e.target.value || null,
+                          categoryId: v === NO_CATEGORY ? "" : v,
                         })
                       }
                     >
-                      <option value="">No Payee</option>
-                      {payees.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Choose category..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_CATEGORY}>
+                          Choose category...
+                        </SelectItem>
+                        {buildCategorySections(groups, categories).map((s) => (
+                          <SelectGroup key={s.group.id}>
+                            <SelectLabel>{s.group.name}</SelectLabel>
+                            {s.items.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-sm font-medium text-slate-400">
+                    <Label className="text-xs text-muted-foreground">
+                      Assign Payee (optional)
+                    </Label>
+                    <Select
+                      value={newRule.payeeId || NO_PAYEE}
+                      onValueChange={(v) =>
+                        setNewRule({
+                          ...newRule,
+                          payeeId: v === NO_PAYEE ? null : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="No Payee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_PAYEE}>No Payee</SelectItem>
+                        {payees.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-xs text-muted-foreground">
                       Priority (higher = first)
-                    </label>
-                    <input
+                    </Label>
+                    <Input
                       type="number"
-                      className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
                       value={newRule.priority}
                       onChange={(e) =>
                         setNewRule({
@@ -401,56 +891,39 @@ export default function Categories() {
                     />
                   </div>
                 </div>
-                <button
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                  onClick={handleUpsertRule}
-                  disabled={!newRule.pattern || !newRule.categoryId}
-                >
-                  {editingRule ? "Update Rule" : "Create Rule"}
-                </button>
-              </div>
-            )}
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleUpsertRule}
+                    disabled={!newRule.pattern || !newRule.categoryId}
+                  >
+                    {editingRule ? "Update Rule" : "Create Rule"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-x-auto">
+            <div className="bg-card border border-border rounded-xl overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
-                    >
-                      Pattern
-                    </th>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
-                    >
-                      Match
-                    </th>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
-                    >
-                      Category
-                    </th>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
-                    >
-                      Payee
-                    </th>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 whitespace-nowrap`}
-                    >
-                      Priority
-                    </th>
-                    <th
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-slate-500 bg-slate-800/50 border-b border-slate-800 w-12.5`}
-                    ></th>
+                    {["Pattern", "Match", "Category", "Payee", "Priority", ""].map(
+                      (h, i) => (
+                        <th
+                          key={i}
+                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 5 ? "w-12.5" : ""}`}
+                        >
+                          {h}
+                        </th>
+                      ),
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {rules.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={5}
-                        className="text-center p-10 text-slate-500"
+                        colSpan={6}
+                        className="text-center p-10 text-muted-foreground"
                       >
                         No rules yet. Create one to auto-categorize
                         transactions.
@@ -460,32 +933,35 @@ export default function Categories() {
                     rules.map((r) => (
                       <tr
                         key={r.id}
-                        className="hover:bg-slate-800/30 transition-colors border-b border-slate-800 last:border-0"
+                        className="hover:bg-muted/30 transition-colors border-b border-border last:border-0"
                       >
                         <td
-                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm font-medium text-slate-200`}
+                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm font-medium text-foreground`}
                         >
                           "{r.pattern}"
                         </td>
                         <td
                           className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
                         >
-                          <span className="inline-flex items-center px-2 py-1 rounded bg-slate-950 border border-slate-800 text-xs font-medium text-slate-400 capitalize">
+                          <Badge
+                            variant="outline"
+                            className="capitalize text-muted-foreground"
+                          >
                             {r.matchType.replace("_", " ")}
-                          </span>
+                          </Badge>
                         </td>
                         <td
-                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-slate-200`}
+                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-foreground`}
                         >
                           {r.categoryName}
                         </td>
                         <td
-                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-slate-400`}
+                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-muted-foreground`}
                         >
                           {r.payee || "—"}
                         </td>
                         <td
-                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-slate-400`}
+                          className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-muted-foreground`}
                         >
                           {r.priority}
                         </td>
@@ -493,8 +969,10 @@ export default function Categories() {
                           className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-right`}
                         >
                           <div className="flex justify-end gap-1">
-                            <button
-                              className="p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors"
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-muted-foreground hover:text-primary"
                               onClick={() => {
                                 setEditingRule(r);
                                 setNewRule({
@@ -507,14 +985,39 @@ export default function Categories() {
                                 setShowNewRule(true);
                               }}
                             >
-                              <Edit2 size={16} />
-                            </button>
-                            <button
-                              className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                              onClick={() => handleDeleteRule(r.id)}
-                            >
-                              <Trash2 size={16} />
-                            </button>
+                              <Edit2 />
+                            </Button>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="text-muted-foreground hover:text-destructive"
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>
+                                    Delete rule?
+                                  </AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    Delete this rule? It will no longer
+                                    auto-categorize matching transactions.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    variant="destructive"
+                                    onClick={() => handleDeleteRule(r.id)}
+                                  >
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
                           </div>
                         </td>
                       </tr>
@@ -523,8 +1026,8 @@ export default function Categories() {
                 </tbody>
               </table>
             </div>
-          </>
-        )}
+          </TabsContent>
+        </Tabs>
       </div>
     </>
   );

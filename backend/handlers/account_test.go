@@ -42,7 +42,7 @@ func TestGetAccounts(t *testing.T) {
 		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", false, 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
-		WithArgs(userID).
+		WithArgs(userID, userID).
 		WillReturnRows(rows)
 
 	// Perform request
@@ -171,7 +171,7 @@ func TestUpdateAccount(t *testing.T) {
 
 	// Expect Update Payee
 	mock.ExpectExec("UPDATE payees SET name = \\$1 WHERE account_id = \\$2").
-		WithArgs(reqBody.Name, accountID).
+		WithArgs(reqBody.Name, accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	mock.ExpectCommit()

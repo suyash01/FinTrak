@@ -108,7 +108,6 @@ func TestApplyRules(t *testing.T) {
 
 	ruleCatID := uuid.New()
 	txnID := uuid.New()
-	uncategorizedID := uuid.New()
 	userID := testUserID()
 
 	// 1. Get all rules
@@ -117,14 +116,9 @@ func TestApplyRules(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"pattern", "match_type", "category_id", "payee_id"}).
 			AddRow("Zomato", "contains", ruleCatID, nil))
 
-	// 2. Find "Uncategorized" category ID
-	mock.ExpectQuery("SELECT id FROM categories WHERE name = 'Uncategorized'").
-		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uncategorizedID))
-
-	// 3. Get uncategorized transactions
+	// 2. Get uncategorized transactions (category_id IS NULL)
 	mock.ExpectQuery("SELECT id, description FROM transactions WHERE category_id IS NULL").
-		WithArgs(userID, uncategorizedID).
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "description"}).
 			AddRow(txnID, "Zomato Order #999"))
 

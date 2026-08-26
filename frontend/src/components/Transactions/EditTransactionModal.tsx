@@ -4,7 +4,6 @@ import {
   useRef,
   type FormEvent,
   type KeyboardEvent,
-  type MouseEvent,
 } from "react";
 import {
   X,
@@ -19,12 +18,35 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import api from "../../api/client";
 import { formatDate } from "../../utils/formatters";
+import { buildCategorySections } from "../../lib/categories";
 import type {
   Transaction,
   Account,
   Category,
+  CategoryGroup,
   Payee,
   BillingCycle,
   CreateTransactionRequest,
@@ -35,6 +57,7 @@ interface EditTransactionModalProps {
   transaction?: Transaction;
   accounts: Account[];
   categories: Category[];
+  groups: CategoryGroup[];
   payees: Payee[];
   onClose: () => void;
   onSaved: () => void;
@@ -57,6 +80,7 @@ export default function EditTransactionModal({
   transaction,
   accounts,
   categories,
+  groups,
   payees,
   onClose,
   onSaved,
@@ -80,17 +104,7 @@ export default function EditTransactionModal({
   const [loadingCycles, setLoadingCycles] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [visible, setVisible] = useState(false);
-  const backdropRef = useRef<HTMLDivElement | null>(null);
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevAccountRef = useRef<string | null>(null);
-
-  useEffect(
-    () => () => {
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    },
-    [],
-  );
 
   useEffect(() => {
     if (isCreate) {
@@ -121,8 +135,6 @@ export default function EditTransactionModal({
         billingCycleId: transaction.billingCycleId || "",
       });
     }
-    // Trigger enter animation
-    requestAnimationFrame(() => setVisible(true));
   }, [transaction, isCreate, accounts]);
 
   // Load billing cycles for the selected account (credit cards only). The
@@ -166,16 +178,6 @@ export default function EditTransactionModal({
       cancelled = true;
     };
   }, [form.accountId, accounts]);
-
-  const handleClose = () => {
-    setVisible(false);
-    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = setTimeout(onClose, 200);
-  };
-
-  const handleBackdropClick = (e: MouseEvent<HTMLDivElement>) => {
-    if (e.target === backdropRef.current) handleClose();
-  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -238,46 +240,34 @@ export default function EditTransactionModal({
     }
   };
 
-  const inputClass =
-    "w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700/60 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all placeholder:text-slate-600";
   const labelClass =
-    "block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5";
+    "mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground";
 
   return (
-    <div
-      ref={backdropRef}
-      className={`fixed inset-0 z-50 flex justify-end transition-colors duration-200 ${visible ? "bg-black/60 backdrop-blur-sm" : "bg-transparent"}`}
-      onClick={handleBackdropClick}
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
     >
-      <div
-        className={`w-full max-w-lg h-full bg-linear-to-b from-slate-900 to-slate-950 border-l border-slate-700/50 shadow-2xl shadow-black/50 flex flex-col transition-transform duration-200 ease-out ${visible ? "translate-x-0" : "translate-x-full"}`}
-      >
-        {/* Header */}
-        <div className="shrink-0 px-6 py-5 border-b border-slate-800/80 bg-slate-900/50">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-cyan-500/10 rounded-lg">
-                <Pencil size={18} className="text-cyan-400" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-100">
-                  {isCreate ? "Add Transaction" : "Edit Transaction"}
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {isCreate
-                    ? "Add a new transaction"
-                    : "Modify transaction details"}
-                </p>
-              </div>
+      <SheetContent side="right" className="w-full sm:max-w-lg gap-0">
+        <SheetHeader className="px-6 py-5 border-b border-border bg-card">
+          <div className="flex items-center gap-3 pr-8">
+            <div className="p-2 bg-primary/10 rounded-lg">
+              <Pencil size={18} className="text-primary" />
             </div>
-            <button
-              className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-              onClick={handleClose}
-            >
-              <X size={20} />
-            </button>
+            <div>
+              <SheetTitle className="text-lg font-bold">
+                {isCreate ? "Add Transaction" : "Edit Transaction"}
+              </SheetTitle>
+              <SheetDescription className="text-xs mt-0.5">
+                {isCreate
+                  ? "Add a new transaction"
+                  : "Modify transaction details"}
+              </SheetDescription>
+            </div>
           </div>
-        </div>
+        </SheetHeader>
 
         {/* Form */}
         <form
@@ -288,24 +278,23 @@ export default function EditTransactionModal({
           <div className="px-6 py-5 space-y-6">
             {/* Error */}
             {error && (
-              <div className="px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+              <div className="px-4 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
                 {error}
               </div>
             )}
 
             {/* Section: Core Details */}
             <div className="space-y-4">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 <FileText size={12} />
                 <span>Core Details</span>
               </div>
 
               {/* Description */}
               <div>
-                <label className={labelClass}>Description</label>
-                <input
+                <Label className={labelClass}>Description</Label>
+                <Input
                   type="text"
-                  className={inputClass}
                   value={form.description}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, description: e.target.value }))
@@ -318,13 +307,12 @@ export default function EditTransactionModal({
               {/* Date & Amount row */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelClass}>
+                  <Label className={labelClass}>
                     <Calendar size={10} className="inline mr-1" />
                     Date
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="date"
-                    className={`${inputClass} scheme-dark`}
                     value={form.date}
                     onChange={(e) =>
                       setForm((f) => ({ ...f, date: e.target.value }))
@@ -333,15 +321,14 @@ export default function EditTransactionModal({
                   />
                 </div>
                 <div>
-                  <label className={labelClass}>
+                  <Label className={labelClass}>
                     <DollarSign size={10} className="inline mr-1" />
                     Amount
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="number"
                     step="0.01"
                     min="0"
-                    className={inputClass}
                     value={form.amount}
                     onChange={(e) =>
                       setForm((f) => ({ ...f, amount: e.target.value }))
@@ -355,75 +342,94 @@ export default function EditTransactionModal({
               {/* Type & Account row */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelClass}>Type</label>
-                  <div className="flex rounded-lg border border-slate-700/60 overflow-hidden">
-                    <button
+                  <Label className={labelClass}>Type</Label>
+                  <div className="flex rounded-lg border border-border overflow-hidden">
+                    <Button
                       type="button"
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === "debit" ? "bg-red-500/20 text-red-400 border-r border-red-500/30" : "bg-slate-950/80 text-slate-500 border-r border-slate-700/60 hover:text-slate-300"}`}
+                      variant="ghost"
+                      className={`flex-1 h-auto px-3 py-2.5 rounded-none border-r ${form.type === "debit" ? "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20" : "bg-background text-muted-foreground hover:text-foreground border-border"}`}
                       onClick={() => setForm((f) => ({ ...f, type: "debit" }))}
                     >
                       <ArrowDownLeft size={14} />
                       Debit
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-all ${form.type === "credit" ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-950/80 text-slate-500 hover:text-slate-300"}`}
+                      variant="ghost"
+                      className={`flex-1 h-auto px-3 py-2.5 rounded-none ${form.type === "credit" ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30" : "bg-background text-muted-foreground hover:text-foreground"}`}
                       onClick={() => setForm((f) => ({ ...f, type: "credit" }))}
                     >
                       <ArrowUpRight size={14} />
                       Credit
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div>
-                  <label className={labelClass}>
+                  <Label className={labelClass}>
                     <Landmark size={10} className="inline mr-1" />
                     Account
-                  </label>
-                  <select
-                    className={inputClass}
-                    value={form.accountId}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, accountId: e.target.value }))
+                  </Label>
+                  <Select
+                    value={form.accountId || "none"}
+                    onValueChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        accountId: v === "none" ? "" : v,
+                      }))
                     }
-                    required
                   >
-                    <option value="">Select account</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select account" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Select account</SelectItem>
+                      {accounts.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
               {/* Billing Cycle (credit cards only) */}
               {selectedAccount?.accountTypeId === "credit_card" && (
                 <div>
-                  <label className={labelClass}>
+                  <Label className={labelClass}>
                     <Calendar size={10} className="inline mr-1" />
                     Billing Cycle
-                  </label>
-                  <select
-                    className={inputClass}
-                    value={form.billingCycleId}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, billingCycleId: e.target.value }))
+                  </Label>
+                  <Select
+                    value={form.billingCycleId || "none"}
+                    onValueChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        billingCycleId: v === "none" ? "" : v,
+                      }))
                     }
                   >
-                    <option value="">
-                      {isCreate ? "Auto (by date)" : "Unassigned"}
-                    </option>
-                    {billingCycles.map((bc) => (
-                      <option key={bc.id} value={bc.id}>
-                        {bc.label} ({formatDate(bc.startDate)} –{" "}
-                        {formatDate(bc.endDate)})
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue
+                        placeholder={
+                          isCreate ? "Auto (by date)" : "Unassigned"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">
+                        {isCreate ? "Auto (by date)" : "Unassigned"}
+                      </SelectItem>
+                      {billingCycles.map((bc) => (
+                        <SelectItem key={bc.id} value={bc.id}>
+                          {bc.label} ({formatDate(bc.startDate)} –{" "}
+                          {formatDate(bc.endDate)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   {loadingCycles && (
-                    <p className="text-xs text-slate-500 mt-1.5">
+                    <p className="text-xs text-muted-foreground mt-1.5">
                       Loading billing cycles...
                     </p>
                   )}
@@ -432,11 +438,11 @@ export default function EditTransactionModal({
             </div>
 
             {/* Divider */}
-            <div className="border-t border-slate-800/60" />
+            <div className="border-t border-border" />
 
             {/* Section: Classification */}
             <div className="space-y-4">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
                 <Tag size={12} />
                 <span>Classification</span>
               </div>
@@ -444,49 +450,68 @@ export default function EditTransactionModal({
               {/* Category & Payee row */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelClass}>Category</label>
-                  <select
-                    className={inputClass}
-                    value={form.categoryId}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, categoryId: e.target.value }))
+                  <Label className={labelClass}>Category</Label>
+                  <Select
+                    value={form.categoryId || "none"}
+                    onValueChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        categoryId: v === "none" ? "" : v,
+                      }))
                     }
                   >
-                    <option value="">Uncategorized</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Uncategorized" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Uncategorized</SelectItem>
+                      {buildCategorySections(groups, categories).map((s) => (
+                        <SelectGroup key={s.group.id}>
+                          <SelectLabel>{s.group.name}</SelectLabel>
+                          {s.items.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
-                  <label className={labelClass}>
+                  <Label className={labelClass}>
                     <User size={10} className="inline mr-1" />
                     Payee
-                  </label>
-                  <select
-                    className={inputClass}
-                    value={form.payeeId}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, payeeId: e.target.value }))
+                  </Label>
+                  <Select
+                    value={form.payeeId || "none"}
+                    onValueChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        payeeId: v === "none" ? "" : v,
+                      }))
                     }
                   >
-                    <option value="">No Payee</option>
-                    {payees.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="No Payee" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No Payee</SelectItem>
+                      {payees.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
               {/* Notes */}
               <div>
-                <label className={labelClass}>Notes</label>
+                <Label className={labelClass}>Notes</Label>
                 <textarea
-                  className={`${inputClass} resize-none`}
+                  className="w-full min-h-24 resize-none rounded-lg border border-border bg-background px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                   rows={3}
                   value={form.notes}
                   onChange={(e) =>
@@ -498,40 +523,36 @@ export default function EditTransactionModal({
 
               {/* Tags */}
               <div>
-                <label className={labelClass}>Tags</label>
+                <Label className={labelClass}>Tags</Label>
                 <div className="flex flex-wrap gap-2 mb-2">
                   {form.tags.map((tag) => (
-                    <span
+                    <Badge
                       key={tag}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-cyan-500/10 text-cyan-400 text-xs font-medium rounded-full border border-cyan-500/20"
+                      className="bg-primary/10 text-primary border-primary/20 rounded-full"
                     >
                       {tag}
                       <button
                         type="button"
-                        className="hover:text-red-400 transition-colors ml-0.5"
+                        className="hover:text-destructive transition-colors ml-0.5"
                         onClick={() => removeTag(tag)}
                       >
                         <X size={12} />
                       </button>
-                    </span>
+                    </Badge>
                   ))}
                 </div>
                 <div className="flex gap-2">
-                  <input
+                  <Input
                     type="text"
-                    className={`${inputClass} flex-1`}
+                    className="flex-1"
                     value={tagInput}
                     onChange={(e) => setTagInput(e.target.value)}
                     onKeyDown={handleTagKeyDown}
                     placeholder="Add a tag and press Enter"
                   />
-                  <button
-                    type="button"
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm rounded-lg border border-slate-700/60 transition-colors"
-                    onClick={addTag}
-                  >
+                  <Button type="button" variant="outline" onClick={addTag}>
                     Add
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -539,24 +560,19 @@ export default function EditTransactionModal({
         </form>
 
         {/* Footer */}
-        <div className="shrink-0 px-6 py-4 border-t border-slate-800/80 bg-slate-900/50 flex items-center justify-between gap-3">
-          <div className="text-xs text-slate-600 truncate">
+        <SheetFooter className="px-6 py-4 border-t border-border bg-card flex-row items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground truncate">
             {isCreate
               ? "New transaction"
               : `ID: ${transaction.id?.slice(0, 8)}...`}
           </div>
           <div className="flex gap-3">
-            <button
-              type="button"
-              className="px-4 py-2.5 text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-              onClick={handleClose}
-            >
+            <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
               form="edit-transaction-form"
-              className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white text-sm font-semibold rounded-lg transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={saving}
             >
               <Save size={14} />
@@ -565,10 +581,10 @@ export default function EditTransactionModal({
                 : isCreate
                   ? "Add Transaction"
                   : "Save Changes"}
-            </button>
+            </Button>
           </div>
-        </div>
-      </div>
-    </div>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

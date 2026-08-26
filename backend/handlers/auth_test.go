@@ -53,13 +53,13 @@ func TestRegister(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
-	seedArgs := make([]interface{}, 25*6)
+	seedArgs := make([]interface{}, 24*6)
 	for i := range seedArgs {
 		seedArgs[i] = pgxmock.AnyArg()
 	}
 	mock.ExpectExec("INSERT INTO categories").
 		WithArgs(seedArgs...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 25))
+		WillReturnResult(pgxmock.NewResult("INSERT", 24))
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
@@ -110,13 +110,13 @@ func TestRegisterAdminEmail(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
-	seedArgs := make([]interface{}, 25*6)
+	seedArgs := make([]interface{}, 24*6)
 	for i := range seedArgs {
 		seedArgs[i] = pgxmock.AnyArg()
 	}
 	mock.ExpectExec("INSERT INTO categories").
 		WithArgs(seedArgs...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 25))
+		WillReturnResult(pgxmock.NewResult("INSERT", 24))
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))

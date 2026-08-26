@@ -110,9 +110,24 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accountTypes.PUT("/:id", auth.RequireAdmin(), handlers.UpdateAccountType)
 		accountTypes.DELETE("/:id", auth.RequireAdmin(), handlers.DeleteAccountType)
 
-		// Categories
+		// Category groups (base groups are read-only; custom groups are user-owned)
+		api.GET("/groups", handlers.GetGroups)
+		api.POST("/groups", handlers.CreateGroup)
+		api.PUT("/groups/:id", handlers.UpdateGroup)
+		api.DELETE("/groups/:id", handlers.DeleteGroup)
+
+		// Categories (user-owned CRUD; global categories are admin-managed below)
 		api.GET("/categories", handlers.GetCategories)
 		api.POST("/categories", handlers.CreateCategory)
+		api.PUT("/categories/:id", handlers.UpdateCategory)
+		api.DELETE("/categories/:id", handlers.DeleteCategory)
+
+		// Admin: global groups and global categories shared by every user
+		admin := api.Group("/admin", auth.RequireAdmin())
+		admin.POST("/groups", handlers.CreateGlobalGroup)
+		admin.POST("/categories", handlers.CreateGlobalCategory)
+		admin.PUT("/categories/:id", handlers.UpdateGlobalCategory)
+		admin.DELETE("/categories/:id", handlers.DeleteGlobalCategory)
 
 		// Transactions
 		transactions := api.Group("/transactions")

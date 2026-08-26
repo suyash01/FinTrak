@@ -15,12 +15,12 @@ type SeedCategory struct {
 	Name  string
 	Icon  string
 	Color string
-	Type  string
+	Group string
 }
 
-// SeedDefaultCategories inserts the stock income/expense/transfer categories for
-// a user, but only when the user has none yet (so it is safe to call on every
-// registration and boot). Errors are logged and swallowed.
+// SeedDefaultCategories inserts the stock income/expense/transfer/cashback
+// categories for a user, but only when the user has none yet (so it is safe to
+// call on every registration and boot). Errors are logged and swallowed.
 func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	var count int
 	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
@@ -51,23 +51,22 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 		{"Investments", "trending-up", "#10b981", "expense"},
 		{"Salary", "wallet", "#22c55e", "income"},
 		{"Interest", "percent", "#16a34a", "income"},
-		{"Cashback", "badge-indian-rupee", "#eab308", "income"},
 		{"Refund", "undo", "#38bdf8", "income"},
 		{"Other Income", "plus-circle", "#4ade80", "income"},
+		{"Dividends", "trending-up", "#10b981", "income"},
 		{"Transfer", "arrow-left-right", "#94a3b8", "transfer"},
 		{"ATM Withdrawal", "banknote", "#78716c", "transfer"},
-		{"Uncategorized", "help-circle", "#6b7280", "expense"},
-		{"Dividends", "trending-up", "#10b981", "income"},
+		{"Cashback", "badge-indian-rupee", "#eab308", "cashback"},
 	}
 
-	query := `INSERT INTO categories (id, name, icon, color, type, user_id) VALUES `
+	query := `INSERT INTO categories (id, name, icon, color, group_id, user_id) VALUES `
 	values := []interface{}{}
 	placeholders := []string{}
 	for i, c := range categories {
 		base := i * 6
 		placeholders = append(placeholders,
 			fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d)", base+1, base+2, base+3, base+4, base+5, base+6))
-		values = append(values, uuid.New(), c.Name, c.Icon, c.Color, c.Type, userID)
+		values = append(values, uuid.New(), c.Name, c.Icon, c.Color, c.Group, userID)
 	}
 	query += strings.Join(placeholders, ", ")
 

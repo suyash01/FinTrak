@@ -6,12 +6,41 @@ import {
   Edit2,
   Users,
   ReceiptText,
-  X,
   Wallet,
   AlertCircle,
 } from "lucide-react";
 import api from "../../api/client";
 import type { Payee, Account } from "../../types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { toast } from "sonner";
 
 interface PayeeForm {
   name: string;
@@ -19,6 +48,7 @@ interface PayeeForm {
 }
 
 const EMPTY_FORM: PayeeForm = { name: "", accountId: "" };
+const NO_ACCOUNT = "none";
 
 export default function Payees() {
   const [payees, setPayees] = useState<Payee[]>([]);
@@ -74,23 +104,28 @@ export default function Payees() {
       setFormData(EMPTY_FORM);
       fetchPayees();
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (
-      !confirm(
-        "Are you sure you want to delete this payee? This will NOT delete transactions but will remove the link.",
-      )
-    )
-      return;
     try {
       await api.deletePayee(id);
+      toast.success("Payee deleted");
       fetchPayees();
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
+  };
+
+  const openModal = (payee: Payee | null) => {
+    setEditingPayee(payee);
+    setFormData(
+      payee
+        ? { name: payee.name, accountId: payee.accountId || "" }
+        : EMPTY_FORM,
+    );
+    setShowModal(true);
   };
 
   const filteredPayees = payees.filter((p) =>
@@ -102,25 +137,18 @@ export default function Payees() {
       <div className="shrink-0 px-8 pt-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
-              <Users className="text-cyan-500" />
+            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+              <Users className="text-primary" />
               Payees
             </h1>
-            <p className="text-slate-400 text-sm mt-1">
+            <p className="text-muted-foreground text-sm mt-1">
               Manage entities you pay or receive money from
             </p>
           </div>
-          <button
-            onClick={() => {
-              setEditingPayee(null);
-              setFormData(EMPTY_FORM);
-              setShowModal(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-cyan-500/20 transition-all hover:scale-105 active:scale-95"
-          >
-            <Plus size={18} />
+          <Button onClick={() => openModal(null)}>
+            <Plus />
             Add Payee
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -128,13 +156,13 @@ export default function Payees() {
         {/* Search Bar */}
         <div className="relative group max-w-2xl">
           <Search
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-500 transition-colors"
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors"
             size={18}
           />
-          <input
+          <Input
             type="text"
             placeholder="Search payees..."
-            className="w-full bg-slate-900 border border-slate-800 rounded-2xl pl-12 pr-4 py-3 text-slate-200 focus:outline-none focus:border-cyan-500 transition-all shadow-xl"
+            className="pl-12 h-11 rounded-2xl"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -143,19 +171,19 @@ export default function Payees() {
         {/* Grid */}
         {loading ? (
           <div className="flex justify-center p-20">
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-cyan-500"></div>
+            <Spinner className="size-10 text-primary" />
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filteredPayees.map((payee) => (
               <div
                 key={payee.id}
-                className="bg-slate-900 border border-slate-800 p-5 rounded-2xl hover:border-slate-700 transition-all group relative shadow-md"
+                className="bg-card border border-border p-5 rounded-2xl hover:border-primary/30 transition-all group relative shadow-md"
               >
                 <div className="flex justify-between items-start">
                   <div className="flex items-center gap-3">
                     <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${payee.accountId ? "bg-violet-500/10 text-violet-400 border-violet-500/20" : "bg-slate-950 text-cyan-500 border-slate-800"}`}
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${payee.accountId ? "bg-violet-500/10 text-violet-400 border-violet-500/20" : "bg-background text-primary border-border"}`}
                     >
                       {payee.accountId ? (
                         <Wallet size={20} />
@@ -165,139 +193,158 @@ export default function Payees() {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-bold text-slate-200">
+                        <h3 className="font-bold text-foreground">
                           {payee.name}
                         </h3>
                         {payee.accountId && (
-                          <span className="text-[9px] font-bold bg-violet-500/20 text-violet-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                          <Badge className="bg-violet-500/20 text-violet-400 hover:bg-violet-500/20">
                             Account
-                          </span>
+                          </Badge>
                         )}
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                      <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
                         ID: {payee.id.slice(0, 8)}
                       </p>
                     </div>
                   </div>
                   <div className="flex gap-1">
-                    <button
-                      onClick={() => {
-                        setEditingPayee(payee);
-                        setFormData({
-                          name: payee.name,
-                          accountId: payee.accountId || "",
-                        });
-                        setShowModal(true);
-                      }}
-                      className="p-2 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded-lg transition-all"
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => openModal(payee)}
                       title="Edit Payee"
                     >
-                      <Edit2 size={16} />
-                    </button>
+                      <Edit2 />
+                    </Button>
                     {!payee.accountId && (
-                      <button
-                        onClick={() => handleDelete(payee.id)}
-                        className="p-2 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-all"
-                        title="Delete Payee"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title="Delete Payee"
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete payee?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Are you sure you want to delete "{payee.name}"?
+                              This will NOT delete transactions but will remove
+                              the link.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={() => handleDelete(payee.id)}
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     )}
                   </div>
                 </div>
               </div>
             ))}
             {filteredPayees.length === 0 && !loading && (
-              <div className="col-span-full py-20 text-center border-2 border-dashed border-slate-800 rounded-2xl">
-                <Users size={40} className="mx-auto text-slate-700 mb-4" />
-                <p className="text-slate-500">No payees found.</p>
+              <div className="col-span-full py-20 text-center border-2 border-dashed border-border rounded-2xl">
+                <Users size={40} className="mx-auto text-muted-foreground/50 mb-4" />
+                <p className="text-muted-foreground">No payees found.</p>
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-              <h3 className="text-lg font-bold">
-                {editingPayee ? "Edit Payee" : "Add New Payee"}
-              </h3>
-              <button
-                onClick={() => setShowModal(false)}
-                className="text-slate-500 hover:text-white transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                  Payee Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  autoFocus
-                  disabled={!!editingPayee?.accountId}
-                  placeholder="e.g. Amazon, Google, etc."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium"
-                  value={formData.name}
-                  onChange={(e) =>
-                    setFormData({ ...formData, name: e.target.value })
-                  }
-                />
-                {editingPayee?.accountId && (
-                  <p className="text-[10px] text-slate-500 mt-2 flex items-center gap-1">
-                    <AlertCircle size={12} /> Account-linked payees must be
-                    renamed via the Accounts page.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                  Link to Account (Optional)
-                </label>
-                <select
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-cyan-500 transition-all font-medium"
-                  value={formData.accountId}
-                  onChange={(e) =>
-                    setFormData({ ...formData, accountId: e.target.value })
-                  }
-                >
-                  <option value="">No linked account</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} ({acc.bank || acc.accountTypeName})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-500 mt-2">
-                  Linking to an account helps identify internal transfers.
+      {/* Add/Edit Modal */}
+      <Dialog
+        open={showModal}
+        onOpenChange={(open) => {
+          setShowModal(open);
+          if (!open) {
+            setEditingPayee(null);
+            setFormData(EMPTY_FORM);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {editingPayee ? "Edit Payee" : "Add New Payee"}
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Payee Name</Label>
+              <Input
+                type="text"
+                required
+                autoFocus
+                disabled={!!editingPayee?.accountId}
+                placeholder="e.g. Amazon, Google, etc."
+                className="h-11 font-medium"
+                value={formData.name}
+                onChange={(e) =>
+                  setFormData({ ...formData, name: e.target.value })
+                }
+              />
+              {editingPayee?.accountId && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <AlertCircle size={12} /> Account-linked payees must be
+                  renamed via the Accounts page.
                 </p>
-              </div>
-              <div className="flex justify-end pt-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-400 hover:text-white transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-cyan-500 hover:bg-cyan-600 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-cyan-500/20 transition-all hover:scale-105 active:scale-95"
-                >
-                  {editingPayee ? "Save Changes" : "Create Payee"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Link to Account (Optional)</Label>
+              <Select
+                value={formData.accountId || NO_ACCOUNT}
+                onValueChange={(v) =>
+                  setFormData({
+                    ...formData,
+                    accountId: v === NO_ACCOUNT ? "" : v,
+                  })
+                }
+              >
+                <SelectTrigger className="w-full h-11">
+                  <SelectValue placeholder="No linked account" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_ACCOUNT}>No linked account</SelectItem>
+                  {accounts.map((acc) => (
+                    <SelectItem key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.bank || acc.accountTypeName})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Linking to an account helps identify internal transfers.
+              </p>
+            </div>
+            <div className="flex justify-end pt-2 gap-3">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setShowModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit">
+                {editingPayee ? "Save Changes" : "Create Payee"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

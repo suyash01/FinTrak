@@ -13,6 +13,29 @@ import api, { downloadCSV } from "../../api/client";
 import { formatDate, formatCurrency } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import type { Account, AccountType } from "../../types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 
 interface AccountForm {
   name: string;
@@ -50,17 +73,16 @@ export default function Accounts() {
       setShowNew(false);
       setNewAcc(EMPTY_NEW_ACCOUNT);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this account and all its transactions?")) return;
     try {
       await api.deleteAccount(id);
       setAccounts((prev) => prev.filter((a) => a.id !== id));
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -74,7 +96,7 @@ export default function Accounts() {
       setEditingId(null);
       setEditAcc(null);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -93,7 +115,7 @@ export default function Accounts() {
     try {
       await downloadCSV(`/accounts/${id}/export`);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -117,7 +139,7 @@ export default function Accounts() {
         }),
       );
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -132,39 +154,38 @@ export default function Accounts() {
   return (
     <>
       <div className="shrink-0 px-8 pt-6">
-        <h1 className="text-2xl font-bold mb-1">Accounts</h1>
-        <p className="text-slate-400 text-sm">
+        <h1 className="text-2xl font-bold text-foreground mb-1">Accounts</h1>
+        <p className="text-muted-foreground text-sm">
           Manage your bank accounts and credit cards
         </p>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
         <div className="flex justify-end mb-5">
-          <button
-            className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
-            onClick={() => setShowNew(true)}
-          >
-            <Plus size={16} /> Add Account
-          </button>
+          <Button size="lg" className="px-4" onClick={() => setShowNew(true)}>
+            <Plus /> Add Account
+          </Button>
         </div>
 
         {showNew && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 mb-5">
+          <div className="bg-card border border-border rounded-xl p-6 mb-5">
             <div className="flex justify-between items-center mb-4">
-              <h4 className="text-base font-semibold">New Account</h4>
-              <button
-                className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
+              <h4 className="text-base font-semibold text-foreground">
+                New Account
+              </h4>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-foreground"
                 onClick={() => setShowNew(false)}
               >
-                <X size={16} />
-              </button>
+                <X />
+              </Button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-5">
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-slate-400">
-                  Name
-                </label>
-                <input
-                  className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                <Label className="text-xs text-muted-foreground">Name</Label>
+                <Input
+                  className="h-10"
                   placeholder="e.g. HDFC Savings"
                   value={newAcc.name}
                   onChange={(e) =>
@@ -173,29 +194,29 @@ export default function Accounts() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-slate-400">
-                  Type
-                </label>
-                <select
-                  className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                <Label className="text-xs text-muted-foreground">Type</Label>
+                <Select
                   value={newAcc.accountTypeId}
-                  onChange={(e) =>
-                    setNewAcc({ ...newAcc, accountTypeId: e.target.value })
+                  onValueChange={(v) =>
+                    setNewAcc({ ...newAcc, accountTypeId: v })
                   }
                 >
-                  {accountTypes.map((at) => (
-                    <option key={at.id} value={at.id}>
-                      {at.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full h-10">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accountTypes.map((at) => (
+                      <SelectItem key={at.id} value={at.id}>
+                        {at.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-slate-400">
-                  Bank
-                </label>
-                <input
-                  className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                <Label className="text-xs text-muted-foreground">Bank</Label>
+                <Input
+                  className="h-10"
                   placeholder="e.g. HDFC"
                   value={newAcc.bank}
                   onChange={(e) =>
@@ -204,52 +225,51 @@ export default function Accounts() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-slate-400">
-                  Color
-                </label>
+                <Label className="text-xs text-muted-foreground">Color</Label>
                 <input
                   type="color"
                   value={newAcc.color}
                   onChange={(e) =>
                     setNewAcc({ ...newAcc, color: e.target.value })
                   }
-                  className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
+                  className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                 />
               </div>
             </div>
-            <button
-              className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            <Button
+              size="lg"
+              className="px-4"
               onClick={handleCreate}
               disabled={!newAcc.name}
             >
               Create
-            </button>
+            </Button>
           </div>
         )}
 
         {accounts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
-            <Building2 className="w-16 h-16 text-slate-600 mb-4 opacity-50" />
-            <h3 className="text-lg font-semibold mb-2">No Accounts Yet</h3>
-            <p className="text-slate-400 text-sm mb-6 max-w-md">
+            <Building2 className="w-16 h-16 text-muted-foreground opacity-50 mb-4" />
+            <h3 className="text-lg font-semibold text-foreground mb-2">
+              No Accounts Yet
+            </h3>
+            <p className="text-muted-foreground text-sm mb-6 max-w-md">
               Add a bank account or credit card to start importing statements
               and categorizing your transactions.
             </p>
-            <button
-              className="inline-flex items-center gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20"
-              onClick={() => setShowNew(true)}
-            >
+            <Button size="lg" className="px-4" onClick={() => setShowNew(true)}>
               Add Account
-            </button>
+            </Button>
           </div>
         ) : (
           <div
             className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 ${compactLayout ? "gap-3" : "gap-5"}`}
           >
             {accounts.map((acc) => (
-              <div
+              <Card
                 key={acc.id}
-                className={`bg-slate-900 border border-slate-800 rounded-xl ${compactLayout ? "p-3" : "p-5"} hover:border-slate-700 transition-colors flex flex-col`}
+                size={compactLayout ? "sm" : "default"}
+                className={`border-l-border hover:ring-border transition-colors ${compactLayout ? "" : "[--card-spacing:--spacing(5)]"}`}
                 style={{
                   borderLeftColor:
                     editingId === acc.id ? editAcc?.color : acc.color,
@@ -257,43 +277,48 @@ export default function Accounts() {
                 }}
               >
                 {editingId === acc.id && editAcc ? (
-                  <div className="flex flex-col h-full">
+                  <CardContent className="flex flex-col flex-1">
                     <div className="flex justify-between items-center mb-4">
-                      <h4 className="text-sm font-semibold">Edit Account</h4>
-                      <button
-                        className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
+                      <h4 className="text-sm font-semibold text-foreground">
+                        Edit Account
+                      </h4>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-foreground"
                         onClick={() => setEditingId(null)}
                       >
-                        <X size={14} />
-                      </button>
+                        <X />
+                      </Button>
                     </div>
                     <div className="flex flex-col gap-3 mb-5 flex-1">
-                      <input
-                        className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                      <Input
+                        className="h-10"
                         placeholder="Name"
                         value={editAcc.name}
                         onChange={(e) =>
                           setEditAcc({ ...editAcc, name: e.target.value })
                         }
                       />
-                      <select
-                        className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                      <Select
                         value={editAcc.accountTypeId}
-                        onChange={(e) =>
-                          setEditAcc({
-                            ...editAcc,
-                            accountTypeId: e.target.value,
-                          })
+                        onValueChange={(v) =>
+                          setEditAcc({ ...editAcc, accountTypeId: v })
                         }
                       >
-                        {accountTypes.map((at) => (
-                          <option key={at.id} value={at.id}>
-                            {at.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                        <SelectTrigger className="w-full h-10">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {accountTypes.map((at) => (
+                            <SelectItem key={at.id} value={at.id}>
+                              {at.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        className="h-10"
                         placeholder="Bank"
                         value={editAcc.bank}
                         onChange={(e) =>
@@ -306,108 +331,146 @@ export default function Accounts() {
                         onChange={(e) =>
                           setEditAcc({ ...editAcc, color: e.target.value })
                         }
-                        className="w-full h-10.5 cursor-pointer bg-slate-950 border border-slate-800 rounded-lg p-1"
+                        className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                       />
                     </div>
-                    <button
-                      className="inline-flex items-center justify-center w-full gap-2 px-4 py-2 bg-linear-to-r from-cyan-500 to-blue-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50"
+                    <Button
+                      size="lg"
+                      className="w-full"
                       onClick={handleUpdate}
                       disabled={!editAcc.name}
                     >
                       Save
-                    </button>
-                  </div>
+                    </Button>
+                  </CardContent>
                 ) : (
-                  <div className="flex justify-between items-start h-full">
-                    <div className="flex flex-col h-full flex-1">
-                      <div
-                        className={`flex items-center gap-3 ${compactLayout ? "mb-0.5" : "mb-1"}`}
-                      >
-                        {getTypeIcon(
-                          acc.accountTypeId,
-                          acc.color,
-                          compactLayout ? 18 : 20,
-                        )}
-                        <h3
-                          className={`${compactLayout ? "text-sm" : "text-base"} font-semibold text-slate-100 truncate`}
+                  <CardContent className="flex flex-1">
+                    <div className="flex justify-between items-start flex-1">
+                      <div className="flex flex-col flex-1">
+                        <div
+                          className={`flex items-center gap-3 ${compactLayout ? "mb-0.5" : "mb-1"}`}
                         >
-                          {acc.name}
-                        </h3>
-                        {acc.isDefault && (
-                          <span className="shrink-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
-                            Default
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className={`${compactLayout ? "text-[12px] mb-2" : "text-[13px] mb-4"} text-slate-400 flex items-center gap-3`}
-                      >
-                        <span>{acc.accountTypeName}</span>
-                        {acc.bank && (
-                          <>
-                            <span className="w-1 h-1 rounded-full bg-slate-700"></span>
-                            <span>{acc.bank}</span>
-                          </>
-                        )}
-                      </div>
-
-                      <div className={compactLayout ? "mb-2" : "mb-4"}>
-                        <div className="text-[11px] uppercase tracking-wider text-slate-500 font-medium mb-1">
-                          {acc.accountTypeId === "credit_card"
-                            ? "Outstanding"
-                            : "Balance"}
+                          {getTypeIcon(
+                            acc.accountTypeId,
+                            acc.color,
+                            compactLayout ? 18 : 20,
+                          )}
+                          <h3
+                            className={`${compactLayout ? "text-sm" : "text-base"} font-semibold text-foreground truncate`}
+                          >
+                            {acc.name}
+                          </h3>
+                          {acc.isDefault && (
+                            <span className="shrink-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                              Default
+                            </span>
+                          )}
                         </div>
                         <div
-                          className={`${compactLayout ? "text-xl" : "text-2xl"} font-bold text-slate-100 font-mono`}
+                          className={`${compactLayout ? "text-[12px] mb-2" : "text-[13px] mb-4"} text-muted-foreground flex items-center gap-3`}
                         >
-                          {formatCurrency(acc.balance, acc.currency)}
+                          <span>{acc.accountTypeName}</span>
+                          {acc.bank && (
+                            <>
+                              <span className="w-1 h-1 rounded-full bg-muted-foreground"></span>
+                              <span>{acc.bank}</span>
+                            </>
+                          )}
+                        </div>
+
+                        <div className={compactLayout ? "mb-2" : "mb-4"}>
+                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium mb-1">
+                            {acc.accountTypeId === "credit_card"
+                              ? "Outstanding"
+                              : "Balance"}
+                          </div>
+                          <div
+                            className={`${compactLayout ? "text-xl" : "text-2xl"} font-bold text-foreground font-mono`}
+                          >
+                            {formatCurrency(acc.balance, acc.currency)}
+                          </div>
+                        </div>
+
+                        <div className="text-xs text-muted-foreground mt-auto pt-4 border-t border-border/50">
+                          Added {formatDate(acc.createdAt)}
                         </div>
                       </div>
-
-                      <div className="text-xs text-slate-500 mt-auto pt-4 border-t border-slate-800/50">
-                        Added {formatDate(acc.createdAt)}
+                      <div className="flex gap-1 -mr-2 -mt-2">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={
+                            acc.isDefault
+                              ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                              : "text-muted-foreground hover:text-amber-400 hover:bg-accent"
+                          }
+                          onClick={() => handleSetDefault(acc)}
+                          title={
+                            acc.isDefault
+                              ? "Remove as default account"
+                              : "Set as default account"
+                          }
+                        >
+                          <Star
+                            size={16}
+                            fill={acc.isDefault ? "currentColor" : "none"}
+                          />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-primary hover:bg-accent"
+                          onClick={() => handleExport(acc.id)}
+                          title="Export CSV"
+                        >
+                          <Download size={16} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground hover:bg-accent"
+                          onClick={() => startEdit(acc)}
+                          title="Edit Account"
+                        >
+                          <Edit2 size={16} />
+                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                              title="Delete Account"
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>
+                                Delete account?
+                              </AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Are you sure you want to delete "{acc.name}"
+                                and all its transactions? This cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                variant="destructive"
+                                onClick={() => handleDelete(acc.id)}
+                              >
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     </div>
-                    <div className="flex gap-1 -mr-2 -mt-2">
-                      <button
-                        className={`p-2 rounded-lg transition-colors ${acc.isDefault ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10" : "text-slate-500 hover:text-amber-400 hover:bg-slate-800"}`}
-                        onClick={() => handleSetDefault(acc)}
-                        title={
-                          acc.isDefault
-                            ? "Remove as default account"
-                            : "Set as default account"
-                        }
-                      >
-                        <Star
-                          size={16}
-                          fill={acc.isDefault ? "currentColor" : "none"}
-                        />
-                      </button>
-                      <button
-                        className="p-2 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded-lg transition-colors"
-                        onClick={() => handleExport(acc.id)}
-                        title="Export CSV"
-                      >
-                        <Download size={16} />
-                      </button>
-                      <button
-                        className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-                        onClick={() => startEdit(acc)}
-                        title="Edit Account"
-                      >
-                        <Edit2 size={16} />
-                      </button>
-                      <button
-                        className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                        onClick={() => handleDelete(acc.id)}
-                        title="Delete Account"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
+                  </CardContent>
                 )}
-              </div>
+              </Card>
             ))}
           </div>
         )}

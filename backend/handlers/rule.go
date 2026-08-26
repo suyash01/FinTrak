@@ -146,9 +146,8 @@ func UpdateRule(c *gin.Context) {
 }
 
 // ApplyRules re-runs all of the user's rules against uncategorized transactions
-// (category_id IS NULL or the "Uncategorized" category), applying the first
-// matching rule's category and payee. Returns the number of transactions
-// updated.
+// (category_id IS NULL), applying the first matching rule's category and payee.
+// Returns the number of transactions updated.
 func ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
@@ -160,18 +159,9 @@ func ApplyRules(c *gin.Context) {
 		return
 	}
 
-	// Find the "Uncategorized" category ID
-	var uncategorizedID uuid.UUID
-	err = db.Pool.QueryRow(c, "SELECT id FROM categories WHERE name = 'Uncategorized' AND user_id = $1 LIMIT 1", userID).Scan(&uncategorizedID)
-	hasUncategorized := err == nil
-
-	// Get uncategorized transactions (NULL or "Uncategorized" category)
+	// Get uncategorized transactions (category_id IS NULL)
 	query := "SELECT id, description FROM transactions WHERE category_id IS NULL AND user_id = $1"
 	args := []interface{}{userID}
-	if hasUncategorized {
-		query += " OR (category_id = $2 AND user_id = $1)"
-		args = append(args, uncategorizedID)
-	}
 
 	txnRows, err := db.Pool.Query(c, query, args...)
 	if err != nil {

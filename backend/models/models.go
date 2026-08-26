@@ -57,15 +57,35 @@ type Payee struct {
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
-// Category is a user-scoped grouping for transactions. ParentID supports a
-// hierarchical taxonomy; Type is "income", "expense", or "transfer".
+// CategoryGroup is a top-level grouping for categories. The four base groups
+// (income, expense, transfer, cashback) are immutable and shared globally
+// (UserID nil); users can add their own custom groups (UserID set). IsBase marks
+// the built-in, non-deletable groups.
+type CategoryGroup struct {
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Icon     string     `json:"icon"`
+	Color    string     `json:"color"`
+	IsBase   bool       `json:"isBase"`
+	IsGlobal bool       `json:"isGlobal"`
+	UserID   *uuid.UUID `json:"userId,omitempty"`
+	SortOrder int       `json:"sortOrder"`
+}
+
+// Category is a user-scoped (or global) grouping for transactions. ParentID
+// supports a hierarchical taxonomy; GroupID references a CategoryGroup
+// ("income", "expense", "transfer", "cashback", or a user's custom group).
 type Category struct {
 	ID       uuid.UUID  `json:"id"`
 	Name     string     `json:"name"`
 	Icon     string     `json:"icon"`
 	Color    string     `json:"color"`
 	ParentID *uuid.UUID `json:"parentId"`
-	Type     string     `json:"type"`
+	GroupID  string     `json:"groupId"`
+	IsGlobal bool       `json:"isGlobal"`
+	// Joined
+	GroupName   string `json:"groupName,omitempty"`
+	GroupIsBase bool   `json:"groupIsBase,omitempty"`
 }
 
 // Transaction is a single debit or credit entry on an account. The joined
@@ -241,6 +261,46 @@ type UpdateAccountRequest struct {
 	IsDefault     *bool  `json:"isDefault"`
 }
 
+// CreateCategoryRequest is the body for POST /api/v1/categories.
+type CreateCategoryRequest struct {
+	Name    string     `json:"name" binding:"required"`
+	Icon    string     `json:"icon"`
+	Color   string     `json:"color"`
+	GroupID string     `json:"groupId" binding:"required"`
+	ParentID *uuid.UUID `json:"parentId"`
+}
+
+// UpdateCategoryRequest is the body for PUT /api/v1/categories/:id.
+type UpdateCategoryRequest struct {
+	Name     string     `json:"name"`
+	Icon     string     `json:"icon"`
+	Color    string     `json:"color"`
+	GroupID  string     `json:"groupId"`
+	ParentID *uuid.UUID `json:"parentId"`
+}
+
+// DeleteCategoryResult reports the side effects of deleting a category: how
+// many transactions were uncategorized and how many rules were removed.
+type DeleteCategoryResult struct {
+	ClearedTransactions int `json:"clearedTransactions"`
+	DeletedRules        int `json:"deletedRules"`
+}
+
+// CreateCategoryGroupRequest is the body for POST /api/v1/groups.
+type CreateCategoryGroupRequest struct {
+	ID    string `json:"id" binding:"required"`
+	Name  string `json:"name" binding:"required"`
+	Icon  string `json:"icon"`
+	Color string `json:"color"`
+}
+
+// UpdateCategoryGroupRequest is the body for PUT /api/v1/groups/:id.
+type UpdateCategoryGroupRequest struct {
+	Name  string `json:"name"`
+	Icon  string `json:"icon"`
+	Color string `json:"color"`
+}
+
 // CreateAccountTypeRequest is the admin-only body for POST /api/v1/account-types.
 type CreateAccountTypeRequest struct {
 	ID              string `json:"id" binding:"required"`
@@ -355,9 +415,11 @@ type CreateTransactionRequest struct {
 }
 
 // BulkCategorizeRequest reassigns one category to many transactions at once.
+// CategoryID accepts a category UUID or the "uncategorized" sentinel to clear
+// the category on every selected transaction.
 type BulkCategorizeRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
-	CategoryID     uuid.UUID   `json:"categoryId" binding:"required"`
+	CategoryID     string      `json:"categoryId" binding:"required"`
 }
 
 // BulkUpdatePayeeRequest reassigns one payee to many transactions at once.

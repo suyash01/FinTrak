@@ -10,14 +10,17 @@ import type {
   BulkBillingCycleRequest,
   BulkUpdatePayeeRequest,
   Category,
+  CategoryGroup,
   CreateAccountRequest,
   CreateAccountTypeRequest,
+  CreateCategoryGroupRequest,
   CreateCategoryRequest,
   CreateLinkRequest,
   CreatePayeeRequest,
   CreateRuleRequest,
   CreateTransactionRequest,
   DashboardSummary,
+  DeleteCategoryResult,
   ImportResult,
   ImportTransactionsRequest,
   Link,
@@ -35,6 +38,8 @@ import type {
   TransactionsResponse,
   UpdateAccountRequest,
   UpdateAccountTypeRequest,
+  UpdateCategoryGroupRequest,
+  UpdateCategoryRequest,
   UpdatePayeeRequest,
   UpdateRuleRequest,
   UpdateTransactionRequest,
@@ -288,10 +293,40 @@ const api = {
   deleteAccountType: (id: string): Promise<null> =>
     request(`/account-types/${id}`, { method: "DELETE" }),
 
-  // Categories
+  // Categories & groups
   getCategories: (): Promise<Category[]> => request("/categories"),
   createCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/categories", { method: "POST", body: JSON.stringify(data) }),
+  updateCategory: (id: string, data: UpdateCategoryRequest): Promise<Category> =>
+    request(`/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteCategory: (id: string): Promise<DeleteCategoryResult> =>
+    request(`/categories/${id}`, { method: "DELETE" }),
+  getGroups: (): Promise<CategoryGroup[]> => request("/groups"),
+  createGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
+    request("/groups", { method: "POST", body: JSON.stringify(data) }),
+  updateGroup: (
+    id: string,
+    data: UpdateCategoryGroupRequest,
+  ): Promise<CategoryGroup> =>
+    request(`/groups/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteGroup: (id: string): Promise<null> =>
+    request(`/groups/${id}`, { method: "DELETE" }),
+
+  // Admin: global groups & categories shared by every user
+  createGlobalGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
+    request("/admin/groups", { method: "POST", body: JSON.stringify(data) }),
+  createGlobalCategory: (data: CreateCategoryRequest): Promise<Category> =>
+    request("/admin/categories", { method: "POST", body: JSON.stringify(data) }),
+  updateGlobalCategory: (
+    id: string,
+    data: UpdateCategoryRequest,
+  ): Promise<Category> =>
+    request(`/admin/categories/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteGlobalCategory: (id: string): Promise<DeleteCategoryResult> =>
+    request(`/admin/categories/${id}`, { method: "DELETE" }),
 
   // Transactions
   getTransactions: (
