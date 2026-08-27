@@ -316,7 +316,8 @@ const DEFAULT_FILTERS: Record<string, string | number> = {
   page: 1,
 };
 
-const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 0]; // 0 = show all
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 500, 1000];
+const MAX_PAGE_SIZE = 1000;
 const PAGE_SIZE_LS_KEY = "txPageSize";
 
 export default function Transactions() {
@@ -347,7 +348,8 @@ export default function Transactions() {
   // Page size: remembered locally and persisted against the user's account.
   const savedPageSize = () => {
     const v = Number(localStorage.getItem(PAGE_SIZE_LS_KEY));
-    return Number.isNaN(v) ? 50 : v;
+    if (Number.isNaN(v)) return 50;
+    return Math.min(Math.max(v, 1), MAX_PAGE_SIZE);
   };
   const [pageSize, setPageSize] = useState(savedPageSize);
   const [preset, setPreset] = useState(() => {
@@ -472,12 +474,13 @@ export default function Transactions() {
       .getUserSettings()
       .then((s) => {
         if (typeof s.pageSize !== "number") return;
-        setPageSize(s.pageSize);
-        if (PAGE_SIZE_OPTIONS.includes(s.pageSize)) {
-          setPreset(String(s.pageSize));
+        const clamped = Math.min(Math.max(s.pageSize, 1), MAX_PAGE_SIZE);
+        setPageSize(clamped);
+        if (PAGE_SIZE_OPTIONS.includes(clamped)) {
+          setPreset(String(clamped));
         } else {
           setPreset("custom");
-          setCustomInput(String(s.pageSize));
+          setCustomInput(String(clamped));
         }
       })
       .catch(() => {});
@@ -485,10 +488,11 @@ export default function Transactions() {
 
   const applyPageSize = (size: number) => {
     const n = Number(size);
-    if (!Number.isFinite(n) || n < 0) return;
-    setPageSize(n);
-    localStorage.setItem(PAGE_SIZE_LS_KEY, String(n));
-    api.updateUserSettings({ pageSize: n }).catch(() => {});
+    if (!Number.isFinite(n)) return;
+    const clamped = Math.min(Math.max(n, 1), MAX_PAGE_SIZE);
+    setPageSize(clamped);
+    localStorage.setItem(PAGE_SIZE_LS_KEY, String(clamped));
+    api.updateUserSettings({ pageSize: clamped }).catch(() => {});
   };
 
   const handlePresetChange = (val: string) => {
@@ -504,7 +508,7 @@ export default function Transactions() {
 
   const commitCustom = () => {
     const n = Number(customInput);
-    if (!Number.isFinite(n) || n < 0) return;
+    if (!Number.isFinite(n) || n < 1) return;
     applyPageSize(n);
   };
 
@@ -559,6 +563,22 @@ export default function Transactions() {
   // selected transactions belong to the same account).
   const selectedAccount = accounts.find((a) => a.id === filters.accountId);
   const isCreditCardFilter = selectedAccount?.accountTypeId === "credit_card";
+
+  // True when any filter deviates from the defaults, so the header can tell a
+  // filtered count apart from the unfiltered "all accounts" total.
+  const isFiltered = useMemo(
+    () =>
+      filters.accountId !== "" ||
+      filters.categoryId !== "" ||
+      filters.groupId !== "" ||
+      filters.payeeId !== "" ||
+      filters.search !== "" ||
+      filters.type !== "" ||
+      filters.dateFrom !== "" ||
+      filters.dateTo !== "" ||
+      filters.linked !== "",
+    [filters],
+  );
 
   useEffect(() => {
     if (!isCreditCardFilter) {
@@ -784,7 +804,9 @@ export default function Transactions() {
           <div>
             <h1 className="text-2xl font-bold mb-1">Transactions</h1>
             <p className="text-muted-foreground text-sm">
-              {data.total.toLocaleString()} transactions across all accounts
+              {data.total.toLocaleString()} transaction
+              {data.total === 1 ? "" : "s"}
+              {isFiltered ? " matching your filters" : " across all accounts"}
             </p>
           </div>
           <Button
@@ -933,7 +955,7 @@ export default function Transactions() {
               <SelectContent>
                 {PAGE_SIZE_OPTIONS.map((o) => (
                   <SelectItem key={o} value={String(o)}>
-                    {o === 0 ? "Show all" : o}
+                    {o}
                   </SelectItem>
                 ))}
                 <SelectItem value="custom">Custom...</SelectItem>
@@ -942,7 +964,8 @@ export default function Transactions() {
             {preset === "custom" && (
               <Input
                 type="number"
-                min="0"
+                min="1"
+                max="1000"
                 value={customInput}
                 onChange={(e) => setCustomInput(e.target.value)}
                 onBlur={commitCustom}
