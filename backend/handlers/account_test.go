@@ -37,9 +37,10 @@ func TestGetAccounts(t *testing.T) {
 
 	// Define expected data
 	userID := testUserID()
-	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "balance"}).
-		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", true, 1, 1000.50).
-		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", false, 5, 500.00)
+	createdAt := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
+		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", true, intPtr(1), createdAt, 1000.50).
+		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", false, intPtr(5), createdAt, 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
 		WithArgs(userID, userID).
@@ -59,6 +60,7 @@ func TestGetAccounts(t *testing.T) {
 	assert.Len(t, accounts, 2)
 	assert.Equal(t, "Savings", accounts[0].Name)
 	assert.Equal(t, 1000.50, accounts[0].Balance)
+	assert.Equal(t, createdAt, accounts[0].CreatedAt)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -90,11 +92,11 @@ func TestCreateAccount(t *testing.T) {
 	// Expect Transaction
 	mock.ExpectBegin()
 
-	// Expect Insert Account
+	// Expect Insert Account (billing day omitted -> NULL).
 	mock.ExpectQuery("INSERT INTO accounts").
-		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, 1).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "is_default", "billing_day"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, 1))
+		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, (*int)(nil)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "is_default", "billing_day", "created_at"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, intPtr(1), time.Now()))
 
 	// Expect Account Type Name Fetch
 	mock.ExpectQuery("SELECT name FROM account_types").
@@ -166,8 +168,8 @@ func TestUpdateAccount(t *testing.T) {
 	// Expect Update Account
 	mock.ExpectQuery("WITH updated AS").
 		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID, (*int)(nil)).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "balance"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, 1, 0.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
 
 	// Expect Update Payee
 	mock.ExpectExec("UPDATE payees SET name = \\$1 WHERE account_id = \\$2").
@@ -198,6 +200,13 @@ func TestUpdateAccount(t *testing.T) {
 
 func testUserID() uuid.UUID {
 	return uuid.MustParse("00000000-0000-0000-0000-000000000001")
+}
+
+// intPtr returns a pointer to n. pgxmock's Scan copies values into the
+// destination when they are assignable, so pointer-typed struct fields
+// (e.g. Account.BillingDay *int) need pointer mock values.
+func intPtr(n int) *int {
+	return &n
 }
 
 func testAuthMiddleware() gin.HandlerFunc {

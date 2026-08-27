@@ -44,10 +44,11 @@ type Account struct {
 	Color           string    `json:"color"`
 	IsDefault       bool      `json:"isDefault"`
 	Balance         float64   `json:"balance"`
-	// BillingDay is the day of the month on which credit-card billing cycles
-	// end (1-31, clamped to the month length). Only meaningful for credit-card
-	// accounts; other account types never have cycles generated.
-	BillingDay int `json:"billingDay"`
+	CreatedAt       time.Time `json:"createdAt"`
+	// BillingDay is the day of the month on which billing cycles end (1-31,
+	// clamped to the month length). It is optional; when set, per-cycle summary
+	// rows are shown for the account regardless of its type.
+	BillingDay *int `json:"billingDay"`
 }
 
 // Payee is a merchant or party a transaction is associated with. Payees can be
@@ -121,10 +122,10 @@ type Transaction struct {
 	BillingCycleLabel string     `json:"billingCycleLabel,omitempty"`
 }
 
-// BillingCycle is a persisted billing period for a credit-card account. Cycles
-// are auto-generated from the account's billing day; transactions are attached
-// to them via Transaction.BillingCycleID. TotalOutstanding is the sum of the
-// debit (purchase) transactions attached to the cycle.
+// BillingCycle is a persisted billing period for an account with a billing day
+// set. Cycles are auto-generated from the account's billing day; transactions
+// are attached to them via Transaction.BillingCycleID. TotalOutstanding is the
+// sum of the debit (purchase) transactions attached to the cycle.
 type BillingCycle struct {
 	ID               uuid.UUID `json:"id"`
 	AccountID        uuid.UUID `json:"accountId"`
@@ -250,8 +251,9 @@ type CreateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     bool   `json:"isDefault"`
-	// BillingDay is the credit-card billing day (1-31). Omitted on non-credit
-	// card accounts; defaults to 1.
+	// BillingDay is the day of the month on which billing cycles end (1-31).
+	// Optional: when set, summary rows are generated for the account regardless
+	// of its type; omitted stores NULL (no cycles, no summary rows).
 	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 
@@ -265,8 +267,9 @@ type UpdateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     *bool  `json:"isDefault"`
-	// BillingDay is the credit-card billing day (1-31). Omitted keeps the
-	// current value.
+	// BillingDay is the day of the month on which billing cycles end (1-31).
+	// Optional: omitted leaves the current value untouched, an explicit value
+	// sets it, and null clears it.
 	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 

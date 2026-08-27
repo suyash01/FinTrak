@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     is_default BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    billing_day INTEGER NOT NULL DEFAULT 1,
+    billing_day INTEGER,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );
@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS payees (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );
+
+-- One account-linked payee per account (account_id is NULL for manually-created
+-- payees), backing the ON CONFLICT upsert in CreateAccount.
+CREATE UNIQUE INDEX IF NOT EXISTS payees_account_id_uq
+    ON payees (account_id) WHERE account_id IS NOT NULL;
 
 -- Transactions
 CREATE TABLE IF NOT EXISTS transactions (

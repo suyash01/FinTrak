@@ -19,8 +19,9 @@ export interface Account {
   color: string;
   isDefault: boolean;
   balance: number;
-  // Credit-card billing day (1-31). Only meaningful for credit-card accounts.
-  billingDay?: number;
+  // Optional billing day (1-31). When set, per-cycle summary rows are shown
+  // for the account regardless of its type; null means none.
+  billingDay?: number | null;
   createdAt?: string;
 }
 
@@ -255,7 +256,7 @@ export interface CreateAccountRequest {
   currency?: string;
   color?: string;
   isDefault?: boolean;
-  billingDay?: number;
+  billingDay?: number | null;
 }
 
 export interface UpdateAccountRequest {
@@ -265,7 +266,7 @@ export interface UpdateAccountRequest {
   currency?: string;
   color?: string;
   isDefault?: boolean;
-  billingDay?: number;
+  billingDay?: number | null;
 }
 
 export interface CreateAccountTypeRequest {

@@ -26,9 +26,9 @@ type cycleQueryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// GetBillingCycles lists the billing cycles for a credit-card account,
-// auto-generating any missing cycles first. Non-credit-card accounts return an
-// empty list. Each cycle carries its total outstanding (sum of attached debit
+// GetBillingCycles lists the billing cycles for an account, auto-generating
+// any missing cycles first. Accounts without a billing day return an empty
+// list. Each cycle carries its total outstanding (sum of attached debit
 // transactions) and transaction count.
 func GetBillingCycles(c *gin.Context) {
 	userID := auth.GetUserID(c)
@@ -39,12 +39,11 @@ func GetBillingCycles(c *gin.Context) {
 	}
 
 	// The account must exist and belong to the authenticated user.
-	var acctTypeID string
-	var billingDay int
+	var billingDay *int
 	err = db.Pool.QueryRow(c,
-		`SELECT a.account_type_id, a.billing_day
+		`SELECT a.billing_day
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&acctTypeID, &billingDay)
+		accountID, userID).Scan(&billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -55,12 +54,12 @@ func GetBillingCycles(c *gin.Context) {
 		return
 	}
 
-	if acctTypeID != "credit_card" {
+	if billingDay == nil {
 		c.JSON(http.StatusOK, gin.H{"data": []models.BillingCycle{}})
 		return
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, accountID, billingDay); err != nil {
+	if err := ensureBillingCycles(c, db.Pool, userID, accountID, *billingDay); err != nil {
 		log.Printf("Error in GetBillingCycles (ensure cycles): %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -76,13 +75,13 @@ func GetBillingCycles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": cycles})
 }
 
-// ensureBillingCycles creates any missing billing cycles for a credit-card
-// account (one per month, ending on the account's billing day) and then
-// back-fills the suggested default: every unassigned transaction is attached to
-// the cycle whose date range contains its transaction date. It is idempotent
-// and safe to call on every request. If existing cycles no longer end on the
-// billing day (e.g. the day was changed), they are dropped first so they can be
-// regenerated.
+// ensureBillingCycles creates any missing billing cycles for an account that
+// has a billing day set (one per month, ending on the account's billing day)
+// and then back-fills the suggested default: every unassigned transaction is
+// attached to the cycle whose date range contains its transaction date. It is
+// idempotent and safe to call on every request. If existing cycles no longer
+// end on the billing day (e.g. the day was changed), they are dropped first so
+// they can be regenerated.
 func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID, billingDay int) error {
 	// Billing days out of range fall back to the 1st of the month.
 	if billingDay <= 0 || billingDay > 31 {

@@ -559,10 +559,10 @@ export default function Transactions() {
   }, []);
 
   // Bulk billing-cycle assignment is only offered when the account filter is a
-  // single credit-card account (cycles are per-account, so this guarantees all
-  // selected transactions belong to the same account).
+  // single account with a billing day (cycles are per-account, so this
+  // guarantees all selected transactions belong to the same account).
   const selectedAccount = accounts.find((a) => a.id === filters.accountId);
-  const isCreditCardFilter = selectedAccount?.accountTypeId === "credit_card";
+  const hasBillingDayFilter = Boolean(selectedAccount?.billingDay);
 
   // True when any filter deviates from the defaults, so the header can tell a
   // filtered count apart from the unfiltered "all accounts" total.
@@ -581,7 +581,7 @@ export default function Transactions() {
   );
 
   useEffect(() => {
-    if (!isCreditCardFilter) {
+    if (!hasBillingDayFilter) {
       setBillingCycles([]);
       setLoadingCycles(false);
       return;
@@ -602,7 +602,7 @@ export default function Transactions() {
     return () => {
       cancelled = true;
     };
-  }, [filters.accountId, isCreditCardFilter]);
+  }, [filters.accountId, hasBillingDayFilter]);
 
   const updateFilter = (key: string, value: string) => {
     setFilters((f) => ({ ...f, [key]: value, page: 1 }));
@@ -1026,7 +1026,7 @@ export default function Transactions() {
                 </option>
               ))}
             </select>
-            {isCreditCardFilter && (
+            {hasBillingDayFilter && (
               <select
                 className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
                 onChange={(e) => {

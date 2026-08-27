@@ -43,15 +43,31 @@ interface AccountForm {
   bank: string;
   color: string;
   currency: string;
-  billingDay: number;
+  billingDay: number | null;
 }
 
-const EMPTY_NEW_ACCOUNT = {
+const EMPTY_NEW_ACCOUNT: AccountForm = {
   name: "",
   accountTypeId: "bank",
   bank: "",
   color: "#06b6d4",
-  billingDay: 1,
+  currency: "INR",
+  billingDay: null,
+};
+
+const ordinal = (n: number): string => {
+  const suffixes = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return suffixes[(v - 20) % 10] || suffixes[v] || suffixes[0];
+};
+
+// parseBillingDay maps a number-input value to a billing day. An empty value
+// clears the field (null = no billing day / no summary rows).
+const parseBillingDay = (v: string): number | null => {
+  if (v === "") return null;
+  const n = Number(v);
+  if (Number.isNaN(n)) return null;
+  return Math.max(1, Math.min(31, n));
 };
 
 export default function Accounts() {
@@ -110,7 +126,7 @@ export default function Accounts() {
       bank: acc.bank || "",
       color: acc.color,
       currency: acc.currency,
-      billingDay: acc.billingDay ?? 1,
+      billingDay: acc.billingDay ?? null,
     });
   };
 
@@ -132,6 +148,7 @@ export default function Accounts() {
         bank: acc.bank || "",
         currency: acc.currency,
         color: acc.color,
+        billingDay: acc.billingDay ?? null,
         isDefault: !acc.isDefault,
       });
       setAccounts((prev) =>
@@ -238,29 +255,28 @@ export default function Accounts() {
                   className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                 />
               </div>
-              {newAcc.accountTypeId === "credit_card" && (
-                <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs text-muted-foreground">
-                    Billing Day
-                  </Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={31}
-                    className="h-10"
-                    value={newAcc.billingDay}
-                    onChange={(e) =>
-                      setNewAcc({
-                        ...newAcc,
-                        billingDay: Math.max(
-                          1,
-                          Math.min(31, Number(e.target.value) || 1),
-                        ),
-                      })
-                    }
-                  />
-                </div>
-              )}
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Billing Day
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={31}
+                  placeholder="None"
+                  className="h-10"
+                  value={newAcc.billingDay ?? ""}
+                  onChange={(e) =>
+                    setNewAcc({
+                      ...newAcc,
+                      billingDay: parseBillingDay(e.target.value),
+                    })
+                  }
+                />
+                <span className="text-[11px] text-muted-foreground">
+                  Optional. Set to show monthly summary rows for this account.
+                </span>
+              </div>
             </div>
             <Button
               size="lg"
@@ -359,29 +375,29 @@ export default function Accounts() {
                         }
                         className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                       />
-                      {editAcc.accountTypeId === "credit_card" && (
-                        <div className="flex flex-col gap-1.5">
-                          <Label className="text-xs text-muted-foreground">
-                            Billing Day
-                          </Label>
-                          <Input
-                            type="number"
-                            min={1}
-                            max={31}
-                            className="h-10"
-                            value={editAcc.billingDay}
-                            onChange={(e) =>
-                              setEditAcc({
-                                ...editAcc,
-                                billingDay: Math.max(
-                                  1,
-                                  Math.min(31, Number(e.target.value) || 1),
-                                ),
-                              })
-                            }
-                          />
-                        </div>
-                      )}
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs text-muted-foreground">
+                          Billing Day
+                        </Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={31}
+                          placeholder="None"
+                          className="h-10"
+                          value={editAcc.billingDay ?? ""}
+                          onChange={(e) =>
+                            setEditAcc({
+                              ...editAcc,
+                              billingDay: parseBillingDay(e.target.value),
+                            })
+                          }
+                        />
+                        <span className="text-[11px] text-muted-foreground">
+                          Optional. Set to show monthly summary rows for this
+                          account. Leave empty to disable.
+                        </span>
+                      </div>
                     </div>
                     <Button
                       size="lg"
@@ -425,6 +441,15 @@ export default function Accounts() {
                               <span>{acc.bank}</span>
                             </>
                           )}
+                          {acc.billingDay ? (
+                            <>
+                              <span className="w-1 h-1 rounded-full bg-muted-foreground"></span>
+                              <span>
+                                Billing day: {acc.billingDay}
+                                {ordinal(acc.billingDay)}
+                              </span>
+                            </>
+                          ) : null}
                         </div>
 
                         <div className={compactLayout ? "mb-2" : "mb-4"}>

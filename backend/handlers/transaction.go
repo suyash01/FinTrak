@@ -231,8 +231,9 @@ func GetTransactions(c *gin.Context) {
 	}
 
 	// When a single account is filtered, inject computed summary rows: the
-	// per-cycle total outstanding for credit cards. These are synthetic and are
-	// never persisted. Other account types show their raw transactions only.
+	// per-cycle total outstanding for accounts that have a billing day set.
+	// These are synthetic and are never persisted. Accounts without a billing
+	// day show their raw transactions only.
 	if accountID != "" {
 		summaryTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
@@ -288,15 +289,14 @@ func CreateTransaction(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
-	// The account must exist and belong to the authenticated user. Also fetch
-	// its type and billing day so credit-card transactions can be attached to a
-	// billing cycle.
+	// The account must exist and belong to the authenticated user. Also fetch its
+	// billing day so transactions can be attached to a billing cycle (cycles
+	// only exist for accounts with a billing day set).
 	var ownerID uuid.UUID
-	var acctTypeID string
-	var billingDay int
+	var billingDay *int
 	err = tx.QueryRow(c,
-		"SELECT user_id, account_type_id, billing_day FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &acctTypeID, &billingDay)
+		"SELECT user_id, billing_day FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -327,9 +327,9 @@ func CreateTransaction(c *gin.Context) {
 		}
 	}
 
-	// The explicitly chosen billing cycle (credit cards) must belong to this
-	// user, otherwise the assignment below would silently no-op.
-	if acctTypeID == "credit_card" && req.BillingCycleID != nil {
+	// The explicitly chosen billing cycle must belong to this user, otherwise
+	// the assignment below would silently no-op.
+	if billingDay != nil && req.BillingCycleID != nil {
 		var owned bool
 		err := tx.QueryRow(c,
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
@@ -366,11 +366,12 @@ func CreateTransaction(c *gin.Context) {
 		return
 	}
 
-	// Credit-card transactions are attached to a billing cycle: by default the
-	// cycle matching the transaction date (the suggested default), or the
-	// explicitly chosen cycle when the client supplied one.
-	if acctTypeID == "credit_card" {
-		if err := ensureBillingCycles(c, tx, userID, req.AccountID, billingDay); err != nil {
+	// Transactions on accounts with a billing day are attached to a billing
+	// cycle: by default the cycle matching the transaction date (the suggested
+	// default), or the explicitly chosen cycle when the client supplied one.
+	// Cycles are only generated for accounts that have a billing day set.
+	if billingDay != nil {
+		if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
 			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
@@ -706,14 +707,13 @@ func ImportTransactions(c *gin.Context) {
 		}
 	}
 
-	// The account must exist and belong to the authenticated user. Also fetch
-	// its type so credit-card imports can be attached to a billing cycle.
+	// The account must exist and belong to the authenticated user. Also fetch its
+	// billing day so imports can be attached to a billing cycle.
 	var ownerID uuid.UUID
-	var acctTypeID string
-	var billingDay int
+	var billingDay *int
 	err := db.Pool.QueryRow(c,
-		"SELECT user_id, account_type_id, billing_day FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &acctTypeID, &billingDay)
+		"SELECT user_id, billing_day FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -864,13 +864,13 @@ func ImportTransactions(c *gin.Context) {
 		}
 		br.Close()
 
-		// Credit-card imports: attach the new transactions to their billing
-		// cycles. When the client chose an explicit cycle, every imported
-		// transaction is attached to it (overriding the date-based default);
-		// otherwise the suggested default (by transaction date) applies. Runs
-		// inside the transaction so the assignment commits atomically with the
-		// import.
-		if acctTypeID == "credit_card" {
+		// Imports on accounts with a billing day: attach the new transactions
+		// to their billing cycles. When the client chose an explicit cycle,
+		// every imported transaction is attached to it (overriding the
+		// date-based default); otherwise the suggested default (by transaction
+		// date) applies. Runs inside the transaction so the assignment commits
+		// atomically with the import.
+		if billingDay != nil {
 			if req.BillingCycleID != nil {
 				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
 					log.Printf("Error in ImportTransactions (set billing cycle): %v\n", err)
@@ -878,10 +878,14 @@ func ImportTransactions(c *gin.Context) {
 					return
 				}
 			}
-			if err := ensureBillingCycles(c, tx, userID, req.AccountID, billingDay); err != nil {
-				log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
-				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-				return
+			// Cycles are only generated for accounts that have a billing day
+			// set; the date-based default can't apply to accounts without one.
+			if billingDay != nil {
+				if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
+					log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
+					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 
@@ -1068,39 +1072,35 @@ func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UU
 // so React keys stay stable across requests.
 var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 
-// buildAccountSummaryRows looks up the filtered account's type and returns the
-// synthetic summary rows to display. Only credit-card accounts get summary rows
-// (per billing cycle); all other account types (bank, loan, etc.) show their
-// raw transactions only.
+// buildAccountSummaryRows looks up the filtered account and returns the
+// synthetic summary rows to display. Accounts with a billing day set get
+// per-cycle summary rows (regardless of account type); accounts without one
+// show their raw transactions only.
 func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) []models.Transaction {
-	var acctName, acctTypeID string
-	var billingDay int
+	var acctName string
+	var billingDay *int
 	err := db.Pool.QueryRow(c,
-		`SELECT a.name, a.account_type_id, a.billing_day
+		`SELECT a.name, a.billing_day
 		 FROM accounts a
 		 WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&acctName, &acctTypeID, &billingDay)
-	if err != nil {
+		accountID, userID).Scan(&acctName, &billingDay)
+	if err != nil || billingDay == nil {
 		return nil
 	}
 
-	if acctTypeID != "credit_card" {
-		return nil
-	}
-
-	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), billingDay); err != nil {
+	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), *billingDay); err != nil {
 		log.Printf("Error in buildAccountSummaryRows (ensure billing cycles): %v\n", err)
 		return nil
 	}
 	return computeCreditCardSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
 }
 
-// computeCreditCardSummaryRows builds the synthetic "Total outstanding" rows for
-// a credit-card account from its explicit billing cycles. Each cycle that has
-// attached transactions gets a row at its end date (the sum of its attached
-// debit purchases), and the in-progress cycle containing the end of the range
-// gets a row at the range end. Cycles are expected to already exist (callers
-// run ensureBillingCycles first).
+// computeCreditCardSummaryRows builds the synthetic "Total outstanding" rows
+// for an account (any type with a billing day set) from its explicit billing
+// cycles. Each cycle that has attached transactions gets a row at its end date
+// (the sum of its attached debit purchases), and the in-progress cycle
+// containing the end of the range gets a row at the range end. Cycles are
+// expected to already exist (callers run ensureBillingCycles first).
 func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {

@@ -435,7 +435,7 @@ export default function Import() {
   const [existingRefresh, setExistingRefresh] = useState(0);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
 
-  // Billing cycle selection (credit-card accounts only): when chosen, every
+  // Billing cycle selection (accounts with a billing day): when chosen, every
   // imported transaction is attached to that cycle instead of the date-based
   // default.
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
@@ -471,15 +471,15 @@ export default function Import() {
       .catch(console.error);
   }, [selectedAccount, existingRefresh]);
 
-  // Load the billing cycles for the selected account when it is a credit card,
+  // Load the billing cycles for the selected account when it has a billing day,
   // so the user can attach all imported transactions to one cycle. Reset the
   // selection whenever the account changes.
-  const selectedAccountType = accounts.find(
+  const selectedAccountHasBillingDay = accounts.find(
     (a) => a.id === selectedAccount,
-  )?.accountTypeId;
+  )?.billingDay;
   useEffect(() => {
     setImportBillingCycleId("");
-    if (selectedAccountType !== "credit_card") {
+    if (!selectedAccountHasBillingDay) {
       setBillingCycles([]);
       return;
     }
@@ -487,7 +487,7 @@ export default function Import() {
       .getBillingCycles(selectedAccount)
       .then((res) => setBillingCycles(res.data || []))
       .catch(() => setBillingCycles([]));
-  }, [selectedAccount, selectedAccountType]);
+  }, [selectedAccount, selectedAccountHasBillingDay]);
 
   // ---- Step 1: Select Account ----
   const handleCreateAccount = async () => {
@@ -661,9 +661,9 @@ export default function Import() {
         transactions: parsedTransactions,
         duplicateAction: action,
       };
-      // Credit-card imports can attach every transaction to a chosen billing
-      // cycle (null falls back to the date-based default).
-      if (selectedAccountType === "credit_card") {
+      // Accounts with a billing day can attach every transaction to a chosen
+      // billing cycle (null falls back to the date-based default).
+      if (selectedAccountHasBillingDay) {
         payload.billingCycleId = importBillingCycleId || null;
       }
       const result = await api.importTransactions(payload);
@@ -1275,7 +1275,7 @@ export default function Import() {
               )}
             </div>
 
-            {selectedAccountType === "credit_card" && (
+            {selectedAccountHasBillingDay && (
               <div className="mb-5 p-4 bg-background border border-border rounded-lg">
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">

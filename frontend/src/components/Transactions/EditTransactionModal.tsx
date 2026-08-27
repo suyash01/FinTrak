@@ -137,17 +137,18 @@ export default function EditTransactionModal({
     }
   }, [transaction, isCreate, accounts]);
 
-  // Load billing cycles for the selected account (credit cards only). The
-  // cycle is cleared when the account actually changes, but preserved on the
-  // initial load so an existing attachment survives opening the modal.
+  // Load billing cycles for the selected account (accounts with a billing
+  // day). The cycle is cleared when the account actually changes, but
+  // preserved on the initial load so an existing attachment survives opening
+  // the modal.
   useEffect(() => {
     const acct = accounts.find((a) => a.id === form.accountId);
-    const isCreditCard = acct?.accountTypeId === "credit_card";
+    const hasBillingDay = acct?.billingDay;
 
-    if (!isCreditCard) {
+    if (!hasBillingDay) {
       setBillingCycles([]);
       setLoadingCycles(false);
-      // Clear any cycle picked for a previous (credit-card) account.
+      // Clear any cycle picked for a previous (billing-day) account.
       if (prevAccountRef.current && prevAccountRef.current !== form.accountId) {
         setForm((f) => ({ ...f, billingCycleId: "" }));
       }
@@ -197,9 +198,9 @@ export default function EditTransactionModal({
         accountId: form.accountId,
       };
 
-      // Only credit-card transactions carry a billing cycle; for other account
-      // types omit the field so an edit never clears an existing attachment.
-      if (selectedAccount?.accountTypeId === "credit_card") {
+      // Only accounts with a billing day carry a billing cycle; for other
+      // accounts omit the field so an edit never clears an existing attachment.
+      if (selectedAccount?.billingDay) {
         payload.billingCycleId = form.billingCycleId || null;
       }
 
@@ -393,8 +394,8 @@ export default function EditTransactionModal({
                 </div>
               </div>
 
-              {/* Billing Cycle (credit cards only) */}
-              {selectedAccount?.accountTypeId === "credit_card" && (
+              {/* Billing Cycle (accounts with a billing day) */}
+              {selectedAccount?.billingDay && (
                 <div>
                   <Label className={labelClass}>
                     <Calendar size={10} className="inline mr-1" />

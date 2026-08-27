@@ -221,10 +221,10 @@ func TestGetBillingCycles(t *testing.T) {
 	acctID := uuid.New()
 	cycleID := uuid.New()
 
-	// Account lookup (credit card).
-	mock.ExpectQuery("SELECT a.account_type_id, a.billing_day").
+	// Account lookup (credit card with a billing day).
+	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"account_type_id", "billing_day"}).AddRow("credit_card", 5))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -268,7 +268,7 @@ func TestGetBillingCycles(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestGetBillingCyclesNonCreditCard(t *testing.T) {
+func TestGetBillingCyclesNoBillingDay(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -287,10 +287,10 @@ func TestGetBillingCyclesNonCreditCard(t *testing.T) {
 	userID := testUserID()
 	acctID := uuid.New()
 
-	// Account lookup (bank account -> empty list, no cycle logic).
-	mock.ExpectQuery("SELECT a.account_type_id, a.billing_day").
+	// Account lookup (no billing day -> empty list, no cycle logic).
+	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"account_type_id", "billing_day"}).AddRow("bank", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(nil))
 
 	req, _ := http.NewRequest("GET", "/accounts/"+acctID.String()+"/billing-cycles", nil)
 	w := httptest.NewRecorder()
@@ -320,7 +320,7 @@ func TestGetBillingCyclesAccountNotFound(t *testing.T) {
 	userID := testUserID()
 	acctID := uuid.New()
 
-	mock.ExpectQuery("SELECT a.account_type_id, a.billing_day").
+	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
 		WillReturnError(pgx.ErrNoRows)
 
