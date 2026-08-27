@@ -263,7 +263,7 @@ paths:
       tags:
         - Accounts
       summary: Get billing cycles for a credit card account
-      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals
+      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals. Cycles are auto-generated one per month, ending on the account's billingDay. Non-credit-card accounts return an empty list.
       operationId: getBillingCycles
       security:
         - BearerAuth: []
@@ -1740,6 +1740,12 @@ components:
           default: "#06b6d4"
         isDefault:
           type: boolean
+        billingDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          default: 1
+          description: Credit-card billing day on which each billing cycle ends; only meaningful for credit-card accounts (defaults to 1)
 
     UpdateAccountRequest:
       type: object
@@ -1756,6 +1762,11 @@ components:
           type: string
         isDefault:
           type: boolean
+        billingDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Credit-card billing day on which each billing cycle ends; omitted keeps the current value
 
     CreateAccountTypeRequest:
       type: object
@@ -2140,6 +2151,11 @@ components:
         balance:
           type: number
           format: double
+        billingDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Credit-card billing day on which each billing cycle ends (default 1)
 
     AccountType:
       type: object

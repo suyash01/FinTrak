@@ -44,6 +44,10 @@ type Account struct {
 	Color           string    `json:"color"`
 	IsDefault       bool      `json:"isDefault"`
 	Balance         float64   `json:"balance"`
+	// BillingDay is the day of the month on which credit-card billing cycles
+	// end (1-31, clamped to the month length). Only meaningful for credit-card
+	// accounts; other account types never have cycles generated.
+	BillingDay int `json:"billingDay"`
 }
 
 // Payee is a merchant or party a transaction is associated with. Payees can be
@@ -246,6 +250,9 @@ type CreateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     bool   `json:"isDefault"`
+	// BillingDay is the credit-card billing day (1-31). Omitted on non-credit
+	// card accounts; defaults to 1.
+	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 
 // UpdateAccountRequest uses a *bool for IsDefault so that an absent key leaves
@@ -258,6 +265,9 @@ type UpdateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     *bool  `json:"isDefault"`
+	// BillingDay is the credit-card billing day (1-31). Omitted keeps the
+	// current value.
+	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 
 // CreateCategoryRequest is the body for POST /api/v1/categories.

@@ -43,6 +43,7 @@ interface AccountForm {
   bank: string;
   color: string;
   currency: string;
+  billingDay: number;
 }
 
 const EMPTY_NEW_ACCOUNT = {
@@ -50,6 +51,7 @@ const EMPTY_NEW_ACCOUNT = {
   accountTypeId: "bank",
   bank: "",
   color: "#06b6d4",
+  billingDay: 1,
 };
 
 export default function Accounts() {
@@ -108,6 +110,7 @@ export default function Accounts() {
       bank: acc.bank || "",
       color: acc.color,
       currency: acc.currency,
+      billingDay: acc.billingDay ?? 1,
     });
   };
 
@@ -235,6 +238,29 @@ export default function Accounts() {
                   className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                 />
               </div>
+              {newAcc.accountTypeId === "credit_card" && (
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-xs text-muted-foreground">
+                    Billing Day
+                  </Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={31}
+                    className="h-10"
+                    value={newAcc.billingDay}
+                    onChange={(e) =>
+                      setNewAcc({
+                        ...newAcc,
+                        billingDay: Math.max(
+                          1,
+                          Math.min(31, Number(e.target.value) || 1),
+                        ),
+                      })
+                    }
+                  />
+                </div>
+              )}
             </div>
             <Button
               size="lg"
@@ -333,6 +359,29 @@ export default function Accounts() {
                         }
                         className="w-full h-10.5 cursor-pointer bg-background border border-border rounded-lg p-1"
                       />
+                      {editAcc.accountTypeId === "credit_card" && (
+                        <div className="flex flex-col gap-1.5">
+                          <Label className="text-xs text-muted-foreground">
+                            Billing Day
+                          </Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={31}
+                            className="h-10"
+                            value={editAcc.billingDay}
+                            onChange={(e) =>
+                              setEditAcc({
+                                ...editAcc,
+                                billingDay: Math.max(
+                                  1,
+                                  Math.min(31, Number(e.target.value) || 1),
+                                ),
+                              })
+                            }
+                          />
+                        </div>
+                      )}
                     </div>
                     <Button
                       size="lg"

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     is_default BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
+    billing_day INTEGER NOT NULL DEFAULT 1,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );

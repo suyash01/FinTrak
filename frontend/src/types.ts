@@ -19,6 +19,8 @@ export interface Account {
   color: string;
   isDefault: boolean;
   balance: number;
+  // Credit-card billing day (1-31). Only meaningful for credit-card accounts.
+  billingDay?: number;
   createdAt?: string;
 }
 
@@ -253,6 +255,7 @@ export interface CreateAccountRequest {
   currency?: string;
   color?: string;
   isDefault?: boolean;
+  billingDay?: number;
 }
 
 export interface UpdateAccountRequest {
@@ -262,6 +265,7 @@ export interface UpdateAccountRequest {
   currency?: string;
   color?: string;
   isDefault?: boolean;
+  billingDay?: number;
 }
 
 export interface CreateAccountTypeRequest {

@@ -40,10 +40,11 @@ func GetBillingCycles(c *gin.Context) {
 
 	// The account must exist and belong to the authenticated user.
 	var acctTypeID string
+	var billingDay int
 	err = db.Pool.QueryRow(c,
-		`SELECT a.account_type_id
+		`SELECT a.account_type_id, a.billing_day
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&acctTypeID)
+		accountID, userID).Scan(&acctTypeID, &billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -59,7 +60,7 @@ func GetBillingCycles(c *gin.Context) {
 		return
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, accountID); err != nil {
+	if err := ensureBillingCycles(c, db.Pool, userID, accountID, billingDay); err != nil {
 		log.Printf("Error in GetBillingCycles (ensure cycles): %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -76,14 +77,23 @@ func GetBillingCycles(c *gin.Context) {
 }
 
 // ensureBillingCycles creates any missing billing cycles for a credit-card
-// account (one per month, ending on the 1st) and then back-fills the suggested
-// default: every unassigned transaction is attached to the cycle whose date
-// range contains its transaction date. It is idempotent and safe to call on
-// every request.
-func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID) error {
-	// Cycles always end on the 1st of each month (the billing day is no longer
-	// configurable per account).
-	billingDay := 1
+// account (one per month, ending on the account's billing day) and then
+// back-fills the suggested default: every unassigned transaction is attached to
+// the cycle whose date range contains its transaction date. It is idempotent
+// and safe to call on every request. If existing cycles no longer end on the
+// billing day (e.g. the day was changed), they are dropped first so they can be
+// regenerated.
+func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID, billingDay int) error {
+	// Billing days out of range fall back to the 1st of the month.
+	if billingDay <= 0 || billingDay > 31 {
+		billingDay = 1
+	}
+
+	// If the billing day changed, drop the stale cycles so they can be
+	// regenerated on the new day.
+	if err := dropMisalignedCycles(ctx, q, userID, accountID, billingDay); err != nil {
+		return err
+	}
 
 	// Earliest transaction date for the account (fall back to today).
 	var earliest time.Time
@@ -130,6 +140,51 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 		 WHERE t.account_id = $1 AND t.user_id = $2
 		   AND t.billing_cycle_id IS NULL
 		   AND t.date >= bc.start_date AND t.date <= bc.end_date`,
+		accountID, userID)
+	return err
+}
+
+// dropMisalignedCycles deletes any billing cycles whose end date no longer
+// matches the account's billing day (e.g. the day was changed), detaching their
+// transactions first so ensureBillingCycles can regenerate the cycles on the
+// new day. It is a no-op when all existing cycles are aligned.
+func dropMisalignedCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID, billingDay int) error {
+	rows, err := q.Query(ctx,
+		`SELECT end_date FROM billing_cycles WHERE account_id = $1 AND user_id = $2`,
+		accountID, userID)
+	if err != nil {
+		return err
+	}
+	misaligned := false
+	for rows.Next() {
+		var end time.Time
+		if err := rows.Scan(&end); err != nil {
+			rows.Close()
+			return err
+		}
+		if !dateOnly(end).Equal(billingDateInMonth(dateOnly(end), billingDay)) {
+			misaligned = true
+			break
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !misaligned {
+		return nil
+	}
+
+	// Detach the transactions so the date-based default can re-attach them to
+	// the regenerated cycles, then drop the stale cycles.
+	if _, err := q.Exec(ctx,
+		`UPDATE transactions SET billing_cycle_id = NULL
+		 WHERE user_id = $1 AND billing_cycle_id IN (SELECT id FROM billing_cycles WHERE account_id = $2 AND user_id = $1)`,
+		userID, accountID); err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx,
+		`DELETE FROM billing_cycles WHERE account_id = $1 AND user_id = $2`,
 		accountID, userID)
 	return err
 }

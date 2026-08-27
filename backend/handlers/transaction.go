@@ -289,12 +289,14 @@ func CreateTransaction(c *gin.Context) {
 	defer tx.Rollback(c)
 
 	// The account must exist and belong to the authenticated user. Also fetch
-	// its type so credit-card transactions can be attached to a billing cycle.
+	// its type and billing day so credit-card transactions can be attached to a
+	// billing cycle.
 	var ownerID uuid.UUID
 	var acctTypeID string
+	var billingDay int
 	err = tx.QueryRow(c,
-		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &acctTypeID)
+		"SELECT user_id, account_type_id, billing_day FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &acctTypeID, &billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -368,7 +370,7 @@ func CreateTransaction(c *gin.Context) {
 	// cycle matching the transaction date (the suggested default), or the
 	// explicitly chosen cycle when the client supplied one.
 	if acctTypeID == "credit_card" {
-		if err := ensureBillingCycles(c, tx, userID, req.AccountID); err != nil {
+		if err := ensureBillingCycles(c, tx, userID, req.AccountID, billingDay); err != nil {
 			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
@@ -708,9 +710,10 @@ func ImportTransactions(c *gin.Context) {
 	// its type so credit-card imports can be attached to a billing cycle.
 	var ownerID uuid.UUID
 	var acctTypeID string
+	var billingDay int
 	err := db.Pool.QueryRow(c,
-		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &acctTypeID)
+		"SELECT user_id, account_type_id, billing_day FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &acctTypeID, &billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -875,7 +878,7 @@ func ImportTransactions(c *gin.Context) {
 					return
 				}
 			}
-			if err := ensureBillingCycles(c, tx, userID, req.AccountID); err != nil {
+			if err := ensureBillingCycles(c, tx, userID, req.AccountID, billingDay); err != nil {
 				log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
@@ -1071,11 +1074,12 @@ var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 // raw transactions only.
 func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) []models.Transaction {
 	var acctName, acctTypeID string
+	var billingDay int
 	err := db.Pool.QueryRow(c,
-		`SELECT a.name, a.account_type_id
+		`SELECT a.name, a.account_type_id, a.billing_day
 		 FROM accounts a
 		 WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&acctName, &acctTypeID)
+		accountID, userID).Scan(&acctName, &acctTypeID, &billingDay)
 	if err != nil {
 		return nil
 	}
@@ -1084,7 +1088,7 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 		return nil
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID)); err != nil {
+	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), billingDay); err != nil {
 		log.Printf("Error in buildAccountSummaryRows (ensure billing cycles): %v\n", err)
 		return nil
 	}
