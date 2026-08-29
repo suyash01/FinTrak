@@ -46,9 +46,7 @@ export default function Sidebar() {
   useEffect(() => {
     api
       .getPaperlessSettings()
-      .then((s) =>
-        setPaperlessEnabled(Boolean(s.paperlessUrl && s.hasToken)),
-      )
+      .then((s) => setPaperlessEnabled(Boolean(s.paperlessUrl && s.hasToken)))
       .catch(() => setPaperlessEnabled(false));
   }, [location.pathname]);
 
@@ -143,7 +141,11 @@ export default function Sidebar() {
         </NavLink>
 
         <div className={sectionClass}>Organize</div>
-        <NavLink to="/categories" className={navLinkClass} title="Categories & Rules">
+        <NavLink
+          to="/categories"
+          className={navLinkClass}
+          title="Categories & Rules"
+        >
           <Tags className="w-4.5 h-4.5 shrink-0" />
           {!collapsed && <span>Categories & Rules</span>}
         </NavLink>
@@ -167,26 +169,18 @@ export default function Sidebar() {
         </NavLink>
       </nav>
       <div
-        className={`p-4 border-t border-sidebar-border space-y-3 ${
+        className={`p-4 space-y-3 ${
           collapsed ? "flex flex-col items-center" : ""
         }`}
       >
-        {!collapsed && (
-          <div className="text-xs text-muted-foreground truncate">
-            {user?.email}
-          </div>
-        )}
         <div
           className={`flex items-center ${
-            collapsed ? "flex-col gap-3" : "justify-between"
+            collapsed ? "" : "justify-between gap-2"
           }`}
         >
           {!collapsed && (
-            <div className="flex items-center gap-2">
-              <Sparkles size={14} className="text-primary" />
-              <span className="text-xs text-muted-foreground">
-                FinTrak v{packageJson.version}
-              </span>
+            <div className="text-xs text-muted-foreground truncate min-w-0">
+              {user?.email}
             </div>
           )}
           <Button
@@ -194,11 +188,19 @@ export default function Sidebar() {
             size="icon-sm"
             onClick={handleLogout}
             title="Log out"
-            className="text-muted-foreground hover:text-destructive"
+            className="text-muted-foreground hover:text-destructive shrink-0"
           >
             <LogOut />
           </Button>
         </div>
+        {!collapsed && (
+          <div className="border-t border-sidebar-border pt-3 flex items-center gap-2">
+            <Sparkles size={14} className="text-primary" />
+            <span className="text-xs text-muted-foreground">
+              FinTrak v{packageJson.version}
+            </span>
+          </div>
+        )}
       </div>
     </aside>
   );

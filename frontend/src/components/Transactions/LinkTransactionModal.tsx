@@ -118,12 +118,13 @@ export default function LinkTransactionModal({
     dTo: string = dateTo,
     mAmount: boolean = matchAmount,
     exclAccount: boolean = excludeSameAccount,
+    acctId: string = accountId,
   ) => {
     setLoading(true);
     try {
       const params: QueryParams = {
         search,
-        accountId,
+        accountId: acctId,
         dateFrom: dFrom,
         dateTo: dTo,
         limit: 20,
@@ -595,7 +596,17 @@ const typeClass =
                   </div>
                   <Select
                     value={accountId || "all"}
-                    onValueChange={(v) => setAccountId(v === "all" ? "" : v)}
+                    onValueChange={(v) => {
+                      const acctId = v === "all" ? "" : v;
+                      setAccountId(acctId);
+                      handleSearch(
+                        dateFrom,
+                        dateTo,
+                        matchAmount,
+                        excludeSameAccount,
+                        acctId,
+                      );
+                    }}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="All Accounts" />
