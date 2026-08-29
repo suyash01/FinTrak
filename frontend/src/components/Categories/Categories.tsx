@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Plus, Trash2, Play, Edit2, Globe, Lock } from "lucide-react";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
@@ -93,12 +94,21 @@ const NO_GROUP = "none";
 const NO_PAYEE = "none";
 const NO_CATEGORY = "none";
 
+type CategoryTab = "groups" | "categories" | "rules";
+
+const TAB_PARAM = "tab";
+
 export default function Categories() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [groups, setGroups] = useState<CategoryGroup[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [payees, setPayees] = useState<Payee[]>([]);
-  const [tab, setTab] = useState<"groups" | "categories" | "rules">("groups");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const syncedUrlRef = useRef(searchParams.toString());
+  const [tab, setTab] = useState<CategoryTab>(() => {
+    const t = searchParams.get(TAB_PARAM);
+    return t === "categories" || t === "rules" ? t : "groups";
+  });
   const [showNewCategory, setShowNewCategory] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [globalCategoryMode, setGlobalCategoryMode] = useState(false);
@@ -129,6 +139,28 @@ export default function Categories() {
     api.getPayees().then(setPayees).catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the active tab in sync with the URL so it is shareable and
+  // deep-linkable (e.g. ?tab=rules). The default "groups" tab stays implicit.
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (tab !== "groups") params[TAB_PARAM] = tab;
+    const desiredQs = new URLSearchParams(params).toString();
+    if (desiredQs === syncedUrlRef.current) return;
+    syncedUrlRef.current = desiredQs;
+    setSearchParams(params, { replace: true });
+  }, [tab]);
+
+  useEffect(() => {
+    const currentQs = searchParams.toString();
+    if (currentQs === syncedUrlRef.current) return;
+    const t = searchParams.get(TAB_PARAM);
+    const next: CategoryTab =
+      t === "categories" || t === "rules" ? t : "groups";
+    if (next !== tab) setTab(next);
+    syncedUrlRef.current = currentQs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   useEffect(() => {
     return () => {

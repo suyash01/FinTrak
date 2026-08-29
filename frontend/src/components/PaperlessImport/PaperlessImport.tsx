@@ -6,6 +6,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   RefreshCw,
   Loader2,
@@ -214,6 +215,42 @@ interface ImportPreview {
   documentIds: number[];
 }
 
+// Inc/exclude filter maps (correspondents, document types, tags) are serialized
+// to the URL as repeated params so the page state is shareable and deep-linkable.
+const SEARCH_PARAM = "search";
+const MAP_PARAMS = {
+  correspondent: { inc: "correspondentInc", exc: "correspondentExc" },
+  documentType: { inc: "documentTypeInc", exc: "documentTypeExc" },
+  tag: { inc: "tagInc", exc: "tagExc" },
+} as const;
+
+function mapFromParams(
+  params: URLSearchParams,
+  incKey: string,
+  excKey: string,
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  params.getAll(incKey).forEach((v) => {
+    if (v) map[v] = "inc";
+  });
+  params.getAll(excKey).forEach((v) => {
+    if (v) map[v] = "exc";
+  });
+  return map;
+}
+
+function appendMapParams(
+  params: URLSearchParams,
+  map: Record<string, string>,
+  incKey: string,
+  excKey: string,
+) {
+  for (const [value, mode] of Object.entries(map)) {
+    if (mode === "inc") params.append(incKey, value);
+    else if (mode === "exc") params.append(excKey, value);
+  }
+}
+
 export default function PaperlessImport() {
   const [configured, setConfigured] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -232,15 +269,33 @@ export default function PaperlessImport() {
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  // Filters
-  const [search, setSearch] = useState("");
+  // Filters (initialized from URL search params so filters are shareable)
+  const [searchParams, setSearchParams] = useSearchParams();
+  const syncedUrlRef = useRef(searchParams.toString());
+  const [search, setSearch] = useState(
+    () => searchParams.get(SEARCH_PARAM) || "",
+  );
   const [correspondentMap, setCorrespondentMap] = useState<
     Record<string, string>
-  >({});
+  >(() =>
+    mapFromParams(
+      searchParams,
+      MAP_PARAMS.correspondent.inc,
+      MAP_PARAMS.correspondent.exc,
+    ),
+  );
   const [documentTypeMap, setDocumentTypeMap] = useState<
     Record<string, string>
-  >({});
-  const [tagMap, setTagMap] = useState<Record<string, string>>({});
+  >(() =>
+    mapFromParams(
+      searchParams,
+      MAP_PARAMS.documentType.inc,
+      MAP_PARAMS.documentType.exc,
+    ),
+  );
+  const [tagMap, setTagMap] = useState<Record<string, string>>(() =>
+    mapFromParams(searchParams, MAP_PARAMS.tag.inc, MAP_PARAMS.tag.exc),
+  );
 
   // File preview (blob URL of the original PDF)
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
@@ -315,6 +370,62 @@ export default function PaperlessImport() {
         return next;
       });
     };
+
+  // Keep the URL in sync with user-driven filter changes. Only non-default
+  // filters are written, so a clean URL equals the default state.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (search) params.set(SEARCH_PARAM, search);
+    appendMapParams(
+      params,
+      correspondentMap,
+      MAP_PARAMS.correspondent.inc,
+      MAP_PARAMS.correspondent.exc,
+    );
+    appendMapParams(
+      params,
+      documentTypeMap,
+      MAP_PARAMS.documentType.inc,
+      MAP_PARAMS.documentType.exc,
+    );
+    appendMapParams(params, tagMap, MAP_PARAMS.tag.inc, MAP_PARAMS.tag.exc);
+    const desiredQs = params.toString();
+    if (desiredQs === syncedUrlRef.current) return;
+    syncedUrlRef.current = desiredQs;
+    setSearchParams(params, { replace: true });
+  }, [search, correspondentMap, documentTypeMap, tagMap]);
+
+  // React to external URL changes (navigation, back/forward, shared links).
+  useEffect(() => {
+    const currentQs = searchParams.toString();
+    if (currentQs === syncedUrlRef.current) return;
+
+    const nextSearch = searchParams.get(SEARCH_PARAM) || "";
+    const nextCorrespondent = mapFromParams(
+      searchParams,
+      MAP_PARAMS.correspondent.inc,
+      MAP_PARAMS.correspondent.exc,
+    );
+    const nextDocumentType = mapFromParams(
+      searchParams,
+      MAP_PARAMS.documentType.inc,
+      MAP_PARAMS.documentType.exc,
+    );
+    const nextTags = mapFromParams(
+      searchParams,
+      MAP_PARAMS.tag.inc,
+      MAP_PARAMS.tag.exc,
+    );
+    if (nextSearch !== search) setSearch(nextSearch);
+    if (JSON.stringify(nextCorrespondent) !== JSON.stringify(correspondentMap))
+      setCorrespondentMap(nextCorrespondent);
+    if (JSON.stringify(nextDocumentType) !== JSON.stringify(documentTypeMap))
+      setDocumentTypeMap(nextDocumentType);
+    if (JSON.stringify(nextTags) !== JSON.stringify(tagMap))
+      setTagMap(nextTags);
+    syncedUrlRef.current = currentQs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Build filter dropdown options from the loaded documents.
   const correspondentOptions = useMemo(() => {

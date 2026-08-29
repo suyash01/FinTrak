@@ -1,4 +1,5 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Plus,
   Search,
@@ -53,7 +54,9 @@ const NO_ACCOUNT = "none";
 export default function Payees() {
   const [payees, setPayees] = useState<Payee[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const syncedUrlRef = useRef(searchParams.toString());
+  const [search, setSearch] = useState(() => searchParams.get("search") || "");
   const [showModal, setShowModal] = useState(false);
   const [editingPayee, setEditingPayee] = useState<Payee | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -63,6 +66,26 @@ export default function Payees() {
     fetchPayees();
     fetchAccounts();
   }, []);
+
+  // Keep the search filter in sync with the URL so it is shareable and
+  // back/forward friendly.
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (search) params.search = search;
+    const desiredQs = new URLSearchParams(params).toString();
+    if (desiredQs === syncedUrlRef.current) return;
+    syncedUrlRef.current = desiredQs;
+    setSearchParams(params, { replace: true });
+  }, [search]);
+
+  useEffect(() => {
+    const currentQs = searchParams.toString();
+    if (currentQs === syncedUrlRef.current) return;
+    const next = searchParams.get("search") || "";
+    if (next !== search) setSearch(next);
+    syncedUrlRef.current = currentQs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const fetchAccounts = async () => {
     try {
