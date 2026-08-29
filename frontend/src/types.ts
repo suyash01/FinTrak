@@ -82,8 +82,6 @@ export interface Transaction {
   categoryIcon?: string;
   categoryColor?: string;
   isLinked?: boolean;
-  linkCount?: number;
-  linkId?: string | null;
   isSummary?: boolean;
   // Billing cycle attachment (credit cards)
   billingCycleId?: string | null;

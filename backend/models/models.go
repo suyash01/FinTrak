@@ -114,8 +114,6 @@ type Transaction struct {
 	CategoryIcon  string     `json:"categoryIcon,omitempty"`
 	CategoryColor string     `json:"categoryColor,omitempty"`
 	IsLinked      bool       `json:"isLinked"`
-	LinkCount     int        `json:"linkCount"`
-	LinkID        *uuid.UUID `json:"linkId,omitempty"`
 	IsSummary     bool       `json:"isSummary,omitempty"`
 	// Billing cycle attachment (credit cards)
 	BillingCycleID    *uuid.UUID `json:"billingCycleId,omitempty"`

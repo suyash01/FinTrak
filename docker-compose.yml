@@ -22,6 +22,16 @@ services:
     networks:
       - backend-net
 
+  statement-parser:
+    container_name: statement-parser
+    build:
+      context: ./statement_parser
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    networks:
+      - backend-net
+
   backend:
     container_name: backend
     build:
@@ -72,15 +82,14 @@ services:
     networks:
       - backend-net
 
-  statement-parser:
-    container_name: statement-parser
-    build:
-      context: ./statement_parser
+  dozzle:
+    container_name: dozzle
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dozzle_data:/data
     ports:
-      - "5000:5000"
-    restart: unless-stopped
-    networks:
-      - backend-net
+      - 8082:8080
 
 networks:
   backend-net:
@@ -88,3 +97,4 @@ networks:
 
 volumes:
   pgdata:
+  dozzle_data:

@@ -7,7 +7,7 @@ import {
   useRef,
   type CSSProperties,
 } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import {
   Search,
   ChevronUp,
@@ -15,8 +15,6 @@ import {
   Trash2,
   Tags,
   Link2,
-  Link2Off,
-  Check,
   Pencil,
   Plus,
   Folder,
@@ -140,7 +138,6 @@ interface TransactionRowProps {
   ) => void;
   handlePayeeChange: (txnId: string, payeeId: string, txn: Transaction) => void;
   handleDelete: (id: string) => void;
-  handleUnlink: (t: Transaction) => void;
   setLinkingTxn: (t: Transaction | null) => void;
   setEditingTxn: (t: Transaction | null) => void;
 }
@@ -155,7 +152,6 @@ const TransactionRow = memo(function TransactionRow({
   handleCategoryChange,
   handlePayeeChange,
   handleDelete,
-  handleUnlink,
   setLinkingTxn,
   setEditingTxn,
 }: TransactionRowProps) {
@@ -252,26 +248,16 @@ const TransactionRow = memo(function TransactionRow({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+            className={`${
+              t.isLinked
+                ? "text-primary bg-primary/10 hover:bg-primary/20 hover:text-primary"
+                : "text-muted-foreground hover:text-primary hover:bg-primary/10"
+            }`}
             onClick={() => setLinkingTxn(t)}
-            title={
-              t.isLinked ? "Link more transactions" : "Find match and link"
-            }
+            title={t.isLinked ? "Manage links" : "Find match and link"}
           >
             <Link2 size={14} />
           </Button>
-          {(t.linkCount ?? 0) > 0 && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="group text-emerald-500 hover:text-destructive hover:bg-destructive/10"
-              onClick={() => handleUnlink(t)}
-              title={(t.linkCount ?? 0) > 1 ? "Manage links" : "Unlink"}
-            >
-              <Check size={14} className="group-hover:hidden" />
-              <Link2Off size={14} className="hidden group-hover:block" />
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -321,7 +307,6 @@ const MAX_PAGE_SIZE = 1000;
 const PAGE_SIZE_LS_KEY = "txPageSize";
 
 export default function Transactions() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<TransactionsResponse>({
     data: [],
@@ -340,7 +325,6 @@ export default function Transactions() {
   const [creating, setCreating] = useState(false);
   const [deleteTxnId, setDeleteTxnId] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [unlinkTxn, setUnlinkTxn] = useState<Transaction | null>(null);
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
@@ -755,30 +739,6 @@ export default function Transactions() {
     [loadTransactions],
   );
 
-  const handleUnlink = useCallback(
-    (t: Transaction) => {
-      if ((t.linkCount ?? 0) > 1 || !t.linkId) {
-        navigate("/linking");
-        return;
-      }
-      setUnlinkTxn(t);
-    },
-    [navigate],
-  );
-
-  const confirmUnlink = useCallback(
-    async (t: Transaction) => {
-      if (!t.linkId) return;
-      try {
-        await api.deleteLink(t.linkId);
-        loadTransactions();
-      } catch (err) {
-        console.error(err);
-      }
-    },
-    [loadTransactions],
-  );
-
   const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -1146,7 +1106,6 @@ export default function Transactions() {
                     handleCategoryChange={handleCategoryChange}
                     handlePayeeChange={handlePayeeChange}
                     handleDelete={handleDelete}
-                    handleUnlink={handleUnlink}
                     setLinkingTxn={setLinkingTxn}
                     setEditingTxn={setEditingTxn}
                   />
@@ -1290,32 +1249,6 @@ export default function Transactions() {
               }}
             >
               Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <AlertDialog
-        open={unlinkTxn !== null}
-        onOpenChange={(open) => !open && setUnlinkTxn(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Unlink these transactions?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the link between these transactions.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const t = unlinkTxn;
-                setUnlinkTxn(null);
-                if (t) confirmUnlink(t);
-              }}
-            >
-              Unlink
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -83,10 +83,6 @@ func GetTransactions(c *gin.Context) {
 				COALESCE(c.name, '') as category_name, COALESCE(c.icon, '') as category_icon,
 			  COALESCE(c.color, '') as category_color,
 			  EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as is_linked,
-			  (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as link_count,
-			  CASE WHEN (SELECT COUNT(*) FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) = 1
-			       THEN (SELECT id FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id LIMIT 1)
-			  END as link_id,
 			  t.billing_cycle_id,
 			  COALESCE(bc.label, '') as billing_cycle_label
 			  FROM transactions t
@@ -222,7 +218,7 @@ func GetTransactions(c *gin.Context) {
 		var t models.Transaction
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
-			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked, &t.LinkCount, &t.LinkID,
+			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked,
 			&t.BillingCycleID, &t.BillingCycleLabel); err != nil {
 			log.Printf("Error in GetTransactions scan: %v\n", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)

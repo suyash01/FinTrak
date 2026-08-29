@@ -71,13 +71,17 @@ export default function LinkTransactionModal({
   const [matchAmount, setMatchAmount] = useState(true);
   const [excludeSameAccount, setExcludeSameAccount] = useState(true);
   const [existingLinks, setExistingLinks] = useState<Link[]>([]);
+  const [linksLoading, setLinksLoading] = useState(true);
   const [unlinkTarget, setUnlinkTarget] = useState<string | null>(null);
 
   const loadLinks = async () => {
     try {
+      setLinksLoading(true);
       setExistingLinks(await api.getLinks({ txnId: txn.id }));
     } catch (err) {
       console.error(err);
+    } finally {
+      setLinksLoading(false);
     }
   };
 
@@ -362,9 +366,15 @@ export default function LinkTransactionModal({
       >
         <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden p-0 gap-0 rounded-2xl">
           <DialogHeader className="px-6 py-4 border-b border-border bg-card pr-10">
-            <DialogTitle>Find Match & Link</DialogTitle>
+            <DialogTitle>
+              {existingLinks.length > 0
+                ? "Manage Links"
+                : "Find Match & Link"}
+            </DialogTitle>
             <DialogDescription>
-              Pick a matching transaction to create a connection
+              {existingLinks.length > 0
+                ? "View or remove existing links, or link more transactions"
+                : "Pick a matching transaction to create a connection"}
             </DialogDescription>
           </DialogHeader>
 
@@ -401,11 +411,20 @@ export default function LinkTransactionModal({
           </div>
 
           {/* Existing links */}
-          {existingLinks.length > 0 && (
-            <div className="px-6 py-3 border-b border-border bg-muted/50">
-              <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                Already Linked ({existingLinks.length})
+          <div className="px-6 py-3 border-b border-border bg-muted/50">
+            <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+              Linked Transactions ({existingLinks.length})
+            </div>
+            {linksLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                <Spinner className="h-4 w-4" />
+                Loading links...
               </div>
+            ) : existingLinks.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground italic py-1">
+                No links yet. Find a match below to create one.
+              </div>
+            ) : (
               <div className="space-y-1.5">
                 {existingLinks.map((l) => {
                   const other = l.fromTxnId === txn.id ? l.toTxn : l.fromTxn;
@@ -456,8 +475,8 @@ export default function LinkTransactionModal({
                   );
                 })}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Info banner */}
           <div className="px-6 py-2.5 bg-primary/5 border-b border-border">
