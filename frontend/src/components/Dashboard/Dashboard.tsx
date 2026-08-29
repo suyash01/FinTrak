@@ -132,32 +132,6 @@ export default function Dashboard() {
     loadSummary();
   }, [loadSummary]);
 
-  if (loading)
-    return (
-      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <Spinner className="size-8 text-primary" />
-        </div>
-      </div>
-    );
-
-  if (error) {
-    return (
-      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <div className="px-5 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive mb-4">
-            {error}
-          </div>
-          <Button onClick={loadSummary}>Retry</Button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!data) return null;
-
-  const netSavings = data.totalIncome - data.totalExpense;
-
   const recentColumnHelper = createColumnHelper<Transaction>();
   const recentColumns = useMemo<ColumnDef<Transaction>[]>(() => {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
@@ -236,6 +210,32 @@ export default function Dashboard() {
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compactLayout]);
+
+  if (loading)
+    return (
+      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <Spinner className="size-8 text-primary" />
+        </div>
+      </div>
+    );
+
+  if (error) {
+    return (
+      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="px-5 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive mb-4">
+            {error}
+          </div>
+          <Button onClick={loadSummary}>Retry</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const netSavings = data.totalIncome - data.totalExpense;
 
   return (
     <>
