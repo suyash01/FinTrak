@@ -22,6 +22,12 @@ from .sbi_cc_extractor import (
     to_csv_bytes as _sbi_to_csv_bytes,
 )
 
+from .icici_bank_extractor import (
+    PdfPasswordRequired,
+    extract_transactions as _icici_bank_extract_transactions,
+    to_csv_bytes as _icici_bank_to_csv_bytes,
+)
+
 
 @dataclass(frozen=True)
 class ExtractorSpec:
@@ -83,6 +89,9 @@ def to_csv_bytes(transactions: List[dict[str, Any]], extractor_name: str) -> byt
 
 register_extractor("icici_cc", "ICICI Credit Card", _icici_extract_transactions, _icici_to_csv_bytes)
 register_extractor("sbi_cc", "SBI Credit Card", _sbi_extract_transactions, _sbi_to_csv_bytes)
+register_extractor(
+    "icici_bank", "ICICI Bank Statement", _icici_bank_extract_transactions, _icici_bank_to_csv_bytes
+)
 
 __all__ = [
     "ExtractorSpec",

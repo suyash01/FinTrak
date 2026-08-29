@@ -32,8 +32,9 @@ const maxPageSize = 1000
 // GetTransactions returns a paginated, filterable list of the user's
 // transactions. Filters cover account, category, payee, free-text description,
 // date range, type, exact amount, and linked state; sorting and pagination are
-// validated/clamped server-side. For credit-card account filters, synthetic
-// summary rows (cycle outstanding totals) are merged into the response.
+// validated/clamped server-side. When filtering a single account that has a
+// billing day set (any account type) and sorting by date, synthetic summary
+// rows (per-cycle outstanding totals) are merged into the response.
 func GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID := c.Query("accountId")
@@ -230,11 +231,12 @@ func GetTransactions(c *gin.Context) {
 		transactions = append(transactions, t)
 	}
 
-	// When a single account is filtered, inject computed summary rows: the
-	// per-cycle total outstanding for accounts that have a billing day set.
-	// These are synthetic and are never persisted. Accounts without a billing
-	// day show their raw transactions only.
-	if accountID != "" {
+	// When a single account is filtered and sorted by date, inject computed
+	// summary rows: the per-cycle total outstanding for accounts that have a
+	// billing day set. These are synthetic and are never persisted. Summary
+	// rows only make sense in a date-ordered list, so other sort columns skip
+	// them; accounts without a billing day show their raw transactions only.
+	if accountID != "" && sortBy == "date" {
 		summaryTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
 	}
@@ -352,8 +354,8 @@ func CreateTransaction(c *gin.Context) {
 	err = tx.QueryRow(c,
 		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
 		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-		 WHERE ($7 IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND c.user_id = $2))
-		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
+		 WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND c.user_id = $2))
+		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
 		 RETURNING id`,
 		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1092,19 +1094,19 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 		log.Printf("Error in buildAccountSummaryRows (ensure billing cycles): %v\n", err)
 		return nil
 	}
-	return computeCreditCardSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
+	return computeSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
 }
 
-// computeCreditCardSummaryRows builds the synthetic "Total outstanding" rows
+// computeSummaryRows builds the synthetic "Total outstanding" rows
 // for an account (any type with a billing day set) from its explicit billing
 // cycles. Each cycle that has attached transactions gets a row at its end date
 // (the sum of its attached debit purchases), and the in-progress cycle
 // containing the end of the range gets a row at the range end. Cycles are
 // expected to already exist (callers run ensureBillingCycles first).
-func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
+func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {
-		log.Printf("Error in computeCreditCardSummaryRows (list cycles): %v\n", err)
+		log.Printf("Error in computeSummaryRows (list cycles): %v\n", err)
 		return nil
 	}
 
@@ -1131,16 +1133,17 @@ func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, a
 		}
 	}
 
-	buildRow := func(kind, description string, date time.Time, amount float64) models.Transaction {
+	buildRow := func(kind, description string, date time.Time, amount float64, billingCycleID *uuid.UUID) models.Transaction {
 		return models.Transaction{
-			ID:          summaryID(accountID.String(), kind, date),
-			AccountID:   accountID,
-			Date:        date,
-			Description: description,
-			Amount:      amount,
-			Type:        "credit",
-			AccountName: acctName,
-			IsSummary:   true,
+			ID:             summaryID(accountID.String(), kind, date),
+			AccountID:      accountID,
+			Date:           date,
+			Description:    description,
+			Amount:         amount,
+			Type:           "credit",
+			AccountName:    acctName,
+			IsSummary:      true,
+			BillingCycleID: billingCycleID,
 		}
 	}
 
@@ -1152,7 +1155,7 @@ func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, a
 		// A row for every completed cycle (end date within the range) that has
 		// attached transactions.
 		if bc.TransactionCount > 0 && !end.Before(from) && !end.After(to) {
-			rows = append(rows, buildRow("outstanding", "Total outstanding", end, bc.TotalOutstanding))
+			rows = append(rows, buildRow("outstanding", "Total outstanding", end, bc.TotalOutstanding, &bc.ID))
 		}
 		// Track the in-progress cycle: the one whose date range contains `to`.
 		if !dateOnly(bc.StartDate).After(to) && !end.Before(to) {
@@ -1170,11 +1173,11 @@ func computeCreditCardSummaryRows(c *gin.Context, userID, accountID uuid.UUID, a
 			 FROM transactions t WHERE t.billing_cycle_id = $1 AND t.date <= $2`,
 			current.ID, to).Scan(&total, &count)
 		if err != nil {
-			log.Printf("Error in computeCreditCardSummaryRows (current cycle): %v\n", err)
+			log.Printf("Error in computeSummaryRows (current cycle): %v\n", err)
 			return nil
 		}
 		if count > 0 {
-			rows = append(rows, buildRow("outstanding-current", "Total outstanding", to, total))
+			rows = append(rows, buildRow("outstanding-current", "Total outstanding", to, total, &current.ID))
 		}
 	}
 
@@ -1237,9 +1240,14 @@ func filterSummaryRowsForPage(transactions []models.Transaction, rows []models.T
 	return kept
 }
 
-// mergeByDate interleaves summary rows into the sorted transaction list by date,
-// placing a summary row at the top of the day when it shares a date with the
-// day's transactions.
+// mergeByDate interleaves summary rows into the sorted transaction list by
+// date, grouping each page's transactions by billing cycle so a "Total
+// outstanding" row stays adjacent to its own cycle's transactions: after them
+// in ascending order, before them in descending. Cycle transactions always
+// fall on or before their cycle's row date, so the grouped output remains
+// date-ordered. Transactions not attached to a cycle that has a kept row are
+// preserved too (before the rows when descending, after them when ascending)
+// so no transaction is ever dropped.
 func mergeByDate(transactions []models.Transaction, rows []models.Transaction, sortOrder string) []models.Transaction {
 	asc := sortOrder == "ASC"
 	sort.Slice(rows, func(i, j int) bool {
@@ -1249,38 +1257,38 @@ func mergeByDate(transactions []models.Transaction, rows []models.Transaction, s
 		return rows[i].Date.After(rows[j].Date)
 	})
 
-	merged := make([]models.Transaction, 0, len(transactions)+len(rows))
-	i, j := 0, 0
-	for i < len(transactions) || j < len(rows) {
-		if j >= len(rows) {
-			merged = append(merged, transactions[i])
-			i++
-		} else if i >= len(transactions) {
-			merged = append(merged, rows[j])
-			j++
+	// Group the page's transactions by the cycle whose row they belong to;
+	// transactions with no matching kept cycle are held aside and re-added
+	// below so they are never dropped.
+	grouped := make(map[uuid.UUID][]models.Transaction, len(rows))
+	rowCycles := make(map[uuid.UUID]bool, len(rows))
+	for _, r := range rows {
+		rowCycles[*r.BillingCycleID] = true
+	}
+	var ungrouped []models.Transaction
+	for _, t := range transactions {
+		if t.BillingCycleID != nil && rowCycles[*t.BillingCycleID] {
+			grouped[*t.BillingCycleID] = append(grouped[*t.BillingCycleID], t)
 		} else {
-			a, b := transactions[i], rows[j]
-			if asc {
-				// Ascending by date; on ties put the summary row (b) first.
-				if !a.Date.Before(b.Date) {
-					merged = append(merged, b)
-					j++
-				} else {
-					merged = append(merged, a)
-					i++
-				}
-			} else {
-				// Descending by date; on ties put the summary row (b) first.
-				if !a.Date.After(b.Date) {
-					merged = append(merged, b)
-					j++
-				} else {
-					merged = append(merged, a)
-					i++
-				}
-			}
+			ungrouped = append(ungrouped, t)
 		}
 	}
+
+	merged := make([]models.Transaction, 0, len(transactions)+len(rows))
+	if asc {
+		for _, r := range rows {
+			merged = append(merged, grouped[*r.BillingCycleID]...)
+			merged = append(merged, r)
+		}
+		merged = append(merged, ungrouped...)
+	} else {
+		merged = append(merged, ungrouped...)
+		for _, r := range rows {
+			merged = append(merged, r)
+			merged = append(merged, grouped[*r.BillingCycleID]...)
+		}
+	}
+
 	return merged
 }
 

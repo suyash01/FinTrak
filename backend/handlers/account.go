@@ -198,7 +198,7 @@ func UpdateAccount(c *gin.Context) {
 		err := tx.QueryRow(c,
 			`WITH updated AS (
 				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, is_default = COALESCE($6, is_default), billing_day = $9, updated_at = NOW() 
-				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day
+				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day, created_at
 			)
 			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default, u.billing_day, u.created_at,
 			COALESCE((

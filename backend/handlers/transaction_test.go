@@ -753,15 +753,18 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	txnID := uuid.New()
 	accountID := uuid.New()
 	today := dateOnly(time.Now())
+	cycleID := uuid.New()
 
 	// Count query with account filter.
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
 		WithArgs(userID, accountID.String()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	// Main query with account filter.
+	// Main query with account filter. The transaction is attached to the cycle
+	// (transactions on billing-day accounts get assigned a cycle), so it groups
+	// with the summary row below.
 	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "link_count", "link_id", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, today, "Groceries", 200.0, "debit", nil, nil, "", nil, "", today, "Checking", "", "", "", false, 0, nil, nil, "")
+		AddRow(txnID, accountID, today, "Groceries", 200.0, "debit", nil, nil, "", nil, "", today, "Checking", "", "", "", false, 0, nil, &cycleID, "This month")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, accountID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -788,8 +791,8 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
-	// computeCreditCardSummaryRows: one completed cycle ending today.
-	cycleID := uuid.New()
+	// computeSummaryRows: one completed cycle ending today, containing the
+	// transaction above.
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
@@ -1554,7 +1557,7 @@ func TestImportTransactionsPayeeNotOwned(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestComputeCreditCardSummaryRows(t *testing.T) {
+func TestComputeSummaryRows(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -1591,7 +1594,7 @@ func TestComputeCreditCardSummaryRows(t *testing.T) {
 		WithArgs(cycleID(3), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
 		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(60.0, 1))
 
-	rows := computeCreditCardSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
+	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	// Feb 5 (Jan debits = 150), Mar 5 (Feb debits = 200), and a current-cycle
 	// row at Mar 31 (Mar debits = 60).
@@ -1608,7 +1611,7 @@ func TestComputeCreditCardSummaryRows(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestComputeCreditCardSummaryRowsFirstOfMonth(t *testing.T) {
+func TestComputeSummaryRowsFirstOfMonth(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -1644,7 +1647,7 @@ func TestComputeCreditCardSummaryRowsFirstOfMonth(t *testing.T) {
 		WithArgs(cycleID(4), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
 		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(0.0, 0))
 
-	rows := computeCreditCardSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
+	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	var found float64
 	for _, r := range rows {
@@ -1658,20 +1661,66 @@ func TestComputeCreditCardSummaryRowsFirstOfMonth(t *testing.T) {
 }
 
 func TestMergeSummaryRows(t *testing.T) {
-	mkTxn := func(day int) models.Transaction {
-		return models.Transaction{ID: uuid.New(), Date: time.Date(2024, 1, day, 0, 0, 0, 0, time.UTC)}
+	cycleA := uuid.New()
+	cycleB := uuid.New()
+	mkTxn := func(day int, cycle *uuid.UUID) models.Transaction {
+		return models.Transaction{ID: uuid.New(), Date: time.Date(2024, 1, day, 0, 0, 0, 0, time.UTC), BillingCycleID: cycle}
 	}
-	// transactions sorted DESC by date: 10, 8, 5
-	txns := []models.Transaction{mkTxn(10), mkTxn(8), mkTxn(5)}
-	// summary rows: a row on day 9 and day 6
-	summary := []models.Transaction{mkTxn(9), mkTxn(6)}
+	mkRow := func(day int, cycle uuid.UUID) models.Transaction {
+		return models.Transaction{ID: uuid.New(), Date: time.Date(2024, 1, day, 0, 0, 0, 0, time.UTC), IsSummary: true, Description: "Total outstanding", BillingCycleID: &cycle}
+	}
+	days := func(txns []models.Transaction) []int {
+		got := make([]int, len(txns))
+		for i, m := range txns {
+			got[i] = m.Date.Day()
+		}
+		return got
+	}
 
-	merged := mergeSummaryRows(txns, summary, "date", "DESC")
-	got := make([]int, len(merged))
-	for i, m := range merged {
-		got[i] = m.Date.Day()
-	}
-	assert.Equal(t, []int{10, 9, 8, 6, 5}, got)
+	t.Run("desc groups each row with its cycle's transactions", func(t *testing.T) {
+		// Cycle A ends day 10, cycle B ends day 6. A future-dated transaction
+		// with no cycle (day 12) must still be preserved, not dropped.
+		txns := []models.Transaction{
+			mkTxn(12, nil),
+			mkTxn(10, &cycleA), mkTxn(9, &cycleA),
+			mkTxn(6, &cycleB), mkTxn(5, &cycleB),
+		}
+		rows := []models.Transaction{mkRow(10, cycleA), mkRow(6, cycleB)}
+
+		merged := mergeSummaryRows(txns, rows, "date", "DESC")
+		assert.Equal(t, []int{12, 10, 10, 9, 6, 6, 5}, days(merged))
+		// Each row leads its own cycle's transactions in descending order.
+		assert.True(t, merged[1].IsSummary)
+		assert.Equal(t, "Total outstanding", merged[1].Description)
+		assert.True(t, merged[4].IsSummary)
+	})
+
+	t.Run("asc groups each row with its cycle's transactions", func(t *testing.T) {
+		txns := []models.Transaction{
+			mkTxn(5, &cycleB), mkTxn(6, &cycleB),
+			mkTxn(9, &cycleA), mkTxn(10, &cycleA),
+			mkTxn(12, nil),
+		}
+		rows := []models.Transaction{mkRow(6, cycleB), mkRow(10, cycleA)}
+
+		merged := mergeSummaryRows(txns, rows, "date", "ASC")
+		assert.Equal(t, []int{5, 6, 6, 9, 10, 10, 12}, days(merged))
+		// Each row trails its own cycle's transactions in ascending order.
+		assert.True(t, merged[2].IsSummary)
+		assert.True(t, merged[5].IsSummary)
+	})
+
+	t.Run("transactions without a cycle are never dropped", func(t *testing.T) {
+		txns := []models.Transaction{
+			mkTxn(12, nil),
+			mkTxn(10, &cycleA), mkTxn(9, &cycleA),
+			mkTxn(6, &cycleB), mkTxn(5, &cycleB),
+		}
+		rows := []models.Transaction{mkRow(10, cycleA), mkRow(6, cycleB)}
+
+		merged := mergeSummaryRows(txns, rows, "date", "DESC")
+		assert.Len(t, merged, len(txns)+len(rows))
+	})
 }
 
 func TestMergeSummaryRowsHiddenOnNonDateSort(t *testing.T) {
