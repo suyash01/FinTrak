@@ -72,9 +72,15 @@ interface SelectOption {
   label: string;
 }
 
+interface EditableSelectGroup {
+  label: string;
+  options: SelectOption[];
+}
+
 interface EditableSelectProps {
   value?: string | null;
-  options: SelectOption[];
+  options?: SelectOption[];
+  optionGroups?: EditableSelectGroup[];
   onChange: (value: string) => void;
   placeholder: string;
   displayText?: string;
@@ -84,13 +90,15 @@ interface EditableSelectProps {
 function EditableSelect({
   value,
   options,
+  optionGroups,
   onChange,
   placeholder,
   displayText,
   style,
 }: EditableSelectProps) {
   const isPlaceholder = !value;
-  const isMissing = Boolean(value) && !options.some((o) => o.value === value);
+  const allOptions = optionGroups?.flatMap((g) => g.options) ?? options ?? [];
+  const isMissing = Boolean(value) && !allOptions.some((o) => o.value === value);
 
   return (
     <select
@@ -112,15 +120,33 @@ function EditableSelect({
           {displayText}
         </option>
       )}
-      {options.map((o) => (
-        <option
-          key={o.value}
-          value={o.value}
-          className="bg-popover text-foreground not-italic"
-        >
-          {o.label}
-        </option>
-      ))}
+      {optionGroups
+        ? optionGroups.map((g) => (
+            <optgroup
+              key={g.label}
+              label={g.label}
+              className="bg-popover text-muted-foreground"
+            >
+              {g.options.map((o) => (
+                <option
+                  key={o.value}
+                  value={o.value}
+                  className="bg-popover text-foreground not-italic"
+                >
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
+          ))
+        : options?.map((o) => (
+            <option
+              key={o.value}
+              value={o.value}
+              className="bg-popover text-foreground not-italic"
+            >
+              {o.label}
+            </option>
+          ))}
     </select>
   );
 }
@@ -213,10 +239,6 @@ export default function Transactions() {
   }, [payees]);
 
   // Pre-compute select options so they're stable references
-  const categoryOptions = useMemo(
-    () => categories.map((c) => ({ value: c.id, label: c.name })),
-    [categories],
-  );
   const payeeOptions = useMemo(
     () => payees.map((p) => ({ value: p.id, label: p.name })),
     [payees],
@@ -227,6 +249,16 @@ export default function Transactions() {
   const categorySections = useMemo(
     () => buildCategorySections(groups, categories),
     [groups, categories],
+  );
+  // Grouped options for the inline row picker. Group headings are plain
+  // optgroup labels and are not selectable.
+  const categoryOptionGroups = useMemo(
+    () =>
+      categorySections.map((s) => ({
+        label: s.group.name,
+        options: s.items.map((c) => ({ value: c.id, label: c.name })),
+      })),
+    [categorySections],
   );
   // Lookup of every group id so the filter can tell a group selection apart
   // from a category selection (both live in the same dropdown).
@@ -743,7 +775,7 @@ export default function Transactions() {
           row.original.isSummary ? null : (
             <EditableSelect
               value={row.original.categoryId}
-              options={categoryOptions}
+              optionGroups={categoryOptionGroups}
               onChange={(val) =>
                 handleCategoryChange(row.original.id, val, row.original)
               }
@@ -832,7 +864,7 @@ export default function Transactions() {
     ],
     [
       pad,
-      categoryOptions,
+      categoryOptionGroups,
       payeeOptions,
       handleCategoryChange,
       handlePayeeChange,
@@ -1155,6 +1187,11 @@ export default function Transactions() {
           containerClassName="bg-card border border-border rounded-xl overflow-x-auto"
           headerClassName={headerBase}
           cellClassName={pad}
+          virtualize
+          maxHeight={
+            compactLayout ? "calc(100vh - 190px)" : "calc(100vh - 240px)"
+          }
+          estimateRowSize={compactLayout ? 33 : 45}
           footer={(table) =>
             pageSize > 0 && data.pages > 1 ? (
               <DataTablePagination table={table} />

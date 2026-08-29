@@ -15,6 +15,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,13 @@ interface DataTableProps<TData, TValue> {
   headerClassName?: string;
   cellClassName?: string;
   footer?: (table: TanstackTable<TData>) => React.ReactNode;
+  // Row virtualization: when enabled, only the rows near the scroll position
+  // are rendered inside a vertically scrollable region bounded by `maxHeight`,
+  // which keeps large pages (e.g. 1000 transactions) light. `estimateRowSize`
+  // seeds each row's height before the real rows are measured.
+  virtualize?: boolean;
+  maxHeight?: string | number;
+  estimateRowSize?: number;
 }
 
 export function DataTable<TData, TValue>({
@@ -90,6 +98,9 @@ export function DataTable<TData, TValue>({
   headerClassName,
   cellClassName,
   footer,
+  virtualize = false,
+  maxHeight = 480,
+  estimateRowSize = 48,
 }: DataTableProps<TData, TValue>) {
   const useSorting = sorting !== undefined || onSortingChange !== undefined;
   const usePagination =
@@ -117,76 +128,146 @@ export function DataTable<TData, TValue>({
 
   const columnCount = table.getVisibleLeafColumns().length;
 
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const rows = table.getRowModel().rows;
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => estimateRowSize,
+    getItemKey: (index) => {
+      const row = rows[index];
+      return row ? getRowId?.(row.original, index) ?? index : index;
+    },
+    overscan: 10,
+  });
+  const virtualItems = virtualize ? virtualizer.getVirtualItems() : [];
+  const totalSize = virtualizer.getTotalSize();
+  const measureRow = React.useCallback(
+    (el: HTMLTableRowElement | null) => {
+      if (el) virtualizer.measureElement(el);
+    },
+    [virtualizer],
+  );
+
+  const renderRow = (row: Row<TData>, dataIndex?: number) => (
+    <TableRow
+      key={row.id}
+      data-index={dataIndex}
+      ref={dataIndex !== undefined ? measureRow : undefined}
+      className={cn("border-border", getRowClassName?.(row))}
+    >
+      {row.getVisibleCells().map((cell) => (
+        <TableCell
+          key={cell.id}
+          className={cn(
+            cellClassName,
+            cell.column.columnDef.meta?.cellClassName,
+          )}
+        >
+          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+        </TableCell>
+      ))}
+    </TableRow>
+  );
+
+  const tableElement = (
+    <Table
+      className={tableClassName}
+      wrapperClassName={virtualize ? "relative w-full" : undefined}
+    >
+      <TableHeader
+        className={cn(
+          virtualize && "sticky top-0 z-10 bg-card",
+          theadClassName,
+        )}
+      >
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id} className="hover:bg-transparent">
+            {headerGroup.headers.map((header) => (
+              <TableHead
+                key={header.id}
+                className={cn(
+                  headerClassName,
+                  header.column.columnDef.meta?.headerClassName,
+                )}
+              >
+                {header.isPlaceholder
+                  ? null
+                  : flexRender(
+                      header.column.columnDef.header,
+                      header.getContext(),
+                    )}
+              </TableHead>
+            ))}
+          </TableRow>
+        ))}
+      </TableHeader>
+      <TableBody>
+        {loading ? (
+          <TableRow>
+            <TableCell
+              colSpan={columnCount}
+              className="text-center p-10"
+            >
+              <Spinner className="mx-auto size-8 text-primary" />
+            </TableCell>
+          </TableRow>
+        ) : rows.length === 0 ? (
+          <TableRow>
+            <TableCell
+              colSpan={columnCount}
+              className="text-center p-10 text-muted-foreground"
+            >
+              {emptyMessage}
+            </TableCell>
+          </TableRow>
+        ) : virtualize ? (
+          <>
+            {virtualItems.length > 0 && virtualItems[0].start > 0 && (
+              <TableRow
+                aria-hidden
+                className="pointer-events-none"
+                style={{ height: virtualItems[0].start }}
+              >
+                <TableCell colSpan={columnCount} className="p-0 border-0" />
+              </TableRow>
+            )}
+            {virtualItems.map((vi) => renderRow(rows[vi.index], vi.index))}
+            {virtualItems.length > 0 &&
+              totalSize - virtualItems[virtualItems.length - 1].end > 0 && (
+                <TableRow
+                  aria-hidden
+                  className="pointer-events-none"
+                  style={{
+                    height:
+                      totalSize - virtualItems[virtualItems.length - 1].end,
+                  }}
+                >
+                  <TableCell colSpan={columnCount} className="p-0 border-0" />
+                </TableRow>
+              )}
+          </>
+        ) : (
+          rows.map((row) => renderRow(row))
+        )}
+      </TableBody>
+    </Table>
+  );
+
   return (
     <>
       <div className={containerClassName}>
-        <Table className={tableClassName}>
-          <TableHeader className={theadClassName}>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="hover:bg-transparent">
-                {headerGroup.headers.map((header) => (
-                  <TableHead
-                    key={header.id}
-                    className={cn(
-                      headerClassName,
-                      header.column.columnDef.meta?.headerClassName,
-                    )}
-                  >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell
-                  colSpan={columnCount}
-                  className="text-center p-10"
-                >
-                  <Spinner className="mx-auto size-8 text-primary" />
-                </TableCell>
-              </TableRow>
-            ) : table.getRowModel().rows.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={columnCount}
-                  className="text-center p-10 text-muted-foreground"
-                >
-                  {emptyMessage}
-                </TableCell>
-              </TableRow>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  className={cn("border-border", getRowClassName?.(row))}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell
-                      key={cell.id}
-                      className={cn(
-                        cellClassName,
-                        cell.column.columnDef.meta?.cellClassName,
-                      )}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext(),
-                      )}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+        {virtualize ? (
+          <div
+            ref={scrollRef}
+            className="relative w-full"
+            style={{ maxHeight, overflow: "auto", overflowAnchor: "none" }}
+          >
+            {tableElement}
+          </div>
+        ) : (
+          tableElement
+        )}
       </div>
       {footer?.(table)}
     </>
