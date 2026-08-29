@@ -21,6 +21,7 @@ type Config struct {
 	ParserURL          string
 	AdminEmails        []string
 	Env                string
+	LogLevel           string
 	TokenEncryptionKey string
 }
 
@@ -53,6 +54,17 @@ func Load() *Config {
 	parserURL := os.Getenv("STATEMENT_PARSER_URL")
 	if parserURL == "" {
 		parserURL = "http://localhost:5000"
+	}
+
+	// Log level. Debug in development captures request/response bodies; info is
+	// the production default so secrets and payloads stay out of the logs.
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		if env == "production" {
+			logLevel = "info"
+		} else {
+			logLevel = "debug"
+		}
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -93,6 +105,7 @@ func Load() *Config {
 		ParserURL:          parserURL,
 		AdminEmails:        adminEmails,
 		Env:                env,
+		LogLevel:           logLevel,
 		TokenEncryptionKey: tokenEncryptionKey,
 	}
 }

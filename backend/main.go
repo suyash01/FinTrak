@@ -5,12 +5,14 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
+	"net/http"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/handlers"
+	"github.com/fintrak/backend/internal/logger"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -28,6 +30,10 @@ func main() {
 
 	cfg := config.Load()
 
+	// Structured logging: debug level (with request/response body capture) in
+	// development, info + JSON in production.
+	logger.New(cfg.Env, cfg.LogLevel)
+
 	// Connect to database
 	db.Connect(cfg.DatabaseURL)
 	defer db.Close()
@@ -42,14 +48,34 @@ func main() {
 	r := setupRouter(cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	log.Printf("🚀 FinTrak API v%s running on %s\n", Version, addr)
-	r.Run(addr)
+	slog.Info("FinTrak API starting", "version", Version, "env", cfg.Env, "addr", addr)
+	if err := r.Run(addr); err != nil {
+		slog.Error("server exited", "error", err)
+	}
 }
 
 // setupRouter builds the Gin router and registers all routes. It is extracted
 // from main so it can be exercised by unit tests.
 func setupRouter(cfg *config.Config) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+
+	// Recover panics into a structured 500 response instead of crashing the
+	// process. Registered first so it also covers the logging middleware.
+	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		slog.Error("panic recovered",
+			slog.String("method", c.Request.Method),
+			slog.String("path", c.Request.URL.Path),
+			slog.Any("error", recovered),
+		)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	}))
+
+	// Structured request logging. Emits an access line for every request and,
+	// at debug level (development), captures and logs request/response bodies.
+	// Skipped under test mode to keep unit test output quiet.
+	if gin.Mode() != gin.TestMode {
+		r.Use(logger.RequestLogger(slog.Default()))
+	}
 
 	// Point the statement handler at the standalone parser service.
 	handlers.SetStatementParserURL(cfg.ParserURL)

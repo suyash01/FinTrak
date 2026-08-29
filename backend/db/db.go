@@ -7,8 +7,8 @@ import (
 	"context"
 	"embed"
 	"errors"
-	"fmt"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -42,14 +42,16 @@ func Connect(databaseURL string) {
 	var err error
 	Pool, err = pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
+		slog.Error("unable to connect to database", "error", err)
+		os.Exit(1)
 	}
 
 	if err := Pool.Ping(context.Background()); err != nil {
-		log.Fatalf("Unable to ping database: %v\n", err)
+		slog.Error("unable to ping database", "error", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("✓ Connected to PostgreSQL")
+	slog.Info("connected to PostgreSQL")
 }
 
 // Close releases the shared connection pool. Safe to call more than once.
@@ -64,19 +66,22 @@ func Close() {
 func RunMigrations(databaseURL string) {
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
-		log.Fatalf("Failed to initialize migrations source: %v", err)
+		slog.Error("failed to initialize migrations source", "error", err)
+		os.Exit(1)
 	}
 
 	m, err := migrate.NewWithSourceInstance("iofs", d, databaseURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize migrate instance: %v", err)
+		slog.Error("failed to initialize migrate instance", "error", err)
+		os.Exit(1)
 	}
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		log.Fatalf("Migration up failed: %v", err)
+		slog.Error("migration up failed", "error", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("✓ Database migrations complete")
+	slog.Info("database migrations complete")
 }
 
 // WithTx executes the given function within a database transaction.

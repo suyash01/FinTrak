@@ -3,7 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -25,7 +25,7 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	var count int
 	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
 	if err != nil {
-		log.Printf("Failed to count categories for user %s: %v", userID, err)
+		slog.Error("failed to count categories for user", "user_id", userID, "error", err)
 		return
 	}
 	if count > 0 {
@@ -72,11 +72,11 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 
 	_, err = Pool.Exec(ctx, query, values...)
 	if err != nil {
-		log.Printf("Failed to seed categories: %v", err)
+		slog.Error("failed to seed categories", "error", err)
 		return
 	}
 
-	fmt.Println("✓ Seeded default categories")
+	slog.Info("seeded default categories")
 }
 
 // SeedCategoryGroup describes one immutable base category group row.
@@ -110,11 +110,11 @@ func SeedCategoryGroups() {
 			g.ID, g.Name, g.Icon, g.Color, g.SortOrder,
 		)
 		if err != nil {
-			log.Printf("Failed to seed category group %s: %v", g.ID, err)
+			slog.Error("failed to seed category group", "id", g.ID, "error", err)
 		}
 	}
 
-	fmt.Println("✓ Seeded default category groups")
+	slog.Info("seeded default category groups")
 }
 
 // SeedAccountType describes one built-in account type row.
@@ -141,10 +141,10 @@ func PromoteAdminUsers(emails []string) {
 			email,
 		)
 		if err != nil {
-			log.Printf("Failed to promote user %s to admin: %v", email, err)
+			slog.Error("failed to promote user to admin", "email", email, "error", err)
 		}
 	}
-	fmt.Println("✓ Ensured admin users")
+	slog.Info("ensured admin users")
 }
 
 // SeedAccountTypes inserts the built-in "bank" and "credit_card" account types.
@@ -164,9 +164,9 @@ func SeedAccountTypes() {
 			at.ID, at.Name, at.PositiveTxnType,
 		)
 		if err != nil {
-			log.Printf("Failed to seed account type %s: %v", at.ID, err)
+			slog.Error("failed to seed account type", "id", at.ID, "error", err)
 		}
 	}
 
-	fmt.Println("✓ Seeded default account types")
+	slog.Info("seeded default account types")
 }
