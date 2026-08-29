@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS rules (
 -- Links
 CREATE TABLE IF NOT EXISTS links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type VARCHAR(20) NOT NULL CHECK (type IN ('transfer', 'cashback', 'refund')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('transfer', 'cashback', 'refund', 'bill_payment')),
     from_txn_id UUID NOT NULL,
     to_txn_id UUID NOT NULL,
     notes TEXT DEFAULT '',

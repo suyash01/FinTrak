@@ -89,6 +89,7 @@ export default function Linking() {
   const transferLinks = links.filter((l) => l.type === "transfer");
   const cashbackLinks = links.filter((l) => l.type === "cashback");
   const refundLinks = links.filter((l) => l.type === "refund");
+  const billPaymentLinks = links.filter((l) => l.type === "bill_payment");
 
   return (
     <>
@@ -96,7 +97,7 @@ export default function Linking() {
         <div>
           <h1 className="text-2xl font-bold mb-1">Linked Transactions</h1>
           <p className="text-muted-foreground text-sm">
-            Review and manage linked transfers and cashbacks
+            Review and manage linked transactions
           </p>
         </div>
         {links.length > 0 && (
@@ -167,9 +168,9 @@ export default function Linking() {
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
-                          <CheckSquare size={18} className="size-[18px]" />
+                          <CheckSquare size={18} className="size-4.5" />
                         ) : (
-                          <Square size={18} className="size-[18px]" />
+                          <Square size={18} className="size-4.5" />
                         )}
                       </Button>
                       <div className="flex-1 min-w-0">
@@ -233,9 +234,9 @@ export default function Linking() {
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
-                          <CheckSquare size={18} className="size-[18px]" />
+                          <CheckSquare size={18} className="size-4.5" />
                         ) : (
-                          <Square size={18} className="size-[18px]" />
+                          <Square size={18} className="size-4.5" />
                         )}
                       </Button>
                       <div className="flex-1 min-w-0">
@@ -298,9 +299,74 @@ export default function Linking() {
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
-                          <CheckSquare size={18} className="size-[18px]" />
+                          <CheckSquare size={18} className="size-4.5" />
                         ) : (
-                          <Square size={18} className="size-[18px]" />
+                          <Square size={18} className="size-4.5" />
+                        )}
+                      </Button>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm text-foreground truncate">
+                          {l.fromTxn?.description}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {formatDate(l.fromTxn?.date)} ·{" "}
+                          <span className="text-destructive font-medium">
+                            −{formatCurrency(l.fromTxn?.amount || 0)}
+                          </span>
+                        </div>
+                      </div>
+                      <ArrowRight
+                        className="text-primary shrink-0 opacity-50"
+                        size={16}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm text-foreground truncate">
+                          {l.toTxn?.description}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {formatDate(l.toTxn?.date)} ·{" "}
+                          <span className="text-emerald-500 font-medium">
+                            +{formatCurrency(l.toTxn?.amount || 0)}
+                          </span>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => setUnlinkId(l.id)}
+                        title="Remove link"
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {billPaymentLinks.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500"></div>
+                  Bill Payments ({billPaymentLinks.length})
+                </h4>
+                <div className="space-y-3">
+                  {billPaymentLinks.map((l) => (
+                    <div
+                      key={l.id}
+                      className={`group bg-card border ${selected.has(l.id) ? "border-primary/50 bg-primary/5" : "border-border"} rounded-xl p-4 flex items-center gap-4 transition-all hover:border-primary/30`}
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => toggleSelect(l.id)}
+                        className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
+                      >
+                        {selected.has(l.id) ? (
+                          <CheckSquare size={18} className="size-4.5" />
+                        ) : (
+                          <Square size={18} className="size-4.5" />
                         )}
                       </Button>
                       <div className="flex-1 min-w-0">
@@ -355,7 +421,7 @@ export default function Linking() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove this link?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will unlink the transfer and its linked transactions.
+              This will remove the connection and its linked transactions.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -384,7 +450,7 @@ export default function Linking() {
               Remove {selected.size} selected links?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This will unlink the selected transfers and their linked
+              This will unlink the selected connections and their linked
               transactions.
             </AlertDialogDescription>
           </AlertDialogHeader>

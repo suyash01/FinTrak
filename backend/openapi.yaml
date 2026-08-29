@@ -1166,7 +1166,7 @@ paths:
           name: type
           schema:
             type: string
-            enum: [transfer, cashback, refund]
+            enum: [transfer, cashback, refund, bill_payment]
           description: Filter by link type
         - in: query
           name: txnId
@@ -1192,7 +1192,7 @@ paths:
       tags:
         - Links
       summary: Create a new link
-      description: Link two transactions (e.g., transfer between accounts, cashback, refund)
+      description: Link two transactions (e.g., transfer between accounts, cashback, refund, bill payment)
       operationId: createLink
       security:
         - BearerAuth: []
@@ -2174,7 +2174,7 @@ components:
       properties:
         type:
           type: string
-          enum: [transfer, cashback, refund]
+          enum: [transfer, cashback, refund, bill_payment]
         fromTxnId:
           type: string
           format: uuid
@@ -2437,7 +2437,7 @@ components:
           format: uuid
         type:
           type: string
-          enum: [transfer, cashback, refund]
+          enum: [transfer, cashback, refund, bill_payment]
         fromTxnId:
           type: string
           format: uuid

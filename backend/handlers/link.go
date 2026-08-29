@@ -73,6 +73,11 @@ func GetLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, links)
 }
 
+// isValidLinkType reports whether t is one of the supported link types.
+func isValidLinkType(t string) bool {
+	return t == "transfer" || t == "cashback" || t == "refund" || t == "bill_payment"
+}
+
 // CreateLink links two transactions owned by the user, rejecting invalid types,
 // missing transactions, and exact duplicates. For "transfer" links it also
 // re-categorizes both transactions as "Transfer" and swaps their payees to the
@@ -92,7 +97,7 @@ func CreateLink(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
-	if req.Type != "transfer" && req.Type != "cashback" && req.Type != "refund" {
+	if !isValidLinkType(req.Type) {
 		validation.RespondError(c, "invalid link type", http.StatusBadRequest)
 		return
 	}
@@ -217,7 +222,7 @@ func BulkCreateLinks(c *gin.Context) {
 	createdCount := 0
 	userID := auth.GetUserID(c)
 	for _, l := range req.Links {
-		if l.Type != "transfer" && l.Type != "cashback" && l.Type != "refund" {
+		if !isValidLinkType(l.Type) {
 			validation.RespondError(c, "invalid link type", http.StatusBadRequest)
 			return
 		}

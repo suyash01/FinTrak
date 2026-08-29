@@ -284,6 +284,48 @@ func TestCreateLinkCashbackSkipsTransferUpdates(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCreateLinkBillPaymentSkipsTransferUpdates(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.POST("/links", CreateLink)
+
+	userID := testUserID()
+	fromID := uuid.New()
+	toID := uuid.New()
+	linkID := uuid.New()
+	now := time.Now()
+
+	reqBody := models.CreateLinkRequest{
+		Type:      "bill_payment",
+		FromTxnID: fromID,
+		ToTxnID:   toID,
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
+		WithArgs([]uuid.UUID{fromID, toID}, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
+		WithArgs(userID, "bill_payment", fromID, toID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("INSERT INTO links").
+		WithArgs(userID, "bill_payment", fromID, toID, "").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
+			AddRow(linkID, "bill_payment", fromID, toID, "", now))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/links", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	var link models.Link
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &link))
+	assert.Equal(t, "bill_payment", link.Type)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCreateLinkInvalidType(t *testing.T) {
 	r, mock := newLinkTestRouter(t)
 	r.POST("/links", CreateLink)
@@ -392,6 +434,7 @@ func TestBulkCreateLinks(t *testing.T) {
 		Links: []models.CreateLinkRequest{
 			{Type: "transfer", FromTxnID: fromID, ToTxnID: toID, Notes: "n1"},
 			{Type: "cashback", FromTxnID: toID, ToTxnID: fromID, Notes: "n2"},
+			{Type: "bill_payment", FromTxnID: fromID, ToTxnID: toID, Notes: "n3"},
 		},
 	}
 
@@ -428,6 +471,17 @@ func TestBulkCreateLinks(t *testing.T) {
 		WithArgs(userID, "cashback", toID, fromID, "n2").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
+	// Link 3: bill payment (no transfer updates)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
+		WithArgs([]uuid.UUID{fromID, toID}, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
+		WithArgs(userID, "bill_payment", fromID, toID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO links").
+		WithArgs(userID, "bill_payment", fromID, toID, "n3").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
 	mock.ExpectCommit()
 
 	body, _ := json.Marshal(reqBody)
@@ -437,7 +491,7 @@ func TestBulkCreateLinks(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"createdCount":2`)
+	assert.Contains(t, w.Body.String(), `"createdCount":3`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

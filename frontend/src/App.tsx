@@ -146,8 +146,8 @@ function Settings() {
           <h3 className="text-base font-semibold mb-4">About FinTrak</h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
             FinTrak helps you consolidate bank and credit card statements,
-            categorize transactions, and track transfers and cashbacks — all in
-            one place.
+            categorize transactions, and track transfers, cashbacks, refunds,
+            and bill payments — all in one place.
           </p>
           <div className="mt-4 text-[13px] text-muted-foreground">
             Version 0.1.0-alpha · Built with Go + React

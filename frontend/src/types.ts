@@ -110,9 +110,11 @@ export interface Rule {
   categoryName?: string;
 }
 
+export type LinkType = "transfer" | "cashback" | "refund" | "bill_payment";
+
 export interface Link {
   id: string;
-  type: string;
+  type: LinkType;
   fromTxnId: string;
   toTxnId: string;
   notes?: string;
@@ -428,7 +430,7 @@ export interface UpdatePayeeRequest {
 }
 
 export interface CreateLinkRequest {
-  type: string;
+  type: LinkType;
   fromTxnId: string;
   toTxnId: string;
   notes?: string;

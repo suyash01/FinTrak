@@ -151,8 +151,9 @@ type Rule struct {
 }
 
 // Link pairs two transactions that belong together — typically a transfer
-// between the user's own accounts, or a cashback/refund that corresponds to an
-// earlier purchase. FromTxn/ToTxn carry the joined transaction details.
+// between the user's own accounts, a cashback/refund that corresponds to an
+// earlier purchase, or a bill payment. FromTxn/ToTxn carry the joined
+// transaction details.
 type Link struct {
 	ID        uuid.UUID `json:"id"`
 	Type      string    `json:"type"`

@@ -16,8 +16,10 @@
 - **Category & Payee Management**: Organize your spending with hierarchical categories and tracked payees.
 - **Smart Rules Engine**: Automate categorization by creating rules based on transaction descriptions or payees.
 - **Transaction Linking**:
-  - **Transfer Detection**: Link matching transactions between accounts to avoid double-counting.
+  - **Transfers**: Link matching transactions between your own accounts to avoid double-counting.
   - **Cashback & Refunds**: Link refunds or cashback to their original purchases.
+  - **Bill Payments**: Link a payment to its counterpart transaction (e.g. credit-card bill paid from a bank account).
+  - Link types are chosen manually for any pair of transactions, whether on the same account or different accounts.
 - **Bulk Operations**: Categorize, update payees, or delete multiple transactions at once.
 
 ---

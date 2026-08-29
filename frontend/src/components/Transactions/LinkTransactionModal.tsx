@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   RotateCcw,
   Gift,
+  ArrowLeftRight,
+  Receipt,
   Trash2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -46,7 +48,7 @@ import {
   formatDateOnly,
   parseDateOnly,
 } from "../../utils/formatters";
-import type { Transaction, Account, Link, QueryParams } from "../../types";
+import type { Transaction, Account, Link, LinkType, QueryParams } from "../../types";
 
 interface LinkTransactionModalProps {
   txn: Transaction;
@@ -64,7 +66,7 @@ export default function LinkTransactionModal({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [results, setResults] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
-  const [linkType, setLinkType] = useState("");
+  const [linkType, setLinkType] = useState<LinkType>("transfer");
   const [pendingTarget, setPendingTarget] = useState<Transaction | null>(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -152,17 +154,13 @@ export default function LinkTransactionModal({
   };
 
   const handleSelectTarget = (targetTxn: Transaction) => {
-    if (isSameAccount(targetTxn)) {
-      // Same account: show confirmation step with cashback/refund choice
-      setPendingTarget(targetTxn);
-      setLinkType("cashback"); // default for same-account
-    } else {
-      // Different accounts: immediately link as transfer
-      performLink(targetTxn, "transfer");
-    }
+    // Always ask the user to pick a link type — cross-account pairs are no
+    // longer assumed to be transfers.
+    setPendingTarget(targetTxn);
+    setLinkType(isSameAccount(targetTxn) ? "cashback" : "transfer");
   };
 
-  const performLink = async (targetTxn: Transaction, type: string) => {
+  const performLink = async (targetTxn: Transaction, type: LinkType) => {
     try {
       let fromId = txn.id;
       let toId = targetTxn.id;
@@ -193,7 +191,7 @@ export default function LinkTransactionModal({
     }
   };
 
-  const handleConfirmSameAccountLink = () => {
+  const handleConfirmLink = () => {
     if (!pendingTarget || !linkType) return;
     performLink(pendingTarget, linkType);
   };
@@ -219,7 +217,7 @@ export default function LinkTransactionModal({
                 <ArrowLeft size={18} />
               </Button>
               <div>
-                <DialogTitle>Same Account Link</DialogTitle>
+                <DialogTitle>Choose Link Type</DialogTitle>
                 <DialogDescription className="text-xs mt-0.5">
                   Choose the link type for this connection
                 </DialogDescription>
@@ -286,6 +284,31 @@ export default function LinkTransactionModal({
               <Button
                 type="button"
                 variant="ghost"
+                onClick={() => setLinkType("transfer")}
+                className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
+                  linkType === "transfer"
+                    ? "border-primary bg-primary/10 shadow-lg shadow-primary/10"
+                    : "border-border bg-background/50 hover:border-muted-foreground"
+                }`}
+              >
+                <ArrowLeftRight
+                  size={22}
+                  className={
+                    linkType === "transfer" ? "text-primary" : "text-muted-foreground"
+                  }
+                />
+                <span
+                  className={`text-sm font-semibold ${linkType === "transfer" ? "text-primary" : "text-muted-foreground"}`}
+                >
+                  Transfer
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  Money between accounts
+                </span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
                 onClick={() => setLinkType("cashback")}
                 className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
                   linkType === "cashback"
@@ -335,6 +358,33 @@ export default function LinkTransactionModal({
                   Return or reversal
                 </span>
               </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setLinkType("bill_payment")}
+                className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
+                  linkType === "bill_payment"
+                    ? "border-sky-500 bg-sky-500/10 shadow-lg shadow-sky-500/10"
+                    : "border-border bg-background/50 hover:border-muted-foreground"
+                }`}
+              >
+                <Receipt
+                  size={22}
+                  className={
+                    linkType === "bill_payment"
+                      ? "text-sky-400"
+                      : "text-muted-foreground"
+                  }
+                />
+                <span
+                  className={`text-sm font-semibold ${linkType === "bill_payment" ? "text-sky-400" : "text-muted-foreground"}`}
+                >
+                  Bill Payment
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  Paying a bill or EMI
+                </span>
+              </Button>
             </div>
           </div>
 
@@ -344,7 +394,7 @@ export default function LinkTransactionModal({
               Back to Results
             </Button>
             <Button
-              onClick={handleConfirmSameAccountLink}
+              onClick={handleConfirmLink}
               disabled={!linkType}
               className="px-6 py-2.5 h-auto text-sm font-bold"
             >
@@ -428,12 +478,14 @@ export default function LinkTransactionModal({
               <div className="space-y-1.5">
                 {existingLinks.map((l) => {
                   const other = l.fromTxnId === txn.id ? l.toTxn : l.fromTxn;
-                  const typeClass =
-                    l.type === "transfer"
-                      ? "bg-primary/10 text-primary"
-                      : l.type === "cashback"
-                        ? "bg-emerald-500/10 text-emerald-400"
-                        : "bg-amber-500/10 text-amber-400";
+const typeClass =
+  l.type === "transfer"
+    ? "bg-primary/10 text-primary"
+    : l.type === "cashback"
+      ? "bg-emerald-500/10 text-emerald-400"
+      : l.type === "refund"
+        ? "bg-amber-500/10 text-amber-400"
+        : "bg-sky-500/10 text-sky-400";
                   return (
                     <div
                       key={l.id}
@@ -481,11 +533,8 @@ export default function LinkTransactionModal({
           {/* Info banner */}
           <div className="px-6 py-2.5 bg-primary/5 border-b border-border">
             <p className="text-[11px] text-primary/70 text-center">
-              <span className="font-semibold">Cross-account</span> links
-              auto-assign as Transfer ·{" "}
-              <span className="font-semibold">Same-account</span> links let you
-              choose Cashback or Refund · A transaction can be linked to many
-              others
+              Choose a link type for any pair — Transfer, Cashback, Refund, or
+              Bill Payment · A transaction can be linked to many others
             </p>
           </div>
 
@@ -655,7 +704,7 @@ export default function LinkTransactionModal({
                         onClick={() => handleSelectTarget(r)}
                         className="opacity-0 group-hover:opacity-100 px-4 py-2 h-auto text-xs font-bold"
                       >
-                        {sameAccount ? "Choose Type…" : "Link as Transfer"}
+                        Choose Type…
                       </Button>
                     </div>
                   );
