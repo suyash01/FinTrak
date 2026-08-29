@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   BarChart,
   Bar,
@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { TrendingUp, TrendingDown, Wallet, ArrowUpDown } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
+import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -24,14 +25,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
+import { DataTable } from "@/components/ui/data-table";
 import {
   Select,
   SelectTrigger,
@@ -46,6 +40,7 @@ import type {
   Account,
   CategorySpend,
   QueryParams,
+  Transaction,
 } from "../../types";
 
 const ALL_ACCOUNTS = "all";
@@ -162,6 +157,85 @@ export default function Dashboard() {
   if (!data) return null;
 
   const netSavings = data.totalIncome - data.totalExpense;
+
+  const recentColumnHelper = createColumnHelper<Transaction>();
+  const recentColumns = useMemo<ColumnDef<Transaction>[]>(() => {
+    const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
+    const headBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`;
+    return [
+      recentColumnHelper.accessor("date", {
+        header: () => "Date",
+        cell: ({ row }) => (
+          <span className="text-sm">{formatDate(row.original.date)}</span>
+        ),
+        meta: { headerClassName: headBase, cellClassName: pad },
+      }),
+      recentColumnHelper.accessor("description", {
+        header: () => "Description",
+        cell: ({ row }) => (
+          <div className="max-w-75">
+            <div className="text-sm font-medium text-foreground truncate">
+              {row.original.description}
+            </div>
+            {row.original.payee && (
+              <div className="text-[11px] text-muted-foreground truncate">
+                {row.original.payee}
+              </div>
+            )}
+          </div>
+        ),
+        meta: { headerClassName: headBase, cellClassName: `${pad} max-w-75` },
+      }),
+      recentColumnHelper.accessor("accountName", {
+        header: () => "Account",
+        cell: ({ row }) => (
+          <span className="text-sm">{row.original.accountName}</span>
+        ),
+        meta: { headerClassName: headBase, cellClassName: pad },
+      }),
+      recentColumnHelper.display({
+        id: "category",
+        header: () => "Category",
+        cell: ({ row }) =>
+          row.original.categoryName ? (
+            <Badge
+              variant="outline"
+              className={`h-auto rounded-full ${compactLayout ? "px-2 py-0" : "px-2.5 py-0.5"} inline-flex items-center text-xs font-medium`}
+              style={{
+                color: row.original.categoryColor,
+                borderColor: row.original.categoryColor,
+                background: `${row.original.categoryColor}15`,
+              }}
+            >
+              {row.original.categoryName}
+            </Badge>
+          ) : (
+            <span className="text-muted-foreground text-sm">—</span>
+          ),
+        meta: { headerClassName: headBase, cellClassName: pad },
+      }),
+      recentColumnHelper.accessor("amount", {
+        header: () => "Amount",
+        cell: ({ row }) => (
+          <span
+            className={`text-sm text-right font-semibold ${
+              row.original.type === "debit"
+                ? "text-destructive"
+                : "text-emerald-500"
+            }`}
+          >
+            {row.original.type === "debit" ? "−" : "+"}
+            {formatCurrency(row.original.amount)}
+          </span>
+        ),
+        meta: {
+          headerClassName: `${headBase} text-right`,
+          cellClassName: `${pad} text-right`,
+        },
+      }),
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compactLayout]);
 
   return (
     <>
@@ -358,98 +432,14 @@ export default function Dashboard() {
           </CardHeader>
           {data.recentTransactions.length > 0 ? (
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                    >
-                      Date
-                    </TableHead>
-                    <TableHead
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                    >
-                      Description
-                    </TableHead>
-                    <TableHead
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                    >
-                      Account
-                    </TableHead>
-                    <TableHead
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                    >
-                      Category
-                    </TableHead>
-                    <TableHead
-                      className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap text-right`}
-                    >
-                      Amount
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.recentTransactions.map((t) => (
-                    <TableRow key={t.id}>
-                      <TableCell
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
-                      >
-                        {formatDate(t.date)}
-                      </TableCell>
-                      <TableCell
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm max-w-75`}
-                      >
-                        <div className="font-medium text-foreground truncate">
-                          {t.description}
-                        </div>
-                        {t.payee && (
-                          <div className="text-[11px] text-muted-foreground truncate">
-                            {t.payee}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
-                      >
-                        {t.accountName}
-                      </TableCell>
-                      <TableCell
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
-                      >
-                        {t.categoryName ? (
-                          <Badge
-                            variant="outline"
-                            className={`h-auto rounded-full ${compactLayout ? "px-2 py-0" : "px-2.5 py-0.5"} inline-flex items-center text-xs font-medium`}
-                            style={{
-                              color: t.categoryColor,
-                              borderColor: t.categoryColor,
-                              background: `${t.categoryColor}15`,
-                            }}
-                          >
-                            {t.categoryName}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell
-                        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-right font-semibold`}
-                      >
-                        <span
-                          className={
-                            t.type === "debit"
-                              ? "text-destructive"
-                              : "text-emerald-500"
-                          }
-                        >
-                          {t.type === "debit" ? "−" : "+"}
-                          {formatCurrency(t.amount)}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTable
+                columns={recentColumns}
+                data={data.recentTransactions}
+                getRowId={(row) => row.id}
+                containerClassName="overflow-x-auto"
+                headerClassName=""
+                cellClassName=""
+              />
             </CardContent>
           ) : (
             <div className="flex flex-col items-center justify-center p-10 text-center text-muted-foreground">

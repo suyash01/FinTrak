@@ -1,9 +1,15 @@
+const currencyFormatters = new Map<string, Intl.NumberFormat>();
 export function formatCurrency(amount: number, currency = "INR"): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(amount);
+  let nf = currencyFormatters.get(currency);
+  if (!nf) {
+    nf = new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+    });
+    currencyFormatters.set(currency, nf);
+  }
+  return nf.format(amount);
 }
 
 export function parseDateOnly(dateStr: string | null | undefined): Date | null {
@@ -21,18 +27,25 @@ export function formatDateOnly(date: Date | string | null | undefined): string {
   return `${y}-${m}-${d}`;
 }
 
+const dateFormatter = new Intl.DateTimeFormat("en-IN", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+const dateShortFormatter = new Intl.DateTimeFormat("en-IN", {
+  day: "2-digit",
+  month: "short",
+});
+
 export function formatDate(dateStr: string | null | undefined): string {
   const d = parseDateOnly(dateStr);
   if (!d) return "";
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return dateFormatter.format(d);
 }
 
 export function formatDateShort(dateStr: string | null | undefined): string {
   const d = parseDateOnly(dateStr);
   if (!d) return "";
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+  return dateShortFormatter.format(d);
 }

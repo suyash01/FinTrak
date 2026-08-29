@@ -3,15 +3,20 @@ import {
   useEffect,
   useCallback,
   useMemo,
-  memo,
   useRef,
   type CSSProperties,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
+  createColumnHelper,
+  type ColumnDef,
+  type OnChangeFn,
+  type PaginationState,
+  type RowSelectionState,
+  type SortingState,
+} from "@tanstack/react-table";
+import {
   Search,
-  ChevronUp,
-  ChevronDown,
   Trash2,
   Tags,
   Link2,
@@ -24,7 +29,6 @@ import EditTransactionModal from "./EditTransactionModal";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Select,
   SelectContent,
@@ -34,13 +38,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  DataTable,
+  DataTableColumnHeader,
+  DataTablePagination,
+} from "@/components/ui/data-table";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -124,153 +125,7 @@ function EditableSelect({
   );
 }
 
-interface TransactionRowProps {
-  t: Transaction;
-  compactLayout: boolean;
-  selected: boolean;
-  toggleSelect: (id: string) => void;
-  categoryOptions: SelectOption[];
-  payeeOptions: SelectOption[];
-  handleCategoryChange: (
-    txnId: string,
-    categoryId: string,
-    txn: Transaction,
-  ) => void;
-  handlePayeeChange: (txnId: string, payeeId: string, txn: Transaction) => void;
-  handleDelete: (id: string) => void;
-  setLinkingTxn: (t: Transaction | null) => void;
-  setEditingTxn: (t: Transaction | null) => void;
-}
-
-const TransactionRow = memo(function TransactionRow({
-  t,
-  compactLayout,
-  selected,
-  toggleSelect,
-  categoryOptions,
-  payeeOptions,
-  handleCategoryChange,
-  handlePayeeChange,
-  handleDelete,
-  setLinkingTxn,
-  setEditingTxn,
-}: TransactionRowProps) {
-  if (t.isSummary) {
-    const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
-    return (
-      <TableRow className="bg-primary/10 border-border">
-        <TableCell className={pad}></TableCell>
-        <TableCell className={`${pad} text-sm text-muted-foreground whitespace-nowrap`}>
-          {formatDate(t.date)}
-        </TableCell>
-        <TableCell className={`${pad} text-sm font-semibold text-primary`}>
-          {t.description}
-        </TableCell>
-        <TableCell className={pad}></TableCell>
-        <TableCell className={`${pad} text-sm text-muted-foreground whitespace-nowrap`}>
-          {t.accountName}
-        </TableCell>
-        <TableCell className={pad}></TableCell>
-        <TableCell
-          className={`${pad} text-sm text-right font-bold text-foreground font-mono whitespace-nowrap`}
-        >
-          {formatCurrency(t.amount)}
-        </TableCell>
-        <TableCell className={pad}></TableCell>
-      </TableRow>
-    );
-  }
-  return (
-    <TableRow
-      className={`transition-colors border-border ${selected ? "bg-primary/10" : "hover:bg-muted/50"}`}
-    >
-      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
-        <Checkbox checked={selected} onCheckedChange={() => toggleSelect(t.id)} />
-      </TableCell>
-      <TableCell
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm whitespace-nowrap`}
-      >
-        {formatDate(t.date)}
-      </TableCell>
-      <TableCell
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap`}
-        title={t.description}
-      >
-        {t.description}
-      </TableCell>
-      <TableCell
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm min-w-25`}
-      >
-        <EditableSelect
-          value={t.payeeId}
-          options={payeeOptions}
-          onChange={(val) => handlePayeeChange(t.id, val, t)}
-          placeholder="No Payee"
-          displayText={t.payee}
-        />
-      </TableCell>
-      <TableCell
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm whitespace-nowrap`}
-      >
-        {t.accountName}
-      </TableCell>
-      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}>
-        <EditableSelect
-          value={t.categoryId}
-          options={categoryOptions}
-          onChange={(val) => handleCategoryChange(t.id, val, t)}
-          placeholder="Uncategorized"
-          displayText={t.categoryId ? t.categoryName : ""}
-          style={t.categoryColor ? { color: t.categoryColor } : undefined}
-        />
-      </TableCell>
-      <TableCell
-        className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-right font-semibold whitespace-nowrap`}
-      >
-        <span
-          className={t.type === "debit" ? "text-destructive" : "text-emerald-500"}
-        >
-          {t.type === "debit" ? "−" : "+"}
-          {formatCurrency(t.amount)}
-        </span>
-      </TableCell>
-      <TableCell className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"}`}>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground hover:text-primary hover:bg-primary/10"
-            onClick={() => setEditingTxn(t)}
-            title="Edit transaction"
-          >
-            <Pencil size={14} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className={`${
-              t.isLinked
-                ? "text-primary bg-primary/10 hover:bg-primary/20 hover:text-primary"
-                : "text-muted-foreground hover:text-primary hover:bg-primary/10"
-            }`}
-            onClick={() => setLinkingTxn(t)}
-            title={t.isLinked ? "Manage links" : "Find match and link"}
-          >
-            <Link2 size={14} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            onClick={() => handleDelete(t.id)}
-          >
-            <Trash2 size={14} />
-          </Button>
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-});
+const columnHelper = createColumnHelper<Transaction>();
 
 const URL_PARAMS = [
   "search",
@@ -593,28 +448,79 @@ export default function Transactions() {
     setSelected(new Set());
   };
 
-  const toggleSort = (col: string) => {
+  // Derived TanStack state (server-side sorting/pagination, client-side
+  // selection) plus the handlers that write back into `filters`/`selected`.
+  const sorting = useMemo<SortingState>(
+    () => [
+      {
+        id: String(filters.sortBy || "date"),
+        desc: filters.sortOrder === "ASC" ? false : true,
+      },
+    ],
+    [filters.sortBy, filters.sortOrder],
+  );
+  const sortingRef = useRef(sorting);
+  useEffect(() => {
+    sortingRef.current = sorting;
+  }, [sorting]);
+
+  const pagination = useMemo<PaginationState>(
+    () => ({ pageIndex: Number(filters.page) - 1, pageSize }),
+    [filters.page, pageSize],
+  );
+  const paginationRef = useRef(pagination);
+  useEffect(() => {
+    paginationRef.current = pagination;
+  }, [pagination]);
+
+  const rowSelection = useMemo<RowSelectionState>(() => {
+    const obj: RowSelectionState = {};
+    selected.forEach((id) => (obj[id] = true));
+    return obj;
+  }, [selected]);
+  const rowSelectionRef = useRef(rowSelection);
+  useEffect(() => {
+    rowSelectionRef.current = rowSelection;
+  }, [rowSelection]);
+
+  const onSortingChange: OnChangeFn<SortingState> = useCallback((updater) => {
+    const next =
+      typeof updater === "function" ? updater(sortingRef.current) : updater;
+    const col = next[0];
     setFilters((f) => ({
       ...f,
-      sortBy: col,
-      sortOrder: f.sortBy === col && f.sortOrder === "DESC" ? "ASC" : "DESC",
+      sortBy: col?.id ?? "date",
+      sortOrder: col?.desc ? "DESC" : "ASC",
+      page: 1,
     }));
     setSelected(new Set());
-  };
+  }, []);
 
-  const goToPage = (page: number) => {
-    setFilters((f) => ({ ...f, page }));
-    setSelected(new Set());
-  };
+  const onPaginationChange: OnChangeFn<PaginationState> = useCallback(
+    (updater) => {
+      const next =
+        typeof updater === "function"
+          ? updater(paginationRef.current)
+          : updater;
+      if (next.pageSize !== paginationRef.current.pageSize) {
+        applyPageSize(next.pageSize);
+      }
+      setFilters((f) => ({ ...f, page: next.pageIndex + 1 }));
+      setSelected(new Set());
+    },
+    [],
+  );
 
-  const SortIcon = ({ col }: { col: string }) => {
-    if (filters.sortBy !== col) return null;
-    return filters.sortOrder === "ASC" ? (
-      <ChevronUp size={14} />
-    ) : (
-      <ChevronDown size={14} />
-    );
-  };
+  const onRowSelectionChange: OnChangeFn<RowSelectionState> = useCallback(
+    (updater) => {
+      const next =
+        typeof updater === "function"
+          ? updater(rowSelectionRef.current)
+          : updater;
+      setSelected(new Set(Object.keys(next).filter((k) => next[k])));
+    },
+    [],
+  );
 
   const handleCategoryChange = useCallback(
     async (txnId: string, categoryId: string, txn: Transaction) => {
@@ -739,23 +645,202 @@ export default function Transactions() {
     [loadTransactions],
   );
 
-  const toggleSelect = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }, []);
+  const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
+  const headerBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
 
-  const toggleSelectAll = useCallback(() => {
-    setSelected((prev) => {
-      if (prev.size === data.data.length && data.data.length > 0) {
-        return new Set();
-      } else {
-        return new Set(data.data.map((t) => t.id));
-      }
-    });
-  }, [data.data]);
+  // Column definitions for the transactions table.
+  const columns = useMemo<ColumnDef<Transaction>[]>(
+    () => [
+      columnHelper.display({
+        id: "select",
+        header: ({ table }) => (
+          <Checkbox
+            checked={table.getIsAllPageRowsSelected()}
+            onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
+          />
+        ),
+        cell: ({ row }) =>
+          row.original.isSummary ? null : (
+            <Checkbox
+              checked={row.getIsSelected()}
+              onCheckedChange={(v) => row.toggleSelected(!!v)}
+            />
+          ),
+        meta: { headerClassName: "w-10" },
+      }),
+      columnHelper.accessor("date", {
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title="Date" />
+        ),
+        cell: ({ row }) =>
+          row.original.isSummary ? (
+            <span className="text-sm text-muted-foreground whitespace-nowrap">
+              {formatDate(row.original.date)}
+            </span>
+          ) : (
+            <span className="text-sm whitespace-nowrap">
+              {formatDate(row.original.date)}
+            </span>
+          ),
+        meta: { cellClassName: "text-sm whitespace-nowrap" },
+      }),
+      columnHelper.accessor("description", {
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title="Description" />
+        ),
+        cell: ({ row }) =>
+          row.original.isSummary ? (
+            <span className="text-sm font-semibold text-primary">
+              {row.original.description}
+            </span>
+          ) : (
+            <span
+              className="block text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap"
+              title={row.original.description}
+            >
+              {row.original.description}
+            </span>
+          ),
+        meta: {
+          cellClassName:
+            "text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap",
+        },
+      }),
+      columnHelper.display({
+        id: "payee",
+        header: () => "Payee",
+        cell: ({ row }) =>
+          row.original.isSummary ? null : (
+            <EditableSelect
+              value={row.original.payeeId}
+              options={payeeOptions}
+              onChange={(val) =>
+                handlePayeeChange(row.original.id, val, row.original)
+              }
+              placeholder="No Payee"
+              displayText={row.original.payee}
+            />
+          ),
+        meta: { cellClassName: "text-sm min-w-25" },
+      }),
+      columnHelper.accessor("accountName", {
+        header: () => "Account",
+        cell: ({ row }) => (
+          <span
+            className={`text-sm whitespace-nowrap ${
+              row.original.isSummary ? "text-muted-foreground" : ""
+            }`}
+          >
+            {row.original.accountName}
+          </span>
+        ),
+        meta: { cellClassName: "text-sm whitespace-nowrap" },
+      }),
+      columnHelper.display({
+        id: "category",
+        header: () => "Category",
+        cell: ({ row }) =>
+          row.original.isSummary ? null : (
+            <EditableSelect
+              value={row.original.categoryId}
+              options={categoryOptions}
+              onChange={(val) =>
+                handleCategoryChange(row.original.id, val, row.original)
+              }
+              placeholder="Uncategorized"
+              displayText={
+                row.original.categoryId ? row.original.categoryName : ""
+              }
+              style={
+                row.original.categoryColor
+                  ? { color: row.original.categoryColor }
+                  : undefined
+              }
+            />
+          ),
+        meta: { cellClassName: "text-sm" },
+      }),
+      columnHelper.accessor("amount", {
+        header: ({ column }) => (
+          <DataTableColumnHeader column={column} title="Amount" />
+        ),
+        cell: ({ row }) =>
+          row.original.isSummary ? (
+            <span className="text-sm text-right font-bold text-foreground font-mono whitespace-nowrap">
+              {formatCurrency(row.original.amount)}
+            </span>
+          ) : (
+            <span
+              className={`text-sm text-right font-semibold whitespace-nowrap ${
+                row.original.type === "debit"
+                  ? "text-destructive"
+                  : "text-emerald-500"
+              }`}
+            >
+              {row.original.type === "debit" ? "−" : "+"}
+              {formatCurrency(row.original.amount)}
+            </span>
+          ),
+        meta: {
+          headerClassName: "text-right",
+          cellClassName: "text-sm text-right whitespace-nowrap",
+        },
+      }),
+      columnHelper.display({
+        id: "actions",
+        header: () => "",
+        cell: ({ row }) => {
+          const t = row.original;
+          if (t.isSummary) return null;
+          return (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+                onClick={() => setEditingTxn(t)}
+                title="Edit transaction"
+              >
+                <Pencil size={14} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={`${
+                  t.isLinked
+                    ? "text-primary bg-primary/10 hover:bg-primary/20 hover:text-primary"
+                    : "text-muted-foreground hover:text-primary hover:bg-primary/10"
+                }`}
+                onClick={() => setLinkingTxn(t)}
+                title={t.isLinked ? "Manage links" : "Find match and link"}
+              >
+                <Link2 size={14} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                onClick={() => handleDelete(t.id)}
+              >
+                <Trash2 size={14} />
+              </Button>
+            </div>
+          );
+        },
+        meta: { headerClassName: "w-12.5" },
+      }),
+    ],
+    [
+      pad,
+      categoryOptions,
+      payeeOptions,
+      handleCategoryChange,
+      handlePayeeChange,
+      handleDelete,
+      setLinkingTxn,
+      setEditingTxn,
+    ],
+  );
 
   return (
     <>
@@ -794,9 +879,13 @@ export default function Transactions() {
         >
           <Select
             value={String(filters.accountId || "all")}
-            onValueChange={(v) => updateFilter("accountId", v === "all" ? "" : v)}
+            onValueChange={(v) =>
+              updateFilter("accountId", v === "all" ? "" : v)
+            }
           >
-            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+            <SelectTrigger
+              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            >
               <SelectValue placeholder="All Accounts" />
             </SelectTrigger>
             <SelectContent>
@@ -823,7 +912,9 @@ export default function Transactions() {
               }
             }}
           >
-            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+            <SelectTrigger
+              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            >
               <SelectValue placeholder="All Categories" />
             </SelectTrigger>
             <SelectContent>
@@ -852,7 +943,9 @@ export default function Transactions() {
             value={String(filters.payeeId || "all")}
             onValueChange={(v) => updateFilter("payeeId", v === "all" ? "" : v)}
           >
-            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+            <SelectTrigger
+              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            >
               <SelectValue placeholder="All Payees" />
             </SelectTrigger>
             <SelectContent>
@@ -868,7 +961,9 @@ export default function Transactions() {
             value={String(filters.type || "all")}
             onValueChange={(v) => updateFilter("type", v === "all" ? "" : v)}
           >
-            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+            <SelectTrigger
+              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            >
               <SelectValue placeholder="All Types" />
             </SelectTrigger>
             <SelectContent>
@@ -881,7 +976,9 @@ export default function Transactions() {
             value={String(filters.linked || "all")}
             onValueChange={(v) => updateFilter("linked", v === "all" ? "" : v)}
           >
-            <SelectTrigger className={`${compactLayout ? "h-8" : "h-10"} bg-background`}>
+            <SelectTrigger
+              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            >
               <SelectValue placeholder="All Link Status" />
             </SelectTrigger>
             <SelectContent>
@@ -907,9 +1004,13 @@ export default function Transactions() {
 
           {/* Page size control, floated right to stay visually separate */}
           <div className={`ml-auto flex items-center gap-2`}>
-            <label className="text-sm text-muted-foreground">Rows per page</label>
+            <label className="text-sm text-muted-foreground">
+              Rows per page
+            </label>
             <Select value={preset} onValueChange={handlePresetChange}>
-              <SelectTrigger className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}>
+              <SelectTrigger
+                className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1027,142 +1128,39 @@ export default function Transactions() {
           </div>
         )}
 
-{/* Table */}
-        <div className="bg-card border border-border rounded-xl overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 w-10`}
-                >
-                  <Checkbox
-                    checked={
-                      data.data.length > 0 && selected.size === data.data.length
-                    }
-                    onCheckedChange={() => toggleSelectAll()}
-                  />
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none`}
-                  onClick={() => toggleSort("date")}
-                >
-                  Date <SortIcon col="date" />
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none`}
-                  onClick={() => toggleSort("description")}
-                >
-                  Description <SortIcon col="description" />
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                >
-                  Payee
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                >
-                  Account
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`}
-                >
-                  Category
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap cursor-pointer hover:text-foreground select-none text-right`}
-                  onClick={() => toggleSort("amount")}
-                >
-                  Amount <SortIcon col="amount" />
-                </TableHead>
-                <TableHead
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 w-12.5`}
-                ></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center p-10">
-                    <Spinner className="mx-auto size-8 text-primary" />
-                  </TableCell>
-                </TableRow>
-              ) : data.data.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center p-10 text-muted-foreground">
-                    No transactions found
-                  </TableCell>
-                </TableRow>
-              ) : (
-                data.data.map((t) => (
-                  <TransactionRow
-                    key={t.id}
-                    t={t}
-                    compactLayout={compactLayout}
-                    selected={selected.has(t.id)}
-                    toggleSelect={toggleSelect}
-                    categoryOptions={categoryOptions}
-                    payeeOptions={payeeOptions}
-                    handleCategoryChange={handleCategoryChange}
-                    handlePayeeChange={handlePayeeChange}
-                    handleDelete={handleDelete}
-                    setLinkingTxn={setLinkingTxn}
-                    setEditingTxn={setEditingTxn}
-                  />
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-
-        {/* Pagination */}
-        {pageSize > 0 && data.pages > 1 && (
-          <div className="flex items-center justify-between mt-4 mb-4">
-            <div className="text-sm text-muted-foreground">
-              Page {data.page} of {data.pages} ({data.total} total)
-            </div>
-            <div className="flex gap-1.5">
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={data.page <= 1}
-                onClick={() => goToPage(data.page - 1)}
-              >
-                Prev
-              </Button>
-              {Array.from({ length: Math.min(data.pages, 7) }, (_, i) => {
-                let pageNum: number;
-                if (data.pages <= 7) {
-                  pageNum = i + 1;
-                } else if (data.page <= 4) {
-                  pageNum = i + 1;
-                } else if (data.page >= data.pages - 3) {
-                  pageNum = data.pages - 6 + i;
-                } else {
-                  pageNum = data.page - 3 + i;
-                }
-                return (
-                  <Button
-                    key={pageNum}
-                    size="sm"
-                    variant={data.page === pageNum ? "default" : "ghost"}
-                    onClick={() => goToPage(pageNum)}
-                  >
-                    {pageNum}
-                  </Button>
-                );
-              })}
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={data.page >= data.pages}
-                onClick={() => goToPage(data.page + 1)}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
-        )}
+        {/* Table */}
+        <DataTable
+          columns={columns}
+          data={data.data}
+          loading={loading}
+          emptyMessage="No transactions found"
+          getRowId={(row) => row.id}
+          enableRowSelection={(row) => !row.original.isSummary}
+          getRowClassName={(row) => {
+            if (row.original.isSummary) return "bg-primary/10 border-border";
+            return row.getIsSelected()
+              ? "bg-primary/10 border-border"
+              : "border-border";
+          }}
+          sorting={sorting}
+          onSortingChange={onSortingChange}
+          manualSorting
+          pagination={pagination}
+          onPaginationChange={onPaginationChange}
+          manualPagination
+          rowCount={data.total}
+          pageCount={data.pages}
+          rowSelection={rowSelection}
+          onRowSelectionChange={onRowSelectionChange}
+          containerClassName="bg-card border border-border rounded-xl overflow-x-auto"
+          headerClassName={headerBase}
+          cellClassName={pad}
+          footer={(table) =>
+            pageSize > 0 && data.pages > 1 ? (
+              <DataTablePagination table={table} />
+            ) : null
+          }
+        />
       </div>
       {linkingTxn && (
         <LinkTransactionModal

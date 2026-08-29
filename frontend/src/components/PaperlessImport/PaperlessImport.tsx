@@ -31,13 +31,10 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  createColumnHelper,
+  type ColumnDef,
+} from "@tanstack/react-table";
+import { DataTable } from "@/components/ui/data-table";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +57,7 @@ import type {
   PaperlessDocument,
   StatementExtractor,
   ImportTransaction,
+  ValidateTransactionResult,
   ValidateTransactionsResponse,
 } from "../../types";
 
@@ -645,6 +643,150 @@ export default function PaperlessImport() {
     [preview],
   );
 
+  // Preview table (parsed transactions from the selected documents).
+  const previewColumns = useMemo<ColumnDef<ImportTransaction>[]>(() => {
+    const colHelper = createColumnHelper<ImportTransaction>();
+    const headBase =
+      "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
+    return [
+      colHelper.accessor("date", {
+        header: () => "Date",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground whitespace-nowrap">
+            {row.original.date}
+          </span>
+        ),
+        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
+      }),
+      colHelper.accessor("description", {
+        header: () => "Description",
+        cell: ({ row }) => (
+          <span className="text-foreground">{row.original.description}</span>
+        ),
+        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
+      }),
+      colHelper.accessor("type", {
+        header: () => "Type",
+        cell: ({ row }) => (
+          <Badge
+            className={`uppercase text-[10px] ${
+              row.original.type === "credit"
+                ? "bg-emerald-500/10 text-emerald-400"
+                : "bg-destructive/10 text-destructive"
+            }`}
+          >
+            {row.original.type}
+          </Badge>
+        ),
+        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
+      }),
+      colHelper.accessor("amount", {
+        header: () => "Amount",
+        cell: ({ row }) => (
+          <span
+            className={`text-right font-medium whitespace-nowrap ${
+              row.original.type === "credit"
+                ? "text-emerald-400"
+                : "text-destructive"
+            }`}
+          >
+            {row.original.type === "credit" ? "+" : "−"}
+            {formatCurrency(row.original.amount)}
+          </span>
+        ),
+        meta: {
+          headerClassName: `${headBase} text-right`,
+          cellClassName: "px-4 py-2 text-right",
+        },
+      }),
+    ];
+  }, []);
+
+  // Validation-results dialog table.
+  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
+    const colHelper = createColumnHelper<ValidateTransactionResult>();
+    const headBase =
+      "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
+    return [
+      colHelper.accessor("date", {
+        header: () => "Date",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground whitespace-nowrap">
+            {row.original.date}
+          </span>
+        ),
+        meta: {
+          headerClassName: `${headBase} w-28`,
+          cellClassName: "px-4 py-2",
+        },
+      }),
+      colHelper.accessor("description", {
+        header: () => "Description",
+        cell: ({ row }) => (
+          <span className="text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
+            {row.original.description}
+          </span>
+        ),
+        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
+      }),
+      colHelper.accessor("type", {
+        header: () => "Type",
+        cell: ({ row }) => (
+          <Badge
+            className={`uppercase text-[10px] ${
+              row.original.type === "credit"
+                ? "bg-emerald-500/10 text-emerald-400"
+                : "bg-destructive/10 text-destructive"
+            }`}
+          >
+            {row.original.type}
+          </Badge>
+        ),
+        meta: {
+          headerClassName: `${headBase} w-24`,
+          cellClassName: "px-4 py-2",
+        },
+      }),
+      colHelper.accessor("amount", {
+        header: () => "Amount",
+        cell: ({ row }) => (
+          <span
+            className={`text-right font-medium whitespace-nowrap ${
+              row.original.type === "credit"
+                ? "text-emerald-400"
+                : "text-destructive"
+            }`}
+          >
+            {row.original.type === "credit" ? "+" : "−"}
+            {formatCurrency(row.original.amount)}
+          </span>
+        ),
+        meta: {
+          headerClassName: `${headBase} text-right w-32`,
+          cellClassName: "px-4 py-2 text-right",
+        },
+      }),
+      colHelper.display({
+        id: "status",
+        header: () => "Status",
+        cell: ({ row }) =>
+          row.original.exists ? (
+            <Badge className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/25">
+              <CheckCircle2 size={12} /> Already exists
+            </Badge>
+          ) : (
+            <Badge className="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+              <PlusCircle size={12} /> New
+            </Badge>
+          ),
+        meta: {
+          headerClassName: `${headBase} w-32`,
+          cellClassName: "px-4 py-2",
+        },
+      }),
+    ];
+  }, []);
+
   if (loadingConfig) {
     return (
       <div className="flex-1 px-8 pt-6">
@@ -1027,49 +1169,13 @@ export default function PaperlessImport() {
               </div>
             ) : (
               <div className="max-h-80 overflow-y-auto border border-border rounded-lg bg-background">
-                <Table>
-                  <TableHeader className="sticky top-0 bg-card text-left text-xs text-muted-foreground">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="h-auto px-4 py-2 font-medium">
-                        Date
-                      </TableHead>
-                      <TableHead className="h-auto px-4 py-2 font-medium">
-                        Description
-                      </TableHead>
-                      <TableHead className="h-auto px-4 py-2 font-medium">
-                        Type
-                      </TableHead>
-                      <TableHead className="h-auto px-4 py-2 font-medium text-right">
-                        Amount
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {preview.transactions.slice(0, 500).map((t, i) => (
-                      <TableRow key={i}>
-                        <TableCell className="px-4 py-2 text-muted-foreground whitespace-nowrap">
-                          {t.date}
-                        </TableCell>
-                        <TableCell className="px-4 py-2 text-foreground whitespace-normal">
-                          {t.description}
-                        </TableCell>
-                        <TableCell className="px-4 py-2 whitespace-nowrap">
-                          <Badge
-                            className={`uppercase text-[10px] ${t.type === "credit" ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}
-                          >
-                            {t.type}
-                          </Badge>
-                        </TableCell>
-                        <TableCell
-                          className={`px-4 py-2 text-right font-medium whitespace-nowrap ${t.type === "credit" ? "text-emerald-400" : "text-destructive"}`}
-                        >
-                          {t.type === "credit" ? "+" : "−"}
-                          {formatCurrency(t.amount)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <DataTable
+                  columns={previewColumns}
+                  data={preview.transactions.slice(0, 500)}
+                  containerClassName=""
+                  headerClassName=""
+                  cellClassName=""
+                />
               </div>
             )}
             {parsedCount > 0 && (
@@ -1167,63 +1273,14 @@ export default function PaperlessImport() {
 
             {/* Per-transaction list */}
             <div className="border border-border rounded-lg overflow-y-auto flex-1 bg-background">
-              <Table>
-                <TableHeader className="sticky top-0 bg-card text-left text-xs text-muted-foreground">
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="h-auto px-4 py-2 font-medium w-28">
-                      Date
-                    </TableHead>
-                    <TableHead className="h-auto px-4 py-2 font-medium">
-                      Description
-                    </TableHead>
-                    <TableHead className="h-auto px-4 py-2 font-medium w-24">
-                      Type
-                    </TableHead>
-                    <TableHead className="h-auto px-4 py-2 font-medium text-right w-32">
-                      Amount
-                    </TableHead>
-                    <TableHead className="h-auto px-4 py-2 font-medium w-32">
-                      Status
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {validationResult.results.map((r) => (
-                    <TableRow key={r.index}>
-                      <TableCell className="px-4 py-2 text-muted-foreground whitespace-nowrap">
-                        {r.date}
-                      </TableCell>
-                      <TableCell className="px-4 py-2 text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
-                        {r.description}
-                      </TableCell>
-                      <TableCell className="px-4 py-2 whitespace-nowrap">
-                        <Badge
-                          className={`uppercase text-[10px] ${r.type === "credit" ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}
-                        >
-                          {r.type}
-                        </Badge>
-                      </TableCell>
-                      <TableCell
-                        className={`px-4 py-2 text-right font-medium whitespace-nowrap ${r.type === "credit" ? "text-emerald-400" : "text-destructive"}`}
-                      >
-                        {r.type === "credit" ? "+" : "−"}
-                        {formatCurrency(r.amount)}
-                      </TableCell>
-                      <TableCell className="px-4 py-2 whitespace-nowrap">
-                        {r.exists ? (
-                          <Badge className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/25">
-                            <CheckCircle2 size={12} /> Already exists
-                          </Badge>
-                        ) : (
-                          <Badge className="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                            <PlusCircle size={12} /> New
-                          </Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <DataTable
+                columns={validationColumns}
+                data={validationResult.results}
+                getRowId={(row) => String(row.index)}
+                containerClassName=""
+                headerClassName=""
+                cellClassName=""
+              />
             </div>
 
             <DialogFooter showCloseButton className="border-border" />
