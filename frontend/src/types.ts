@@ -189,6 +189,21 @@ export interface MonthlyData {
   expense: number;
 }
 
+export interface CurrentCycleInfo {
+  id: string;
+  startDate: string;
+  endDate: string;
+  label: string;
+}
+
+export interface BillingCycleTrendItem {
+  label: string;
+  startDate: string;
+  endDate: string;
+  income: number;
+  expense: number;
+}
+
 export interface DashboardSummary {
   totalAccounts: number;
   totalTransactions: number;
@@ -198,6 +213,10 @@ export interface DashboardSummary {
   incomeByCategory: CategorySpend[];
   monthlyTrend: MonthlyData[];
   recentTransactions: Transaction[];
+  // Present only in billing-cycle view (groupBy=billing_cycle): totals reflect
+  // the current statement period and billingCycleTrend replaces monthlyTrend.
+  currentCycle?: CurrentCycleInfo;
+  billingCycleTrend?: BillingCycleTrendItem[];
 }
 
 export interface TransactionsResponse {

@@ -67,26 +67,26 @@ type Payee struct {
 // (UserID nil); users can add their own custom groups (UserID set). IsBase marks
 // the built-in, non-deletable groups.
 type CategoryGroup struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	Icon     string     `json:"icon"`
-	Color    string     `json:"color"`
-	IsBase   bool       `json:"isBase"`
-	IsGlobal bool       `json:"isGlobal"`
-	UserID   *uuid.UUID `json:"userId,omitempty"`
-	SortOrder int       `json:"sortOrder"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Icon      string     `json:"icon"`
+	Color     string     `json:"color"`
+	IsBase    bool       `json:"isBase"`
+	IsGlobal  bool       `json:"isGlobal"`
+	UserID    *uuid.UUID `json:"userId,omitempty"`
+	SortOrder int        `json:"sortOrder"`
 }
 
 // Category is a user-scoped (or global) grouping for transactions. GroupID
 // references a CategoryGroup ("income", "expense", "transfer", "cashback", or a
 // user's custom group).
 type Category struct {
-	ID       uuid.UUID  `json:"id"`
-	Name     string     `json:"name"`
-	Icon     string     `json:"icon"`
-	Color    string     `json:"color"`
-	GroupID  string     `json:"groupId"`
-	IsGlobal bool       `json:"isGlobal"`
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Icon     string    `json:"icon"`
+	Color    string    `json:"color"`
+	GroupID  string    `json:"groupId"`
+	IsGlobal bool      `json:"isGlobal"`
 	// Joined
 	GroupName   string `json:"groupName,omitempty"`
 	GroupIsBase bool   `json:"groupIsBase,omitempty"`
@@ -109,12 +109,12 @@ type Transaction struct {
 	Payee       string     `json:"payee"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	// Joined fields
-	AccountName   string     `json:"accountName,omitempty"`
-	CategoryName  string     `json:"categoryName,omitempty"`
-	CategoryIcon  string     `json:"categoryIcon,omitempty"`
-	CategoryColor string     `json:"categoryColor,omitempty"`
-	IsLinked      bool       `json:"isLinked"`
-	IsSummary     bool       `json:"isSummary,omitempty"`
+	AccountName   string `json:"accountName,omitempty"`
+	CategoryName  string `json:"categoryName,omitempty"`
+	CategoryIcon  string `json:"categoryIcon,omitempty"`
+	CategoryColor string `json:"categoryColor,omitempty"`
+	IsLinked      bool   `json:"isLinked"`
+	IsSummary     bool   `json:"isSummary,omitempty"`
 	// Billing cycle attachment (credit cards)
 	BillingCycleID    *uuid.UUID `json:"billingCycleId,omitempty"`
 	BillingCycleLabel string     `json:"billingCycleLabel,omitempty"`
@@ -556,6 +556,9 @@ type BulkDeleteLinksRequest struct {
 // DashboardSummary aggregates a user's financial overview for the dashboard:
 // account/transaction counts, income and expense totals, spending and income
 // breakdowns by category, a monthly trend, and the most recent transactions.
+// In billing-cycle view (groupBy=billing_cycle) the totals reflect the current
+// statement period, BillingCycleTrend replaces MonthlyTrend, and
+// CurrentCycle describes that in-progress period.
 type DashboardSummary struct {
 	TotalAccounts      int             `json:"totalAccounts"`
 	TotalTransactions  int             `json:"totalTransactions"`
@@ -565,6 +568,29 @@ type DashboardSummary struct {
 	IncomeByCategory   []CategorySpend `json:"incomeByCategory"`
 	MonthlyTrend       []MonthlyData   `json:"monthlyTrend"`
 	RecentTransactions []Transaction   `json:"recentTransactions"`
+	// Billing-cycle view (groupBy=billing_cycle): populated when the dashboard
+	// is framed around statement periods for a single billing-day account.
+	CurrentCycle      *CurrentCycleInfo       `json:"currentCycle,omitempty"`
+	BillingCycleTrend []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
+}
+
+// CurrentCycleInfo describes the billing cycle currently in progress for an
+// account in billing-cycle dashboard view.
+type CurrentCycleInfo struct {
+	ID        uuid.UUID `json:"id"`
+	StartDate time.Time `json:"startDate"`
+	EndDate   time.Time `json:"endDate"`
+	Label     string    `json:"label"`
+}
+
+// BillingCycleTrendItem holds income and expense totals for one billing cycle,
+// keyed by its label (e.g. "Aug 2026").
+type BillingCycleTrendItem struct {
+	Label     string    `json:"label"`
+	StartDate time.Time `json:"startDate"`
+	EndDate   time.Time `json:"endDate"`
+	Income    float64   `json:"income"`
+	Expense   float64   `json:"expense"`
 }
 
 // CategorySpend aggregates spend/income for a single category.

@@ -1788,6 +1788,25 @@ paths:
             type: string
             format: uuid
           description: Filter by account ID
+        - in: query
+          name: groupBy
+          schema:
+            type: string
+            enum:
+              - billing_cycle
+          description: >-
+            When "billing_cycle", frame the whole summary around the statement
+            periods of the account given by `accountId` (which must have a
+            `billingDay` set). The stat totals and category breakdowns span the
+            last `cycles` cycles, `billingCycleTrend` replaces `monthlyTrend`,
+            and `currentCycle` describes the in-progress period. Date-range
+            filters are ignored in this mode.
+        - in: query
+          name: cycles
+          schema:
+            type: integer
+            default: 12
+          description: Number of billing cycles to include in the window (1-60, used with groupBy=billing_cycle)
       responses:
         "200":
           description: Dashboard summary
@@ -2599,6 +2618,37 @@ components:
         expense:
           type: number
 
+    CurrentCycleInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        label:
+          type: string
+
+    BillingCycleTrendItem:
+      type: object
+      properties:
+        label:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        income:
+          type: number
+        expense:
+          type: number
+
     DashboardSummary:
       type: object
       properties:
@@ -2626,6 +2676,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Transaction"
+        currentCycle:
+          $ref: "#/components/schemas/CurrentCycleInfo"
+        billingCycleTrend:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingCycleTrendItem"
 
     # ============= Common =============
     ErrorResponse:

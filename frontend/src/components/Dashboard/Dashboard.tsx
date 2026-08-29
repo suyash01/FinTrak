@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import type {
   DashboardSummary,
   Account,
@@ -74,7 +75,15 @@ export default function Dashboard() {
   const [dateTo, setDateTo] = useState(
     searchParams.get("dateTo") || defaultRange.dateTo,
   );
+  const [groupBy, setGroupBy] = useState(
+    searchParams.get("groupBy") === "billing_cycle" ? "billing_cycle" : "",
+  );
+  const [cycles, setCycles] = useState(searchParams.get("cycles") || "12");
   const { compactLayout } = useSettings();
+
+  const selectedAccount = accounts.find((a) => a.id === accountId);
+  const isBillingCycleMode = groupBy === "billing_cycle";
+  const isBillingAccount = Boolean(selectedAccount?.billingDay);
 
   useEffect(() => {
     api
@@ -96,20 +105,43 @@ export default function Dashboard() {
   useEffect(() => {
     const params: Record<string, string> = {};
     if (accountId) params.accountId = accountId;
-    if (dateFrom) params.dateFrom = dateFrom;
-    if (dateTo) params.dateTo = dateTo;
+    if (isBillingCycleMode) {
+      params.groupBy = "billing_cycle";
+      params.cycles = cycles;
+    } else {
+      if (dateFrom) params.dateFrom = dateFrom;
+      if (dateTo) params.dateTo = dateTo;
+    }
     const urlParams = Object.fromEntries(searchParams.entries());
     if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
       setSearchParams(params, { replace: true });
     }
-  }, [accountId, dateFrom, dateTo, searchParams, setSearchParams]);
+  }, [accountId, dateFrom, dateTo, isBillingCycleMode, cycles, searchParams, setSearchParams]);
 
   useEffect(() => {
     setAccountId(searchParams.get("accountId") || "");
     setDateFrom(searchParams.get("dateFrom") || defaultRange.dateFrom);
     setDateTo(searchParams.get("dateTo") || defaultRange.dateTo);
+    setGroupBy(searchParams.get("groupBy") === "billing_cycle" ? "billing_cycle" : "");
+    const cyc = searchParams.get("cycles");
+    if (cyc && ["6", "12", "24"].includes(cyc)) {
+      setCycles(cyc);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // Billing-cycle view only makes sense for an account that has a billing day;
+  // fall back to the calendar view otherwise. Do not force it off while the
+  // account list is still loading (selectedAccount is undefined) so the mode
+  // survives a refresh.
+  useEffect(() => {
+    if (
+      isBillingCycleMode &&
+      (!accountId || (selectedAccount && !selectedAccount.billingDay))
+    ) {
+      setGroupBy("");
+    }
+  }, [isBillingCycleMode, accountId, selectedAccount]);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
@@ -117,8 +149,13 @@ export default function Dashboard() {
     try {
       const params: QueryParams = {};
       if (accountId) params.accountId = accountId;
-      if (dateFrom) params.dateFrom = dateFrom;
-      if (dateTo) params.dateTo = dateTo;
+      if (isBillingCycleMode) {
+        params.groupBy = "billing_cycle";
+        params.cycles = cycles;
+      } else {
+        if (dateFrom) params.dateFrom = dateFrom;
+        if (dateTo) params.dateTo = dateTo;
+      }
       const res = await api.getDashboardSummary(params);
       setData(res);
     } catch (err) {
@@ -126,7 +163,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, dateFrom, dateTo]);
+  }, [accountId, dateFrom, dateTo, isBillingCycleMode, cycles]);
 
   useEffect(() => {
     loadSummary();
@@ -236,6 +273,15 @@ export default function Dashboard() {
   if (!data) return null;
 
   const netSavings = data.totalIncome - data.totalExpense;
+  const trendData = (isBillingCycleMode
+    ? data.billingCycleTrend ?? []
+    : data.monthlyTrend ?? []) as unknown as Array<{
+    income: number;
+    expense: number;
+    [key: string]: unknown;
+  }>;
+  const trendXKey = isBillingCycleMode ? "label" : "month";
+  const hasTrend = trendData.length > 0;
 
   return (
     <>
@@ -267,23 +313,66 @@ export default function Dashboard() {
               ))}
             </SelectContent>
           </Select>
-          <Input
-            type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            title="From date"
-          />
-          <Input
-            type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            title="To date"
-          />
+          {isBillingCycleMode ? (
+            <Select value={cycles} onValueChange={setCycles}>
+              <SelectTrigger
+                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-40`}
+              >
+                <SelectValue placeholder="Cycles" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="6">Last 6 cycles</SelectItem>
+                <SelectItem value="12">Last 12 cycles</SelectItem>
+                <SelectItem value="24">Last 24 cycles</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <>
+              <Input
+                type="date"
+                className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                title="From date"
+              />
+              <Input
+                type="date"
+                className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                title="To date"
+              />
+            </>
+          )}
+          {isBillingAccount && (
+            <label
+              className={`flex items-center gap-2 cursor-pointer select-none ${compactLayout ? "h-8" : "h-10"}`}
+            >
+              <Switch
+                checked={isBillingCycleMode}
+                onCheckedChange={(v) => setGroupBy(v ? "billing_cycle" : "")}
+                size="sm"
+              />
+              <span className="text-sm text-muted-foreground">
+                Billing cycle view
+              </span>
+            </label>
+          )}
         </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
+        {/* Current statement period (billing-cycle view) */}
+        {data.currentCycle && (
+          <p className="text-muted-foreground text-[13px] mb-3">
+            Current statement:{" "}
+            <span className="font-medium text-foreground">
+              {data.currentCycle.label}
+            </span>
+            {" · "}
+            {formatDate(data.currentCycle.startDate)} –{" "}
+            {formatDate(data.currentCycle.endDate)}
+          </p>
+        )}
         {/* Stats */}
         <div
           className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 ${compactLayout ? "gap-3 mb-4" : "gap-5 mb-6"}`}
@@ -361,15 +450,19 @@ export default function Dashboard() {
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
             >
-              <CardTitle>Monthly Income vs Expenses</CardTitle>
+              <CardTitle>
+                {isBillingCycleMode
+                  ? "Statement Income vs Expenses"
+                  : "Monthly Income vs Expenses"}
+              </CardTitle>
             </CardHeader>
             <CardContent className="flex-1 min-h-70">
-              {data.monthlyTrend.length > 0 ? (
+              {hasTrend ? (
                 <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={data.monthlyTrend} barGap={4}>
+                  <BarChart data={trendData} barGap={4}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis
-                      dataKey="month"
+                      dataKey={trendXKey}
                       stroke="var(--muted-foreground)"
                       fontSize={12}
                     />
