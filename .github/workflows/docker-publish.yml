@@ -133,7 +133,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish-frontend:
-    needs: [test-frontend, publish-parser]
+    needs: [test-frontend, publish-backend]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
