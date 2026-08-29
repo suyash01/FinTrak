@@ -61,11 +61,13 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, TypedDict, cast
 
 import pdfplumber
 from pdfplumber.page import Page
+from pdfplumber.pdf import PDF
 
 #: The masked/right-aligned word blocks pdfplumber.Page.extract_words()
-#: returns. total=False because extract_words() emits several more keys
-#: (e.g. "bottom", "upright", "direction") that this module never reads.
-class Word(TypedDict, total=False):
+#: returns. All keys are required (extract_words() always emits them);
+#: extra keys it also emits (e.g. "bottom", "upright", "direction") are
+#: simply ignored since TypedDicts allow additional keys.
+class Word(TypedDict):
     text: str
     x0: float
     x1: float
@@ -202,7 +204,7 @@ def _parse_date(text: str) -> str:
     return f"{yyyy}-{mm}-{dd}"
 
 
-def _open_pdf(path: str, password: Optional[str]) -> pdfplumber.PDF:
+def _open_pdf(path: str, password: Optional[str]) -> PDF:
     try:
         pdf = pdfplumber.open(path, password=password or "")
     except Exception as exc:  # pdfplumber surfaces pypdf's decrypt errors
@@ -247,7 +249,9 @@ def _find_section_account(words: List[Word]) -> Optional[str]:
 
 @dataclass
 class _PageParseResult:
-    transactions: List[Transaction] = field(default_factory=list)
+    transactions: List[Transaction] = field(
+        default_factory=lambda: cast(List[Transaction], [])
+    )
     printed_deposit_total: Optional[float] = None
     printed_withdrawal_total: Optional[float] = None
     printed_closing_balance: Optional[float] = None
@@ -297,7 +301,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
             by_col[_classify_column(w["x0"], w["x1"])].append(w)
 
         date_text: str = by_col["date"][0]["text"]
-        mode_text: str = " ".join(w["text"] for w in sorted(by_col["mode"], key=lambda w: w["x0"]))
+        mode_raw: str = " ".join(w["text"] for w in sorted(by_col["mode"], key=lambda w: w["x0"]))
         deposit_text: Optional[str] = by_col["deposit"][0]["text"] if by_col["deposit"] else None
         withdrawal_text: Optional[str] = by_col["withdrawal"][0]["text"] if by_col["withdrawal"] else None
         balance_text: Optional[str] = by_col["balance"][0]["text"] if by_col["balance"] else None
@@ -311,7 +315,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
 
         records[top] = _RawRecord(
             date_raw=date_text,
-            mode=mode_text,
+            mode=mode_raw,
             deposit_raw=deposit_text,
             withdrawal_raw=withdrawal_text,
             balance_raw=balance_text,

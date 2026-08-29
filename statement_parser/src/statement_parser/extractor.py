@@ -33,8 +33,11 @@ from .icici_bank_extractor import (
 class ExtractorSpec:
     name: str
     display_name: str
-    extract: Callable[[str, Optional[str]], dict[str, Any]]
-    to_csv: Callable[[List[dict[str, Any]]], bytes]
+    # Extractors return different dict shapes (some TypedDicts like
+    # StatementResult, others plain dict[str, Any]) and accept different
+    # transaction container types, so the registry types these loosely.
+    extract: Callable[..., Any]
+    to_csv: Callable[..., bytes]
 
 
 _EXTRACTORS: Dict[str, ExtractorSpec] = {}
@@ -43,8 +46,8 @@ _EXTRACTORS: Dict[str, ExtractorSpec] = {}
 def register_extractor(
     name: str,
     display_name: str,
-    extractor: Callable[[str, Optional[str]], dict[str, Any]],
-    to_csv: Callable[[List[dict[str, Any]]], bytes],
+    extractor: Callable[..., Any],
+    to_csv: Callable[..., bytes],
 ) -> None:
     """Register a new statement extractor implementation."""
     _EXTRACTORS[name.lower()] = ExtractorSpec(
