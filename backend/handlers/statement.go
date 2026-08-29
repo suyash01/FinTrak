@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/internal/logger"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -149,7 +151,10 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Error forwarding statement (calling parser): %v\n", err)
@@ -277,7 +282,10 @@ func ListStatementExtractors(c *gin.Context) {
 		return
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Error in ListStatementExtractors (calling parser): %v\n", err)

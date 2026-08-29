@@ -3,10 +3,12 @@ package logger
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -143,6 +145,193 @@ func TestRequestLoggerSkipsBinaryPayloads(t *testing.T) {
 	require.Len(t, h.records, 1)
 	_, ok := recordAttr(t, h.records[0], "request_body")
 	assert.False(t, ok)
+}
+
+func TestRequestLoggerDoesNotTruncateLargeResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	r.GET("/large", func(c *gin.Context) {
+		payload := strings.Repeat("x", maxBodyLog) // > 8 KB, single Write call
+		c.JSON(http.StatusOK, gin.H{"documents": strings.Split(payload, "")})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/large", nil))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		Documents []string `json:"documents"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Len(t, body.Documents, maxBodyLog)
+}
+
+func TestRequestLoggerLogsFullBodyWhenUnlimited(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	payload := strings.Repeat("z", 10_000)
+	r.GET("/big", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": payload})
+	})
+
+	original := maxBodyLog
+	SetMaxBodyLog(0)
+	t.Cleanup(func() { maxBodyLog = original })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/big", nil))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, h.records, 1)
+	respBody, ok := recordAttr(t, h.records[0], "response_body")
+	require.True(t, ok)
+	assert.Contains(t, respBody, payload)
+	_, truncated := recordAttr(t, h.records[0], "response_body_truncated")
+	assert.False(t, truncated)
+}
+
+func TestRequestLoggerLogsQueryParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelInfo}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	r.GET("/list", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/list?page=2&category_id=5", nil))
+
+	require.Len(t, h.records, 1)
+	assert.Equal(t, "/list", mustAttr(t, h.records[0], "path"))
+	assert.Equal(t, "page=2&category_id=5", mustAttr(t, h.records[0], "query"))
+}
+
+func TestRequestLoggerOmitsQueryWhenAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelInfo}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	r.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ping", nil))
+
+	require.Len(t, h.records, 1)
+	_, ok := recordAttr(t, h.records[0], "query")
+	assert.False(t, ok)
+}
+
+func TestLoggingRoundTripperLogsURLWithQueryAndRedactsToken(t *testing.T) {
+	h := &collectHandler{level: slog.LevelDebug}
+	l := slog.New(h)
+
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"documents":[{"id":1}]}`)),
+		}, nil
+	})
+
+	rt := LoggingRoundTripper(base, l)
+	req := httptest.NewRequest(http.MethodGet,
+		"http://paperless.local/api/documents/?page_size=100&ordering=-created", nil)
+	req.Header.Set("Authorization", "Token supersecret-token")
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	assert.JSONEq(t, `{"documents":[{"id":1}]}`, string(got))
+
+	require.Len(t, h.records, 1)
+	rec := h.records[0]
+	assert.Equal(t, "outbound_request", rec.Message)
+	assert.Equal(t, "GET", mustAttr(t, rec, "method"))
+	assert.Equal(t, "200", mustAttr(t, rec, "status"))
+	urlAttr := mustAttr(t, rec, "url")
+	assert.Contains(t, urlAttr, "page_size=100")
+	assert.Contains(t, urlAttr, "ordering=-created")
+	assert.Contains(t, urlAttr, "/api/documents/")
+
+	assert.Equal(t, "authorization", mustAttr(t, rec, "redacted_header"))
+	assert.False(t, recordHasAttrValue(t, rec, "supersecret-token"))
+	respBody := mustAttr(t, rec, "response_body")
+	assert.Contains(t, respBody, "documents")
+}
+
+func TestLoggingRoundTripperPreservesRequestBody(t *testing.T) {
+	h := &collectHandler{level: slog.LevelDebug}
+	l := slog.New(h)
+
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		_, _ = io.ReadAll(req.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":42}`)),
+			Request:    req,
+		}, nil
+	})
+
+	rt := LoggingRoundTripper(base, l)
+	payload := `{"name":"fintrak","color":"#06b6d4"}`
+	req := httptest.NewRequest(http.MethodPost, "http://paperless.local/api/tags/",
+		bytes.NewBufferString(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	assert.JSONEq(t, `{"id":42}`, string(got))
+
+	require.Len(t, h.records, 1)
+	assert.Contains(t, mustAttr(t, h.records[0], "request_body"), "fintrak")
+}
+
+func TestLoggingRoundTripperSkipsBinaryRequestBody(t *testing.T) {
+	h := &collectHandler{level: slog.LevelDebug}
+	l := slog.New(h)
+
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		_, _ = io.ReadAll(req.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString("{}")),
+			Request:    req,
+		}, nil
+	})
+
+	rt := LoggingRoundTripper(base, l)
+	req := httptest.NewRequest(http.MethodPost, "http://parser.local/api/extract",
+		bytes.NewBufferString("%PDF-1.4 binary payload"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Len(t, h.records, 1)
+	_, ok := recordAttr(t, h.records[0], "request_body")
+	assert.False(t, ok)
+}
+
+func recordHasAttrValue(t *testing.T, rec slog.Record, substr string) bool {
+	t.Helper()
+	found := false
+	rec.Attrs(func(a slog.Attr) bool {
+		if strings.Contains(a.Value.String(), substr) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func TestRequestLoggerPreservesHandlerRequestBody(t *testing.T) {

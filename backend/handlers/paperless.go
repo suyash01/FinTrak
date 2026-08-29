@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +21,7 @@ import (
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/crypto"
+	"github.com/fintrak/backend/internal/logger"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -33,6 +37,13 @@ const maxPaperlessResponse = 20 << 20 // 20 MB
 
 // maxPaperlessDocument bounds a statement PDF downloaded from Paperless.
 const maxPaperlessDocument = 20 << 20 // 20 MB
+
+// defaultPaperlessPageSize is the page size requested from Paperless when the
+// caller does not specify one.
+const defaultPaperlessPageSize = 25
+
+// maxPaperlessPageSize mirrors Paperless-ngx's server-side cap on page_size.
+const maxPaperlessPageSize = 100
 
 // paperlessConfig loads a user's Paperless-ngx settings from the users row. The
 // stored API token may be encrypted at rest; it is decrypted on demand by
@@ -81,10 +92,64 @@ func paperlessOrigin(s models.UserSettings) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// paperlessSameOrigin reports whether u stays on the configured origin, so the
-// API token is never forwarded to a different host.
-func paperlessSameOrigin(u *url.URL, origin string) bool {
-	return u.Scheme+"://"+u.Host == origin
+// paperlessQueryInt parses an integer query parameter, clamping it into
+// [min, max] and returning def when absent or malformed.
+func paperlessQueryInt(c *gin.Context, key string, def, min, max int) int {
+	v := strings.TrimSpace(c.Query(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < min {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+// resolvePaperlessIDs maps the name-based filter values the UI sends back into
+// the numeric IDs Paperless requires for its `*__id__*` query filters. Unknown
+// names are ignored rather than failing the whole request.
+func resolvePaperlessIDs(names map[int]string, values []string) []int {
+	byName := make(map[string]int, len(names))
+	for id, name := range names {
+		byName[name] = id
+	}
+	ids := make([]int, 0, len(values))
+	seen := map[int]bool{}
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if id, ok := byName[v]; ok && !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	return ids
+}
+
+// joinPaperlessIDs formats a list of IDs for a Paperless `*__id__*` filter.
+func joinPaperlessIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.Itoa(id)
+	}
+	return strings.Join(parts, ",")
+}
+
+// sortedNameList returns the names of a lookup map in sorted order so the UI
+// can render stable filter dropdown options.
+func sortedNameList(m map[int]string) []string {
+	names := make([]string, 0, len(m))
+	for _, name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // validatePaperlessURL is used at save time: the URL must be an absolute
@@ -117,7 +182,8 @@ func paperlessClient(s models.UserSettings) (*http.Client, error) {
 		return nil, err
 	}
 	return &http.Client{
-		Timeout: paperlessClientTimeout,
+		Timeout:   paperlessClientTimeout,
+		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme+"://"+req.URL.Host != origin {
 				return http.ErrUseLastResponse
@@ -353,7 +419,10 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 }
 
 // ListPaperlessDocuments proxies the user's Paperless-ngx document list so the
-// Paperless import UI can show available statements to pull. Requires the user
+// Paperless import UI can show available statements to pull. Filters (search
+// text, correspondents, document types, tags) and pagination are forwarded to
+// Paperless so it does the filtering and returns a single page — the backend
+// never pulls the full document set and filters in memory. Requires the user
 // to have configured both a URL and an API token.
 func ListPaperlessDocuments(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
@@ -383,91 +452,119 @@ func ListPaperlessDocuments(c *gin.Context) {
 	}
 
 	base := paperlessBase(settings)
-	origin, _ := paperlessOrigin(settings)
-	baseURL, err := url.Parse(base)
+
+	// The lookup tables are fetched once and reused to (a) resolve the
+	// name-based filters the UI sends back into Paperless IDs, (b) humanize the
+	// document list, and (c) populate the filter dropdown options in the
+	// response.
+	maps := fetchNameMaps(c, client, base, token)
+
+	page := paperlessQueryInt(c, "page", 1, 1, math.MaxInt)
+	pageSize := paperlessQueryInt(c, "pageSize", defaultPaperlessPageSize, 1, maxPaperlessPageSize)
+
+	// Translate the name-based UI filters into Paperless query filters so the
+	// filtering and pagination happen server-side.
+	qs := url.Values{}
+	qs.Set("page", strconv.Itoa(page))
+	qs.Set("page_size", strconv.Itoa(pageSize))
+	qs.Set("ordering", "-created")
+	// Only request the fields the list actually renders; Paperless returns the
+	// full document serializer (including the OCR'd `content`) otherwise, which
+	// is large and unused.
+	qs.Set("fields", "id,title,correspondent,document_type,created,tags")
+	// `title_search` is Paperless's current (Tantivy) title-only simple search;
+	// `title__icontains` is the legacy ORM filter that older instances use and
+	// that newer ones still honor. Sending both keeps title-only filtering
+	// working across Paperless versions (unknown params are ignored). `text`
+	// would match the OCR'd content too, so it is deliberately not used.
+	if q := strings.TrimSpace(c.Query("search")); q != "" {
+		qs.Set("title_search", q)
+		qs.Set("title__icontains", q)
+	}
+	if ids := resolvePaperlessIDs(maps.correspondents, c.QueryArray("correspondentInc")); len(ids) > 0 {
+		qs.Set("correspondent__id__in", joinPaperlessIDs(ids))
+	}
+	if ids := resolvePaperlessIDs(maps.correspondents, c.QueryArray("correspondentExc")); len(ids) > 0 {
+		qs.Set("correspondent__id__none", joinPaperlessIDs(ids))
+	}
+	if ids := resolvePaperlessIDs(maps.documentTypes, c.QueryArray("documentTypeInc")); len(ids) > 0 {
+		qs.Set("document_type__id__in", joinPaperlessIDs(ids))
+	}
+	if ids := resolvePaperlessIDs(maps.documentTypes, c.QueryArray("documentTypeExc")); len(ids) > 0 {
+		qs.Set("document_type__id__none", joinPaperlessIDs(ids))
+	}
+	if ids := resolvePaperlessIDs(maps.tags, c.QueryArray("tagInc")); len(ids) > 0 {
+		qs.Set("tags__id__any", joinPaperlessIDs(ids))
+	}
+	if ids := resolvePaperlessIDs(maps.tags, c.QueryArray("tagExc")); len(ids) > 0 {
+		qs.Set("tags__id__none", joinPaperlessIDs(ids))
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, base+"/api/documents/?"+qs.Encode(), nil)
 	if err != nil {
-		validation.RespondError(c, "invalid paperless URL", http.StatusBadRequest)
+		log.Printf("Error in ListPaperlessDocuments (build request): %v\n", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Authorization", "Token "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error in ListPaperlessDocuments (calling paperless): %v\n", err)
+		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
+		return
+	}
+	body, readErr := readAllLimited(resp.Body, maxPaperlessResponse)
+	resp.Body.Close()
+	if readErr != nil {
+		log.Printf("Error in ListPaperlessDocuments (read response): %v\n", readErr)
+		validation.RespondError(c, "Paperless returned an unreadable response", http.StatusBadGateway)
 		return
 	}
 
-	// Gather all documents by following the pagination `next` links Paperless
-	// returns (page_size is capped at 100 server-side). Only same-origin links
-	// are followed so the token is never sent to a different host.
-	allRaw := make([]rawPaperlessDocument, 0)
-	current := base + "/api/documents/?page_size=100&ordering=-created"
-	for current != "" {
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, current, nil)
-		if err != nil {
-			log.Printf("Error in ListPaperlessDocuments (build request): %v\n", err)
-			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		req.Header.Set("Authorization", "Token "+token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("Error in ListPaperlessDocuments (calling paperless): %v\n", err)
-			validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
-			return
-		}
-		body, readErr := readAllLimited(resp.Body, maxPaperlessResponse)
-		resp.Body.Close()
-		if readErr != nil {
-			log.Printf("Error in ListPaperlessDocuments (read response): %v\n", readErr)
-			validation.RespondError(c, "Paperless returned an unreadable response", http.StatusBadGateway)
-			return
-		}
-
-		if rejectPaperlessRedirect(c, resp.StatusCode) {
-			return
-		}
-		if resp.StatusCode == http.StatusUnauthorized {
-			validation.RespondError(c, "Paperless rejected the API token", http.StatusBadGateway)
-			return
-		}
-		if resp.StatusCode >= 500 {
-			log.Printf("Error in ListPaperlessDocuments (status %d): %s\n", resp.StatusCode, string(body))
-			validation.RespondError(c, "Paperless failed to list documents", http.StatusBadGateway)
-			return
-		}
-
-		var raw struct {
-			Results []rawPaperlessDocument `json:"results"`
-			Next    string                 `json:"next"`
-			Error   string                 `json:"error"`
-		}
-		if err := json.Unmarshal(body, &raw); err != nil {
-			log.Printf("Error in ListPaperlessDocuments (unmarshal): %v\n", err)
-			validation.RespondError(c, "Paperless returned an invalid response", http.StatusBadGateway)
-			return
-		}
-		if resp.StatusCode >= 400 || raw.Error != "" {
-			msg := raw.Error
-			if msg == "" {
-				msg = "failed to list Paperless documents"
-			}
-			validation.RespondError(c, msg, resp.StatusCode)
-			return
-		}
-
-		allRaw = append(allRaw, raw.Results...)
-
-		// Follow the next link only when it stays on the configured origin.
-		current = ""
-		if raw.Next != "" {
-			if nextRef, err := url.Parse(raw.Next); err == nil {
-				resolved := baseURL.ResolveReference(nextRef)
-				if paperlessSameOrigin(resolved, origin) {
-					current = resolved.String()
-				}
-			}
-		}
+	if rejectPaperlessRedirect(c, resp.StatusCode) {
+		return
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		validation.RespondError(c, "Paperless rejected the API token", http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode >= 500 {
+		log.Printf("Error in ListPaperlessDocuments (status %d): %s\n", resp.StatusCode, string(body))
+		validation.RespondError(c, "Paperless failed to list documents", http.StatusBadGateway)
+		return
 	}
 
-	maps := fetchNameMaps(c, client, base, token)
+	var raw struct {
+		Results []rawPaperlessDocument `json:"results"`
+		Count   int                    `json:"count"`
+		Error   string                 `json:"error"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		log.Printf("Error in ListPaperlessDocuments (unmarshal): %v\n", err)
+		validation.RespondError(c, "Paperless returned an invalid response", http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode >= 400 || raw.Error != "" {
+		msg := raw.Error
+		if msg == "" {
+			msg = "failed to list Paperless documents"
+		}
+		validation.RespondError(c, msg, resp.StatusCode)
+		return
+	}
 
-	docs := make([]models.PaperlessDocument, 0, len(allRaw))
-	for _, d := range allRaw {
+	totalCount := raw.Count
+	if totalCount == 0 && len(raw.Results) > 0 {
+		totalCount = len(raw.Results)
+	}
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	docs := make([]models.PaperlessDocument, 0, len(raw.Results))
+	for _, d := range raw.Results {
 		doc := models.PaperlessDocument{
 			ID:      d.ID,
 			Title:   d.Title,
@@ -483,7 +580,16 @@ func ListPaperlessDocuments(c *gin.Context) {
 		docs = append(docs, doc)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"documents": docs})
+	c.JSON(http.StatusOK, models.PaperlessDocumentsResponse{
+		Documents:      docs,
+		Page:           page,
+		PageSize:       pageSize,
+		TotalCount:     totalCount,
+		TotalPages:     totalPages,
+		Correspondents: sortedNameList(maps.correspondents),
+		DocumentTypes:  sortedNameList(maps.documentTypes),
+		Tags:           sortedNameList(maps.tags),
+	})
 }
 
 // GetPaperlessDocumentFile proxies a document's original file from the user's

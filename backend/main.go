@@ -33,6 +33,7 @@ func main() {
 	// Structured logging: debug level (with request/response body capture) in
 	// development, info + JSON in production.
 	logger.New(cfg.Env, cfg.LogLevel)
+	logger.SetMaxBodyLog(cfg.LogBodyLimit)
 
 	// Connect to database
 	db.Connect(cfg.DatabaseURL)

@@ -14,8 +14,10 @@ import (
 )
 
 // maxBodyLog caps how many bytes of a request/response body are written to the
-// log. Sensitive fields are redacted before anything is emitted.
-const maxBodyLog = 8192
+// log. Sensitive fields are redacted before anything is emitted. A value <= 0
+// disables truncation so full bodies are captured; SetMaxBodyLog overrides it
+// (wired from the LOG_BODY_LIMIT config).
+var maxBodyLog = 8192
 
 // RequestIDKey is the gin context key under which the per-request ID is stored.
 const RequestIDKey = "requestID"
@@ -32,13 +34,17 @@ type responseWriter struct {
 }
 
 // Write captures the written bytes (up to maxBodyLog) while still streaming the
-// real response to the client.
+// real response to the client. The capture buffer gets a bounded prefix of b;
+// the underlying writer always receives the full payload.
 func (w *responseWriter) Write(b []byte) (int, error) {
-	if remaining := maxBodyLog - w.buf.Len(); remaining > 0 {
-		if len(b) > remaining {
-			b = b[:remaining]
-		}
+	if maxBodyLog <= 0 {
 		w.buf.Write(b)
+	} else if remaining := maxBodyLog - w.buf.Len(); remaining > 0 {
+		if len(b) > remaining {
+			w.buf.Write(b[:remaining])
+		} else {
+			w.buf.Write(b)
+		}
 	}
 	return w.ResponseWriter.Write(b)
 }
@@ -84,6 +90,9 @@ func RequestLogger(l *slog.Logger) gin.HandlerFunc {
 			slog.String("client_ip", c.ClientIP()),
 			slog.String("user_agent", c.Request.UserAgent()),
 		}
+		if q := c.Request.URL.RawQuery; q != "" {
+			attrs = append(attrs, slog.String("query", q))
+		}
 
 		level := slog.LevelInfo
 		if debug {
@@ -120,9 +129,9 @@ func isTextual(contentType string) bool {
 }
 
 // truncate limits a logged body to maxBodyLog bytes and reports whether it was
-// cut off.
+// cut off. A non-positive cap means no truncation.
 func truncate(s string) (string, bool) {
-	if len(s) > maxBodyLog {
+	if maxBodyLog > 0 && len(s) > maxBodyLog {
 		return s[:maxBodyLog], true
 	}
 	return s, false

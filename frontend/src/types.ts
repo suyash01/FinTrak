@@ -231,6 +231,25 @@ export interface StatementParseResult {
 
 export interface PaperlessDocumentsResponse {
   documents: PaperlessDocument[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  correspondents: string[];
+  documentTypes: string[];
+  tags: string[];
+}
+
+export interface PaperlessDocumentsParams {
+  search?: string;
+  page?: number;
+  pageSize?: number;
+  correspondentInc?: string[];
+  correspondentExc?: string[];
+  documentTypeInc?: string[];
+  documentTypeExc?: string[];
+  tagInc?: string[];
+  tagExc?: string[];
 }
 
 export interface PaperlessImportResult {

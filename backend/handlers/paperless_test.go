@@ -184,7 +184,7 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/api/tags"):
 			w.Write([]byte(`{"results":[{"id":9,"name":"credit-card"}]}`))
 		default:
-			w.Write([]byte(`{"results":[
+			w.Write([]byte(`{"count":1,"results":[
 				{"id":42,"title":"SBI Statement March","correspondent":7,"document_type":3,"added":"2026-03-01T10:00:00Z","created":"2026-03-01T10:00:00Z","tags":[9]}
 			]}`))
 		}
@@ -207,6 +207,13 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 			Created       string   `json:"created"`
 			Tags          []string `json:"tags"`
 		} `json:"documents"`
+		Page           int      `json:"page"`
+		PageSize       int      `json:"pageSize"`
+		TotalCount     int      `json:"totalCount"`
+		TotalPages     int      `json:"totalPages"`
+		Correspondents []string `json:"correspondents"`
+		DocumentTypes  []string `json:"documentTypes"`
+		Tags           []string `json:"tags"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	require.Len(t, res.Documents, 1)
@@ -214,6 +221,14 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 	assert.Equal(t, "SBI", res.Documents[0].Correspondent)
 	assert.Equal(t, "credit-card", res.Documents[0].Tags[0])
 	assert.Equal(t, "2026-03-01T10:00:00Z", res.Documents[0].Created)
+	assert.Equal(t, 1, res.Page)
+	assert.Equal(t, 25, res.PageSize)
+	assert.Equal(t, 1, res.TotalCount)
+	assert.Equal(t, 1, res.TotalPages)
+	// The lookup tables are returned so the UI can render filter dropdowns.
+	assert.Equal(t, []string{"SBI"}, res.Correspondents)
+	assert.Equal(t, []string{"Statement"}, res.DocumentTypes)
+	assert.Equal(t, []string{"credit-card"}, res.Tags)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -403,50 +418,8 @@ func TestGetPaperlessDocumentFileInvalidID(t *testing.T) {
 func TestListPaperlessDocumentsPagination(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 
-	// Paperless returns two pages; the first points to a `next` link.
-	// The server URL is captured via a holder so the handler can reference it.
-	var baseURL string
-	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/api/correspondents"):
-			w.Write([]byte(`{"results":[]}`))
-		case strings.Contains(r.URL.Path, "/api/document_types"):
-			w.Write([]byte(`{"results":[]}`))
-		case strings.Contains(r.URL.Path, "/api/tags"):
-			w.Write([]byte(`{"results":[]}`))
-		case r.URL.RawQuery == "page=2":
-			w.Write([]byte(`{"results":[{"id":2,"title":"Doc Two"}],"next":null}`))
-		default:
-			w.Write([]byte(`{"results":[{"id":1,"title":"Doc One"}],"next":"` + baseURL + `/api/documents/?page=2"}`))
-		}
-	}))
-	baseURL = paperless.URL
-	defer paperless.Close()
-	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
-
-	r := newPaperlessTestRouter()
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	var res struct {
-		Documents []struct {
-			ID    int    `json:"id"`
-			Title string `json:"title"`
-		} `json:"documents"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
-	require.Len(t, res.Documents, 2)
-	assert.Equal(t, 1, res.Documents[0].ID)
-	assert.Equal(t, 2, res.Documents[1].ID)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestListPaperlessDocumentsIgnoresCrossOriginNext(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
-
+	// Paperless must receive the requested page/page_size directly and the
+	// handler must return its count as pagination metadata.
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
@@ -456,9 +429,10 @@ func TestListPaperlessDocumentsIgnoresCrossOriginNext(t *testing.T) {
 			strings.Contains(r.URL.Path, "/api/tags"):
 			w.Write([]byte(`{"results":[]}`))
 		default:
-			// next points at a different host: it must NOT be followed, so the
-			// token is never forwarded to another origin.
-			w.Write([]byte(`{"results":[{"id":1,"title":"Doc One"}],"next":"http://evil.example.com/api/documents/?page=2"}`))
+			assert.Equal(t, "2", r.URL.Query().Get("page"))
+			assert.Equal(t, "25", r.URL.Query().Get("page_size"))
+			assert.Equal(t, "id,title,correspondent,document_type,created,tags", r.URL.Query().Get("fields"))
+			w.Write([]byte(`{"count":57,"results":[{"id":2,"title":"Doc Two"}]}`))
 		}
 	}))
 	defer paperless.Close()
@@ -466,17 +440,74 @@ func TestListPaperlessDocumentsIgnoresCrossOriginNext(t *testing.T) {
 
 	r := newPaperlessTestRouter()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents?page=2&pageSize=25", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res struct {
+		Documents []struct {
+			ID    int    `json:"id"`
+			Title string `json:"title"`
+		} `json:"documents"`
+		Page       int `json:"page"`
+		PageSize   int `json:"pageSize"`
+		TotalCount int `json:"totalCount"`
+		TotalPages int `json:"totalPages"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	require.Len(t, res.Documents, 1)
+	assert.Equal(t, 2, res.Documents[0].ID)
+	assert.Equal(t, 2, res.Page)
+	assert.Equal(t, 25, res.PageSize)
+	assert.Equal(t, 57, res.TotalCount)
+	assert.Equal(t, 3, res.TotalPages)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListPaperlessDocumentsFilters(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	// The name-based UI filters must be translated into Paperless ID filters and
+	// forwarded, so filtering happens server-side rather than in the backend.
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/api/correspondents"):
+			w.Write([]byte(`{"results":[{"id":7,"name":"SBI"},{"id":8,"name":"HDFC"}]}`))
+		case strings.Contains(r.URL.Path, "/api/document_types"):
+			w.Write([]byte(`{"results":[{"id":3,"name":"Statement"}]}`))
+		case strings.Contains(r.URL.Path, "/api/tags"):
+			w.Write([]byte(`{"results":[{"id":9,"name":"credit-card"}]}`))
+		default:
+			assert.Equal(t, "SBI", r.URL.Query().Get("title_search"))
+			assert.Equal(t, "SBI", r.URL.Query().Get("title__icontains"))
+			assert.Equal(t, "id,title,correspondent,document_type,created,tags", r.URL.Query().Get("fields"))
+			assert.Equal(t, "7,8", r.URL.Query().Get("correspondent__id__in"))
+			assert.Equal(t, "8", r.URL.Query().Get("correspondent__id__none"))
+			assert.Equal(t, "3", r.URL.Query().Get("document_type__id__in"))
+			assert.Equal(t, "9", r.URL.Query().Get("tags__id__any"))
+			w.Write([]byte(`{"count":1,"results":[{"id":42,"title":"Doc","correspondent":7,"document_type":3,"tags":[9]}]}`))
+		}
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/paperless/documents?search=SBI&correspondentInc=SBI&correspondentInc=HDFC&correspondentExc=HDFC&documentTypeInc=Statement&tagInc=credit-card", nil))
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var res struct {
 		Documents []struct {
 			ID int `json:"id"`
 		} `json:"documents"`
+		TotalCount int `json:"totalCount"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	require.Len(t, res.Documents, 1)
-	assert.Equal(t, 1, res.Documents[0].ID)
+	assert.Equal(t, 42, res.Documents[0].ID)
+	assert.Equal(t, 1, res.TotalCount)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

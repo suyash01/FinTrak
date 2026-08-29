@@ -7,6 +7,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -22,6 +23,7 @@ type Config struct {
 	AdminEmails        []string
 	Env                string
 	LogLevel           string
+	LogBodyLimit       int
 	TokenEncryptionKey string
 }
 
@@ -67,6 +69,16 @@ func Load() *Config {
 		}
 	}
 
+	// Byte cap for request/response bodies written to the log at debug level.
+	// 0 (the default) disables truncation so full bodies are captured; a
+	// positive value caps the logged payload.
+	logBodyLimit := 0
+	if raw := os.Getenv("LOG_BODY_LIMIT"); raw != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && n >= 0 {
+			logBodyLimit = n
+		}
+	}
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		if env == "production" {
@@ -106,6 +118,7 @@ func Load() *Config {
 		AdminEmails:        adminEmails,
 		Env:                env,
 		LogLevel:           logLevel,
+		LogBodyLimit:       logBodyLimit,
 		TokenEncryptionKey: tokenEncryptionKey,
 	}
 }

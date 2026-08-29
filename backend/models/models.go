@@ -216,6 +216,20 @@ type PaperlessDocument struct {
 	Tags          []string `json:"tags"`
 }
 
+// PaperlessDocumentsResponse is the paginated document list returned by the
+// paperless list endpoint. The full lookup tables are included so the import
+// UI can render filter dropdowns without fetching every document.
+type PaperlessDocumentsResponse struct {
+	Documents      []PaperlessDocument `json:"documents"`
+	Page           int                 `json:"page"`
+	PageSize       int                 `json:"pageSize"`
+	TotalCount     int                 `json:"totalCount"`
+	TotalPages     int                 `json:"totalPages"`
+	Correspondents []string            `json:"correspondents"`
+	DocumentTypes  []string            `json:"documentTypes"`
+	Tags           []string            `json:"tags"`
+}
+
 // PaperlessImportRequest asks the backend to pull a single Paperless document,
 // parse it with the statement parser, and return the normalized transactions.
 type PaperlessImportRequest struct {

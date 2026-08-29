@@ -26,6 +26,7 @@ import type {
   Link,
   LoginRequest,
   PaperlessDocumentsResponse,
+  PaperlessDocumentsParams,
   PaperlessImportRequest,
   PaperlessImportResult,
   Payee,
@@ -408,8 +409,26 @@ const api = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  getPaperlessDocuments: (): Promise<PaperlessDocumentsResponse> =>
-    request("/paperless/documents"),
+  getPaperlessDocuments: (
+    params?: PaperlessDocumentsParams,
+  ): Promise<PaperlessDocumentsResponse> => {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set("search", params.search);
+    if (params?.page && params.page > 1) qs.set("page", String(params.page));
+    if (params?.pageSize) qs.set("pageSize", String(params.pageSize));
+    for (const key of [
+      "correspondentInc",
+      "correspondentExc",
+      "documentTypeInc",
+      "documentTypeExc",
+      "tagInc",
+      "tagExc",
+    ] as const) {
+      (params?.[key] || []).forEach((value) => qs.append(key, value));
+    }
+    const query = qs.toString();
+    return request(query ? `/paperless/documents?${query}` : "/paperless/documents");
+  },
   importPaperlessDocument: (
     data: PaperlessImportRequest,
   ): Promise<PaperlessImportResult> =>

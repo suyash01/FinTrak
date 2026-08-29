@@ -67,3 +67,10 @@ func (logBridge) Write(p []byte) (int, error) {
 	slog.Info(strings.TrimRight(string(p), "\n"))
 	return len(p), nil
 }
+
+// SetMaxBodyLog overrides the byte cap for request/response bodies written to
+// the log at debug level. A value <= 0 disables truncation so full bodies are
+// captured; the default (when unset) is 8192.
+func SetMaxBodyLog(n int) {
+	maxBodyLog = n
+}

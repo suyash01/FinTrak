@@ -1525,13 +1525,102 @@ paths:
       tags:
         - Paperless
       summary: List Paperless documents
-      description: Fetch a list of documents from the user's Paperless-ngx instance
+      description: >
+        Fetch a page of documents from the user's Paperless-ngx instance.
+        Filters and pagination are forwarded to Paperless so filtering happens
+        server-side. The full correspondent/document-type/tag lookup tables are
+        returned so the UI can render filter dropdowns without fetching every
+        document.
       operationId: listPaperlessDocuments
       security:
         - BearerAuth: []
+      parameters:
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+          description: Substring search over the document title only, forwarded to Paperless as `title_search` (with a `title__icontains` fallback)
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+          description: Page number (1-based)
+        - in: query
+          name: pageSize
+          required: false
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 100
+          description: Documents per page (Paperless caps this at 100)
+        - in: query
+          name: correspondentInc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Correspondent names to include (any match)
+        - in: query
+          name: correspondentExc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Correspondent names to exclude
+        - in: query
+          name: documentTypeInc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Document type names to include (any match)
+        - in: query
+          name: documentTypeExc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Document type names to exclude
+        - in: query
+          name: tagInc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Tag names to include (any match)
+        - in: query
+          name: tagExc
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: Tag names to exclude
       responses:
         "200":
-          description: List of documents
+          description: Paginated list of documents
           content:
             application/json:
               schema:
@@ -1541,6 +1630,26 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/PaperlessDocument"
+                  page:
+                    type: integer
+                  pageSize:
+                    type: integer
+                  totalCount:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  correspondents:
+                    type: array
+                    items:
+                      type: string
+                  documentTypes:
+                    type: array
+                    items:
+                      type: string
+                  tags:
+                    type: array
+                    items:
+                      type: string
         "400":
           description: Paperless is not configured
           content:

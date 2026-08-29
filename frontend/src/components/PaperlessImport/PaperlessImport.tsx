@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useCallback,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -218,6 +219,10 @@ interface ImportPreview {
 // Inc/exclude filter maps (correspondents, document types, tags) are serialized
 // to the URL as repeated params so the page state is shareable and deep-linkable.
 const SEARCH_PARAM = "search";
+const PAGE_PARAM = "page";
+const PAGE_SIZE_PARAM = "pageSize";
+const PAGE_SIZE_DEFAULT = 25;
+const PAGE_SIZE_OPTIONS = [25, 50, 100];
 const MAP_PARAMS = {
   correspondent: { inc: "correspondentInc", exc: "correspondentExc" },
   documentType: { inc: "documentTypeInc", exc: "documentTypeExc" },
@@ -275,6 +280,8 @@ export default function PaperlessImport() {
   const [search, setSearch] = useState(
     () => searchParams.get(SEARCH_PARAM) || "",
   );
+  // Server-side search is debounced so typing doesn't fire a request per key.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search);
   const [correspondentMap, setCorrespondentMap] = useState<
     Record<string, string>
   >(() =>
@@ -293,6 +300,20 @@ export default function PaperlessImport() {
       MAP_PARAMS.documentType.exc,
     ),
   );
+
+  // Pagination + filter option lists come back from the (server-side) listing.
+  const [page, setPage] = useState(() =>
+    Math.max(1, parseInt(searchParams.get(PAGE_PARAM) || "1", 10) || 1),
+  );
+  const [pageSize, setPageSize] = useState(() => {
+    const v = parseInt(searchParams.get(PAGE_SIZE_PARAM) || "", 10);
+    return PAGE_SIZE_OPTIONS.includes(v) ? v : PAGE_SIZE_DEFAULT;
+  });
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [correspondents, setCorrespondents] = useState<string[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<string[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
   const [tagMap, setTagMap] = useState<Record<string, string>>(() =>
     mapFromParams(searchParams, MAP_PARAMS.tag.inc, MAP_PARAMS.tag.exc),
   );
@@ -334,22 +355,59 @@ export default function PaperlessImport() {
         if (list.length > 0) setExtractor(list[0].name);
       })
       .catch(console.error);
-    loadDocuments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured]);
 
-  const loadDocuments = async () => {
+  // Debounce the server-side search so a keystroke never fires a request.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Filters + pagination are forwarded to Paperless; the response also carries
+  // the full lookup tables so the filter dropdowns stay complete across pages.
+  const loadDocuments = useCallback(async () => {
     setLoadingDocs(true);
     setError("");
     try {
-      const res = await api.getPaperlessDocuments();
+      const res = await api.getPaperlessDocuments({
+        search: debouncedSearch,
+        page,
+        pageSize,
+        correspondentInc: Object.keys(correspondentMap).filter(
+          (k) => correspondentMap[k] === "inc",
+        ),
+        correspondentExc: Object.keys(correspondentMap).filter(
+          (k) => correspondentMap[k] === "exc",
+        ),
+        documentTypeInc: Object.keys(documentTypeMap).filter(
+          (k) => documentTypeMap[k] === "inc",
+        ),
+        documentTypeExc: Object.keys(documentTypeMap).filter(
+          (k) => documentTypeMap[k] === "exc",
+        ),
+        tagInc: Object.keys(tagMap).filter((k) => tagMap[k] === "inc"),
+        tagExc: Object.keys(tagMap).filter((k) => tagMap[k] === "exc"),
+      });
       setDocuments(res?.documents || []);
+      setTotalCount(res?.totalCount ?? 0);
+      setTotalPages(Math.max(1, res?.totalPages ?? 1));
+      setCorrespondents(res?.correspondents || []);
+      setDocumentTypes(res?.documentTypes || []);
+      setTags(res?.tags || []);
+      // Clamp to the last page if a filter change made the current page stale.
+      if (res?.totalPages && page > res.totalPages) setPage(res.totalPages);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoadingDocs(false);
     }
-  };
+  }, [debouncedSearch, page, pageSize, correspondentMap, documentTypeMap, tagMap]);
+
+  useEffect(() => {
+    if (!configured) return;
+    loadDocuments();
+  }, [configured, loadDocuments]);
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -363,6 +421,7 @@ export default function PaperlessImport() {
   const setFilter =
     (setter: Dispatch<SetStateAction<Record<string, string>>>) =>
     (value: string, mode: string | null) => {
+      setPage(1);
       setter((prev) => {
         const next = { ...prev };
         if (mode) next[value] = mode;
@@ -376,6 +435,9 @@ export default function PaperlessImport() {
   useEffect(() => {
     const params = new URLSearchParams();
     if (search) params.set(SEARCH_PARAM, search);
+    if (page > 1) params.set(PAGE_PARAM, String(page));
+    if (pageSize !== PAGE_SIZE_DEFAULT)
+      params.set(PAGE_SIZE_PARAM, String(pageSize));
     appendMapParams(
       params,
       correspondentMap,
@@ -393,7 +455,14 @@ export default function PaperlessImport() {
     if (desiredQs === syncedUrlRef.current) return;
     syncedUrlRef.current = desiredQs;
     setSearchParams(params, { replace: true });
-  }, [search, correspondentMap, documentTypeMap, tagMap]);
+  }, [
+    search,
+    page,
+    pageSize,
+    correspondentMap,
+    documentTypeMap,
+    tagMap,
+  ]);
 
   // React to external URL changes (navigation, back/forward, shared links).
   useEffect(() => {
@@ -401,6 +470,17 @@ export default function PaperlessImport() {
     if (currentQs === syncedUrlRef.current) return;
 
     const nextSearch = searchParams.get(SEARCH_PARAM) || "";
+    const nextPage = Math.max(
+      1,
+      parseInt(searchParams.get(PAGE_PARAM) || "1", 10) || 1,
+    );
+    const rawPageSize = parseInt(
+      searchParams.get(PAGE_SIZE_PARAM) || "",
+      10,
+    );
+    const nextPageSize = PAGE_SIZE_OPTIONS.includes(rawPageSize)
+      ? rawPageSize
+      : PAGE_SIZE_DEFAULT;
     const nextCorrespondent = mapFromParams(
       searchParams,
       MAP_PARAMS.correspondent.inc,
@@ -417,6 +497,8 @@ export default function PaperlessImport() {
       MAP_PARAMS.tag.exc,
     );
     if (nextSearch !== search) setSearch(nextSearch);
+    if (nextPage !== page) setPage(nextPage);
+    if (nextPageSize !== pageSize) setPageSize(nextPageSize);
     if (JSON.stringify(nextCorrespondent) !== JSON.stringify(correspondentMap))
       setCorrespondentMap(nextCorrespondent);
     if (JSON.stringify(nextDocumentType) !== JSON.stringify(documentTypeMap))
@@ -427,57 +509,34 @@ export default function PaperlessImport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Build filter dropdown options from the loaded documents.
-  const correspondentOptions = useMemo(() => {
-    const set = new Set(documents.map((d) => d.correspondent).filter(Boolean));
-    return [...set].sort();
-  }, [documents]);
+  // True when any filter is active, used to distinguish "no documents" from
+  // "no documents match the current filters".
+  const hasActiveFilters = useMemo(
+    () =>
+      search.trim() !== "" ||
+      Object.keys(correspondentMap).length > 0 ||
+      Object.keys(documentTypeMap).length > 0 ||
+      Object.keys(tagMap).length > 0,
+    [search, correspondentMap, documentTypeMap, tagMap],
+  );
 
-  const documentTypeOptions = useMemo(() => {
-    const set = new Set(documents.map((d) => d.documentType).filter(Boolean));
-    return [...set].sort();
-  }, [documents]);
+  // Filter dropdown options come from the server response (the full lookup
+  // tables), so they stay complete across pages. The loaded page is merged in
+  // so names Paperless hasn't indexed yet still appear.
+  const correspondentOptions = useMemo(
+    () => [...new Set([...correspondents, ...documents.map((d) => d.correspondent).filter(Boolean)])].sort(),
+    [correspondents, documents],
+  );
 
-  const tagOptions = useMemo(() => {
-    const set = new Set(documents.flatMap((d) => d.tags || []));
-    return [...set].sort();
-  }, [documents]);
+  const documentTypeOptions = useMemo(
+    () => [...new Set([...documentTypes, ...documents.map((d) => d.documentType).filter(Boolean)])].sort(),
+    [documentTypes, documents],
+  );
 
-  const applyFilter = (
-    matchValue: string | string[],
-    map: Record<string, string>,
-  ) => {
-    const inc = Object.keys(map).filter((k) => map[k] === "inc");
-    const exc = Object.keys(map).filter((k) => map[k] === "exc");
-    const docValues = Array.isArray(matchValue) ? matchValue : [matchValue];
-    if (exc.length > 0 && docValues.some((v) => exc.includes(v))) return false;
-    if (inc.length > 0) return docValues.some((v) => inc.includes(v));
-    return true;
-  };
-
-  const filteredDocuments = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return documents.filter((d) => {
-      const docTags = d.tags || [];
-
-      if (!applyFilter(d.correspondent, correspondentMap)) return false;
-      if (!applyFilter(d.documentType, documentTypeMap)) return false;
-      if (!applyFilter(docTags, tagMap)) return false;
-
-      if (!q) return true;
-      const haystack = [
-        d.title,
-        d.correspondent,
-        d.documentType,
-        `#${d.id}`,
-        ...docTags,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(q);
-    });
-  }, [documents, search, correspondentMap, documentTypeMap, tagMap]);
+  const tagOptions = useMemo(
+    () => [...new Set([...tags, ...documents.flatMap((d) => d.tags || [])])].sort(),
+    [tags, documents],
+  );
 
   const openFilePreview = async (doc: PaperlessDocument) => {
     setLoadingFileId(doc.id);
@@ -738,7 +797,7 @@ export default function PaperlessImport() {
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-foreground">
-              Documents ({filteredDocuments.length})
+              Documents ({totalCount})
             </h3>
             <Button
               variant="outline"
@@ -762,7 +821,10 @@ export default function PaperlessImport() {
                 placeholder="Search title, correspondent, tag..."
                 className="pl-9"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
               />
             </div>
             <MultiFilter
@@ -789,15 +851,15 @@ export default function PaperlessImport() {
             <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
               <Spinner className="size-4" /> Loading documents...
             </div>
-          ) : filteredDocuments.length === 0 ? (
+          ) : documents.length === 0 ? (
             <div className="text-sm text-muted-foreground py-6">
-              {documents.length === 0
-                ? "No documents found in Paperless."
-                : "No documents match the current filters."}
+              {hasActiveFilters
+                ? "No documents match the current filters."
+                : "No documents found in Paperless."}
             </div>
           ) : (
             <div className="divide-y divide-border border border-border rounded-lg overflow-y-auto max-h-96 bg-background">
-              {filteredDocuments.map((d) => (
+              {documents.map((d) => (
                 <div
                   key={d.id}
                   className="flex items-start gap-3 p-3 cursor-pointer hover:bg-card transition-colors"
@@ -859,7 +921,79 @@ export default function PaperlessImport() {
             </div>
           )}
 
-          <div className="flex items-center gap-3 mt-4">
+          {/* Pagination */}
+          <div className="flex items-center justify-between mt-4 mb-4 flex-wrap gap-3">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <span>
+                Page {page} of {totalPages} ({totalCount} total)
+              </span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => {
+                  setPageSize(Number(v));
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger className="w-auto gap-2 px-2 py-1 h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      {n} / page
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {totalPages > 1 && (
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={page <= 1}
+                  onClick={() => setPage(page - 1)}
+                >
+                  Prev
+                </Button>
+                {Array.from(
+                  { length: Math.min(totalPages, 7) },
+                  (_, i) => {
+                    let pageNum: number;
+                    if (totalPages <= 7) {
+                      pageNum = i + 1;
+                    } else if (page <= 4) {
+                      pageNum = i + 1;
+                    } else if (page >= totalPages - 3) {
+                      pageNum = totalPages - 6 + i;
+                    } else {
+                      pageNum = page - 3 + i;
+                    }
+                    return (
+                      <Button
+                        key={pageNum}
+                        size="sm"
+                        variant={page === pageNum ? "default" : "ghost"}
+                        onClick={() => setPage(pageNum)}
+                      >
+                        {pageNum}
+                      </Button>
+                    );
+                  },
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(page + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
             <Button
               onClick={importSelected}
               disabled={parsing || selected.size === 0}

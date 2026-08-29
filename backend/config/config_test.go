@@ -60,6 +60,21 @@ func TestLoadAllowsWildcardOrigin(t *testing.T) {
 	assert.Equal(t, []string{"*"}, cfg.AllowedOrigins)
 }
 
+func TestLoadLogBodyLimit(t *testing.T) {
+	unsetEnv(t, "DATABASE_URL", "PORT", "ALLOWED_ORIGINS", "JWT_SECRET", "APP_ENV", "STATEMENT_PARSER_URL", "LOG_BODY_LIMIT")
+
+	assert.Equal(t, 0, Load().LogBodyLimit)
+
+	t.Setenv("LOG_BODY_LIMIT", "4096")
+	assert.Equal(t, 4096, Load().LogBodyLimit)
+
+	t.Setenv("LOG_BODY_LIMIT", "not-a-number")
+	assert.Equal(t, 0, Load().LogBodyLimit)
+
+	t.Setenv("LOG_BODY_LIMIT", "-1")
+	assert.Equal(t, 0, Load().LogBodyLimit)
+}
+
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
