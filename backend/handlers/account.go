@@ -193,6 +193,16 @@ func UpdateAccount(c *gin.Context) {
 		return
 	}
 
+	// Range-check an explicit billing day before touching the database; the
+	// OptionalInt field replaces the old binding tag, which couldn't be used
+	// on the absent/null-sensitive type.
+	if req.BillingDay.Set() {
+		if v := req.BillingDay.Value(); v != nil && (*v < 1 || *v > 31) {
+			validation.RespondError(c, "billingDay must be between 1 and 31", http.StatusBadRequest)
+			return
+		}
+	}
+
 	var account models.Account
 	userID := auth.GetUserID(c)
 	err = db.WithTx(c, func(tx pgx.Tx) error {
@@ -204,9 +214,22 @@ func UpdateAccount(c *gin.Context) {
 			}
 		}
 
+		// billing_day is only written when the request mentions it: an absent
+		// key must leave the current value (and its derived billing cycles)
+		// untouched, an explicit number sets it, and null clears it. The id and
+		// user_id params stay at $7/$8 so the outer SELECT references hold; an
+		// explicit billing day is appended as $9.
+		setClauses := "name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, is_default = COALESCE($6, is_default)"
+		args := []interface{}{req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID}
+		billingClause := ""
+		if req.BillingDay.Set() {
+			billingClause = ", billing_day = $9"
+			args = append(args, req.BillingDay.Value())
+		}
+
 		err := tx.QueryRow(c,
-			`WITH updated AS (
-				UPDATE accounts SET name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, is_default = COALESCE($6, is_default), billing_day = $9, updated_at = NOW() 
+			fmt.Sprintf(`WITH updated AS (
+				UPDATE accounts SET %s%s, updated_at = NOW() 
 				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day, created_at
 			)
 			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default, u.billing_day, u.created_at,
@@ -218,8 +241,8 @@ func UpdateAccount(c *gin.Context) {
 				FROM transactions t WHERE t.account_id = u.id AND t.user_id = $8
 			), 0) as balance
 			FROM updated u
-			JOIN account_types at ON u.account_type_id = at.id`,
-			req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID, req.BillingDay,
+			JOIN account_types at ON u.account_type_id = at.id`, setClauses, billingClause),
+			args...,
 		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.IsDefault, &account.BillingDay, &account.CreatedAt, &account.Balance)
 
 		if err != nil {

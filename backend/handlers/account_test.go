@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetAccounts(t *testing.T) {
@@ -166,9 +168,10 @@ func TestUpdateAccount(t *testing.T) {
 		WithArgs(userID, accountID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	// Expect Update Account
+	// Expect Update Account (billing_day omitted from the request, so the SQL
+	// must NOT contain a billing_day clause and only 8 args are sent)
 	mock.ExpectQuery("WITH updated AS").
-		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID, (*int)(nil)).
+		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
 			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
 
@@ -179,9 +182,12 @@ func TestUpdateAccount(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	// Perform request
-	jsonBody, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBuffer(jsonBody))
+	// Request body is a raw JSON string: the OptionalInt billingDay field has
+	// no MarshalJSON, so struct marshaling would emit "billingDay":{} and fail
+	// binding.
+	body := fmt.Sprintf(`{"name":%q,"accountTypeId":%q,"bank":%q,"currency":%q,"color":%q,"isDefault":true}`,
+		reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color)
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -399,7 +405,7 @@ func TestUpdateAccountPayeeNameConflict(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	mock.ExpectQuery("WITH updated AS").
-		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID, (*int)(nil)).
+		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
 			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
 
@@ -409,13 +415,96 @@ func TestUpdateAccountPayeeNameConflict(t *testing.T) {
 		WithArgs(reqBody.Name, accountID, userID).
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint \"payees_user_name_uq\""})
 
-	jsonBody, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBuffer(jsonBody))
+	body := fmt.Sprintf(`{"name":%q,"accountTypeId":%q,"bank":%q,"currency":%q,"color":%q,"isDefault":true}`,
+		reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color)
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "payee")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateAccountBillingDayExplicitSet(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+
+	// billingDay:15 present -> the SQL carries ", billing_day = $9" with 15.
+	mock.ExpectBegin()
+	mock.ExpectQuery("WITH updated AS").
+		WithArgs("Savings", "bank", "Axis", "INR", "#06b6d4", (*bool)(nil), accountID, userID, intPtr(15)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
+			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, intPtr(15), time.Now(), 0.0))
+	mock.ExpectExec("UPDATE payees SET name").
+		WithArgs("Savings", accountID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(),
+		bytes.NewBufferString(`{"name":"Savings","accountTypeId":"bank","bank":"Axis","currency":"INR","color":"#06b6d4","billingDay":15}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var account models.Account
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &account))
+	require.NotNil(t, account.BillingDay)
+	assert.Equal(t, 15, *account.BillingDay)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateAccountBillingDayExplicitNullClears(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+
+	// billingDay:null present -> the SQL carries ", billing_day = $9" with nil.
+	mock.ExpectBegin()
+	mock.ExpectQuery("WITH updated AS").
+		WithArgs("Savings", "bank", "Axis", "INR", "#06b6d4", (*bool)(nil), accountID, userID, (*int)(nil)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
+			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, (*int)(nil), time.Now(), 0.0))
+	mock.ExpectExec("UPDATE payees SET name").
+		WithArgs("Savings", accountID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(),
+		bytes.NewBufferString(`{"name":"Savings","accountTypeId":"bank","bank":"Axis","currency":"INR","color":"#06b6d4","billingDay":null}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var account models.Account
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &account))
+	assert.Nil(t, account.BillingDay)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateAccountBillingDayInvalidRange(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	for _, day := range []int{0, 32, -3} {
+		t.Run(fmt.Sprintf("billingDay=%d", day), func(t *testing.T) {
+			req, _ := http.NewRequest("PUT", "/accounts/"+uuid.New().String(),
+				bytes.NewBufferString(fmt.Sprintf(`{"name":"Savings","billingDay":%d}`, day)))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "between 1 and 31")
+		})
+	}
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

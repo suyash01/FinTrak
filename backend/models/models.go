@@ -275,9 +275,10 @@ type CreateAccountRequest struct {
 	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 
-// UpdateAccountRequest uses a *bool for IsDefault so that an absent key leaves
-// the current default flag untouched (the edit form does not send it), while an
-// explicit true/false sets it.
+// UpdateAccountRequest is a partial update for an account. Pointer/bool
+// fields distinguish "not provided" from "set to empty"; BillingDay uses
+// OptionalInt so an explicit null clears the stored value while an absent key
+// leaves it untouched.
 type UpdateAccountRequest struct {
 	Name          string `json:"name"`
 	AccountTypeID string `json:"accountTypeId"`
@@ -285,10 +286,11 @@ type UpdateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     *bool  `json:"isDefault"`
-	// BillingDay is the day of the month on which billing cycles end (1-31).
-	// Optional: omitted leaves the current value untouched, an explicit value
-	// sets it, and null clears it.
-	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
+	// BillingDay is the day of the month on which billing cycles end (1-31,
+	// range-checked in the handler). An absent key leaves the current value
+	// (and its derived billing cycles) untouched, an explicit value sets it,
+	// and null clears it.
+	BillingDay OptionalInt `json:"billingDay"`
 }
 
 // CreateCategoryRequest is the body for POST /api/v1/categories.
