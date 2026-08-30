@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -147,6 +148,10 @@ func UpdateRule(c *gin.Context) {
 
 // ApplyRules re-runs all of the user's rules against uncategorized transactions
 // (category_id IS NULL), applying the first matching rule's category and payee.
+// It runs as one set-based UPDATE per rule in descending priority order: the
+// category_id IS NULL guard means a transaction is categorized by exactly one
+// (the highest-priority matching) rule, and any failure rolls the whole apply
+// back so a mid-batch error can never commit a silently partial result.
 // Returns the number of transactions updated.
 func ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
@@ -159,18 +164,6 @@ func ApplyRules(c *gin.Context) {
 		return
 	}
 
-	// Get uncategorized transactions (category_id IS NULL)
-	query := "SELECT id, description FROM transactions WHERE category_id IS NULL AND user_id = $1"
-	args := []interface{}{userID}
-
-	txnRows, err := db.Pool.Query(c, query, args...)
-	if err != nil {
-		log.Printf("Error in ApplyRules (getting transactions): %v\n", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer txnRows.Close()
-
 	// Use a transaction for batch updates
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
@@ -181,34 +174,37 @@ func ApplyRules(c *gin.Context) {
 	defer tx.Rollback(c)
 
 	updated := 0
-	for txnRows.Next() {
-		var txnID uuid.UUID
-		var desc string
-		if err := txnRows.Scan(&txnID, &desc); err != nil {
-			log.Printf("Error in ApplyRules transaction scan: %v\n", err)
+	for _, r := range rules {
+		// Param layout: $1 user_id, $2 category_id, and the pattern is $3
+		// (no payee) or $4 (payee at $3).
+		args := []any{userID, r.CatID}
+		payeeClause := ""
+		paramIdx := 3
+		if r.PayeeID != nil {
+			payeeClause = ", payee_id = $3"
+			args = append(args, r.PayeeID)
+			paramIdx = 4
+		}
+		matchExpr, matchArg, ok := ruleMatchSQL(r.MatchType, r.Pattern, paramIdx)
+		if !ok {
+			// Match types matchRule does not implement (e.g. the legacy
+			// 'regex' value) never fire there either — skip them here rather
+			// than failing the whole batch.
 			continue
 		}
+		args = append(args, matchArg)
 
-		for _, r := range rules {
-			if matchRule(desc, r.Pattern, r.MatchType) {
-				updateQuery := "UPDATE transactions SET category_id = $1"
-				updateArgs := []interface{}{r.CatID}
-				if r.PayeeID != nil {
-					updateQuery += ", payee_id = $2 WHERE id = $3 AND user_id = $4"
-					updateArgs = append(updateArgs, r.PayeeID, txnID, userID)
-				} else {
-					updateQuery += " WHERE id = $2 AND user_id = $3"
-					updateArgs = append(updateArgs, txnID, userID)
-				}
-				_, err := tx.Exec(c, updateQuery, updateArgs...)
-				if err != nil {
-					log.Printf("Error in ApplyRules (updating transaction %v with rule %v): %v\n", txnID, r.Pattern, err)
-					continue
-				}
-				updated++
-				break
-			}
+		res, err := tx.Exec(c,
+			fmt.Sprintf(`UPDATE transactions SET category_id = $2%s
+			 WHERE user_id = $1 AND category_id IS NULL AND %s`, payeeClause, matchExpr),
+			args...,
+		)
+		if err != nil {
+			log.Printf("Error in ApplyRules (updating with rule %q): %v\n", r.Pattern, err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return // deferred rollback keeps the apply all-or-nothing
 		}
+		updated += int(res.RowsAffected())
 	}
 
 	if err := tx.Commit(c); err != nil {
@@ -218,6 +214,29 @@ func ApplyRules(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"updated": updated})
+}
+
+// ruleMatchSQL builds the SQL predicate (referencing the pattern as $paramIdx)
+// and its bound argument for a rule's match type, mirroring matchRule's
+// semantics: case-insensitive contains / starts_with / exact. The arg's % and _
+// are escaped so LIKE behaves like a plain substring check ("100%" does not
+// match "1000"). ok is false for match types matchRule never fires for.
+func ruleMatchSQL(matchType, pattern string, paramIdx int) (expr string, arg string, ok bool) {
+	switch matchType {
+	case "contains":
+		return fmt.Sprintf("LOWER(description) LIKE LOWER($%d) ESCAPE '\\'", paramIdx), "%" + escapeLikePattern(pattern) + "%", true
+	case "starts_with":
+		return fmt.Sprintf("LOWER(description) LIKE LOWER($%d) ESCAPE '\\'", paramIdx), escapeLikePattern(pattern) + "%", true
+	case "exact":
+		return fmt.Sprintf("LOWER(description) = LOWER($%d)", paramIdx), pattern, true
+	}
+	return "", "", false
+}
+
+// escapeLikePattern escapes LIKE wildcards and the escape character itself so a
+// user-supplied pattern matches literally (same semantics as strings.Contains).
+func escapeLikePattern(p string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }
 
 // ruleEntry is the minimal rule representation used for in-memory matching

@@ -210,6 +210,10 @@ func BulkCreateLinks(c *gin.Context) {
 		validation.RespondBindError(c, err)
 		return
 	}
+	if len(req.Links) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many links (max %d per request)", maxBulkBatch), http.StatusBadRequest)
+		return
+	}
 
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
@@ -389,7 +393,10 @@ func BulkDeleteLinks(c *gin.Context) {
 		validation.RespondBindError(c, err)
 		return
 	}
-
+	if len(req.IDs) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many link ids (max %d per request)", maxBulkBatch), http.StatusBadRequest)
+		return
+	}
 	if len(req.IDs) == 0 {
 		c.JSON(http.StatusOK, gin.H{"message": "nothing to delete", "deletedCount": 0})
 		return

@@ -626,6 +626,25 @@ func TestBulkDeleteLinks(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestBulkDeleteLinksTooManyIDs(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", BulkDeleteLinks)
+
+	ids := make([]uuid.UUID, maxBulkBatch+1)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+	body, _ := json.Marshal(models.BulkDeleteLinksRequest{IDs: ids})
+	req, _ := http.NewRequest("POST", "/links/bulk-delete", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "too many link ids")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBulkDeleteLinksEmpty(t *testing.T) {
 	r, mock := newLinkTestRouter(t)
 	r.POST("/links/bulk-delete", BulkDeleteLinks)

@@ -25,6 +25,10 @@ import (
 // that a malformed or malicious request can't queue an unbounded batch.
 const maxImportBatch = 10000
 
+// maxBulkBatch caps how many IDs a single bulk operation may target, so a
+// crafted request can't force a giant ANY($1) array or a very long query.
+const maxBulkBatch = 5000
+
 // maxPageSize caps how many transactions a single page can return, matching the
 // frontend's limit, so a crafted request can't bypass it and fetch everything.
 const maxPageSize = 1000
@@ -145,8 +149,10 @@ func GetTransactions(c *gin.Context) {
 	if search != "" {
 		query += fmt.Sprintf(" AND LOWER(t.description) LIKE LOWER($%d)", paramIdx)
 		countQuery += fmt.Sprintf(" AND LOWER(t.description) LIKE LOWER($%d)", paramIdx)
-		args = append(args, "%"+search+"%")
-		countArgs = append(countArgs, "%"+search+"%")
+		// Escape % and _ so "100%" matches the literal text, not "1000" —
+		// same semantics as the rules engine's matchRule.
+		args = append(args, "%"+escapeLikePattern(search)+"%")
+		countArgs = append(countArgs, "%"+escapeLikePattern(search)+"%")
 		paramIdx++
 	}
 	if dateFrom != "" {
@@ -564,6 +570,10 @@ func BulkCategorize(c *gin.Context) {
 		validation.RespondBindError(c, err)
 		return
 	}
+	if len(req.TransactionIDs) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many transaction ids (max %d per request)", maxBulkBatch), http.StatusBadRequest)
+		return
+	}
 
 	// The "uncategorized" sentinel clears the category on every selected
 	// transaction; otherwise the target category must exist and be the user's.
@@ -599,6 +609,10 @@ func BulkUpdatePayee(c *gin.Context) {
 		validation.RespondBindError(c, err)
 		return
 	}
+	if len(req.TransactionIDs) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many transaction ids (max %d per request)", maxBulkBatch), http.StatusBadRequest)
+		return
+	}
 
 	query := `UPDATE transactions SET payee_id = $1
 	          WHERE id = ANY($2) AND user_id = $3
@@ -621,6 +635,10 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 		validation.RespondBindError(c, err)
 		return
 	}
+	if len(req.TransactionIDs) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many transaction ids (max %d per request)", maxBulkBatch), http.StatusBadRequest)
+		return
+	}
 
 	query := `UPDATE transactions SET billing_cycle_id = $1
 	          WHERE id = ANY($2) AND user_id = $3
@@ -640,6 +658,10 @@ func BulkDeleteTransactions(c *gin.Context) {
 	var req models.BulkDeleteTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
+		return
+	}
+	if len(req.TransactionIDs) > maxBulkBatch {
+		validation.RespondError(c, fmt.Sprintf("too many transaction ids (max %d per request)", maxBulkBatch), http.StatusBadRequest)
 		return
 	}
 

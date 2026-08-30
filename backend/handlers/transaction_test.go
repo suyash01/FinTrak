@@ -1815,3 +1815,46 @@ func TestUpdateTransactionNonPositiveAmount(t *testing.T) {
 	}
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestBulkCategorizeTooManyIDs(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-categorize", BulkCategorize)
+
+	ids := make([]uuid.UUID, maxBulkBatch+1)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+	body, _ := json.Marshal(map[string]interface{}{"transactionIds": ids, "categoryId": uuid.New().String()})
+	req, _ := http.NewRequest("POST", "/transactions/bulk-categorize", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "too many transaction ids")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransactionsSearchEscapesWildcards(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", GetTransactions)
+
+	userID := testUserID()
+
+	// Searching "100%" must pass the escaped pattern (%100\%%), not the raw
+	// text that LIKE would interpret as a wildcard.
+	// The handler issues the COUNT query first, then the paged list.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+		WithArgs(userID, `%100\%%`).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT t.id, t.account_id").
+		WithArgs(userID, `%100\%%`, 50, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}))
+
+	req, _ := http.NewRequest("GET", "/transactions?search=100%25", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
