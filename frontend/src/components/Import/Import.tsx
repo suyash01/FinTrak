@@ -233,6 +233,11 @@ const getMappingErrors = (
 // Duplicate detection mirrors the backend fingerprint so that the count the
 // user sees matches what the import endpoint would skip.
 const FINGERPRINT_SEP = "\x00";
+// Upper bound on pages of existing-transaction history fetched for duplicate
+// detection (100 pages × 1000 rows = 100k transactions). The loop normally
+// stops at the server-reported page count; this guard only trips on a server
+// reporting bogus pagination metadata.
+const MAX_EXISTING_FETCH_PAGES = 100;
 const fingerprintOf = (
   date: string,
   amount: number,
@@ -460,16 +465,42 @@ export default function Import() {
   }, []);
 
   // Load the account's existing transactions so duplicates can be flagged
-  // before anything is imported.
+  // before anything is imported. The backend clamps a page's LIMIT to
+  // maxPageSize (1000) and reports the total page count, so every page is
+  // fetched — an old `limit: 0` here silently returned only the 50 newest
+  // rows, making "N already exist in this account" counts (and the
+  // skip-duplicates prompt) wrong for anything older, and letting genuine
+  // duplicates slip through an import with duplicateAction "keep".
   useEffect(() => {
     if (!selectedAccount) {
       setExistingTxns([]);
       return;
     }
-    api
-      .getTransactions({ accountId: selectedAccount, limit: 0 })
-      .then((res) => setExistingTxns(res.data || []))
-      .catch(console.error);
+    let cancelled = false;
+    (async () => {
+      const all: Transaction[] = [];
+      try {
+        for (let page = 1; page <= MAX_EXISTING_FETCH_PAGES; page++) {
+          const res = await api.getTransactions({
+            accountId: selectedAccount,
+            limit: 1000,
+            page,
+          });
+          // Synthetic billing-cycle summary rows are not real transactions
+          // and must never count as duplicate candidates.
+          all.push(...(res.data || []).filter((t) => !t.isSummary));
+          if (!res.pages || page >= res.pages) break;
+        }
+        if (!cancelled) setExistingTxns(all);
+      } catch (err) {
+        // Keep the previously loaded set on failure (e.g. a transient
+        // network error mid-pagination) rather than wiping the counts.
+        if (!cancelled) console.error(err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedAccount, existingRefresh]);
 
   // Load the billing cycles for the selected account when it has a billing day,
