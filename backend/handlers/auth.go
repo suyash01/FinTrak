@@ -59,13 +59,19 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	role := roleForEmail(req.Email, adminEmailsFromContext(c))
+	// Emails are always stored lowercase so identity is case-insensitive: the
+	// case-sensitive UNIQUE constraint on users.email then rejects any
+	// case-variant duplicate at insert time (23505 -> 409), and logins can
+	// compare email = $1 directly against the plain index.
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	role := roleForEmail(email, adminEmailsFromContext(c))
 
 	var user models.User
 	err = db.Pool.QueryRow(c,
 		`INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3)
-		 RETURNING id, email, role`,
-		req.Email, hash, role,
+			 RETURNING id, email, role`,
+		email, hash, role,
 	).Scan(&user.ID, &user.Email, &user.Role)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -102,9 +108,13 @@ func Login(c *gin.Context) {
 
 	var user models.User
 	var passwordHash string
+	// Registered emails are always stored lowercase, so a direct equality
+	// lookup is exact, uses the unique index on users.email, and can never
+	// match more than one row per identity.
+	email := strings.ToLower(strings.TrimSpace(req.Email))
 	err := db.Pool.QueryRow(c,
-		"SELECT id, email, password_hash, role FROM users WHERE LOWER(email) = LOWER($1)",
-		req.Email,
+		"SELECT id, email, password_hash, role FROM users WHERE email = $1",
+		email,
 	).Scan(&user.ID, &user.Email, &passwordHash, &user.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "invalid email or password", http.StatusUnauthorized)

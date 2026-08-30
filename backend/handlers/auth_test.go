@@ -103,10 +103,12 @@ func TestRegisterAdminEmail(t *testing.T) {
 	userID := uuid.New()
 	reqBody := models.RegisterRequest{Email: "ADMIN@example.com", Password: "password123"}
 
+	// Register stores the email lowercase while the role allowlist is still
+	// matched case-insensitively via EqualFold.
 	mock.ExpectQuery("INSERT INTO users").
-		WithArgs(reqBody.Email, pgxmock.AnyArg(), "admin").
+		WithArgs("admin@example.com", pgxmock.AnyArg(), "admin").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
-			AddRow(userID, reqBody.Email, "admin"))
+			AddRow(userID, "admin@example.com", "admin"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -148,10 +150,13 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	r := newAuthTestRouter()
 	r.POST("/auth/register", Register)
 
-	reqBody := models.RegisterRequest{Email: "dup@example.com", Password: "password123"}
+	// Mixed-case input is normalized to lowercase before the INSERT, so the
+	// case-sensitive UNIQUE constraint on users.email rejects a case-variant
+	// duplicate the same way it rejects an identical one (23505 -> 409).
+	reqBody := models.RegisterRequest{Email: "DUP@example.com", Password: "password123"}
 
 	mock.ExpectQuery("INSERT INTO users").
-		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
+		WithArgs("dup@example.com", pgxmock.AnyArg(), "user").
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
 
 	jsonBody, _ := json.Marshal(reqBody)
@@ -209,6 +214,46 @@ func TestLogin(t *testing.T) {
 	assert.Equal(t, userID, res.User.ID)
 	assert.Equal(t, "user", res.User.Role)
 
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoginNormalizesEmail(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newAuthTestRouter()
+	r.POST("/auth/login", Login)
+
+	userID := uuid.New()
+	password := "password123"
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mixed-case input is normalized exactly like it is on registration, so
+	// the lookup finds the stored lowercase row.
+	reqBody := models.LoginRequest{Email: "Test@Example.COM", Password: password}
+
+	mock.ExpectQuery("SELECT id, email, password_hash, role FROM users").
+		WithArgs("test@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
+			AddRow(userID, "test@example.com", hash, "user"))
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

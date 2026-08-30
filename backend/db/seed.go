@@ -132,12 +132,12 @@ func PromoteAdminUsers(emails []string) {
 	}
 	ctx := context.Background()
 	for _, email := range emails {
-		email = strings.TrimSpace(email)
+		email = strings.ToLower(strings.TrimSpace(email))
 		if email == "" {
 			continue
 		}
 		_, err := Pool.Exec(ctx,
-			"UPDATE users SET role = 'admin' WHERE LOWER(email) = LOWER($1)",
+			"UPDATE users SET role = 'admin' WHERE email = $1",
 			email,
 		)
 		if err != nil {
