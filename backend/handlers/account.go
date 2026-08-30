@@ -124,7 +124,7 @@ func CreateAccount(c *gin.Context) {
 
 	if err != nil {
 		// The account-linked payee upsert can collide with an existing payee
-		// name owned by this user (payees_user_name_uq after migration 000002)
+		// name owned by this user (payees_user_name_uq)
 		// — surface that as a conflict, not a 500.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -142,10 +142,11 @@ func CreateAccount(c *gin.Context) {
 
 // DeleteAccount removes an account owned by the user along with its
 // account-linked payee, so no orphaned payees are left behind. Its
-// transactions are deleted first (migration 000003 also cascades them — and
-// their links — from the account row); the count is returned so the UI can
-// tell the user what was removed. Previously the transactions were orphaned:
-// invisible in listings (inner JOIN) yet still counted by dashboard totals.
+// transactions are deleted first (the transactions.account_id foreign key
+// also cascades them — and their links — from the account row); the count is
+// returned so the UI can tell the user what was removed. Previously the
+// transactions were orphaned: invisible in listings (inner JOIN) yet still
+// counted by dashboard totals.
 func DeleteAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

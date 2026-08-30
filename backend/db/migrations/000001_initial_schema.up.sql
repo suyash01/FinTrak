@@ -1,9 +1,16 @@
--- FinTrak initial schema (squashed).
--- Single migration combining the full migration history: the original schema,
--- billing cycles, user roles, the composite ownership FKs that enforce that
--- every user-owned reference points at a row owned by the same user, category
--- groups (replacing the legacy categories.type column), and the removal of the
--- never-used categories.parent_id column.
+-- FinTrak canonical schema (squashed).
+-- Single baseline migration merging the full migration history:
+--   * the original schema: users, account types, accounts (incl. billing_day),
+--     billing cycles, category groups (replacing the legacy categories.type
+--     column and the never-used categories.parent_id), categories, payees,
+--     transactions, rules, links
+--   * per-owner payee name uniqueness ((user_id, name)) instead of the
+--     column-wide UNIQUE on payees.name
+--   * foreign keys from transactions.account_id -> accounts and from
+--     links.from_txn_id/to_txn_id -> transactions so deletions cascade
+--     (the historical orphan-cleanup DELETEs are no-ops on a fresh database
+--     and are intentionally not carried over)
+--   * the query indexes added for the dominant listing/aggregate patterns
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -109,13 +116,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS categories_user_id_uq
 -- Payees
 CREATE TABLE IF NOT EXISTS payees (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
     account_id UUID,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );
+
+-- Payee names are unique per owner: two users may each have a "Starbucks",
+-- but one user cannot create two of the same name. The historical column-wide
+-- UNIQUE on payees.name is intentionally absent; this index enforces the
+-- per-owner scope (its name is referenced by handler code/tests — keep it).
+CREATE UNIQUE INDEX IF NOT EXISTS payees_user_name_uq
+    ON payees (user_id, name);
 
 -- One account-linked payee per account (account_id is NULL for manually-created
 -- payees), backing the ON CONFLICT upsert in CreateAccount.
@@ -125,7 +139,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS payees_account_id_uq
 -- Transactions
 CREATE TABLE IF NOT EXISTS transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id UUID NOT NULL,
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     date DATE NOT NULL,
     description TEXT NOT NULL,
     amount DECIMAL(15,2) NOT NULL,
@@ -157,10 +171,58 @@ CREATE TABLE IF NOT EXISTS rules (
 CREATE TABLE IF NOT EXISTS links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     type VARCHAR(20) NOT NULL CHECK (type IN ('transfer', 'cashback', 'refund', 'bill_payment')),
-    from_txn_id UUID NOT NULL,
-    to_txn_id UUID NOT NULL,
+    from_txn_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    to_txn_id UUID NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
     notes TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE (id, user_id)
 );
+
+-- Query indexes for the dominant access patterns.
+-- The UNIQUE (id, user_id) indexes above are useless for queries that
+-- predicate on user_id/account_id first:
+--
+--   * GET /transactions and its COUNT(*) — WHERE user_id = $1
+--     ORDER BY date DESC LIMIT/OFFSET
+--   * Import/validate duplicate snapshots and billing-cycle aggregates —
+--     WHERE account_id = $1 AND user_id = $2
+--   * the per-row is_linked EXISTS in the transaction list —
+--     SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id
+--     (two single-column indexes let Postgres combine them with a BitmapOr)
+--   * FK-ownership EXISTS checks and LEFT JOINs on category_id/payee_id
+--   * rules/payees/categories listing — WHERE user_id = $1
+--   * GetLinks — WHERE user_id = $1 ORDER BY created_at DESC
+
+CREATE INDEX transactions_user_date_idx
+    ON transactions (user_id, date DESC);
+
+CREATE INDEX transactions_account_user_idx
+    ON transactions (account_id, user_id);
+
+CREATE INDEX transactions_category_idx
+    ON transactions (category_id) WHERE category_id IS NOT NULL;
+
+CREATE INDEX transactions_payee_idx
+    ON transactions (payee_id) WHERE payee_id IS NOT NULL;
+
+CREATE INDEX transactions_billing_cycle_idx
+    ON transactions (billing_cycle_id) WHERE billing_cycle_id IS NOT NULL;
+
+CREATE INDEX links_from_txn_idx
+    ON links (from_txn_id);
+
+CREATE INDEX links_to_txn_idx
+    ON links (to_txn_id);
+
+CREATE INDEX links_user_created_idx
+    ON links (user_id, created_at DESC);
+
+CREATE INDEX rules_user_idx
+    ON rules (user_id);
+
+CREATE INDEX payees_user_idx
+    ON payees (user_id);
+
+CREATE INDEX categories_user_idx
+    ON categories (user_id) WHERE user_id IS NOT NULL;
