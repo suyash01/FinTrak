@@ -375,9 +375,18 @@ type paperlessNameMaps struct {
 	tags           map[int]string
 }
 
+// nameMapPageSize is the page size requested for each Paperless lookup table.
+const nameMapPageSize = 1000
+
+// maxNameMapPages bounds the pagination loop so a misbehaving instance that
+// keeps returning full pages can't make the lookup hang forever.
+const maxNameMapPages = 100
+
 // fetchNameMaps pulls the correspondent/document_type/tag lookup tables from
 // Paperless and returns them as ID->name maps. Individual failures are logged
-// but not fatal — the document list still renders, just without names.
+// but not fatal — the document list still renders, just without names. Each
+// table is paginated (Paperless caps page_size at 1000) so instances with
+// more than 1000 entries are not truncated.
 func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) paperlessNameMaps {
 	maps := paperlessNameMaps{
 		correspondents: map[int]string{},
@@ -388,40 +397,56 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	} {
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, base+path, nil)
-		if err != nil {
-			return nil
+		var out []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
 		}
-		req.Header.Set("Authorization", "Token "+token)
-		resp, err := client.Do(req)
-		if err != nil {
-			slog.Error("fetching paperless resource", "path", path, "error", err)
-			return nil
+		for page := 1; page <= maxNameMapPages; page++ {
+			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet,
+				fmt.Sprintf("%s%s&page=%d", base, path, page), nil)
+			if err != nil {
+				return nil
+			}
+			req.Header.Set("Authorization", "Token "+token)
+			resp, err := client.Do(req)
+			if err != nil {
+				slog.Error("fetching paperless resource", "path", path, "error", err)
+				return nil
+			}
+			body, err := readAllLimited(resp.Body, maxPaperlessResponse)
+			resp.Body.Close()
+			if err != nil {
+				return nil
+			}
+			var list struct {
+				Results []struct {
+					ID   int    `json:"id"`
+					Name string `json:"name"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal(body, &list); err != nil {
+				return nil
+			}
+			out = append(out, list.Results...)
+			// A short page means the last one; a full page means more may
+			// follow, so keep paging.
+			if len(list.Results) < nameMapPageSize {
+				break
+			}
 		}
-		defer resp.Body.Close()
-		body, err := readAllLimited(resp.Body, maxPaperlessResponse)
-		if err != nil {
-			return nil
-		}
-		var list struct {
-			Results []struct {
-				ID   int    `json:"id"`
-				Name string `json:"name"`
-			} `json:"results"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			return nil
-		}
-		return list.Results
+		return out
 	}
 
-	for _, r := range fetch("/api/correspondents/?page_size=1000") {
+	listPath := func(resource string) string {
+		return fmt.Sprintf("/api/%s/?page_size=%d", resource, nameMapPageSize)
+	}
+	for _, r := range fetch(listPath("correspondents")) {
 		maps.correspondents[r.ID] = r.Name
 	}
-	for _, r := range fetch("/api/document_types/?page_size=1000") {
+	for _, r := range fetch(listPath("document_types")) {
 		maps.documentTypes[r.ID] = r.Name
 	}
-	for _, r := range fetch("/api/tags/?page_size=1000") {
+	for _, r := range fetch(listPath("tags")) {
 		maps.tags[r.ID] = r.Name
 	}
 	return maps

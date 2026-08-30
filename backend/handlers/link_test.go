@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -658,6 +659,26 @@ func TestBulkDeleteLinksEmpty(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"deletedCount":0`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransferSuggestionsExcludesLinkedCredits(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+
+	// The lateral must never suggest a credit transaction that is already on
+	// either side of a link — the strict matcher pins the exact clause so a
+	// future revert to the debit-side-only check fails this test.
+	mock.ExpectQuery(regexp.QuoteMeta("AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = t.id OR to_txn_id = t.id))")).
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"d_id", "d_account_id", "d_date", "d_description", "d_amount", "d_type", "d_account",
+			"c_id", "c_account_id", "c_date", "c_description", "c_amount", "c_type", "c_account"}))
+
+	req, _ := http.NewRequest(http.MethodGet, "/links/transfer-suggestions", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

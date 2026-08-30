@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -274,6 +275,33 @@ func TestUpdateAccountType(t *testing.T) {
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
+}
+
+func TestDeleteAccountTypeUsageCountError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newAccountTypeTestRouter()
+
+	// The usage-count gate failing must not fall through to the DELETE: it
+	// returns 500 instead of silently treating the type as unused.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
+		WithArgs("savings").
+		WillReturnError(errors.New("boom"))
+
+	req, _ := http.NewRequest(http.MethodDelete, "/account-types/savings", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestDeleteAccountType(t *testing.T) {

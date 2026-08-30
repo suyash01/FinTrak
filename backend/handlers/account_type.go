@@ -154,7 +154,11 @@ func DeleteAccountType(c *gin.Context) {
 
 	// Check if any accounts are using this type
 	var count int
-	db.Pool.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count)
+	if err := db.Pool.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count); err != nil {
+		slog.Error("DeleteAccountType (usage count)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	if count > 0 {
 		validation.RespondError(c, "cannot delete: account type is in use by existing accounts", http.StatusConflict)
 		return

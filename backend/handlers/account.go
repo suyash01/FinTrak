@@ -321,7 +321,6 @@ func ExportAccount(c *gin.Context) {
 	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="account_%s_export.csv"`, id.String()[:8]))
 
 	writer := csv.NewWriter(c.Writer)
-	defer writer.Flush()
 
 	// Write CSV Header
 	if err := writer.Write([]string{"Date", "Description", "Amount", "Type", "Tags", "Notes"}); err != nil {
@@ -339,8 +338,12 @@ func ExportAccount(c *gin.Context) {
 			notes       string
 		)
 		if err := rows.Scan(&date, &description, &amount, &txnType, &tags, &notes); err != nil {
+			// Stop rather than silently emitting a CSV that looks complete but
+			// is missing rows: the client sees a truncated file, which is
+			// detectable, instead of wrong data that isn't.
+			writer.Flush()
 			slog.Error("scanning row in ExportAccount", "error", err)
-			continue
+			return
 		}
 
 		record := []string{
@@ -353,8 +356,18 @@ func ExportAccount(c *gin.Context) {
 		}
 
 		if err := writer.Write(record); err != nil {
+			writer.Flush()
 			slog.Error("writing CSV record", "error", err)
 			return
 		}
+	}
+	if err := rows.Err(); err != nil {
+		writer.Flush()
+		slog.Error("iterating rows in ExportAccount", "error", err)
+		return
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		slog.Error("flushing CSV in ExportAccount", "error", err)
 	}
 }

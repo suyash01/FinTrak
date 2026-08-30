@@ -86,6 +86,41 @@ func TestGetGroups(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCreateGroupInvalidID(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newGroupTestRouter() // registers POST /groups -> CreateGroup
+
+	// Rejected before any SQL: uppercase, delimiters that would make the id
+	// unroutable via /groups/:id, digit-first, empty, and overlong (51 chars
+	// > VARCHAR(50)).
+	bodies := []string{
+		`{"id":"BadID","name":"N"}`,
+		`{"id":"bad/id","name":"N"}`,
+		`{"id":"bad?x","name":"N"}`,
+		`{"id":"1starts","name":"N"}`,
+		`{"id":"","name":"N"}`,
+		`{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"N"}`,
+	}
+	for _, body := range bodies {
+		req, _ := http.NewRequest(http.MethodPost, "/groups", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", body)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCreateGroup(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

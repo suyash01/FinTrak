@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,6 +48,40 @@ func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token, tag strin
 	mock.ExpectQuery("SELECT paperless_url, paperless_token, paperless_tag, page_size FROM users").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token", "paperless_tag", "page_size"}).AddRow(url, token, tag, nil))
+}
+
+func TestFetchNameMapsPaginates(t *testing.T) {
+	var pages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		results := make([]map[string]any, 0, nameMapPageSize)
+		if page == "1" {
+			// A full first page: forces the pagination loop to continue.
+			for i := 0; i < nameMapPageSize; i++ {
+				results = append(results, map[string]any{"id": i, "name": fmt.Sprintf("c%d", i)})
+			}
+		} else {
+			// A short second page ends the loop.
+			for i := 0; i < 2; i++ {
+				results = append(results, map[string]any{"id": nameMapPageSize + i, "name": fmt.Sprintf("c%d", nameMapPageSize+i)})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	maps := fetchNameMaps(c, &http.Client{}, server.URL, "tok")
+
+	// 1000 entries from page 1 + 2 from page 2 — beyond the old single-page
+	// single-fetch limit of 1000.
+	assert.Len(t, maps.correspondents, nameMapPageSize+2)
+	assert.Equal(t, "c0", maps.correspondents[0])
+	assert.Equal(t, fmt.Sprintf("c%d", nameMapPageSize+1), maps.correspondents[nameMapPageSize+1])
+	assert.Contains(t, pages, "2")
 }
 
 func TestGetPaperlessSettings(t *testing.T) {

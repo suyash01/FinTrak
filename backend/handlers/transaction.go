@@ -917,12 +917,10 @@ func ImportTransactions(c *gin.Context) {
 			}
 			// Cycles are only generated for accounts that have a billing day
 			// set; the date-based default can't apply to accounts without one.
-			if billingDay != nil {
-				if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
-					slog.Error("ImportTransactions (ensure billing cycles)", "error", err)
-					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-					return
-				}
+			if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
+				slog.Error("ImportTransactions (ensure billing cycles)", "error", err)
+				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+				return
 			}
 		}
 

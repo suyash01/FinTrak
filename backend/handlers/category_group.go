@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
@@ -43,12 +44,28 @@ func GetGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, groups)
 }
 
+// groupIDSlugRe validates user-chosen category group ids: a lowercase letter,
+// then lowercase letters/digits/underscores, up to 50 characters (the column
+// is VARCHAR(50)). Mirrors the account-type id convention so every stored id
+// is addressable via PUT/DELETE /groups/:id — a '/' or '?' in the id would
+// otherwise create unroutable rows, and an overlong id would 500 on insert.
+var groupIDSlugRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,49}$`)
+
+// validCategoryGroupID reports whether a user-supplied group id is a usable slug.
+func validCategoryGroupID(id string) bool {
+	return groupIDSlugRe.MatchString(id)
+}
+
 // CreateGroup adds a user-owned custom group. Base/global groups are never
 // created through this endpoint.
 func CreateGroup(c *gin.Context) {
 	var req models.CreateCategoryGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
+		return
+	}
+	if !validCategoryGroupID(req.ID) {
+		validation.RespondError(c, "group id must be a lowercase letter followed by lowercase letters, digits, or underscores (max 50 characters)", http.StatusBadRequest)
 		return
 	}
 
@@ -178,6 +195,10 @@ func CreateGlobalGroup(c *gin.Context) {
 	var req models.CreateCategoryGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
+		return
+	}
+	if !validCategoryGroupID(req.ID) {
+		validation.RespondError(c, "group id must be a lowercase letter followed by lowercase letters, digits, or underscores (max 50 characters)", http.StatusBadRequest)
 		return
 	}
 
