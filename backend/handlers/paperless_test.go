@@ -339,9 +339,7 @@ func TestTagPaperlessDocuments(t *testing.T) {
 
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
 
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	tagPaperlessDocuments(c, testUserID(), []int{42})
+	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -350,9 +348,7 @@ func TestTagPaperlessDocumentsNoIDs(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 
 	// No document IDs means no settings lookup and no Paperless calls.
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	tagPaperlessDocuments(c, testUserID(), nil)
+	tagPaperlessDocuments(context.Background(), testUserID(), nil, "test-key")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -361,13 +357,10 @@ func TestTagPaperlessDocumentsUnconfigured(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
 
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	tagPaperlessDocuments(c, testUserID(), []int{42})
+	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
-
 func TestImportPaperlessDocumentUnconfigured(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
@@ -612,18 +605,14 @@ func TestReadAllLimited(t *testing.T) {
 }
 
 func TestPaperlessToken(t *testing.T) {
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	c.Set("tokenEncryptionKey", "test-key")
-
 	enc, err := crypto.Encrypt("secret", "test-key")
 	require.NoError(t, err)
-	dec, err := paperlessToken(c, models.UserSettings{PaperlessToken: enc})
+	dec, err := paperlessToken(context.Background(), models.UserSettings{PaperlessToken: enc}, "test-key")
 	assert.NoError(t, err)
 	assert.Equal(t, "secret", dec)
 
 	// Legacy plaintext tokens pass through unchanged.
-	plain, err := paperlessToken(c, models.UserSettings{PaperlessToken: "legacy"})
+	plain, err := paperlessToken(context.Background(), models.UserSettings{PaperlessToken: "legacy"}, "test-key")
 	assert.NoError(t, err)
 	assert.Equal(t, "legacy", plain)
 }

@@ -4,7 +4,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -44,7 +44,7 @@ func GetAccounts(c *gin.Context) {
 
 	rows, err := db.Pool.Query(c, query, userID, userID)
 	if err != nil {
-		log.Printf("Error in GetAccounts: %v\n", err)
+		slog.Error("GetAccounts", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -54,7 +54,7 @@ func GetAccounts(c *gin.Context) {
 	for rows.Next() {
 		var a models.Account
 		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.IsDefault, &a.BillingDay, &a.CreatedAt, &a.Balance); err != nil {
-			log.Printf("Error in GetAccounts scan: %v\n", err)
+			slog.Error("GetAccounts scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -131,7 +131,7 @@ func CreateAccount(c *gin.Context) {
 			validation.RespondError(c, "an account-linked payee with this name already exists. Choose a different account name or delete the existing payee.", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in CreateAccount: %v\n", err)
+		slog.Error("CreateAccount", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -182,7 +182,7 @@ func DeleteAccount(c *gin.Context) {
 			validation.RespondError(c, "account not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in DeleteAccount: %v\n", err)
+		slog.Error("DeleteAccount", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -287,7 +287,7 @@ func UpdateAccount(c *gin.Context) {
 			validation.RespondError(c, "an account-linked payee with this name already exists. Rename the conflicting payee first.", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in UpdateAccount: %v\n", err)
+		slog.Error("UpdateAccount", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -311,7 +311,7 @@ func ExportAccount(c *gin.Context) {
 		 	 AND t.user_id = $2
 		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in ExportAccount: %v\n", err)
+		slog.Error("ExportAccount", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -325,7 +325,7 @@ func ExportAccount(c *gin.Context) {
 
 	// Write CSV Header
 	if err := writer.Write([]string{"Date", "Description", "Amount", "Type", "Tags", "Notes"}); err != nil {
-		log.Printf("Error writing CSV header: %v\n", err)
+		slog.Error("writing CSV header", "error", err)
 		return
 	}
 
@@ -339,7 +339,7 @@ func ExportAccount(c *gin.Context) {
 			notes       string
 		)
 		if err := rows.Scan(&date, &description, &amount, &txnType, &tags, &notes); err != nil {
-			log.Printf("Error scanning row in ExportAccount: %v\n", err)
+			slog.Error("scanning row in ExportAccount", "error", err)
 			continue
 		}
 
@@ -353,7 +353,7 @@ func ExportAccount(c *gin.Context) {
 		}
 
 		if err := writer.Write(record); err != nil {
-			log.Printf("Error writing CSV record: %v\n", err)
+			slog.Error("writing CSV record", "error", err)
 			return
 		}
 	}

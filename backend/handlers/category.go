@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/fintrak/backend/auth"
@@ -26,7 +26,7 @@ func GetCategories(c *gin.Context) {
 		 WHERE c.user_id = $1 OR c.user_id IS NULL
 		 ORDER BY g.sort_order, c.name`, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in GetCategories: %v\n", err)
+		slog.Error("GetCategories", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -36,7 +36,7 @@ func GetCategories(c *gin.Context) {
 	for rows.Next() {
 		var cat models.Category
 		if err := rows.Scan(&cat.ID, &cat.Name, &cat.Icon, &cat.Color, &cat.GroupID, &cat.IsGlobal, &cat.GroupName, &cat.GroupIsBase); err != nil {
-			log.Printf("Error in GetCategories scan: %v\n", err)
+			slog.Error("GetCategories scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -70,7 +70,7 @@ func CreateCategory(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in CreateCategory: %v\n", err)
+		slog.Error("CreateCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -103,7 +103,7 @@ func UpdateCategory(c *gin.Context) {
 			req.GroupID, userID,
 		).Scan(&ok)
 		if err != nil {
-			log.Printf("Error in UpdateCategory (group check): %v\n", err)
+			slog.Error("UpdateCategory (group check)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -130,7 +130,7 @@ func UpdateCategory(c *gin.Context) {
 			validation.RespondError(c, "category not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in UpdateCategory: %v\n", err)
+		slog.Error("UpdateCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -181,7 +181,7 @@ func DeleteCategory(c *gin.Context) {
 			validation.RespondError(c, "category not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in DeleteCategory: %v\n", err)
+		slog.Error("DeleteCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -228,7 +228,7 @@ func DeleteGlobalCategory(c *gin.Context) {
 			validation.RespondError(c, "category not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in DeleteGlobalCategory: %v\n", err)
+		slog.Error("DeleteGlobalCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -264,7 +264,7 @@ func CreateGlobalCategory(c *gin.Context) {
 			validation.RespondError(c, "a global category with this id already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in CreateGlobalCategory: %v\n", err)
+		slog.Error("CreateGlobalCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -293,7 +293,7 @@ func UpdateGlobalCategory(c *gin.Context) {
 			req.GroupID,
 		).Scan(&ok)
 		if err != nil {
-			log.Printf("Error in UpdateGlobalCategory (group check): %v\n", err)
+			slog.Error("UpdateGlobalCategory (group check)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -320,7 +320,7 @@ func UpdateGlobalCategory(c *gin.Context) {
 			validation.RespondError(c, "global category not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in UpdateGlobalCategory: %v\n", err)
+		slog.Error("UpdateGlobalCategory", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

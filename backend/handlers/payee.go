@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/fintrak/backend/auth"
@@ -19,7 +19,7 @@ import (
 func GetPayees(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees WHERE user_id = $1 ORDER BY name", auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in GetPayees: %v\n", err)
+		slog.Error("GetPayees", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -29,7 +29,7 @@ func GetPayees(c *gin.Context) {
 	for rows.Next() {
 		var p models.Payee
 		if err := rows.Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			log.Printf("Error in GetPayees scan: %v\n", err)
+			slog.Error("GetPayees scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -67,7 +67,7 @@ func CreatePayee(c *gin.Context) {
 			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in CreatePayee: %v\n", err)
+		slog.Error("CreatePayee", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -109,7 +109,7 @@ func UpdatePayee(c *gin.Context) {
 			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in UpdatePayee: %v\n", err)
+		slog.Error("UpdatePayee", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -128,7 +128,7 @@ func DeletePayee(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	result, err := db.Pool.Exec(c, "DELETE FROM payees WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
-		log.Printf("Error in DeletePayee: %v\n", err)
+		slog.Error("DeletePayee", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

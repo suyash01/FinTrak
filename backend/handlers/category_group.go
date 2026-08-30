@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/fintrak/backend/auth"
@@ -22,7 +22,7 @@ func GetGroups(c *gin.Context) {
 		 WHERE user_id IS NULL OR user_id = $1
 		 ORDER BY CASE WHEN user_id IS NULL THEN 0 ELSE 1 END, sort_order, name`, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in GetGroups: %v\n", err)
+		slog.Error("GetGroups", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -32,7 +32,7 @@ func GetGroups(c *gin.Context) {
 	for rows.Next() {
 		var g models.CategoryGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.Icon, &g.Color, &g.IsBase, &g.UserID, &g.SortOrder); err != nil {
-			log.Printf("Error in GetGroups scan: %v\n", err)
+			slog.Error("GetGroups scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -69,7 +69,7 @@ func CreateGroup(c *gin.Context) {
 			validation.RespondError(c, "a group with this id already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in CreateGroup: %v\n", err)
+		slog.Error("CreateGroup", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -121,7 +121,7 @@ func UpdateGroup(c *gin.Context) {
 			validation.RespondError(c, "group not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in UpdateGroup: %v\n", err)
+		slog.Error("UpdateGroup", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -146,7 +146,7 @@ func DeleteGroup(c *gin.Context) {
 		`SELECT COUNT(*) FROM categories WHERE group_id = $1 AND user_id = $2`, id, userID,
 	).Scan(&count)
 	if err != nil {
-		log.Printf("Error in DeleteGroup (count categories): %v\n", err)
+		slog.Error("DeleteGroup (count categories)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -158,7 +158,7 @@ func DeleteGroup(c *gin.Context) {
 	result, err := db.Pool.Exec(c,
 		`DELETE FROM category_groups WHERE id = $1 AND user_id = $2 AND is_base = FALSE`, id, userID)
 	if err != nil {
-		log.Printf("Error in DeleteGroup: %v\n", err)
+		slog.Error("DeleteGroup", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -196,7 +196,7 @@ func CreateGlobalGroup(c *gin.Context) {
 			validation.RespondError(c, "a group with this id already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in CreateGlobalGroup: %v\n", err)
+		slog.Error("CreateGlobalGroup", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -213,7 +213,7 @@ func GetTransactions(c *gin.Context) {
 
 	rows, err := db.Pool.Query(c, query, args...)
 	if err != nil {
-		log.Printf("Error in GetTransactions: %v\n", err)
+		slog.Error("GetTransactions", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -226,7 +226,7 @@ func GetTransactions(c *gin.Context) {
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked,
 			&t.BillingCycleID, &t.BillingCycleLabel); err != nil {
-			log.Printf("Error in GetTransactions scan: %v\n", err)
+			slog.Error("GetTransactions scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -287,7 +287,7 @@ func CreateTransaction(c *gin.Context) {
 	// half-persisted transaction behind.
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		log.Printf("Error in CreateTransaction (begin): %v\n", err)
+		slog.Error("CreateTransaction (begin)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -306,7 +306,7 @@ func CreateTransaction(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in CreateTransaction (checking account): %v\n", err)
+		slog.Error("CreateTransaction (checking account)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -320,7 +320,7 @@ func CreateTransaction(c *gin.Context) {
 	if categoryID == nil {
 		rules, err := loadRules(c, userID)
 		if err != nil {
-			log.Printf("Error in CreateTransaction (getting rules): %v\n", err)
+			slog.Error("CreateTransaction (getting rules)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -339,7 +339,7 @@ func CreateTransaction(c *gin.Context) {
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
 			*req.BillingCycleID, userID).Scan(&owned)
 		if err != nil {
-			log.Printf("Error in CreateTransaction (checking billing cycle): %v\n", err)
+			slog.Error("CreateTransaction (checking billing cycle)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -365,7 +365,7 @@ func CreateTransaction(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in CreateTransaction (insert): %v\n", err)
+		slog.Error("CreateTransaction (insert)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -376,7 +376,7 @@ func CreateTransaction(c *gin.Context) {
 	// Cycles are only generated for accounts that have a billing day set.
 	if billingDay != nil {
 		if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
-			log.Printf("Error in CreateTransaction (ensure billing cycles): %v\n", err)
+			slog.Error("CreateTransaction (ensure billing cycles)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -384,7 +384,7 @@ func CreateTransaction(c *gin.Context) {
 			if _, err := tx.Exec(c,
 				"UPDATE transactions SET billing_cycle_id = $1 WHERE id = $2 AND user_id = $3",
 				*req.BillingCycleID, id, userID); err != nil {
-				log.Printf("Error in CreateTransaction (set billing cycle): %v\n", err)
+				slog.Error("CreateTransaction (set billing cycle)", "error", err)
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -392,7 +392,7 @@ func CreateTransaction(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c); err != nil {
-		log.Printf("Error in CreateTransaction (commit): %v\n", err)
+		slog.Error("CreateTransaction (commit)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -549,7 +549,7 @@ func UpdateTransaction(c *gin.Context) {
 
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
-		log.Printf("Error in UpdateTransaction: %v\n", err)
+		slog.Error("UpdateTransaction", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -593,7 +593,7 @@ func BulkCategorize(c *gin.Context) {
 	}
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
-		log.Printf("Error in BulkCategorize: %v\n", err)
+		slog.Error("BulkCategorize", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -619,7 +619,7 @@ func BulkUpdatePayee(c *gin.Context) {
 	            AND EXISTS (SELECT 1 FROM payees p WHERE p.id = $1 AND p.user_id = $3)`
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in BulkUpdatePayee: %v\n", err)
+		slog.Error("BulkUpdatePayee", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -645,7 +645,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)`
 	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in BulkUpdateBillingCycle: %v\n", err)
+		slog.Error("BulkUpdateBillingCycle", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -668,7 +668,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 	query := "DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2"
 	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		log.Printf("Error in BulkDeleteTransactions: %v\n", err)
+		slog.Error("BulkDeleteTransactions", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -687,7 +687,7 @@ func DeleteTransaction(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	result, err := db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
-		log.Printf("Error in DeleteTransaction: %v\n", err)
+		slog.Error("DeleteTransaction", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -756,7 +756,7 @@ func ImportTransactions(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in ImportTransactions (checking account): %v\n", err)
+		slog.Error("ImportTransactions (checking account)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -773,7 +773,7 @@ func ImportTransactions(c *gin.Context) {
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
 			*req.BillingCycleID, userID).Scan(&owned)
 		if err != nil {
-			log.Printf("Error in ImportTransactions (checking billing cycle): %v\n", err)
+			slog.Error("ImportTransactions (checking billing cycle)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -799,7 +799,7 @@ func ImportTransactions(c *gin.Context) {
 			"SELECT COUNT(*) FROM payees WHERE id = ANY($1) AND user_id = $2",
 			payeeIDs, userID).Scan(&owned)
 		if err != nil {
-			log.Printf("Error in ImportTransactions (checking payees): %v\n", err)
+			slog.Error("ImportTransactions (checking payees)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -812,7 +812,7 @@ func ImportTransactions(c *gin.Context) {
 	// Load rules once and match in memory to avoid N+1 queries.
 	rules, err := loadRules(c, userID)
 	if err != nil {
-		log.Printf("Error in ImportTransactions (getting rules): %v\n", err)
+		slog.Error("ImportTransactions (getting rules)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -820,7 +820,7 @@ func ImportTransactions(c *gin.Context) {
 	// Run the whole import in a transaction so it is all-or-nothing.
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		log.Printf("Error in ImportTransactions (begin): %v\n", err)
+		slog.Error("ImportTransactions (begin)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -834,7 +834,7 @@ func ImportTransactions(c *gin.Context) {
 			"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
 			req.AccountID, userID)
 		if err != nil {
-			log.Printf("Error in ImportTransactions (loading existing transactions): %v\n", err)
+			slog.Error("ImportTransactions (loading existing transactions)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -844,7 +844,7 @@ func ImportTransactions(c *gin.Context) {
 			var typ, description string
 			if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
 				rows.Close()
-				log.Printf("Error in ImportTransactions (scanning existing transactions): %v\n", err)
+				slog.Error("ImportTransactions (scanning existing transactions)", "error", err)
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -852,7 +852,7 @@ func ImportTransactions(c *gin.Context) {
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			log.Printf("Error in ImportTransactions (iterating existing transactions): %v\n", err)
+			slog.Error("ImportTransactions (iterating existing transactions)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -892,7 +892,7 @@ func ImportTransactions(c *gin.Context) {
 			var id uuid.UUID
 			if err := br.QueryRow().Scan(&id); err != nil {
 				br.Close()
-				log.Printf("Error in ImportTransactions: %v\n", err)
+				slog.Error("ImportTransactions", "error", err)
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -910,7 +910,7 @@ func ImportTransactions(c *gin.Context) {
 		if billingDay != nil {
 			if req.BillingCycleID != nil {
 				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
-					log.Printf("Error in ImportTransactions (set billing cycle): %v\n", err)
+					slog.Error("ImportTransactions (set billing cycle)", "error", err)
 					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 					return
 				}
@@ -919,7 +919,7 @@ func ImportTransactions(c *gin.Context) {
 			// set; the date-based default can't apply to accounts without one.
 			if billingDay != nil {
 				if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
-					log.Printf("Error in ImportTransactions (ensure billing cycles): %v\n", err)
+					slog.Error("ImportTransactions (ensure billing cycles)", "error", err)
 					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 					return
 				}
@@ -927,23 +927,29 @@ func ImportTransactions(c *gin.Context) {
 		}
 
 		if err := tx.Commit(c); err != nil {
-			log.Printf("Error in ImportTransactions (commit): %v\n", err)
+			slog.Error("ImportTransactions (commit)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
 
 	// Tag the source Paperless documents only after the import has committed, so
-	// the label reflects documents that were actually imported. Best-effort.
-	tagPaperlessDocuments(c, userID, req.PaperlessDocumentIDs)
+	// the label reflects documents that were actually imported. Best-effort and
+	// asynchronous: tagging costs up to four upstream HTTP round-trips per
+	// document, so it must neither stall the response nor fail the import if
+	// the user's Paperless instance is slow or unreachable. The detached
+	// context outlives the request; tagPaperlessDocuments applies its own
+	// overall timeout and bounded concurrency.
+	if len(req.PaperlessDocumentIDs) > 0 {
+		go tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, c.GetString("tokenEncryptionKey"))
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"imported":   imported,
 		"duplicates": duplicates,
 		"total":      len(req.Transactions),
 	})
-	log.Printf("Import complete: %d imported, %d duplicates skipped out of %d total for account %s\n",
-		imported, duplicates, len(req.Transactions), req.AccountID)
+	slog.Info("import complete", "imported", imported, "duplicates", duplicates, "total", len(req.Transactions), "account_id", req.AccountID)
 }
 
 // transactionFingerprint collapses a row into a stable value used for duplicate
@@ -1000,7 +1006,7 @@ func ValidateTransactions(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in ValidateTransactions (checking account): %v\n", err)
+		slog.Error("ValidateTransactions (checking account)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1016,7 +1022,7 @@ func ValidateTransactions(c *gin.Context) {
 		"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
 		req.AccountID, userID)
 	if err != nil {
-		log.Printf("Error in ValidateTransactions (loading existing transactions): %v\n", err)
+		slog.Error("ValidateTransactions (loading existing transactions)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1026,7 +1032,7 @@ func ValidateTransactions(c *gin.Context) {
 		var typ, description string
 		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
 			rows.Close()
-			log.Printf("Error in ValidateTransactions (scanning existing transactions): %v\n", err)
+			slog.Error("ValidateTransactions (scanning existing transactions)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1034,7 +1040,7 @@ func ValidateTransactions(c *gin.Context) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Printf("Error in ValidateTransactions (iterating existing transactions): %v\n", err)
+		slog.Error("ValidateTransactions (iterating existing transactions)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1126,7 +1132,7 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 	}
 
 	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), *billingDay); err != nil {
-		log.Printf("Error in buildAccountSummaryRows (ensure billing cycles): %v\n", err)
+		slog.Error("buildAccountSummaryRows (ensure billing cycles)", "error", err)
 		return nil
 	}
 	return computeSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
@@ -1141,7 +1147,7 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {
-		log.Printf("Error in computeSummaryRows (list cycles): %v\n", err)
+		slog.Error("computeSummaryRows (list cycles)", "error", err)
 		return nil
 	}
 
@@ -1208,7 +1214,7 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 			 FROM transactions t WHERE t.billing_cycle_id = $1 AND t.date <= $2`,
 			current.ID, to).Scan(&total, &count)
 		if err != nil {
-			log.Printf("Error in computeSummaryRows (current cycle): %v\n", err)
+			slog.Error("computeSummaryRows (current cycle)", "error", err)
 			return nil
 		}
 		if count > 0 {

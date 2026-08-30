@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -49,7 +49,7 @@ func GetBillingCycles(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in GetBillingCycles (account lookup): %v\n", err)
+		slog.Error("GetBillingCycles (account lookup)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -60,14 +60,14 @@ func GetBillingCycles(c *gin.Context) {
 	}
 
 	if err := ensureBillingCycles(c, db.Pool, userID, accountID, *billingDay); err != nil {
-		log.Printf("Error in GetBillingCycles (ensure cycles): %v\n", err)
+		slog.Error("GetBillingCycles (ensure cycles)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {
-		log.Printf("Error in GetBillingCycles (list cycles): %v\n", err)
+		slog.Error("GetBillingCycles (list cycles)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

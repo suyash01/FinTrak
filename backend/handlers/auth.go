@@ -8,7 +8,7 @@ package handlers
 import (
 	"crypto/subtle"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -68,7 +68,7 @@ func Register(c *gin.Context) {
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		log.Printf("Error hashing password in Register: %v\n", err)
+		slog.Error("hashing password in Register", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -104,7 +104,7 @@ func Register(c *gin.Context) {
 			validation.RespondError(c, "an account with this email already exists", http.StatusConflict)
 			return
 		}
-		log.Printf("Error in Register: %v\n", err)
+		slog.Error("Register", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -113,7 +113,7 @@ func Register(c *gin.Context) {
 
 	token, err := auth.GenerateToken(user.ID, user.Role, c.MustGet("jwtSecret").(string))
 	if err != nil {
-		log.Printf("Error generating token in Register: %v\n", err)
+		slog.Error("generating token in Register", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -146,7 +146,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("Error in Login (query): %v\n", err)
+		slog.Error("Login (query)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -158,7 +158,7 @@ func Login(c *gin.Context) {
 
 	token, err := auth.GenerateToken(user.ID, user.Role, c.MustGet("jwtSecret").(string))
 	if err != nil {
-		log.Printf("Error generating token in Login: %v\n", err)
+		slog.Error("generating token in Login", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 
@@ -36,7 +36,7 @@ func rejectBuiltInAccountType(c *gin.Context, id string) bool {
 func GetAccountTypes(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
 	if err != nil {
-		log.Printf("Error in GetAccountTypes: %v\n", err)
+		slog.Error("GetAccountTypes", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -46,7 +46,7 @@ func GetAccountTypes(c *gin.Context) {
 	for rows.Next() {
 		var at models.AccountType
 		if err := rows.Scan(&at.ID, &at.Name, &at.PositiveTxnType); err != nil {
-			log.Printf("Error in GetAccountTypes scan: %v\n", err)
+			slog.Error("GetAccountTypes scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -85,7 +85,7 @@ func CreateAccountType(c *gin.Context) {
 	).Scan(&at.ID, &at.Name, &at.PositiveTxnType)
 
 	if err != nil {
-		log.Printf("Error in CreateAccountType: %v\n", err)
+		slog.Error("CreateAccountType", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -131,7 +131,7 @@ func UpdateAccountType(c *gin.Context) {
 			validation.RespondError(c, "account type not found", http.StatusNotFound)
 			return
 		}
-		log.Printf("Error in UpdateAccountType: %v\n", err)
+		slog.Error("UpdateAccountType", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -162,7 +162,7 @@ func DeleteAccountType(c *gin.Context) {
 
 	result, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
 	if err != nil {
-		log.Printf("Error in DeleteAccountType: %v\n", err)
+		slog.Error("DeleteAccountType", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
