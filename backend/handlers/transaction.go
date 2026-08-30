@@ -350,7 +350,7 @@ func CreateTransaction(c *gin.Context) {
 	err = tx.QueryRow(c,
 		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
 		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-		 WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND c.user_id = $2))
+		 WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))
 		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
 		 RETURNING id`,
 		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
@@ -411,9 +411,26 @@ func UpdateTransaction(c *gin.Context) {
 		return
 	}
 
+	// Validate date/amount the same way CreateTransaction does: a PATCH must
+	// not bypass the create-path checks with an invalid date (which would
+	// surface as a driver error, i.e. a 500) or a zero/negative amount (which
+	// would corrupt balance math and billing-cycle totals).
+	if req.Date != nil {
+		if _, err := time.Parse("2006-01-02", *req.Date); err != nil {
+			validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.Amount != nil {
+		if *req.Amount <= 0 {
+			validation.RespondError(c, "amount must be positive", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Build dynamic SET clauses
 	setClauses := []string{}
-	args := []interface{}{}
+	args := []any{}
 	paramIdx := 1
 
 	// Record the parameter index of each ownership-checked FK being set to a
@@ -513,7 +530,7 @@ func UpdateTransaction(c *gin.Context) {
 		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d)", accountParam, userIdx)
 	}
 	if categoryParam != 0 {
-		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories ct WHERE ct.id = $%d AND ct.user_id = $%d)", categoryParam, userIdx)
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories ct WHERE ct.id = $%d AND (ct.user_id = $%d OR ct.user_id IS NULL))", categoryParam, userIdx)
 	}
 	if payeeParam != 0 {
 		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM payees py WHERE py.id = $%d AND py.user_id = $%d)", payeeParam, userIdx)
@@ -561,7 +578,7 @@ func BulkCategorize(c *gin.Context) {
 		}
 		query = `UPDATE transactions SET category_id = $1
 		          WHERE id = ANY($2) AND user_id = $3
-		            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND c.user_id = $3)`
+		            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND (c.user_id = $3 OR c.user_id IS NULL))`
 		args = []interface{}{catUUID, req.TransactionIDs, auth.GetUserID(c)}
 	}
 	result, err := db.Pool.Exec(c, query, args...)

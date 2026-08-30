@@ -64,7 +64,7 @@ func CreateRule(c *gin.Context) {
 	err := db.Pool.QueryRow(c,
 		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority)
 		 SELECT $1, $2, $3, $4, $5, $6
-		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND c.user_id = $1)
+		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))
 		   AND ($5 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		auth.GetUserID(c), req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority,
@@ -126,7 +126,7 @@ func UpdateRule(c *gin.Context) {
 	err = db.Pool.QueryRow(c,
 		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5
 		 WHERE id = $6 AND user_id = $7
-		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND c.user_id = $7)
+		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND (c.user_id = $7 OR c.user_id IS NULL))
 		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $7))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority, id, auth.GetUserID(c),

@@ -352,6 +352,74 @@ func TestRequestLoggerPreservesHandlerRequestBody(t *testing.T) {
 	assert.JSONEq(t, `{"received":"{\"name\":\"alice\",\"password\":\"hunter2\"}"}`, w.Body.String())
 }
 
+func TestRedactComposedSensitiveKeys(t *testing.T) {
+	// The regex is unanchored, so composed camelCase/underscore keys that the
+	// old anchored ^...$ pattern missed are redacted too.
+	got := redact([]byte(`{"paperlessToken":"tok-123","nested":{"passwordHash":"hash-abc"},"name":"alice"}`))
+	assert.NotContains(t, got, "tok-123")
+	assert.NotContains(t, got, "hash-abc")
+	assert.Contains(t, got, "[REDACTED]")
+	assert.Contains(t, got, "alice")
+}
+
+func TestRedactURLEncodedForm(t *testing.T) {
+	// x-www-form-urlencoded bodies are textual for logging but not JSON — the
+	// key-based redaction must apply to them as well.
+	got := redact([]byte("password=hunter2&name=alice"))
+	assert.NotContains(t, got, "hunter2")
+	assert.Contains(t, got, "alice")
+	assert.Contains(t, got, "REDACTED")
+}
+
+func TestRedactQueryStringPreservesBenignQueries(t *testing.T) {
+	assert.Equal(t, "page=2&category_id=5", redactQueryString("page=2&category_id=5"))
+	assert.Equal(t, "", redactQueryString(""))
+}
+
+func TestRedactQueryStringRedactsSensitiveParams(t *testing.T) {
+	got := redactQueryString("accessToken=xyz&page=2")
+	assert.NotContains(t, got, "xyz")
+	assert.Contains(t, got, "REDACTED")
+}
+
+func TestRequestLoggerRedactsComposedKeyBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	r.POST("/settings", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodPost, "/settings",
+		bytes.NewBufferString(`{"paperlessToken":"leaky-token-123","paperlessUrl":"http://pl.local"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Len(t, h.records, 1)
+	reqBody, ok := recordAttr(t, h.records[0], "request_body")
+	require.True(t, ok)
+	assert.NotContains(t, reqBody, "leaky-token-123")
+	assert.Contains(t, reqBody, "[REDACTED]")
+	assert.Contains(t, reqBody, "pl.local")
+}
+
+func TestRequestLoggerRedactsSensitiveQueryParam(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelInfo}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h)))
+	r.GET("/list", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/list?token=query-secret&page=2", nil))
+
+	require.Len(t, h.records, 1)
+	query, ok := recordAttr(t, h.records[0], "query")
+	require.True(t, ok)
+	assert.NotContains(t, query, "query-secret")
+	assert.Contains(t, query, "REDACTED")
+}
+
 func mustAttr(t *testing.T, r slog.Record, key string) string {
 	t.Helper()
 	val, ok := recordAttr(t, r, key)

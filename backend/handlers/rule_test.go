@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/fintrak/backend/db"
@@ -481,5 +482,35 @@ func TestUpdateRuleCategoryNotOwned(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateRuleWithGlobalCategory(t *testing.T) {
+	r, mock := newRuleTestRouter(t)
+	r.POST("/rules", CreateRule)
+
+	userID := testUserID()
+	globalCatID := uuid.New()
+	ruleID := uuid.New()
+
+	reqBody := models.CreateRuleRequest{
+		Pattern:    "ZOMATO",
+		CategoryID: globalCatID,
+		Priority:   10,
+	}
+
+	// The ownership guard must admit global categories (user_id IS NULL).
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))")).
+		WithArgs(userID, reqBody.Pattern, "contains", globalCatID, (*uuid.UUID)(nil), 10).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
+			AddRow(ruleID, reqBody.Pattern, "contains", globalCatID, nil, 10))
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -22,9 +23,12 @@ var maxBodyLog = 8192
 // RequestIDKey is the gin context key under which the per-request ID is stored.
 const RequestIDKey = "requestID"
 
-// sensitiveKeyRe matches JSON keys whose values must never appear in logs
-// (passwords, auth tokens, secrets, payment card numbers, ...).
-var sensitiveKeyRe = regexp.MustCompile(`(?i)^(password|passwd|token|jwt|secret|authorization|apikey|api_key|access_token|refresh_token|cvv|cvv2|pin|otp)$`)
+// sensitiveKeyRe matches JSON/form/query keys whose values must never appear
+// in logs (passwords, auth tokens, secrets, payment card numbers, ...). It is
+// deliberately unanchored: keys are often composed (paperlessToken, setupToken,
+// passwordHash, access_token, X-Api-Key), and over-redacting a harmless value
+// in a log line is acceptable — under-redacting a credential is not.
+var sensitiveKeyRe = regexp.MustCompile(`(?i)(password|passwd|secret|token|jwt|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|cvv|cvv2|pin|otp)`)
 
 // responseWriter wraps gin.ResponseWriter to capture the response body so it
 // can be logged at debug level. Capturing stops after maxBodyLog bytes.
@@ -91,7 +95,7 @@ func RequestLogger(l *slog.Logger) gin.HandlerFunc {
 			slog.String("user_agent", c.Request.UserAgent()),
 		}
 		if q := c.Request.URL.RawQuery; q != "" {
-			attrs = append(attrs, slog.String("query", q))
+			attrs = append(attrs, slog.String("query", redactQueryString(q)))
 		}
 
 		level := slog.LevelInfo
@@ -138,18 +142,53 @@ func truncate(s string) (string, bool) {
 }
 
 // redact replaces the value of every JSON key matched by sensitiveKeyRe with
-// "[REDACTED]". Non-JSON input is returned unchanged.
+// "[REDACTED]". URL-encoded bodies (x-www-form-urlencoded is considered
+// textual by isTextual) are handled by key as well, so password=... fields are
+// redacted even though they are not JSON. Any other input is returned
+// unchanged.
 func redact(body []byte) string {
 	var v any
-	if err := json.Unmarshal(body, &v); err != nil {
-		return string(body)
+	if err := json.Unmarshal(body, &v); err == nil {
+		redactValue(v)
+		out, err := json.Marshal(v)
+		if err == nil {
+			return string(out)
+		}
 	}
-	redactValue(v)
-	out, err := json.Marshal(v)
+	if q, err := url.ParseQuery(string(body)); err == nil {
+		if redactValues(q) {
+			return q.Encode()
+		}
+	}
+	return string(body)
+}
+
+// redactValues replaces the value of every key matched by sensitiveKeyRe and
+// reports whether anything was redacted.
+func redactValues(q url.Values) bool {
+	redacted := false
+	for k := range q {
+		if sensitiveKeyRe.MatchString(k) {
+			q[k] = []string{"[REDACTED]"}
+			redacted = true
+		}
+	}
+	return redacted
+}
+
+// redactQueryString redacts sensitive request query parameters for the logged
+// "query" attribute. Benign queries are returned verbatim (byte-for-byte), so
+// their ordering and encoding are preserved; only after a redaction is the
+// query re-encoded.
+func redactQueryString(raw string) string {
+	q, err := url.ParseQuery(raw)
 	if err != nil {
-		return string(body)
+		return raw
 	}
-	return string(out)
+	if !redactValues(q) {
+		return raw
+	}
+	return q.Encode()
 }
 
 func redactValue(v any) {

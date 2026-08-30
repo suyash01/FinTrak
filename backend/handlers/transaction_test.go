@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -1734,4 +1735,83 @@ func TestMergeSummaryRowsHiddenOnNonDateSort(t *testing.T) {
 		merged := mergeSummaryRows(txns, summary, sortBy, "DESC")
 		assert.Len(t, merged, len(txns), "summary rows must be hidden when sorting by %s", sortBy)
 	}
+}
+
+func TestCreateTransactionWithGlobalCategory(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	globalCatID := uuid.New()
+	txnID := uuid.New()
+
+	reqBody := models.CreateTransactionRequest{
+		AccountID:   accountID,
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      250.5,
+		Type:        "debit",
+		CategoryID:  &globalCatID,
+	}
+
+	mock.ExpectBegin()
+
+	mock.ExpectQuery("SELECT user_id, billing_day").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+
+	// The ownership guard must admit global categories (user_id IS NULL) —
+	// the matcher pins the exact predicate so a future revert to a
+	// user-only check fails this test.
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))")).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateTransactionInvalidDate(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", UpdateTransaction)
+
+	txnID := uuid.New()
+	body, _ := json.Marshal(map[string]interface{}{"date": "15-01-2024"})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid date")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateTransactionNonPositiveAmount(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", UpdateTransaction)
+
+	txnID := uuid.New()
+	for _, amount := range []float64{0, -100} {
+		t.Run(fmt.Sprintf("amount=%v", amount), func(t *testing.T) {
+			body, _ := json.Marshal(map[string]interface{}{"amount": amount})
+			req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "amount must be positive")
+		})
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -99,7 +99,7 @@ func GetDashboardSummary(c *gin.Context) {
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
-				 WHERE c.user_id = $1
+				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
@@ -126,7 +126,7 @@ func GetDashboardSummary(c *gin.Context) {
 	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1` + catFilter + `
-				 WHERE c.user_id = $1
+				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
@@ -381,7 +381,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
-				 WHERE c.user_id = $1
+				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
@@ -406,7 +406,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1` + catFilter + `
-				 WHERE c.user_id = $1
+				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
