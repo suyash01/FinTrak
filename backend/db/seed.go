@@ -126,6 +126,10 @@ type SeedAccountType struct {
 
 // PromoteAdminUsers grants the 'admin' role to any existing user whose email is
 // in the given allowlist. It is idempotent and safe to call on every boot.
+// This is the operator-driven promotion path: self-registration no longer
+// grants admin on the email string alone (handlers.Register requires the
+// ADMIN_SETUP_TOKEN for admin-listed addresses), so boot promotion only ever
+// elevates accounts that already exist with that email.
 func PromoteAdminUsers(emails []string) {
 	if len(emails) == 0 {
 		return

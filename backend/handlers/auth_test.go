@@ -80,7 +80,7 @@ func TestRegister(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestRegisterAdminEmail(t *testing.T) {
+func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -96,43 +96,92 @@ func TestRegisterAdminEmail(t *testing.T) {
 	r.Use(func(c *gin.Context) {
 		c.Set("jwtSecret", testJWTSecret)
 		c.Set("adminEmails", []string{"admin@example.com"})
+		c.Set("adminSetupToken", "op-secret-token-123")
 		c.Next()
 	})
 	r.POST("/auth/register", Register)
 
 	userID := uuid.New()
-	reqBody := models.RegisterRequest{Email: "ADMIN@example.com", Password: "password123"}
+	const adminEmail = "admin@example.com"
 
-	// Register stores the email lowercase while the role allowlist is still
-	// matched case-insensitively via EqualFold.
-	mock.ExpectQuery("INSERT INTO users").
-		WithArgs("admin@example.com", pgxmock.AnyArg(), "admin").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
-			AddRow(userID, "admin@example.com", "admin"))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
-		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
-	seedArgs := make([]interface{}, 24*6)
-	for i := range seedArgs {
-		seedArgs[i] = pgxmock.AnyArg()
+	run := func(name, setupToken string, wantStatus int, expectInsert bool) {
+		t.Run(name, func(t *testing.T) {
+			if expectInsert {
+				mock.ExpectQuery("INSERT INTO users").
+					WithArgs(adminEmail, pgxmock.AnyArg(), "admin").
+					WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+						AddRow(userID, adminEmail, "admin"))
+				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
+					WithArgs(userID).
+					WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+				seedArgs := make([]interface{}, 24*6)
+				for i := range seedArgs {
+					seedArgs[i] = pgxmock.AnyArg()
+				}
+				mock.ExpectExec("INSERT INTO categories").
+					WithArgs(seedArgs...).
+					WillReturnResult(pgxmock.NewResult("INSERT", 24))
+			}
+
+			// Mixed-case admin email: normalized to lowercase before the
+			// allowlist check, so the token gate applies to the identity, not
+			// the exact string.
+			reqBody := models.RegisterRequest{Email: "ADMIN@example.com", Password: "password123", SetupToken: setupToken}
+			jsonBody, _ := json.Marshal(reqBody)
+			req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, wantStatus, w.Code)
+			if wantStatus == http.StatusCreated {
+				var res models.AuthResponse
+				assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+				assert.Equal(t, "admin", res.User.Role)
+			} else {
+				assert.Contains(t, w.Body.String(), "setup token")
+			}
+		})
 	}
-	mock.ExpectExec("INSERT INTO categories").
-		WithArgs(seedArgs...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 24))
 
+	run("missing token", "", http.StatusForbidden, false)
+	run("wrong token", "attacker-guess", http.StatusForbidden, false)
+	run("correct token", "op-secret-token-123", http.StatusCreated, true)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRegisterAdminEmailWithoutConfiguredToken(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(func(c *gin.Context) {
+		c.Set("jwtSecret", testJWTSecret)
+		c.Set("adminEmails", []string{"admin@example.com"})
+		// adminSetupToken intentionally absent: the operator has not
+		// configured one, so admin-listed emails must be refused entirely.
+		c.Next()
+	})
+	r.POST("/auth/register", Register)
+
+	reqBody := models.RegisterRequest{Email: "admin@example.com", Password: "password123", SetupToken: "anything"}
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusCreated, w.Code)
-
-	var res models.AuthResponse
-	err = json.Unmarshal(w.Body.Bytes(), &res)
-	assert.NoError(t, err)
-	assert.Equal(t, "admin", res.User.Role)
-
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "setup token")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -25,6 +25,11 @@ type Config struct {
 	LogLevel           string
 	LogBodyLimit       int
 	TokenEncryptionKey string
+	// AdminSetupToken is the shared secret that lets a registrant whose email
+	// is in AdminEmails self-register with the 'admin' role. Empty disables
+	// admin self-registration entirely (admin-listed emails are refused at
+	// registration); existing admins are unaffected.
+	AdminSetupToken string
 }
 
 const (
@@ -109,6 +114,10 @@ func Load() *Config {
 		}
 	}
 
+	// Admin setup token: required to self-register an admin-listed email. Empty
+	// means admin-listed addresses cannot self-register at all.
+	adminSetupToken := os.Getenv("ADMIN_SETUP_TOKEN")
+
 	return &Config{
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		Port:               port,
@@ -120,5 +129,6 @@ func Load() *Config {
 		LogLevel:           logLevel,
 		LogBodyLimit:       logBodyLimit,
 		TokenEncryptionKey: tokenEncryptionKey,
+		AdminSetupToken:    adminSetupToken,
 	}
 }

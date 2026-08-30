@@ -114,7 +114,7 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 
 The backend exposes a RESTful API under `/api/v1`:
 
-- `POST /auth/register`: Create an account (returns a JWT).
+- `POST /auth/register`: Create an account (returns a JWT). Body: `{ email, password, setupToken? }`. Emails are stored lowercase. Regular registrations get the `user` role. An email listed in `ADMIN_EMAILS` is a reserved identity: registering it grants `admin` only when `setupToken` matches the `ADMIN_SETUP_TOKEN` environment variable, otherwise the request is refused (403) — an unverified registrant can neither self-promote nor squat the address. Alternative: register a normal account, add its email to `ADMIN_EMAILS`, and restart the backend (existing users are promoted at startup).
 - `POST /auth/login`: Sign in (returns a JWT).
 - `GET /accounts`: List all financial accounts. Accounts carry an `isDefault` flag and an optional `billingDay` (1-31, clamped to the month length; `null` when unset); the single default account (per user) is used to pre-fill account filters across the app (except the import screen).
 - `GET /accounts/:id/billing-cycles`: List the billing cycles for an account with a `billingDay` set, auto-generating any missing cycles first (one per month, ending on the account's `billingDay`; changing the day regenerates the cycles). Each cycle carries `{ id, accountId, startDate, endDate, label, totalOutstanding, transactionCount }` where `totalOutstanding` is the sum of attached debit transactions. Accounts without a billing day return an empty list — cycles are never generated for them.

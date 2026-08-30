@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"errors"
 	"log"
 	"net/http"
@@ -31,20 +32,33 @@ func adminEmailsFromContext(c *gin.Context) []string {
 	return nil
 }
 
-// roleForEmail returns 'admin' when the email is in the configured admin
-// allowlist, otherwise 'user'.
-func roleForEmail(email string, adminEmails []string) string {
+// isAdminEmail reports whether email (already trimmed/lowercased by callers)
+// appears in the configured admin allowlist.
+func isAdminEmail(email string, adminEmails []string) bool {
 	for _, e := range adminEmails {
-		if strings.EqualFold(strings.TrimSpace(e), strings.TrimSpace(email)) {
-			return "admin"
+		if strings.EqualFold(strings.TrimSpace(e), email) {
+			return true
 		}
 	}
-	return "user"
+	return false
 }
 
-// Register creates a new user account. The role is derived from the admin
-// allowlist, the password is bcrypt-hashed, and the stock default categories are
-// seeded before returning a fresh JWT.
+// setupTokenMatches compares the supplied setup token against the configured
+// one in constant time so a wrong guess doesn't leak timing information about
+// its length or prefix. Returns false when either side is empty.
+func setupTokenMatches(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// Register creates a new user account. The role defaults to 'user'; a
+// registration whose email is in the admin allowlist is granted 'admin' only
+// when the request carries the operator-owned ADMIN_SETUP_TOKEN (admin-listed
+// addresses are otherwise refused so they can't be squatted by a registrant
+// who merely knows the address). The password is bcrypt-hashed and the stock
+// default categories are seeded before returning a fresh JWT.
 func Register(c *gin.Context) {
 	var req models.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -65,7 +79,18 @@ func Register(c *gin.Context) {
 	// compare email = $1 directly against the plain index.
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 
-	role := roleForEmail(email, adminEmailsFromContext(c))
+	role := "user"
+	if isAdminEmail(email, adminEmailsFromContext(c)) {
+		// Admin-listed identities are reserved: registering one without the
+		// setup token is refused outright (rather than falling back to a
+		// 'user' role) so an unverified third party can neither take the
+		// address nor self-promote.
+		if !setupTokenMatches(req.SetupToken, c.GetString("adminSetupToken")) {
+			validation.RespondError(c, "registering an admin email requires a valid admin setup token", http.StatusForbidden)
+			return
+		}
+		role = "admin"
+	}
 
 	var user models.User
 	err = db.Pool.QueryRow(c,

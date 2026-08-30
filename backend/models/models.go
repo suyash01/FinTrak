@@ -238,10 +238,15 @@ type PaperlessImportRequest struct {
 	DateFormat string `json:"dateFormat"`
 }
 
-// RegisterRequest is the body for POST /api/v1/auth/register.
+// RegisterRequest is the body for POST /api/v1/auth/register. SetupToken is an
+// operator-owned secret (ADMIN_SETUP_TOKEN): when the email matches
+// ADMIN_EMAILS the registration is refused unless it is present and correct,
+// so the admin role can only be self-assigned with proof of privileged access
+// and admin-listed addresses can't be squatted by an unverified registrant.
 type RegisterRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
+	Email      string `json:"email" binding:"required,email"`
+	Password   string `json:"password" binding:"required,min=6"`
+	SetupToken string `json:"setupToken"`
 }
 
 // LoginRequest is the body for POST /api/v1/auth/login.

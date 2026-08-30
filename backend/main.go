@@ -86,6 +86,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	r.Use(func(c *gin.Context) {
 		c.Set("jwtSecret", cfg.JWTSecret)
 		c.Set("adminEmails", cfg.AdminEmails)
+		c.Set("adminSetupToken", cfg.AdminSetupToken)
 		c.Set("appEnv", cfg.Env)
 		c.Set("tokenEncryptionKey", cfg.TokenEncryptionKey)
 		c.Next()
