@@ -247,8 +247,12 @@ func TestDeleteAccount(t *testing.T) {
 
 	userID := testUserID()
 	accountID := uuid.New()
+	const txns = 3
 
 	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", txns))
 	mock.ExpectExec("DELETE FROM payees WHERE account_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
@@ -262,6 +266,13 @@ func TestDeleteAccount(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Message             string `json:"message"`
+		TransactionsDeleted int64  `json:"transactionsDeleted"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "deleted", resp.Message)
+	assert.Equal(t, int64(txns), resp.TransactionsDeleted)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -273,6 +284,9 @@ func TestDeleteAccountNotFound(t *testing.T) {
 	accountID := uuid.New()
 
 	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 	mock.ExpectExec("DELETE FROM payees WHERE account_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))

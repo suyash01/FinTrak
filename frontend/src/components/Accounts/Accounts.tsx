@@ -97,8 +97,14 @@ export default function Accounts() {
 
   const handleDelete = async (id: string) => {
     try {
-      await api.deleteAccount(id);
+      const res = await api.deleteAccount(id);
       setAccounts((prev) => prev.filter((a) => a.id !== id));
+      // Deleting an account wipes its transactions (migration 000003) — make
+      // the destruction visible instead of silently succeeding.
+      const deleted = res?.transactionsDeleted ?? 0;
+      if (deleted > 0) {
+        toast.success(`Account deleted — ${deleted} transaction(s) were removed.`);
+      }
     } catch (err) {
       toast.error((err as Error).message);
     }

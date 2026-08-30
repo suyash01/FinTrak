@@ -274,8 +274,8 @@ const api = {
     request("/accounts", { method: "POST", body: JSON.stringify(data) }),
   updateAccount: (id: string, data: UpdateAccountRequest): Promise<Account> =>
     request(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) }),
-  deleteAccount: (id: string): Promise<null> =>
-    request(`/accounts/${id}`, { method: "DELETE" }),
+  deleteAccount: (id: string): Promise<{ message?: string; transactionsDeleted?: number }> =>
+      request(`/accounts/${id}`, { method: "DELETE" }),
   getBillingCycles: (accountId: string): Promise<{ data: BillingCycle[] }> =>
     request(`/accounts/${accountId}/billing-cycles`),
 

@@ -141,7 +141,11 @@ func CreateAccount(c *gin.Context) {
 }
 
 // DeleteAccount removes an account owned by the user along with its
-// account-linked payee, so no orphaned payees are left behind.
+// account-linked payee, so no orphaned payees are left behind. Its
+// transactions are deleted first (migration 000003 also cascades them — and
+// their links — from the account row); the count is returned so the UI can
+// tell the user what was removed. Previously the transactions were orphaned:
+// invisible in listings (inner JOIN) yet still counted by dashboard totals.
 func DeleteAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -150,7 +154,16 @@ func DeleteAccount(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
+	var transactionsDeleted int64
 	err = db.WithTx(c, func(tx pgx.Tx) error {
+		// Delete the account's transactions (user-scoped) so the response can
+		// report the count; the FK cascade is schema-level insurance.
+		res, err := tx.Exec(c, "DELETE FROM transactions WHERE account_id = $1 AND user_id = $2", id, userID)
+		if err != nil {
+			return err
+		}
+		transactionsDeleted = res.RowsAffected()
+
 		// Remove the account-linked payee to avoid orphaned payees
 		if _, err := tx.Exec(c, "DELETE FROM payees WHERE account_id = $1 AND user_id = $2", id, userID); err != nil {
 			return err
@@ -174,7 +187,7 @@ func DeleteAccount(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+	c.JSON(http.StatusOK, gin.H{"message": "deleted", "transactionsDeleted": transactionsDeleted})
 }
 
 // UpdateAccount edits an account's fields, preserves the current default flag
