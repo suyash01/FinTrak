@@ -12,6 +12,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
 )
@@ -331,5 +332,90 @@ func TestExportAccountInvalidID(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateAccountPayeeNameConflict(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.POST("/accounts", CreateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+	reqBody := models.CreateAccountRequest{
+		Name:          "New Account",
+		AccountTypeID: "bank",
+		Bank:          "Axis",
+	}
+
+	mock.ExpectBegin()
+
+	// Account insert succeeds...
+	mock.ExpectQuery("INSERT INTO accounts").
+		WithArgs(userID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, (*int)(nil)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "is_default", "billing_day", "created_at"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, "INR", "#06b6d4", false, intPtr(1), time.Now()))
+
+	mock.ExpectQuery("SELECT name FROM account_types").
+		WithArgs(reqBody.AccountTypeID).
+		WillReturnRows(pgxmock.NewRows([]string{"name"}).AddRow("Bank Account"))
+
+	// ...but the account-linked payee upsert collides with a payee of the
+	// same name owned by this user (payees_user_name_uq) -> unique violation.
+	mock.ExpectExec("INSERT INTO payees").
+		WithArgs(userID, reqBody.Name, accountID).
+		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint \"payees_user_name_uq\""})
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/accounts", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "payee")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateAccountPayeeNameConflict(t *testing.T) {
+	r, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+	isDefault := true
+	reqBody := models.UpdateAccountRequest{
+		Name:          "Updated Account",
+		AccountTypeID: "bank",
+		Bank:          "Axis",
+		Currency:      "INR",
+		Color:         "#06b6d4",
+		IsDefault:     &isDefault,
+	}
+
+	mock.ExpectBegin()
+
+	mock.ExpectExec("UPDATE accounts SET is_default = FALSE WHERE user_id = \\$1 AND id <> \\$2").
+		WithArgs(userID, accountID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	mock.ExpectQuery("WITH updated AS").
+		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID, (*int)(nil)).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
+
+	// Renaming the account-linked payee collides with another payee of the
+	// same name owned by this user (payees_user_name_uq) -> unique violation.
+	mock.ExpectExec("UPDATE payees SET name").
+		WithArgs(reqBody.Name, accountID, userID).
+		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint \"payees_user_name_uq\""})
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "payee")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

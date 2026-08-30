@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // errAccountNotFound is returned by account helpers when a delete/update
@@ -122,6 +123,14 @@ func CreateAccount(c *gin.Context) {
 	})
 
 	if err != nil {
+		// The account-linked payee upsert can collide with an existing payee
+		// name owned by this user (payees_user_name_uq after migration 000002)
+		// — surface that as a conflict, not a 500.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			validation.RespondError(c, "an account-linked payee with this name already exists. Choose a different account name or delete the existing payee.", http.StatusConflict)
+			return
+		}
 		log.Printf("Error in CreateAccount: %v\n", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -232,6 +241,14 @@ func UpdateAccount(c *gin.Context) {
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			validation.RespondError(c, "account not found", http.StatusNotFound)
+			return
+		}
+		// Renaming the account-linked payee can collide with another payee of
+		// the same name owned by this user (payees_user_name_uq) — surface it
+		// as a conflict instead of a generic 500.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			validation.RespondError(c, "an account-linked payee with this name already exists. Rename the conflicting payee first.", http.StatusConflict)
 			return
 		}
 		log.Printf("Error in UpdateAccount: %v\n", err)
