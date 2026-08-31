@@ -16,7 +16,7 @@ import (
 // builtInAccountTypeIDs are seeded by db.SeedAccountTypes and shared by every
 // user; changing their balance semantics or deleting them would corrupt all
 // accounts, so they are immutable even for admins.
-var builtInAccountTypeIDs = map[string]bool{"bank": true, "credit_card": true}
+var builtInAccountTypeIDs = map[string]bool{"bank": true, "credit_card": true, "loan": true}
 
 // accountTypeIDPattern restricts custom type IDs to a safe lowercase slug.
 var accountTypeIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,29}$`)

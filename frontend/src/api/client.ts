@@ -8,6 +8,7 @@ import type {
   BulkDeleteLinksRequest,
   BulkDeleteTransactionsRequest,
   BulkBillingCycleRequest,
+  BulkLoanRequest,
   BulkUpdatePayeeRequest,
   Category,
   CategoryGroup,
@@ -382,6 +383,11 @@ const api = {
     data: BulkDeleteTransactionsRequest,
   ): Promise<null> =>
     request("/transactions/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  bulkLoan: (data: BulkLoanRequest): Promise<null> =>
+    request("/transactions/bulk-loan", {
       method: "POST",
       body: JSON.stringify(data),
     }),

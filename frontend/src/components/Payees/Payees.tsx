@@ -42,6 +42,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 
 interface PayeeForm {
   name: string;
@@ -328,7 +329,8 @@ export default function Payees() {
 
             <div className="space-y-2">
               <Label>Link to Account (Optional)</Label>
-              <Select
+              <AccountSelect
+                accounts={accounts}
                 value={formData.accountId || NO_ACCOUNT}
                 onValueChange={(v) =>
                   setFormData({
@@ -336,19 +338,10 @@ export default function Payees() {
                     accountId: v === NO_ACCOUNT ? "" : v,
                   })
                 }
-              >
-                <SelectTrigger className="w-full h-11">
-                  <SelectValue placeholder="No linked account" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_ACCOUNT}>No linked account</SelectItem>
-                  {accounts.map((acc) => (
-                    <SelectItem key={acc.id} value={acc.id}>
-                      {acc.name} ({acc.bank || acc.accountTypeName})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="No linked account"
+                triggerClassName="w-full h-11"
+                extraItems={<SelectItem value={NO_ACCOUNT}>No linked account</SelectItem>}
+              />
               <p className="text-xs text-muted-foreground">
                 Linking to an account helps identify internal transfers.
               </p>

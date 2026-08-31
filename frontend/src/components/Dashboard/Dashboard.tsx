@@ -17,6 +17,7 @@ import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -295,24 +296,14 @@ export default function Dashboard() {
         <div
           className={`flex flex-wrap items-center ${compactLayout ? "gap-2" : "gap-3"}`}
         >
-          <Select
+          <AccountSelect
+            accounts={accounts}
             value={accountId || ALL_ACCOUNTS}
             onValueChange={(v) => setAccountId(v === ALL_ACCOUNTS ? "" : v)}
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Accounts" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>
-              {accounts.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            placeholder="All Accounts"
+            triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
+          />
           {isBillingCycleMode ? (
             <Select value={cycles} onValueChange={setCycles}>
               <SelectTrigger

@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import {
   Sheet,
   SheetContent,
@@ -370,7 +371,8 @@ export default function EditTransactionModal({
                     <Landmark size={10} className="inline mr-1" />
                     Account
                   </Label>
-                  <Select
+                  <AccountSelect
+                    accounts={accounts.filter((a) => !a.closed)}
                     value={form.accountId || "none"}
                     onValueChange={(v) =>
                       setForm((f) => ({
@@ -378,19 +380,10 @@ export default function EditTransactionModal({
                         accountId: v === "none" ? "" : v,
                       }))
                     }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Select account</SelectItem>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    placeholder="Select account"
+                    triggerClassName="w-full"
+                    extraItems={<SelectItem value="none">Select account</SelectItem>}
+                  />
                 </div>
               </div>
 

@@ -204,7 +204,7 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 	// Account ownership check (credit card).
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, intPtr(5)))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, intPtr(5), false, "bank"))
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
@@ -268,7 +268,7 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 	// Account ownership check (credit card).
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, intPtr(5)))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, intPtr(5), false, "bank"))
 
 	// Explicit billing cycle ownership check.
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM billing_cycles").
@@ -408,7 +408,7 @@ func TestImportTransactionsAccountForbidden(t *testing.T) {
 	accountID := uuid.New()
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(mock.NewRows([]string{"user_id", "billing_day"}).AddRow(uuid.New(), nil))
+		WillReturnRows(mock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(uuid.New(), nil, false, "bank"))
 
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID:    accountID,
@@ -674,8 +674,8 @@ func TestGetTransactions(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	// Main query.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, 50, 0).
 		WillReturnRows(rows)
@@ -718,8 +718,8 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	// Main query with account filter.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, accountID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -764,8 +764,8 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	// Main query with account filter. The transaction is attached to the cycle
 	// (transactions on billing-day accounts get assigned a cycle), so it groups
 	// with the summary row below.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, today, "Groceries", 200.0, "debit", nil, nil, "", nil, "", today, "Checking", "", "", "", false, &cycleID, "This month")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, today, "Groceries", 200.0, "debit", nil, nil, "", nil, "", today, "Checking", "", "", "", false, &cycleID, "This month", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, accountID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -834,8 +834,8 @@ func TestGetTransactionsCategoryFilter(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	// Main query with the category filter.
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, catID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -869,8 +869,8 @@ func TestGetTransactionsCategoryFilterUncategorized(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
 	// Main query with the uncategorized sentinel -> no category arg, just userID + pagination.
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, 50, 0).
@@ -906,8 +906,8 @@ func TestGetTransactionsCategoryFilterByType(t *testing.T) {
 		WithArgs(userID, "expense").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, "expense", 50, 0).
 		WillReturnRows(rows)
@@ -944,8 +944,8 @@ func TestGetTransactionsGroupFilter(t *testing.T) {
 		WithArgs(userID, groupID.String()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}).
-		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "")
+	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
+		AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, groupID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -992,7 +992,7 @@ func TestCreateTransaction(t *testing.T) {
 	// Account ownership check.
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
@@ -1034,7 +1034,7 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 	// Account ownership check.
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 
 	// Load rules for auto-categorization.
 	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
@@ -1131,7 +1131,7 @@ func TestCreateTransactionForbidden(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(uuid.New(), nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(uuid.New(), nil, false, "bank"))
 
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
@@ -1372,7 +1372,7 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
 		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnError(pgx.ErrNoRows)
@@ -1409,7 +1409,7 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
 		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, &payeeID, []string(nil), "").
 		WillReturnError(pgx.ErrNoRows)
@@ -1446,7 +1446,7 @@ func TestCreateTransactionBillingCycleNotOwned(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, intPtr(5)))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, intPtr(5), false, "bank"))
 	// Cycle belongs to another user.
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM billing_cycles").
 		WithArgs(cycleID, userID).
@@ -1516,7 +1516,7 @@ func TestImportTransactionsBillingCycleNotOwned(t *testing.T) {
 
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM billing_cycles").
 		WithArgs(cycleID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
@@ -1541,7 +1541,7 @@ func TestImportTransactionsPayeeNotOwned(t *testing.T) {
 
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM payees").
 		WithArgs([]uuid.UUID{payeeID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -1762,7 +1762,7 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 
 	mock.ExpectQuery("SELECT user_id, billing_day").
 		WithArgs(accountID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day"}).AddRow(userID, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 
 	// The ownership guard must admit global categories (user_id IS NULL) —
 	// the matcher pins the exact predicate so a future revert to a

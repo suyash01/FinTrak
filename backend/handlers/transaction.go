@@ -88,12 +88,16 @@ func GetTransactions(c *gin.Context) {
 			  COALESCE(c.color, '') as category_color,
 			  EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as is_linked,
 			  t.billing_cycle_id,
-			  COALESCE(bc.label, '') as billing_cycle_label
+			  COALESCE(bc.label, '') as billing_cycle_label,
+			  la.loan_account_id,
+			  COALESCE(loan_acct.name, '') as loan_account_name
 			  FROM transactions t
 			  JOIN accounts a ON t.account_id = a.id
 			  LEFT JOIN categories c ON t.category_id = c.id
 			  LEFT JOIN payees p ON t.payee_id = p.id
 			  LEFT JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
+			  LEFT JOIN loan_attachments la ON la.transaction_id = t.id
+			  LEFT JOIN accounts loan_acct ON loan_acct.id = la.loan_account_id
 			  WHERE t.user_id = $1`
 
 	countQuery := `SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1`
@@ -203,6 +207,22 @@ func GetTransactions(c *gin.Context) {
 		countQuery += " AND NOT EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)"
 	}
 
+	// Loan/EMI filters: loanAccountId narrows to transactions attached to one
+	// loan account (its EMI payments); excludeAttached=true narrows to
+	// transactions not attached to any loan account (attach candidates).
+	loanAccountID := c.Query("loanAccountId")
+	if loanAccountID != "" {
+		query += fmt.Sprintf(" AND la.loan_account_id = $%d", paramIdx)
+		countQuery += fmt.Sprintf(" AND la.loan_account_id = $%d", paramIdx)
+		args = append(args, loanAccountID)
+		countArgs = append(countArgs, loanAccountID)
+		paramIdx++
+	}
+	if c.Query("excludeAttached") == "true" {
+		query += " AND la.loan_account_id IS NULL"
+		countQuery += " AND la.loan_account_id IS NULL"
+	}
+
 	// Get total count
 	var total int
 	db.Pool.QueryRow(c, countQuery, countArgs...).Scan(&total)
@@ -225,7 +245,7 @@ func GetTransactions(c *gin.Context) {
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked,
-			&t.BillingCycleID, &t.BillingCycleLabel); err != nil {
+			&t.BillingCycleID, &t.BillingCycleLabel, &t.LoanAccountID, &t.LoanAccountName); err != nil {
 			slog.Error("GetTransactions scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
@@ -293,14 +313,17 @@ func CreateTransaction(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
-	// The account must exist and belong to the authenticated user. Also fetch its
-	// billing day so transactions can be attached to a billing cycle (cycles
-	// only exist for accounts with a billing day set).
+	// The account must exist and belong to the authenticated user. Also fetch
+	// its billing day (so transactions can be attached to a billing cycle),
+	// its closed flag, and its account type (loan accounts hold no
+	// transactions of their own).
 	var ownerID uuid.UUID
 	var billingDay *int
+	var closed bool
+	var accountTypeID string
 	err = tx.QueryRow(c,
-		"SELECT user_id, billing_day FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &billingDay)
+		"SELECT user_id, billing_day, closed, account_type_id FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &billingDay, &closed, &accountTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -312,6 +335,14 @@ func CreateTransaction(c *gin.Context) {
 	}
 	if ownerID != userID {
 		validation.RespondError(c, "forbidden", http.StatusForbidden)
+		return
+	}
+	if closed {
+		validation.RespondError(c, "account is closed — no transactions can be added", http.StatusConflict)
+		return
+	}
+	if accountTypeID == loanAccountTypeID {
+		validation.RespondError(c, "loan accounts cannot have transactions — link EMI payments from other accounts instead", http.StatusBadRequest)
 		return
 	}
 
@@ -532,8 +563,11 @@ func UpdateTransaction(c *gin.Context) {
 	args = append(args, auth.GetUserID(c))
 
 	where := fmt.Sprintf("WHERE id = $%d AND user_id = $%d", idIdx, userIdx)
+	// Transactions on closed accounts are immutable (only linking remains
+	// possible): an update that touches such a row is a no-op.
+	where += " AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)"
 	if accountParam != 0 {
-		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d)", accountParam, userIdx)
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d AND NOT a.closed)", accountParam, userIdx)
 	}
 	if categoryParam != 0 {
 		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories ct WHERE ct.id = $%d AND (ct.user_id = $%d OR ct.user_id IS NULL))", categoryParam, userIdx)
@@ -577,8 +611,10 @@ func BulkCategorize(c *gin.Context) {
 
 	// The "uncategorized" sentinel clears the category on every selected
 	// transaction; otherwise the target category must exist and be the user's.
+	// Transactions on closed accounts are skipped (immutable; linking only).
 	query := `UPDATE transactions SET category_id = NULL
-	          WHERE id = ANY($1) AND user_id = $2`
+	          WHERE id = ANY($1) AND user_id = $2
+	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	args := []interface{}{req.TransactionIDs, auth.GetUserID(c)}
 	if req.CategoryID != "uncategorized" {
 		catUUID, err := uuid.Parse(req.CategoryID)
@@ -588,7 +624,8 @@ func BulkCategorize(c *gin.Context) {
 		}
 		query = `UPDATE transactions SET category_id = $1
 		          WHERE id = ANY($2) AND user_id = $3
-		            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND (c.user_id = $3 OR c.user_id IS NULL))`
+		            AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $1 AND (c.user_id = $3 OR c.user_id IS NULL))
+		            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 		args = []interface{}{catUUID, req.TransactionIDs, auth.GetUserID(c)}
 	}
 	result, err := db.Pool.Exec(c, query, args...)
@@ -616,7 +653,8 @@ func BulkUpdatePayee(c *gin.Context) {
 
 	query := `UPDATE transactions SET payee_id = $1
 	          WHERE id = ANY($2) AND user_id = $3
-	            AND EXISTS (SELECT 1 FROM payees p WHERE p.id = $1 AND p.user_id = $3)`
+	            AND EXISTS (SELECT 1 FROM payees p WHERE p.id = $1 AND p.user_id = $3)
+	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkUpdatePayee", "error", err)
@@ -642,7 +680,8 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 
 	query := `UPDATE transactions SET billing_cycle_id = $1
 	          WHERE id = ANY($2) AND user_id = $3
-	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)`
+	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)
+	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkUpdateBillingCycle", "error", err)
@@ -665,7 +704,8 @@ func BulkDeleteTransactions(c *gin.Context) {
 		return
 	}
 
-	query := "DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2"
+	query := `DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2
+	          AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkDeleteTransactions", "error", err)
@@ -685,7 +725,12 @@ func DeleteTransaction(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	result, err := db.Pool.Exec(c, "DELETE FROM transactions WHERE id = $1 AND user_id = $2", id, userID)
+	// Transactions on closed accounts are immutable (only linking remains
+	// possible), so the delete becomes a no-op for them.
+	result, err := db.Pool.Exec(c,
+		`DELETE FROM transactions WHERE id = $1 AND user_id = $2
+		 AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`,
+		id, userID)
 	if err != nil {
 		slog.Error("DeleteTransaction", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -745,12 +790,16 @@ func ImportTransactions(c *gin.Context) {
 	}
 
 	// The account must exist and belong to the authenticated user. Also fetch its
-	// billing day so imports can be attached to a billing cycle.
+	// billing day (so imports can be attached to a billing cycle), its closed
+	// flag, and its account type (loan accounts hold no transactions of their
+	// own).
 	var ownerID uuid.UUID
 	var billingDay *int
+	var closed bool
+	var accountTypeID string
 	err := db.Pool.QueryRow(c,
-		"SELECT user_id, billing_day FROM accounts WHERE id = $1",
-		req.AccountID).Scan(&ownerID, &billingDay)
+		"SELECT user_id, billing_day, closed, account_type_id FROM accounts WHERE id = $1",
+		req.AccountID).Scan(&ownerID, &billingDay, &closed, &accountTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -762,6 +811,14 @@ func ImportTransactions(c *gin.Context) {
 	}
 	if ownerID != userID {
 		validation.RespondError(c, "forbidden", http.StatusForbidden)
+		return
+	}
+	if closed {
+		validation.RespondError(c, "account is closed — no transactions can be added", http.StatusConflict)
+		return
+	}
+	if accountTypeID == loanAccountTypeID {
+		validation.RespondError(c, "loan accounts cannot have transactions — link EMI payments from other accounts instead", http.StatusBadRequest)
 		return
 	}
 

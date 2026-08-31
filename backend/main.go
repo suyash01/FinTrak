@@ -169,6 +169,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		transactions.POST("/bulk-categorize", handlers.BulkCategorize)
 		transactions.POST("/bulk-payee", handlers.BulkUpdatePayee)
 		transactions.POST("/bulk-billing-cycle", handlers.BulkUpdateBillingCycle)
+		transactions.POST("/bulk-loan", handlers.BulkLinkLoan)
 		transactions.POST("/bulk-delete", handlers.BulkDeleteTransactions)
 
 		// Statement parsing (forwards to the standalone parser service)

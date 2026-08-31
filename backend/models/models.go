@@ -43,8 +43,11 @@ type Account struct {
 	Currency        string    `json:"currency"`
 	Color           string    `json:"color"`
 	IsDefault       bool      `json:"isDefault"`
-	Balance         float64   `json:"balance"`
-	CreatedAt       time.Time `json:"createdAt"`
+	// Closed marks an account as closed: transactions can no longer be added,
+	// removed, or edited on it (linking remains possible).
+	Closed    bool      `json:"closed"`
+	Balance   float64   `json:"balance"`
+	CreatedAt time.Time `json:"createdAt"`
 	// BillingDay is the day of the month on which billing cycles end (1-31,
 	// clamped to the month length). It is optional; when set, per-cycle summary
 	// rows are shown for the account regardless of its type.
@@ -118,6 +121,11 @@ type Transaction struct {
 	// Billing cycle attachment (credit cards)
 	BillingCycleID    *uuid.UUID `json:"billingCycleId,omitempty"`
 	BillingCycleLabel string     `json:"billingCycleLabel,omitempty"`
+	// Loan/EMI attachment: the loan account this transaction is linked to as
+	// an EMI payment (via loan_attachments). A transaction can be attached to
+	// at most one loan account.
+	LoanAccountID   *uuid.UUID `json:"loanAccountId,omitempty"`
+	LoanAccountName string     `json:"loanAccountName,omitempty"`
 }
 
 // BillingCycle is a persisted billing period for an account with a billing day
@@ -288,6 +296,9 @@ type UpdateAccountRequest struct {
 	Currency      string `json:"currency"`
 	Color         string `json:"color"`
 	IsDefault     *bool  `json:"isDefault"`
+	// Closed marks the account closed (true) or reopens it (false). Absent
+	// leaves the current value untouched.
+	Closed *bool `json:"closed"`
 	// BillingDay is the day of the month on which billing cycles end (1-31,
 	// range-checked in the handler). An absent key leaves the current value
 	// (and its derived billing cycles) untouched, an explicit value sets it,
@@ -469,6 +480,15 @@ type BulkBillingCycleRequest struct {
 // BulkDeleteTransactionsRequest lists the transactions to delete in one call.
 type BulkDeleteTransactionsRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+}
+
+// BulkLoanRequest attaches a batch of transactions to a single loan/EMI
+// account (LoanAccountID set) or detaches them from whatever loan account they
+// are currently attached to (LoanAccountID absent/null). One transaction can be
+// attached to at most one loan account (UNIQUE on loan_attachments).
+type BulkLoanRequest struct {
+	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+	LoanAccountID  *uuid.UUID  `json:"loanAccountId"`
 }
 
 // ImportRequest is the body for POST /api/v1/transactions/import. DuplicateAction

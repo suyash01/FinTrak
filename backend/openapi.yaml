@@ -801,6 +801,53 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /transactions/bulk-loan:
+    post:
+      tags:
+        - Transactions
+      summary: Attach transactions to a Loan / EMI account, or detach them
+      description: >
+        Attaches the given transactions as EMI payments to a single Loan / EMI
+        account (loanAccountId set) or detaches them from whatever loan account
+        they are currently attached to (loanAccountId omitted/null). A
+        transaction can be attached to at most one loan account; already-linked
+        transactions must be detached first (409). Attaching also sets each
+        transaction's payee to the loan account's linked payee, so EMI payments read
+        as paid to the loan. Detaching leaves payees unchanged.
+      operationId: bulkLinkLoan
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkLoanRequest"
+      responses:
+        "200":
+          description: Linking completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attached:
+                    type: integer
+                  detached:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: One or more transactions are already linked to a loan account
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /transactions/bulk-delete:
     post:
       tags:
@@ -1890,6 +1937,9 @@ components:
           type: string
         isDefault:
           type: boolean
+        closed:
+          type: boolean
+          description: Marks the account closed (true) or reopens it (false); omitted keeps the current value
         billingDay:
           type: integer
           minimum: 1
@@ -2105,6 +2155,21 @@ components:
           type: string
           format: uuid
 
+    BulkLoanRequest:
+      type: object
+      required:
+        - transactionIds
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        loanAccountId:
+          type: string
+          format: uuid
+          description: Loan / EMI account to attach to. Omit or null to detach.
+
     BulkDeleteTransactionsRequest:
       type: object
       required:
@@ -2276,6 +2341,9 @@ components:
           type: string
         isDefault:
           type: boolean
+        closed:
+          type: boolean
+          description: Marks the account closed (true) or reopens it (false)
         balance:
           type: number
           format: double
@@ -2349,6 +2417,12 @@ components:
           type: string
           format: uuid
         billingCycleLabel:
+          type: string
+        loanAccountId:
+          type: string
+          format: uuid
+          description: Loan / EMI account this transaction is attached to as an EMI payment
+        loanAccountName:
           type: string
         createdAt:
           type: string

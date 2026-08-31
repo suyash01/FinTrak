@@ -29,14 +29,21 @@ var errAccountNotFound = errors.New("account not found")
 func GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
-		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.is_default, a.billing_day, a.created_at,
-		COALESCE((
-			SELECT SUM(CASE
-				WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-				WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
-				ELSE 0 END)
-			FROM transactions t WHERE t.account_id = a.id AND t.user_id = $1
-		), 0) as balance
+		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.is_default, a.billing_day, a.created_at, a.closed,
+		COALESCE(CASE
+			WHEN at.id = 'loan' THEN (
+				SELECT SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+				FROM loan_attachments la JOIN transactions t ON t.id = la.transaction_id
+				WHERE la.loan_account_id = a.id AND la.user_id = $1
+			)
+			ELSE (
+				SELECT SUM(CASE
+					WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+					WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+					ELSE 0 END)
+				FROM transactions t WHERE t.account_id = a.id AND t.user_id = $1
+			)
+		END, 0) as balance
 		FROM accounts a
 		JOIN account_types at ON a.account_type_id = at.id
 		WHERE a.user_id = $2
@@ -53,7 +60,7 @@ func GetAccounts(c *gin.Context) {
 	accounts := []models.Account{}
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.IsDefault, &a.BillingDay, &a.CreatedAt, &a.Balance); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.IsDefault, &a.BillingDay, &a.CreatedAt, &a.Closed, &a.Balance); err != nil {
 			slog.Error("GetAccounts scan", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
@@ -232,7 +239,8 @@ func UpdateAccount(c *gin.Context) {
 		// key must leave the current value (and its derived billing cycles)
 		// untouched, an explicit number sets it, and null clears it. The id and
 		// user_id params stay at $7/$8 so the outer SELECT references hold; an
-		// explicit billing day is appended as $9.
+		// explicit billing day is appended as $9 and an explicit closed flag as
+		// $10.
 		setClauses := "name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, is_default = COALESCE($6, is_default)"
 		args := []interface{}{req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID}
 		billingClause := ""
@@ -240,24 +248,36 @@ func UpdateAccount(c *gin.Context) {
 			billingClause = ", billing_day = $9"
 			args = append(args, req.BillingDay.Value())
 		}
+		closedClause := ""
+		if req.Closed != nil {
+			closedClause = ", closed = $10"
+			args = append(args, *req.Closed)
+		}
 
 		err := tx.QueryRow(c,
 			fmt.Sprintf(`WITH updated AS (
-				UPDATE accounts SET %s%s, updated_at = NOW() 
-				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day, created_at
+				UPDATE accounts SET %s%s%s, updated_at = NOW() 
+				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day, created_at, closed
 			)
-			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default, u.billing_day, u.created_at,
-			COALESCE((
-				SELECT SUM(CASE
-					WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
-					WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
-					ELSE 0 END)
-				FROM transactions t WHERE t.account_id = u.id AND t.user_id = $8
-			), 0) as balance
+			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default, u.billing_day, u.created_at, u.closed,
+			COALESCE(CASE
+				WHEN at.id = 'loan' THEN (
+					SELECT SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+					FROM loan_attachments la JOIN transactions t ON t.id = la.transaction_id
+					WHERE la.loan_account_id = u.id AND la.user_id = $8
+				)
+				ELSE (
+					SELECT SUM(CASE
+						WHEN at.positive_txn_type = 'credit' THEN (CASE WHEN t.type = 'credit' THEN t.amount ELSE -t.amount END)
+						WHEN at.positive_txn_type = 'debit' THEN (CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END)
+						ELSE 0 END)
+					FROM transactions t WHERE t.account_id = u.id AND t.user_id = $8
+				)
+			END, 0) as balance
 			FROM updated u
-			JOIN account_types at ON u.account_type_id = at.id`, setClauses, billingClause),
+			JOIN account_types at ON u.account_type_id = at.id`, setClauses, billingClause, closedClause),
 			args...,
-		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.IsDefault, &account.BillingDay, &account.CreatedAt, &account.Balance)
+		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.IsDefault, &account.BillingDay, &account.CreatedAt, &account.Closed, &account.Balance)
 
 		if err != nil {
 			return err

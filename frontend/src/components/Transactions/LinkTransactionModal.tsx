@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import api from "../../api/client";
 import {
   formatCurrency,
@@ -594,7 +595,8 @@ const typeClass =
                       Different Account Only
                     </Label>
                   </div>
-                  <Select
+                  <AccountSelect
+                    accounts={accounts}
                     value={accountId || "all"}
                     onValueChange={(v) => {
                       const acctId = v === "all" ? "" : v;
@@ -607,19 +609,10 @@ const typeClass =
                         acctId,
                       );
                     }}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="All Accounts" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Accounts</SelectItem>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    placeholder="All Accounts"
+                    triggerClassName="w-full"
+                    extraItems={<SelectItem value="all">All Accounts</SelectItem>}
+                  />
                 </div>
               </div>
 

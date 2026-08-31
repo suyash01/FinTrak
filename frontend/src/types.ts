@@ -18,6 +18,9 @@ export interface Account {
   currency: string;
   color: string;
   isDefault: boolean;
+  // Closed accounts are immutable for transactions (no add/edit/remove);
+  // linking stays possible.
+  closed: boolean;
   balance: number;
   // Optional billing day (1-31). When set, per-cycle summary rows are shown
   // for the account regardless of its type; null means none.
@@ -86,7 +89,11 @@ export interface Transaction {
   // Billing cycle attachment (credit cards)
   billingCycleId?: string | null;
   billingCycleLabel?: string;
-}
+  // Loan/EMI attachment: the loan account this transaction is linked to as an
+  // EMI payment. At most one loan account per transaction.
+  loanAccountId?: string | null;
+  loanAccountName?: string;
+  }
 
 export interface BillingCycle {
   id: string;
@@ -304,6 +311,7 @@ export interface UpdateAccountRequest {
   currency?: string;
   color?: string;
   isDefault?: boolean;
+  closed?: boolean;
   billingDay?: number | null;
 }
 
@@ -388,6 +396,12 @@ export interface BulkBillingCycleRequest {
 
 export interface BulkDeleteTransactionsRequest {
   transactionIds: string[];
+}
+
+export interface BulkLoanRequest {
+  transactionIds: string[];
+  // Loan / EMI account to attach to; null/omitted detaches from any loan.
+  loanAccountId?: string | null;
 }
 
 export interface ImportTransactionsRequest {

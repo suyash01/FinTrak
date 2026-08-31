@@ -25,6 +25,7 @@ import {
   PlusCircle,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -859,22 +860,13 @@ export default function PaperlessImport() {
               <Label className="text-xs font-medium text-muted-foreground">
                 FinTrak Account
               </Label>
-              <Select
+              <AccountSelect
+                accounts={accounts}
                 value={selectedAccount}
                 onValueChange={setSelectedAccount}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Choose an account..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {accounts.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name} ({a.accountTypeName}
-                      {a.bank ? `, ${a.bank}` : ""})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Choose an account..."
+                triggerClassName="w-full"
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs font-medium text-muted-foreground">

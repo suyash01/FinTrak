@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +53,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -66,6 +68,9 @@ import type {
   QueryParams,
 } from "../../types";
 import { buildCategorySections } from "../../lib/categories";
+
+// Sentinel value for the bulk "Link to Loan" action: detach instead of attach.
+const UNLINK_LOAN = "__unlink__";
 
 interface SelectOption {
   value: string;
@@ -394,6 +399,15 @@ export default function Transactions() {
       Object.entries(filters).forEach(([k, v]) => {
         if (v !== "" && v !== null && v !== undefined) params[k] = v;
       });
+      // A loan account owns no transactions: selecting one in the account
+      // filter lists its attached EMI payments instead (loanAccountId).
+      if (params.accountId) {
+        const loanAcc = accounts.find((a) => a.id === params.accountId);
+        if (loanAcc?.accountTypeId === "loan") {
+          params.loanAccountId = params.accountId;
+          delete params.accountId;
+        }
+      }
       const res = await api.getTransactions(params, {
         signal: controller.signal,
       });
@@ -403,7 +417,7 @@ export default function Transactions() {
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
-  }, [filters]);
+  }, [filters, accounts]);
 
   useEffect(() => {
     const timer = setTimeout(loadTransactions, 300);
@@ -434,6 +448,19 @@ export default function Transactions() {
   // guarantees all selected transactions belong to the same account).
   const selectedAccount = accounts.find((a) => a.id === filters.accountId);
   const hasBillingDayFilter = Boolean(selectedAccount?.billingDay);
+
+  // Loan/EMI targets for the bulk "Link to Loan" action.
+  const loanAccounts = useMemo(
+    () => accounts.filter((a) => a.accountTypeId === "loan"),
+    [accounts],
+  );
+  // Account id -> closed flag, so row actions can hide editing/deleting on
+  // closed accounts (only linking stays possible).
+  const closedById = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const a of accounts) m.set(a.id, a.closed);
+    return m;
+  }, [accounts]);
 
   // True when any filter deviates from the defaults, so the header can tell a
   // filtered count apart from the unfiltered "all accounts" total.
@@ -646,6 +673,20 @@ export default function Transactions() {
     }
   };
 
+  const handleBulkLinkLoan = async (value: string) => {
+    if (selected.size === 0) return;
+    try {
+      await api.bulkLoan({
+        transactionIds: [...selected],
+        loanAccountId: value === UNLINK_LOAN ? null : value,
+      });
+      loadTransactions();
+      setSelected(new Set());
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
   const handleBulkDelete = () => {
     if (selected.size === 0) return;
     setBulkDeleteOpen(true);
@@ -824,17 +865,21 @@ export default function Transactions() {
         cell: ({ row }) => {
           const t = row.original;
           if (t.isSummary) return null;
+          // Closed accounts are immutable: only linking stays possible.
+          const accountClosed = closedById.get(t.accountId) ?? false;
           return (
             <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground hover:text-primary hover:bg-primary/10"
-                onClick={() => setEditingTxn(t)}
-                title="Edit transaction"
-              >
-                <Pencil size={14} />
-              </Button>
+              {!accountClosed && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+                  onClick={() => setEditingTxn(t)}
+                  title="Edit transaction"
+                >
+                  <Pencil size={14} />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -848,14 +893,17 @@ export default function Transactions() {
               >
                 <Link2 size={14} />
               </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                onClick={() => handleDelete(t.id)}
-              >
-                <Trash2 size={14} />
-              </Button>
+              {!accountClosed && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                  onClick={() => handleDelete(t.id)}
+                  title="Delete transaction"
+                >
+                  <Trash2 size={14} />
+                </Button>
+              )}
             </div>
           );
         },
@@ -871,6 +919,7 @@ export default function Transactions() {
       handleDelete,
       setLinkingTxn,
       setEditingTxn,
+      closedById,
     ],
   );
 
@@ -909,26 +958,16 @@ export default function Transactions() {
         <div
           className={`flex flex-wrap items-center ${compactLayout ? "gap-2 mb-3" : "gap-3 mb-5"}`}
         >
-          <Select
+          <AccountSelect
+            accounts={accounts}
             value={String(filters.accountId || "all")}
             onValueChange={(v) =>
               updateFilter("accountId", v === "all" ? "" : v)
             }
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Accounts" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Accounts</SelectItem>
-              {accounts.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            placeholder="All Accounts"
+            triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            extraItems={<SelectItem value="all">All Accounts</SelectItem>}
+          />
           <Select
             value={String(filters.groupId || filters.categoryId || "all")}
             onValueChange={(v) => {
@@ -1140,6 +1179,24 @@ export default function Transactions() {
                 ))}
               </select>
             )}
+            {loanAccounts.length > 0 && (
+              <select
+                className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
+                onChange={(e) => {
+                  if (e.target.value) handleBulkLinkLoan(e.target.value);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">Link to Loan...</option>
+                <option value={UNLINK_LOAN}>Unlink from loan</option>
+                {loanAccounts.map((la) => (
+                  <option key={la.id} value={la.id}>
+                    {la.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <Button
               variant="ghost"
               size="sm"

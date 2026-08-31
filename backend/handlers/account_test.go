@@ -41,9 +41,9 @@ func TestGetAccounts(t *testing.T) {
 	// Define expected data
 	userID := testUserID()
 	createdAt := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
-	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
-		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", true, intPtr(1), createdAt, 1000.50).
-		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", false, intPtr(5), createdAt, 500.00)
+	rows := pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+		AddRow(uuid.New(), "Savings", "bank", "Bank Account", "HDFC", "INR", "#000000", true, intPtr(1), createdAt, false, 1000.50).
+		AddRow(uuid.New(), "Credit Card", "credit_card", "Credit Card", "SBI", "INR", "#ff0000", false, intPtr(5), createdAt, false, 500.00)
 
 	mock.ExpectQuery("SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color").
 		WithArgs(userID, userID).
@@ -172,8 +172,8 @@ func TestUpdateAccount(t *testing.T) {
 	// must NOT contain a billing_day clause and only 8 args are sent)
 	mock.ExpectQuery("WITH updated AS").
 		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), false, 0.0))
 
 	// Expect Update Payee
 	mock.ExpectExec("UPDATE payees SET name = \\$1 WHERE account_id = \\$2").
@@ -420,8 +420,8 @@ func TestUpdateAccountPayeeNameConflict(t *testing.T) {
 
 	mock.ExpectQuery("WITH updated AS").
 		WithArgs(reqBody.Name, reqBody.AccountTypeID, reqBody.Bank, reqBody.Currency, reqBody.Color, &isDefault, accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
-			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), 0.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+			AddRow(accountID, reqBody.Name, reqBody.AccountTypeID, "Bank Account", reqBody.Bank, reqBody.Currency, reqBody.Color, true, intPtr(1), time.Now(), false, 0.0))
 
 	// Renaming the account-linked payee collides with another payee of the
 	// same name owned by this user (payees_user_name_uq) -> unique violation.
@@ -452,8 +452,8 @@ func TestUpdateAccountBillingDayExplicitSet(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("WITH updated AS").
 		WithArgs("Savings", "bank", "Axis", "INR", "#06b6d4", (*bool)(nil), accountID, userID, intPtr(15)).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
-			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, intPtr(15), time.Now(), 0.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, intPtr(15), time.Now(), false, 0.0))
 	mock.ExpectExec("UPDATE payees SET name").
 		WithArgs("Savings", accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -484,8 +484,8 @@ func TestUpdateAccountBillingDayExplicitNullClears(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("WITH updated AS").
 		WithArgs("Savings", "bank", "Axis", "INR", "#06b6d4", (*bool)(nil), accountID, userID, (*int)(nil)).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "balance"}).
-			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, (*int)(nil), time.Now(), 0.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+			AddRow(accountID, "Savings", "bank", "Bank Account", "Axis", "INR", "#06b6d4", false, (*int)(nil), time.Now(), false, 0.0))
 	mock.ExpectExec("UPDATE payees SET name").
 		WithArgs("Savings", accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))

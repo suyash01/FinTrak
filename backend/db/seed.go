@@ -151,14 +151,18 @@ func PromoteAdminUsers(emails []string) {
 	slog.Info("ensured admin users")
 }
 
-// SeedAccountTypes inserts the built-in "bank" and "credit_card" account types.
-// It is idempotent (ON CONFLICT DO NOTHING) and runs on every boot.
+// SeedAccountTypes inserts the built-in account types. It is idempotent
+// (ON CONFLICT DO NOTHING) and runs on every boot.
 func SeedAccountTypes() {
 	ctx := context.Background()
 
 	accountTypes := []SeedAccountType{
 		{"bank", "Bank Account", "credit"},
 		{"credit_card", "Credit Card", "credit"},
+		// Loan/EMI accounts hold no transactions of their own; EMI payments
+		// live on other accounts and are attached via loan_attachments. The
+		// balance is the total attached (repaid) amount, hence 'debit'.
+		{"loan", "Loan / EMI", "debit"},
 	}
 
 	for _, at := range accountTypes {

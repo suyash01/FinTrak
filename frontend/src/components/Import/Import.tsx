@@ -61,6 +61,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import AccountSelect from "@/components/AccountSelect/AccountSelect";
 
 type CsvRow = Record<string, string>;
 
@@ -980,25 +981,18 @@ export default function Import() {
                 <Label className="text-muted-foreground">
                   Existing Account
                 </Label>
-                <Select
+                <AccountSelect
+                  accounts={accounts.filter((a) => !a.closed)}
                   value={selectedAccount || "none"}
                   onValueChange={(v) =>
                     setSelectedAccount(v === "none" ? "" : v)
                   }
-                >
-                  <SelectTrigger className="w-full h-10 bg-background">
-                    <SelectValue placeholder="Choose an account..." />
-                  </SelectTrigger>
-                  <SelectContent>
+                  placeholder="Choose an account..."
+                  triggerClassName="w-full h-10 bg-background"
+                  extraItems={
                     <SelectItem value="none">Choose an account...</SelectItem>
-                    {accounts.map((a) => (
-                      <SelectItem key={a.id} value={a.id}>
-                        {a.name} ({a.accountTypeName}
-                        {a.bank ? `, ${a.bank}` : ""})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  }
+                />
               </div>
             )}
 

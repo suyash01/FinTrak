@@ -84,11 +84,14 @@ func TestSeedAccountTypes(t *testing.T) {
 	mock := setupMock(t)
 
 	mock.ExpectExec("INSERT INTO account_types").
-		WithArgs("bank", "Bank Account", "credit").
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec("INSERT INTO account_types").
-		WithArgs("credit_card", "Credit Card", "credit").
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+			WithArgs("bank", "Bank Account", "credit").
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		mock.ExpectExec("INSERT INTO account_types").
+			WithArgs("credit_card", "Credit Card", "credit").
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		mock.ExpectExec("INSERT INTO account_types").
+			WithArgs("loan", "Loan / EMI", "debit").
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	SeedAccountTypes()
 
