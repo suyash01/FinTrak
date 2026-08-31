@@ -52,7 +52,7 @@ func CreatePayee(c *gin.Context) {
 	err := db.Pool.QueryRow(c,
 		`INSERT INTO payees (user_id, name, account_id)
 		 SELECT $1, $2, $3
-		 WHERE $3 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $3 AND a.user_id = $1)
+		 WHERE ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $3 AND a.user_id = $1))
 		 RETURNING id, name, account_id, created_at, updated_at`,
 		auth.GetUserID(c), req.Name, req.AccountID,
 	).Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt)
@@ -94,7 +94,7 @@ func UpdatePayee(c *gin.Context) {
 	err = db.Pool.QueryRow(c,
 		`UPDATE payees SET name = $1, account_id = $2, updated_at = NOW()
 		 WHERE id = $3 AND user_id = $4
-		   AND ($2 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $2 AND a.user_id = $4))
+		   AND ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $2 AND a.user_id = $4))
 		 RETURNING id, name, account_id, created_at, updated_at`,
 		req.Name, req.AccountID, id, auth.GetUserID(c),
 	).Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt)

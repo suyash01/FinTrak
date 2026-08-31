@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -375,6 +376,75 @@ func TestDeletePayee(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+func TestCreatePayeeNullAccountGuardIsSelfTyped(t *testing.T) {
+	// Regression: the INSERT...SELECT ownership guard must self-type $3 with
+	// an explicit ::uuid cast. Without it, PostgreSQL fails statement Prepare
+	// with 42P08 ("could not determine data type of parameter $3") whenever a
+	// payee is created with accountId null/absent -> 500 on every such create.
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newPayeeTestRouter()
+	userID := testUserID()
+	now := time.Now()
+	payeeID := uuid.New()
+
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $3 AND a.user_id = $1))")).
+		WithArgs(userID, "Amazon", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_id", "created_at", "updated_at"}).
+			AddRow(payeeID, "Amazon", nil, now, now))
+
+	// accountId omitted entirely (nil) — the case that used to 500.
+	jsonBody, _ := json.Marshal(models.CreatePayeeRequest{Name: "Amazon"})
+	req, _ := http.NewRequest(http.MethodPost, "/payees", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePayeeNullAccountGuardIsSelfTyped(t *testing.T) {
+	// Same 42P08 guard as CreatePayee: unsetting the account link (accountId
+	// null) must type $2 explicitly or Prepare fails for every such update.
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newPayeeTestRouter()
+	userID := testUserID()
+	now := time.Now()
+	payeeID := uuid.New()
+
+	mock.ExpectQuery(regexp.QuoteMeta("AND ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $2 AND a.user_id = $4))")).
+		WithArgs("Renamed", pgxmock.AnyArg(), payeeID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_id", "created_at", "updated_at"}).
+			AddRow(payeeID, "Renamed", nil, now, now))
+
+	jsonBody, _ := json.Marshal(models.CreatePayeeRequest{Name: "Renamed"})
+	req, _ := http.NewRequest(http.MethodPut, "/payees/"+payeeID.String(), bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestCreatePayeeAccountNotOwned(t *testing.T) {
