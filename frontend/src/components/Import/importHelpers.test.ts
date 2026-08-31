@@ -6,13 +6,14 @@ import {
   parseDate,
   parseAmount,
   getMappingErrors,
-    fingerprintOf,
-    filterExcluded,
-    apiDate,
+  fingerprintOf,
+  filterExcluded,
+  siblingIndices,
+  apiDate,
   buildParsedTransactions,
   autoDetectMapping,
 } from "./Import";
-import type { Account, AccountType } from "../../types";
+import type { Account, AccountType, ImportTransaction } from "../../types";
 
 describe("targetFieldsFor", () => {
   it("includes the single amount field in single mode", () => {
@@ -233,11 +234,34 @@ describe("filterExcluded", () => {
   });
 
   it("returns an empty array when every row is excluded", () => {
-    expect(filterExcluded(txns, new Set([0, 1, 2]))).toEqual([]);
+      expect(filterExcluded(txns, new Set([0, 1, 2]))).toEqual([]);
+    });
   });
-});
 
-describe("apiDate", () => {
+  describe("siblingIndices", () => {
+    const txns = [
+      { date: "2024-03-15", description: "Coffee", amount: 150, type: "debit" },
+      { date: "2024-03-15", description: "Coffee", amount: 150, type: "debit" },
+      { date: "2024-03-16", description: "Rent", amount: 12000, type: "debit" },
+      { date: "2024-03-15", description: "Coffee", amount: 200, type: "debit" },
+    ] as ImportTransaction[];
+
+    it("returns every index sharing the row's fingerprint", () => {
+      expect(siblingIndices(txns, 0)).toEqual([0, 1]);
+      expect(siblingIndices(txns, 1)).toEqual([0, 1]);
+    });
+
+    it("does not group rows that only share a description", () => {
+      expect(siblingIndices(txns, 3)).toEqual([3]);
+      expect(siblingIndices(txns, 2)).toEqual([2]);
+    });
+
+    it("returns an empty array for an out-of-range index", () => {
+      expect(siblingIndices(txns, 99)).toEqual([]);
+    });
+  });
+
+  describe("apiDate", () => {
   it("extracts the date portion of an ISO timestamp", () => {
     expect(apiDate("2024-03-15T00:00:00Z")).toBe("2024-03-15");
   });

@@ -258,6 +258,27 @@ const fingerprintOf = (
 const filterExcluded = <T,>(transactions: T[], excluded: Set<number>): T[] =>
   transactions.filter((_, i) => !excluded.has(i));
 
+// All row indices whose transaction is identical (same date, amount, type and
+// description) to the given row. Exclusions are applied to the whole set so
+// that unchecking one occurrence of a duplicated transaction also unchecks its
+// twins — otherwise an identical row remaining in the file would still import,
+// looking like the exclusion failed.
+const siblingIndices = (
+  transactions: ImportTransaction[],
+  index: number,
+): number[] => {
+  const t = transactions[index];
+  if (!t) return [];
+  const fp = fingerprintOf(t.date, t.amount, t.type, t.description);
+  const out: number[] = [];
+  transactions.forEach((tx, i) => {
+    if (fingerprintOf(tx.date, tx.amount, tx.type, tx.description) === fp) {
+      out.push(i);
+    }
+  });
+  return out;
+};
+
 const apiDate = (d: string | null | undefined): string => {
   const m = String(d || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? m[0] : "";
@@ -852,14 +873,18 @@ export default function Import() {
             aria-label={
               row.original.description || `Transaction ${row.index + 1}`
             }
-            onCheckedChange={(c) =>
+            onCheckedChange={(c) => {
+              // Toggling one occurrence toggles every identical row (same
+              // date/amount/type/description) in the file, so a duplicated
+              // transaction cannot sneak back in through its twin.
               setExcluded((prev) => {
                 const next = new Set(prev);
-                if (c === true) next.delete(row.index);
-                else next.add(row.index);
+                const sibs = siblingIndices(parsedTransactions, row.index);
+                if (c === true) sibs.forEach((i) => next.delete(i));
+                else sibs.forEach((i) => next.add(i));
                 return next;
-              })
-            }
+              });
+            }}
           />
         ),
         meta: {
@@ -934,7 +959,7 @@ export default function Import() {
         },
       }),
     ];
-  }, [payees, excluded, parsedTransactions.length]);
+  }, [payees, excluded, parsedTransactions]);
 
   // Validation-results dialog table.
   const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
@@ -1782,10 +1807,22 @@ export default function Import() {
               <span className="font-semibold text-foreground">
                 {importResult.imported}
               </span>{" "}
-              of {importResult.total} transactions
-              {importResult.duplicates > 0
-                ? ` imported (${importResult.duplicates} duplicates skipped).`
-                : " imported."}
+              of {parsedTransactions.length} transactions imported
+              {excludedCount > 0 && (
+                <>
+                  {" "}
+                  (
+                  {importResult.duplicates > 0 &&
+                    `${importResult.duplicates} duplicate${
+                      importResult.duplicates === 1 ? "" : "s"
+                    } skipped, `}
+                  {excludedCount} excluded)
+                </>
+              )}
+              {excludedCount === 0 && importResult.duplicates > 0
+                ? ` (${importResult.duplicates} duplicates skipped)`
+                : null}
+              .
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Button
@@ -1990,6 +2027,7 @@ export {
   getMappingErrors,
   fingerprintOf,
   filterExcluded,
+  siblingIndices,
   apiDate,
   buildParsedTransactions,
   autoDetectMapping,

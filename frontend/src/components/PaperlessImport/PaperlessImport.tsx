@@ -53,7 +53,7 @@ import {
 } from "@/components/ui/select";
 import api from "../../api/client";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
-import { filterExcluded } from "../Import/Import";
+import { filterExcluded, siblingIndices } from "../Import/Import";
 import type {
   Account,
   PaperlessDocument,
@@ -617,7 +617,11 @@ export default function PaperlessImport() {
         duplicateAction: "keep",
         paperlessDocumentIds: tagOnImport ? preview.documentIds || [] : [],
       });
-      setSuccess(`Imported ${includedTransactions.length} transactions.`);
+      setSuccess(
+        `Imported ${includedTransactions.length} of ${parsedCount} transactions${
+          excludedCount > 0 ? ` (${excludedCount} excluded)` : ""
+        }.`,
+      );
       setPreview(null);
       setSelected(new Set());
       loadDocuments();
@@ -684,14 +688,21 @@ export default function PaperlessImport() {
             aria-label={
               row.original.description || `Transaction ${row.index + 1}`
             }
-            onCheckedChange={(c) =>
+            onCheckedChange={(c) => {
+              // Toggling one occurrence toggles every identical row (same
+              // date/amount/type/description) in the file, so a duplicated
+              // transaction cannot sneak back in through its twin.
               setExcluded((prev) => {
                 const next = new Set(prev);
-                if (c === true) next.delete(row.index);
-                else next.add(row.index);
+                const sibs = siblingIndices(
+                  preview?.transactions || [],
+                  row.index,
+                );
+                if (c === true) sibs.forEach((i) => next.delete(i));
+                else sibs.forEach((i) => next.add(i));
                 return next;
-              })
-            }
+              });
+            }}
           />
         ),
         meta: {
@@ -750,7 +761,7 @@ export default function PaperlessImport() {
         },
       }),
     ];
-  }, [excluded, parsedCount]);
+  }, [excluded, parsedCount, preview]);
 
   // Validation-results dialog table.
   const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
