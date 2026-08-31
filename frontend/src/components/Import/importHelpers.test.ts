@@ -6,8 +6,9 @@ import {
   parseDate,
   parseAmount,
   getMappingErrors,
-  fingerprintOf,
-  apiDate,
+    fingerprintOf,
+    filterExcluded,
+    apiDate,
   buildParsedTransactions,
   autoDetectMapping,
 } from "./Import";
@@ -206,6 +207,33 @@ describe("fingerprintOf", () => {
     expect(fingerprintOf("2024-03-15", 100, "debit", "Coffee")).not.toBe(
       fingerprintOf("2024-03-15", 100, "credit", "Coffee"),
     );
+  });
+});
+
+describe("filterExcluded", () => {
+  const txns = [
+    { date: "2024-03-15", description: "Coffee" },
+    { date: "2024-03-16", description: "Rent" },
+    { date: "2024-03-17", description: "Salary" },
+  ];
+
+  it("returns everything when nothing is excluded", () => {
+    expect(filterExcluded(txns, new Set())).toEqual(txns);
+  });
+
+  it("drops the excluded row indices", () => {
+    expect(filterExcluded(txns, new Set([1]))).toEqual([
+      txns[0],
+      txns[2],
+    ]);
+  });
+
+  it("supports multiple exclusions and out-of-range indices", () => {
+    expect(filterExcluded(txns, new Set([0, 2, 99]))).toEqual([txns[1]]);
+  });
+
+  it("returns an empty array when every row is excluded", () => {
+    expect(filterExcluded(txns, new Set([0, 1, 2]))).toEqual([]);
   });
 });
 

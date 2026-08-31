@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/select";
 import api from "../../api/client";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
+import { filterExcluded } from "../Import/Import";
 import type {
   Account,
   PaperlessDocument,
@@ -332,6 +333,13 @@ export default function PaperlessImport() {
   const [validationResult, setValidationResult] =
     useState<ValidateTransactionsResponse | null>(null);
 
+  // Row indices the user unchecks in the preview; excluded transactions are
+  // dropped from validate + import. Reset whenever a new preview is parsed.
+  const [excluded, setExcluded] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    setExcluded(new Set());
+  }, [preview]);
+
   useEffect(() => {
     api
       .getPaperlessSettings()
@@ -595,7 +603,7 @@ export default function PaperlessImport() {
   };
 
   const confirmImport = async () => {
-    if (!preview || preview.transactions.length === 0) return;
+    if (!preview || includedTransactions.length === 0) return;
     setImporting(true);
     setError("");
     setSuccess("");
@@ -605,11 +613,11 @@ export default function PaperlessImport() {
       // successful import.
       await api.importTransactions({
         accountId: selectedAccount,
-        transactions: preview.transactions,
+        transactions: includedTransactions,
         duplicateAction: "keep",
         paperlessDocumentIds: tagOnImport ? preview.documentIds || [] : [],
       });
-      setSuccess(`Imported ${preview.transactions.length} transactions.`);
+      setSuccess(`Imported ${includedTransactions.length} transactions.`);
       setPreview(null);
       setSelected(new Set());
       loadDocuments();
@@ -623,13 +631,13 @@ export default function PaperlessImport() {
   // Read-only check: ask the backend which of the parsed transactions already
   // exist in the selected account. Nothing is written.
   const runValidation = async () => {
-    if (!preview || preview.transactions.length === 0) return;
+    if (!preview || includedTransactions.length === 0) return;
     setValidating(true);
     setError("");
     try {
       const result = await api.validateTransactions({
         accountId: selectedAccount,
-        transactions: preview.transactions,
+        transactions: includedTransactions,
       });
       setValidationResult(result);
     } catch (err) {
@@ -643,6 +651,11 @@ export default function PaperlessImport() {
     () => preview?.transactions.length || 0,
     [preview],
   );
+  const includedTransactions = useMemo(
+    () => filterExcluded(preview?.transactions || [], excluded),
+    [preview, excluded],
+  );
+  const excludedCount = parsedCount - includedTransactions.length;
 
   // Preview table (parsed transactions from the selected documents).
   const previewColumns = useMemo<ColumnDef<ImportTransaction>[]>(() => {
@@ -650,6 +663,42 @@ export default function PaperlessImport() {
     const headBase =
       "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
     return [
+      colHelper.display({
+        id: "include",
+        header: () => (
+          <Checkbox
+            checked={excluded.size === 0}
+            aria-label="Include all parsed transactions"
+            onCheckedChange={() =>
+              setExcluded(
+                excluded.size === 0
+                  ? new Set(Array.from({ length: parsedCount }, (_, i) => i))
+                  : new Set(),
+              )
+            }
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            checked={!excluded.has(row.index)}
+            aria-label={
+              row.original.description || `Transaction ${row.index + 1}`
+            }
+            onCheckedChange={(c) =>
+              setExcluded((prev) => {
+                const next = new Set(prev);
+                if (c === true) next.delete(row.index);
+                else next.add(row.index);
+                return next;
+              })
+            }
+          />
+        ),
+        meta: {
+          headerClassName: `${headBase} w-10`,
+          cellClassName: "px-4 py-2",
+        },
+      }),
       colHelper.accessor("date", {
         header: () => "Date",
         cell: ({ row }) => (
@@ -701,7 +750,7 @@ export default function PaperlessImport() {
         },
       }),
     ];
-  }, []);
+  }, [excluded, parsedCount]);
 
   // Validation-results dialog table.
   const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
@@ -1152,8 +1201,21 @@ export default function PaperlessImport() {
               Preview — {preview.title}
             </h3>
             <p className="text-xs text-muted-foreground mb-3">
-              {parsedCount} transaction(s) parsed. Review below before
-              importing.
+              {parsedCount} transaction(s) parsed.
+              {excludedCount > 0 ? (
+                <>
+                  {" "}
+                  {includedTransactions.length} selected for import —{" "}
+                  {excludedCount} excluded. Unchecked rows are not validated
+                  or imported.
+                </>
+              ) : (
+                <>
+                  {" "}
+                  Review below — uncheck any row to exclude it from the
+                  import.
+                </>
+              )}
             </p>
             {preview.transactions.length === 0 ? (
               <div className="text-sm text-muted-foreground py-4">
@@ -1175,7 +1237,7 @@ export default function PaperlessImport() {
                 <Button
                   variant="outline"
                   onClick={runValidation}
-                  disabled={validating}
+                  disabled={validating || includedTransactions.length === 0}
                   title="Check which of these transactions already exist in this account (no data is written)"
                   className="bg-muted text-primary border-primary/30 dark:border-primary/30 hover:bg-accent font-semibold"
                 >
@@ -1188,7 +1250,7 @@ export default function PaperlessImport() {
                 </Button>
                 <Button
                   onClick={confirmImport}
-                  disabled={importing}
+                  disabled={importing || includedTransactions.length === 0}
                   className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold"
                 >
                   {importing ? (
@@ -1198,7 +1260,7 @@ export default function PaperlessImport() {
                   )}
                   {importing
                     ? "Importing..."
-                    : `Import ${parsedCount} transaction(s)`}
+                    : `Import ${includedTransactions.length} transaction(s)`}
                 </Button>
                 <Button
                   variant="ghost"

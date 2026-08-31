@@ -34,6 +34,7 @@ import type {
   ValidateTransactionsResponse,
 } from "../../types";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -251,6 +252,12 @@ const fingerprintOf = (
     .trim()
     .toLowerCase()}`;
 
+// Drop the transactions whose row indices are in `excluded`. Used by both the
+// statement import (CSV/PDF) and Paperless import previews so an excluded row
+// never reaches validate or import.
+const filterExcluded = <T,>(transactions: T[], excluded: Set<number>): T[] =>
+  transactions.filter((_, i) => !excluded.has(i));
+
 const apiDate = (d: string | null | undefined): string => {
   const m = String(d || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? m[0] : "";
@@ -441,6 +448,15 @@ export default function Import() {
   const [existingTxns, setExistingTxns] = useState<Transaction[]>([]);
   const [existingRefresh, setExistingRefresh] = useState(0);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
+
+  // Transactions the user unchecks in the preview are excluded from the
+  // import. Keyed by row index into `parsedTransactions`, and reset whenever
+  // the parsed set is re-derived (new file, remap, reparse).
+  const [excluded, setExcluded] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    setExcluded(new Set());
+  }, [csvData, columnMapping, amountMode, dateFormat, statementTxns]);
 
   // Billing cycle selection (accounts with a billing day): when chosen, every
   // imported transaction is attached to that cycle instead of the date-based
@@ -657,12 +673,21 @@ export default function Import() {
     [existingTxns],
   );
 
+  // Only transactions still checked are candidates for import, validation,
+  // and duplicate detection; excluded rows never reach the backend.
+  const includedTransactions = useMemo(
+    () => filterExcluded(parsedTransactions, excluded),
+    [parsedTransactions, excluded],
+  );
+  const includedCount = includedTransactions.length;
+  const excludedCount = parsedTransactions.length - includedCount;
+
   const { dupCount, inFileDupCount, existingDupCount } = useMemo(() => {
     const seen = new Set<string>();
     let inFileDup = 0;
     let existingDup = 0;
     let total = 0;
-    for (const t of parsedTransactions) {
+    for (const t of includedTransactions) {
       const fp = fingerprintOf(t.date, t.amount, t.type, t.description);
       const matchesExisting = existingSet.has(fp);
       const repeatsInFile = seen.has(fp);
@@ -676,7 +701,7 @@ export default function Import() {
       inFileDupCount: inFileDup,
       existingDupCount: existingDup,
     };
-  }, [parsedTransactions, existingSet]);
+  }, [includedTransactions, existingSet]);
 
   const runImport = async (action: "skip" | "keep") => {
     setDupDialogOpen(false);
@@ -688,10 +713,16 @@ export default function Import() {
         );
         return;
       }
+      if (includedTransactions.length === 0) {
+        toast.error(
+          "All transactions are excluded. Tick at least one row to import.",
+        );
+        return;
+      }
 
       const payload: ImportTransactionsRequest = {
         accountId: selectedAccount,
-        transactions: parsedTransactions,
+        transactions: includedTransactions,
         duplicateAction: action,
       };
       // Accounts with a billing day can attach every transaction to a chosen
@@ -728,9 +759,15 @@ export default function Import() {
         );
         return;
       }
+      if (includedTransactions.length === 0) {
+        toast.error(
+          "All transactions are excluded. Tick at least one row to validate.",
+        );
+        return;
+      }
       const result = await api.validateTransactions({
         accountId: selectedAccount,
-        transactions: parsedTransactions,
+        transactions: includedTransactions,
       });
       setValidationResult(result);
     } catch (err) {
@@ -789,6 +826,47 @@ export default function Import() {
     const headBase =
       "py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";
     return [
+      colHelper.display({
+        id: "include",
+        header: () => (
+          <Checkbox
+            checked={excluded.size === 0}
+            aria-label="Include all parsed transactions"
+            onCheckedChange={() =>
+              setExcluded(
+                excluded.size === 0
+                  ? new Set(
+                      Array.from(
+                        { length: parsedTransactions.length },
+                        (_, i) => i,
+                      ),
+                    )
+                  : new Set(),
+              )
+            }
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            checked={!excluded.has(row.index)}
+            aria-label={
+              row.original.description || `Transaction ${row.index + 1}`
+            }
+            onCheckedChange={(c) =>
+              setExcluded((prev) => {
+                const next = new Set(prev);
+                if (c === true) next.delete(row.index);
+                else next.add(row.index);
+                return next;
+              })
+            }
+          />
+        ),
+        meta: {
+          headerClassName: `${headBase} w-12`,
+          cellClassName: "py-2.5 px-4",
+        },
+      }),
       colHelper.accessor("date", {
         header: () => "Date",
         cell: ({ row }) => (
@@ -856,7 +934,7 @@ export default function Import() {
         },
       }),
     ];
-  }, [payees]);
+  }, [payees, excluded, parsedTransactions.length]);
 
   // Validation-results dialog table.
   const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
@@ -1458,13 +1536,26 @@ export default function Import() {
             <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-2 mb-4">
               <h3 className="text-xl font-bold text-foreground">
                 Preview — {parsedTransactions.length} transactions
+                {excludedCount > 0 && (
+                  <span className="ml-2 text-base font-semibold text-amber-500">
+                    ({includedCount} selected)
+                  </span>
+                )}
               </h3>
-              {!statementTxns && csvData && (
-                <div className="text-sm text-muted-foreground font-medium">
-                  {csvData.length - parsedTransactions.length} rows skipped
-                  (empty/invalid)
-                </div>
-              )}
+              <div className="flex flex-col items-end gap-1">
+                {!statementTxns && csvData && (
+                  <div className="text-sm text-muted-foreground font-medium">
+                    {csvData.length - parsedTransactions.length} rows skipped
+                    (empty/invalid)
+                  </div>
+                )}
+                {excludedCount > 0 && (
+                  <div className="text-sm font-medium text-amber-500/90">
+                    {excludedCount} transaction{excludedCount === 1 ? "" : "s"}{" "}
+                    excluded from import
+                  </div>
+                )}
+              </div>
             </div>
 
             {selectedAccountHasBillingDay && (
@@ -1611,6 +1702,11 @@ export default function Import() {
               </div>
             )}
 
+            <p className="text-sm text-muted-foreground mb-3">
+              Uncheck any row to exclude it from the import. Excluded
+              transactions are not validated or imported.
+            </p>
+
             <div className="border border-border rounded-lg overflow-y-auto max-h-125 bg-background">
               <DataTable
                 columns={previewColumns}
@@ -1641,7 +1737,7 @@ export default function Import() {
                   variant="outline"
                   className="bg-muted text-primary border-primary/30"
                   onClick={runValidation}
-                  disabled={validating || parsedTransactions.length === 0}
+                  disabled={validating || includedTransactions.length === 0}
                   title="Check which of these transactions already exist in this account (no data is written)"
                 >
                   {validating ? (
@@ -1658,14 +1754,14 @@ export default function Import() {
                   size="lg"
                   className="px-5"
                   onClick={handleImport}
-                  disabled={importing || parsedTransactions.length === 0}
+                  disabled={importing || includedTransactions.length === 0}
                 >
                   {importing ? (
                     <div className="flex gap-2 items-center">
                       <Spinner className="size-4" /> Importing...
                     </div>
                   ) : (
-                    <>Import {parsedTransactions.length} Transactions</>
+                    <>Import {includedCount} Transaction{includedCount === 1 ? "" : "s"}</>
                   )}
                 </Button>
               </div>
@@ -1747,8 +1843,9 @@ export default function Import() {
                 </DialogTitle>
               </div>
               <DialogDescription>
-                {dupCount} of the {parsedTransactions.length} transactions
-                match an existing transaction or repeat within this file.
+                {dupCount} of the {includedCount} transaction
+                {includedCount === 1 ? "" : "s"} match an existing
+                transaction or repeat within this file.
               </DialogDescription>
             </DialogHeader>
             <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1">
@@ -1892,6 +1989,7 @@ export {
   parseAmount,
   getMappingErrors,
   fingerprintOf,
+  filterExcluded,
   apiDate,
   buildParsedTransactions,
   autoDetectMapping,
