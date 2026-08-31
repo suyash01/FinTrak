@@ -263,7 +263,7 @@ paths:
       tags:
         - Accounts
       summary: Get billing cycles for a credit card account
-      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals. Cycles are auto-generated one per month, ending on the account's billingDay. Non-credit-card accounts return an empty list.
+      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals. Cycles are auto-generated one per month, ending on the account's billingDay. totalOutstanding is the account's running balance at the cycle's end date (all debits minus all credits — purchases, payments, refunds, cashbacks — posted up to that date). Non-credit-card accounts return an empty list.
       operationId: getBillingCycles
       security:
         - BearerAuth: []
@@ -1540,7 +1540,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Substring search over the document title only, forwarded to Paperless as `title_search` (with a `title__icontains` fallback)
+          description: Search over the document title only. Single-word queries are forwarded to Paperless as `title_search`; multi-word queries become a fielded Tantivy query (`title:"word" AND ...`, every word must appear in the title). OCR content is never searched.
         - in: query
           name: page
           required: false
@@ -2472,8 +2472,9 @@ components:
         label:
           type: string
         totalOutstanding:
-          type: number
-          format: double
+                  type: number
+                  format: double
+                  description: Running balance at the cycle's end date — all debits minus all credits (purchases, payments, refunds, cashbacks) posted up to that date.
         transactionCount:
           type: integer
 

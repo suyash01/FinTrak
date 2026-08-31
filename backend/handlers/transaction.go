@@ -1139,7 +1139,7 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 // computeSummaryRows builds the synthetic "Total outstanding" rows
 // for an account (any type with a billing day set) from its explicit billing
 // cycles. Each cycle that has attached transactions gets a row at its end date
-// (the sum of its attached debit purchases), and the in-progress cycle
+// (the running balance through that date), and the in-progress cycle
 // containing the end of the range gets a row at the range end. Cycles are
 // expected to already exist (callers run ensureBillingCycles first).
 func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
@@ -1203,14 +1203,15 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 	}
 
 	// The in-progress cycle (its end date is beyond the range end) gets a row at
-	// the range end with the debits attached so far.
+	// the range end with the running balance up to that date: every debit minus
+	// every credit (payments, refunds, cashbacks) posted to the account so far.
 	if current != nil && dateOnly(current.EndDate).After(to) {
 		var total float64
 		var count int
 		err := db.Pool.QueryRow(c,
-			`SELECT COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0), COUNT(t.id)
-			 FROM transactions t WHERE t.billing_cycle_id = $1 AND t.date <= $2`,
-			current.ID, to).Scan(&total, &count)
+			`SELECT COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount WHEN t.type = 'credit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)
+			 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
+			accountID, userID, to).Scan(&total, &count)
 		if err != nil {
 			slog.Error("computeSummaryRows (current cycle)", "error", err)
 			return nil

@@ -249,7 +249,7 @@ func TestGetBillingCycles(t *testing.T) {
 	// listBillingCycles.
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID, time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), "Feb 2024", 150.0, 2))
 
 	req, _ := http.NewRequest("GET", "/accounts/"+acctID.String()+"/billing-cycles", nil)
@@ -265,6 +265,79 @@ func TestGetBillingCycles(t *testing.T) {
 	assert.Equal(t, cycleID, res.Data[0].ID)
 	assert.Equal(t, 150.0, res.Data[0].TotalOutstanding)
 	assert.Equal(t, 2, res.Data[0].TransactionCount)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetBillingCyclesNetOutstanding(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.GET("/accounts/:id/billing-cycles", GetBillingCycles)
+
+	userID := testUserID()
+	acctID := uuid.New()
+	cycleA := uuid.New()
+	cycleB := uuid.New()
+
+	// Account lookup (credit card with a billing day).
+	mock.ExpectQuery("SELECT a.billing_day").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+
+	// ensureBillingCycles: alignment check (no stale cycles).
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+
+	// ensureBillingCycles: earliest transaction.
+	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
+
+	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
+	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+
+	// ensureBillingCycles: back-fill.
+	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
+		WithArgs(acctID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	// listBillingCycles: net activity per cycle — cycle A: 10000 purchases;
+	// cycle B: 3000 purchases − 500 refund − 8000 bill payment = −5500.
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
+			AddRow(cycleA, time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), "Feb 2024", 10000.0, 2).
+			AddRow(cycleB, time.Date(2024, 2, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), "Mar 2024", -5500.0, 3))
+
+	req, _ := http.NewRequest("GET", "/accounts/"+acctID.String()+"/billing-cycles", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res struct {
+		Data []models.BillingCycle `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 2)
+	// Running balance through each cycle end: A = 10000, B = 10000 − 5500 = 4500.
+	assert.Equal(t, cycleA, res.Data[0].ID)
+	assert.Equal(t, 10000.0, res.Data[0].TotalOutstanding)
+	assert.Equal(t, cycleB, res.Data[1].ID)
+	assert.Equal(t, 4500.0, res.Data[1].TotalOutstanding)
+	assert.Equal(t, 3, res.Data[1].TransactionCount)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

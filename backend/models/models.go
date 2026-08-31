@@ -123,7 +123,9 @@ type Transaction struct {
 // BillingCycle is a persisted billing period for an account with a billing day
 // set. Cycles are auto-generated from the account's billing day; transactions
 // are attached to them via Transaction.BillingCycleID. TotalOutstanding is the
-// sum of the debit (purchase) transactions attached to the cycle.
+// account's running balance at the cycle's end date — all debits minus all
+// credits (purchases net of payments, refunds, and cashbacks) posted up to
+// that date.
 type BillingCycle struct {
 	ID               uuid.UUID `json:"id"`
 	AccountID        uuid.UUID `json:"accountId"`

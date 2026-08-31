@@ -506,14 +506,24 @@ func ListPaperlessDocuments(c *gin.Context) {
 	// full document serializer (including the OCR'd `content`) otherwise, which
 	// is large and unused.
 	qs.Set("fields", "id,title,correspondent,document_type,created,tags")
-	// `title_search` is Paperless's current (Tantivy) title-only simple search;
-	// `title__icontains` is the legacy ORM filter that older instances use and
-	// that newer ones still honor. Sending both keeps title-only filtering
-	// working across Paperless versions (unknown params are ignored). `text`
-	// would match the OCR'd content too, so it is deliberately not used.
+	// `title_search` is Paperless's Tantivy title-only simple search (regex
+	// infix, so partial words match too); `text`/`query` touching the OCR
+	// content is deliberately never sent — this box searches titles only. On
+	// paperless-ngx 3.0.x multi-word `title_search` is broken ("credit card"
+	// returns nothing even when titles contain both words), so multi-word
+	// queries instead become an explicit fielded Tantivy query AND-ing each
+	// word on the title field, where order and separators are irrelevant:
+	//     query=title:"credit" AND title:"card"
 	if q := strings.TrimSpace(c.Query("search")); q != "" {
-		qs.Set("title_search", q)
-		qs.Set("title__icontains", q)
+		if words := strings.Fields(q); len(words) == 1 {
+			qs.Set("title_search", q)
+		} else {
+			terms := make([]string, 0, len(words))
+			for _, w := range words {
+				terms = append(terms, `title:"`+strings.ReplaceAll(w, `"`, "")+`"`)
+			}
+			qs.Set("query", strings.Join(terms, " AND "))
+		}
 	}
 	if ids := resolvePaperlessIDs(maps.correspondents, c.QueryArray("correspondentInc")); len(ids) > 0 {
 		qs.Set("correspondent__id__in", joinPaperlessIDs(ids))

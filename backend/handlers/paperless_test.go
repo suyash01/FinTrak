@@ -508,7 +508,10 @@ func TestListPaperlessDocumentsFilters(t *testing.T) {
 			w.Write([]byte(`{"results":[{"id":9,"name":"credit-card"}]}`))
 		default:
 			assert.Equal(t, "SBI", r.URL.Query().Get("title_search"))
-			assert.Equal(t, "SBI", r.URL.Query().Get("title__icontains"))
+			// The legacy ORM filter is not forwarded: AND-ed with title_search it
+			// narrows multi-word queries to literal contiguous substrings and can
+			// veto valid Tantivy hits.
+			assert.Empty(t, r.URL.Query().Get("title__icontains"))
 			assert.Equal(t, "id,title,correspondent,document_type,created,tags", r.URL.Query().Get("fields"))
 			assert.Equal(t, "7,8", r.URL.Query().Get("correspondent__id__in"))
 			assert.Equal(t, "8", r.URL.Query().Get("correspondent__id__none"))
@@ -536,6 +539,38 @@ func TestListPaperlessDocumentsFilters(t *testing.T) {
 	require.Len(t, res.Documents, 1)
 	assert.Equal(t, 42, res.Documents[0].ID)
 	assert.Equal(t, 1, res.TotalCount)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListPaperlessDocumentsMultiWordTitleSearch(t *testing.T) {
+	mock := setupPaperlessMock(t, "", "")
+
+	// Multi-word `title_search` is broken on paperless-ngx 3.0.x ("credit card"
+	// returns nothing even when titles contain both words), so multi-word
+	// searches are forwarded as an explicit fielded Tantivy query AND-ing each
+	// word on the title field.
+	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/api/correspondents"),
+			strings.Contains(r.URL.Path, "/api/document_types"),
+			strings.Contains(r.URL.Path, "/api/tags"):
+			w.Write([]byte(`{"results":[]}`))
+		default:
+			assert.Equal(t, `title:"Credit" AND title:"Card"`, r.URL.Query().Get("query"))
+			assert.Empty(t, r.URL.Query().Get("title_search"))
+			assert.Empty(t, r.URL.Query().Get("title__icontains"))
+			w.Write([]byte(`{"count":1,"results":[{"id":42,"title":"Credit_Card_Statement"}]}`))
+		}
+	}))
+	defer paperless.Close()
+	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+	r := newPaperlessTestRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents?search=Credit+Card", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

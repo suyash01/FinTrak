@@ -126,7 +126,7 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
       {open && (
         <div className="absolute z-20 mt-1 w-full min-w-55 bg-popover text-popover-foreground border border-border rounded-lg shadow-xl overflow-hidden">
           <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground">
-            {label} — <span className="text-primary">+ include</span> ·{" "}
+            {label} — <span className="text-emerald-500">+ include</span> ·{" "}
             <span className="text-destructive">− exclude</span>
           </div>
           <div className="max-h-52 overflow-y-auto">
@@ -142,7 +142,7 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
                     key={opt}
                     className={`flex items-center justify-between gap-2 px-3 py-1.5 text-sm transition-colors ${
                       mode === "inc"
-                        ? "bg-primary/10 text-primary"
+                        ? "bg-emerald-500/10 text-emerald-400"
                         : mode === "exc"
                           ? "bg-destructive/10 text-destructive"
                           : "text-foreground hover:bg-accent"
@@ -160,7 +160,7 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
                         title="Include (match)"
                         className={`rounded-md ${
                           mode === "inc"
-                            ? "bg-primary hover:bg-primary border-primary text-primary-foreground hover:text-primary-foreground"
+                            ? "bg-emerald-500 hover:bg-emerald-600 border-emerald-500 text-white hover:text-white"
                             : "text-muted-foreground border-border hover:bg-accent hover:text-foreground"
                         }`}
                       >
@@ -960,7 +960,7 @@ export default function PaperlessImport() {
               />
               <Input
                 type="text"
-                placeholder="Search title, correspondent, tag..."
+                placeholder="Search title..."
                 className="pl-9"
                 value={search}
                 onChange={(e) => {

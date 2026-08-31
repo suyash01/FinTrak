@@ -28,8 +28,10 @@ type cycleQueryer interface {
 
 // GetBillingCycles lists the billing cycles for an account, auto-generating
 // any missing cycles first. Accounts without a billing day return an empty
-// list. Each cycle carries its total outstanding (sum of attached debit
-// transactions) and transaction count.
+// list. Each cycle carries its total outstanding — the account's running
+// balance at the cycle end date (all debits minus all credits — purchases,
+// payments, refunds, cashbacks — posted up to that date) — and its
+// transaction count.
 func GetBillingCycles(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID, err := uuid.Parse(c.Param("id"))
@@ -216,13 +218,15 @@ func cycleDates(ms time.Time, billingDay int) (time.Time, time.Time) {
 	return start, end
 }
 
-// listBillingCycles returns the account's billing cycles ordered by start date,
-// each with the sum of its attached debit transactions and its transaction
-// count.
+// listBillingCycles returns the account's billing cycles ordered by start date.
+// Each row carries the net activity of its attached transactions (debits minus
+// credits) and the transaction count; TotalOutstanding is the running balance
+// through each cycle end — the cumulative sum of net activity — matching the
+// account's balance at that date.
 func listBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID) ([]models.BillingCycle, error) {
 	rows, err := q.Query(ctx,
 		`SELECT bc.id, bc.start_date, bc.end_date, bc.label,
-		        COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) AS total_outstanding,
+		        COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount WHEN t.type = 'credit' THEN -t.amount ELSE 0 END), 0) AS net_activity,
 		        COUNT(t.id) AS txn_count
 		 FROM billing_cycles bc
 		 LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
@@ -236,11 +240,15 @@ func listBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uu
 	defer rows.Close()
 
 	cycles := []models.BillingCycle{}
+	runningBalance := 0.0
 	for rows.Next() {
 		var bc models.BillingCycle
-		if err := rows.Scan(&bc.ID, &bc.StartDate, &bc.EndDate, &bc.Label, &bc.TotalOutstanding, &bc.TransactionCount); err != nil {
+		var net float64
+		if err := rows.Scan(&bc.ID, &bc.StartDate, &bc.EndDate, &bc.Label, &net, &bc.TransactionCount); err != nil {
 			return nil, err
 		}
+		runningBalance += net
+		bc.TotalOutstanding = runningBalance
 		cycles = append(cycles, bc)
 	}
 	return cycles, rows.Err()

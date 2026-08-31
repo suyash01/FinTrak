@@ -316,7 +316,7 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 	// 3. listBillingCycles
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycle1, start1, end1, "Jun 2026", 1200.00, 4).
 			AddRow(cycle2, start2, end2, "Jul 2026", 2400.00, 6).
 			AddRow(cycle3, start3, end3, "Aug 2026", 3100.50, 8))

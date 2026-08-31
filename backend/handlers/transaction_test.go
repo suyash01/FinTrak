@@ -796,7 +796,7 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	// transaction above.
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID, today.AddDate(0, 0, -30), today, "This month", 500.0, 3))
 
 	req, _ := http.NewRequest("GET", "/transactions?accountId="+accountID.String(), nil)
@@ -1579,34 +1579,36 @@ func TestComputeSummaryRows(t *testing.T) {
 		return uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "cycle-%d", n))
 	}
 
-	// listBillingCycles: Jan 6–Feb 5 (150, 2), Feb 6–Mar 5 (200, 2),
-	// Mar 6–Apr 5 (60, 1), Apr 6–May 5 (0, 0), May 6–Jun 5 (0, 0).
+	// listBillingCycles: net activity per cycle Jan 6–Feb 5 (150, 2),
+	// Feb 6–Mar 5 (200, 2), Mar 6–Apr 5 (60, 1), Apr 6–May 5 (0, 0),
+	// May 6–Jun 5 (0, 0). TotalOutstanding accumulates these.
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID(1), time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), "Feb 2024", 150.0, 2).
 			AddRow(cycleID(2), time.Date(2024, 2, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), "Mar 2024", 200.0, 2).
 			AddRow(cycleID(3), time.Date(2024, 3, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 4, 5, 0, 0, 0, 0, time.UTC), "Apr 2024", 60.0, 1).
 			AddRow(cycleID(4), time.Date(2024, 4, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 5, 5, 0, 0, 0, 0, time.UTC), "May 2024", 0.0, 0).
 			AddRow(cycleID(5), time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC), "Jun 2024", 0.0, 0))
 
-	// Current in-progress cycle (Mar 6–Apr 5 contains Mar 31): debits up to Mar 31.
+	// Current in-progress cycle (Mar 6–Apr 5 contains Mar 31): running balance
+	// of the whole account up to Mar 31 (150 + 200 + 60).
 	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(CASE WHEN t.type = 'debit'").
-		WithArgs(cycleID(3), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
-		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(60.0, 1))
+		WithArgs(acctID, userID, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
+		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(410.0, 3))
 
 	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
-	// Feb 5 (Jan debits = 150), Mar 5 (Feb debits = 200), and a current-cycle
-	// row at Mar 31 (Mar debits = 60).
+	// Feb 5 (running balance 150), Mar 5 (running balance 150+200=350), and a
+	// current-cycle row at Mar 31 (running balance 350+60=410).
 	assert.Len(t, rows, 3)
 	assert.Equal(t, "Total outstanding", rows[0].Description)
 	assert.Equal(t, time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[0].Date))
 	assert.Equal(t, 150.0, rows[0].Amount)
 	assert.Equal(t, time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[1].Date))
-	assert.Equal(t, 200.0, rows[1].Amount)
+	assert.Equal(t, 350.0, rows[1].Amount)
 	assert.Equal(t, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), dateOnly(rows[2].Date))
-	assert.Equal(t, 60.0, rows[2].Amount)
+	assert.Equal(t, 410.0, rows[2].Amount)
 	assert.True(t, rows[0].IsSummary)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -1637,16 +1639,17 @@ func TestComputeSummaryRowsFirstOfMonth(t *testing.T) {
 	// Feb 2–Mar 1 (0, 0), Mar 2–Apr 1 (0, 0).
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "total_outstanding", "txn_count"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID(1), time.Date(2023, 12, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), "Jan 2024", 0.0, 0).
 			AddRow(cycleID(2), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC), "Feb 2024", 100.0, 1).
 			AddRow(cycleID(3), time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC), "Mar 2024", 0.0, 0).
 			AddRow(cycleID(4), time.Date(2024, 3, 2, 0, 0, 0, 0, time.UTC), time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC), "Apr 2024", 0.0, 0))
 
-	// Current in-progress cycle (Mar 2–Apr 1 contains Mar 31): no debits yet.
+	// Current in-progress cycle (Mar 2–Apr 1 contains Mar 31): running balance
+	// of the whole account up to Mar 31 (only the 100 debit so far).
 	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(CASE WHEN t.type = 'debit'").
-		WithArgs(cycleID(4), time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
-		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(0.0, 0))
+		WithArgs(acctID, userID, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
+		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(100.0, 1))
 
 	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
