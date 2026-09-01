@@ -306,9 +306,14 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions WHERE account_id").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(date(2026, 5, 10)))
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles WHERE account_id").
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(date(2026, 5, 10), dateOnly(time.Now()), 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles WHERE account_id").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(date(2099, 1, 5)))
+		WillReturnRows(covered)
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))

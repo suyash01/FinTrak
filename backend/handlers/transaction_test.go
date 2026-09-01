@@ -221,10 +221,15 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
-	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	// ensureBillingCycles: every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), dateOnly(time.Now()), 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 
 	// ensureBillingCycles: back-fill (attaches this transaction by date).
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -290,10 +295,15 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
-	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	// ensureBillingCycles: every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), dateOnly(time.Now()), 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 
 	// ensureBillingCycles: back-fill.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -785,9 +795,14 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(today.AddDate(0, 0, -30)))
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(today.AddDate(0, 0, -30), today, 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(today.AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))

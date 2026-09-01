@@ -83,10 +83,15 @@ func TestEnsureBillingCyclesUpToDate(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
-	// Latest existing cycle end date is in the future -> nothing to generate.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	// Every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), dateOnly(time.Now()), 1) {
+		_, end := cycleDates(ms, 1)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 
 	// Back-fill unassigned transactions.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -122,9 +127,9 @@ func TestEnsureBillingCyclesGenerates(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 
 	// No existing cycles.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(nil))
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	// One INSERT per month from (earliest month - 1) through the in-progress
 	// month. Cycles end on the account's billing day (the 1st by default).
@@ -179,9 +184,9 @@ func TestEnsureBillingCyclesRegeneratesOnBillingDayChange(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 
 	// No cycles remain -> regenerate on the new billing day.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(nil))
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	months := billingCycleMonths(earliest, now, 5)
 	for _, ms := range months {
@@ -236,10 +241,15 @@ func TestGetBillingCycles(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
-	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	// ensureBillingCycles: every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), dateOnly(time.Now()), 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 
 	// ensureBillingCycles: back-fill.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -304,10 +314,15 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
-	// ensureBillingCycles: latest cycle end in the future -> nothing to generate.
-	mock.ExpectQuery("SELECT MAX\\(end_date\\) FROM billing_cycles").
+	// ensureBillingCycles: every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC), dateOnly(time.Now()), 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(dateOnly(time.Now()).AddDate(0, 1, 0)))
+		WillReturnRows(covered)
 
 	// ensureBillingCycles: back-fill.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -402,5 +417,49 @@ func TestGetBillingCyclesAccountNotFound(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEnsureBillingCyclesBackfillScopesCycleToOwnAccount(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	userID := testUserID()
+	acctID := uuid.New()
+	now := dateOnly(time.Now())
+	earliest := time.Date(now.Year(), now.Month(), 10, 0, 0, 0, 0, time.UTC)
+
+	// Alignment check: no stale cycles.
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+
+	// Earliest transaction.
+	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
+
+	// Every month already has a cycle -> nothing to generate.
+	covered := pgxmock.NewRows([]string{"end_date"})
+	for _, ms := range billingCycleMonths(earliest, now, 5) {
+		_, end := cycleDates(ms, 5)
+		covered.AddRow(end)
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(covered)
+
+	// The back-fill must scope the cycle to the transaction's OWN account and
+	// user, otherwise an import can be attached to another account's cycle
+	// (inflating that account's totals and leaving the real cycles empty).
+	mock.ExpectExec("bc.account_id = t.account_id AND bc.user_id = t.user_id").
+		WithArgs(acctID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	err = ensureBillingCycles(context.Background(), mock, userID, acctID, 5)
+	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

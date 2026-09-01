@@ -1,7 +1,6 @@
 import {
   useState,
   useEffect,
-  useRef,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
@@ -77,17 +76,8 @@ interface TransactionForm {
   billingCycleId: string;
 }
 
-export default function EditTransactionModal({
-  transaction,
-  accounts,
-  categories,
-  groups,
-  payees,
-  onClose,
-  onSaved,
-}: EditTransactionModalProps) {
-  const isCreate = !transaction;
-  const [form, setForm] = useState<TransactionForm>({
+function createForm(accounts: Account[]): TransactionForm {
+  return {
     date: new Date().toISOString().split("T")[0],
     description: "",
     amount: "",
@@ -98,62 +88,63 @@ export default function EditTransactionModal({
     notes: "",
     tags: [],
     billingCycleId: "",
-  });
+  };
+}
+
+function formFromTransaction(t: Transaction): TransactionForm {
+  return {
+    date: String(t.date).split("T")[0],
+    description: t.description || "",
+    amount: String(t.amount || ""),
+    type: t.type || "debit",
+    accountId: t.accountId || "",
+    categoryId: t.categoryId || "",
+    payeeId: t.payeeId || "",
+    notes: t.notes || "",
+    tags: t.tags || [],
+    billingCycleId: t.billingCycleId || "",
+  };
+}
+
+export default function EditTransactionModal({
+  transaction,
+  accounts,
+  categories,
+  groups,
+  payees,
+  onClose,
+  onSaved,
+}: EditTransactionModalProps) {
+  const isCreate = !transaction;
+  const [form, setForm] = useState<TransactionForm>(() =>
+    isCreate ? createForm(accounts) : transaction ? formFromTransaction(transaction) : createForm(accounts),
+  );
   const selectedAccount = accounts.find((a) => a.id === form.accountId);
   const [tagInput, setTagInput] = useState("");
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const prevAccountRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (isCreate) {
-      setForm({
-        date: new Date().toISOString().split("T")[0],
-        description: "",
-        amount: "",
-        type: "debit",
-        accountId: accounts?.[0]?.id || "",
-        categoryId: "",
-        payeeId: "",
-        notes: "",
-        tags: [],
-        billingCycleId: "",
-      });
-    } else {
-      const dateStr = String(transaction.date).split("T")[0];
-      setForm({
-        date: dateStr,
-        description: transaction.description || "",
-        amount: String(transaction.amount || ""),
-        type: transaction.type || "debit",
-        accountId: transaction.accountId || "",
-        categoryId: transaction.categoryId || "",
-        payeeId: transaction.payeeId || "",
-        notes: transaction.notes || "",
-        tags: transaction.tags || [],
-        billingCycleId: transaction.billingCycleId || "",
-      });
+      setForm(createForm(accounts));
+    } else if (transaction) {
+      // Rebuild the form when the modal is reused for a different transaction
+      // (the Sheet stays mounted while the parent swaps the editing target).
+      setForm(formFromTransaction(transaction));
     }
   }, [transaction, isCreate, accounts]);
 
   // Load billing cycles for the selected account (accounts with a billing
-  // day). The cycle is cleared when the account actually changes, but
-  // preserved on the initial load so an existing attachment survives opening
-  // the modal.
+  // day). The cycle attachment is only ever cleared by the user changing the
+  // account in the AccountSelect handler — never here — so an existing
+  // attachment survives opening the modal and switching between transactions.
   useEffect(() => {
     const acct = accounts.find((a) => a.id === form.accountId);
-    const hasBillingDay = acct?.billingDay;
-
-    if (!hasBillingDay) {
+    if (!acct?.billingDay) {
       setBillingCycles([]);
       setLoadingCycles(false);
-      // Clear any cycle picked for a previous (billing-day) account.
-      if (prevAccountRef.current && prevAccountRef.current !== form.accountId) {
-        setForm((f) => ({ ...f, billingCycleId: "" }));
-      }
-      prevAccountRef.current = form.accountId;
       return;
     }
 
@@ -170,11 +161,6 @@ export default function EditTransactionModal({
       .finally(() => {
         if (!cancelled) setLoadingCycles(false);
       });
-
-    if (prevAccountRef.current && prevAccountRef.current !== form.accountId) {
-      setForm((f) => ({ ...f, billingCycleId: "" }));
-    }
-    prevAccountRef.current = form.accountId;
 
     return () => {
       cancelled = true;
@@ -378,6 +364,9 @@ export default function EditTransactionModal({
                       setForm((f) => ({
                         ...f,
                         accountId: v === "none" ? "" : v,
+                        // Different account → different cycles; drop any cycle
+                        // picked for the previous account.
+                        billingCycleId: "",
                       }))
                     }
                     placeholder="Select account"
@@ -414,6 +403,19 @@ export default function EditTransactionModal({
                       <SelectItem value="none">
                         {isCreate ? "Auto (by date)" : "Unassigned"}
                       </SelectItem>
+                      {/* The attached cycle may be absent from the fetched list
+                      (e.g. it was generated under an older billing day or a
+                      legacy cross-account attachment). Render it anyway so a
+                      non-null billingCycleId is always visible and never
+                      silently saved as "Unassigned". */}
+                      {form.billingCycleId &&
+                        !billingCycles.some(
+                          (bc) => bc.id === form.billingCycleId,
+                        ) && (
+                          <SelectItem value={form.billingCycleId}>
+                            {transaction?.billingCycleLabel || "Current cycle"}
+                          </SelectItem>
+                        )}
                       {billingCycles.map((bc) => (
                         <SelectItem key={bc.id} value={bc.id}>
                           {bc.label} ({formatDate(bc.startDate)} –{" "}

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -80,7 +79,9 @@ func GetBillingCycles(c *gin.Context) {
 // ensureBillingCycles creates any missing billing cycles for an account that
 // has a billing day set (one per month, ending on the account's billing day)
 // and then back-fills the suggested default: every unassigned transaction is
-// attached to the cycle whose date range contains its transaction date. It is
+// attached to the cycle whose date range contains its transaction date. Gaps
+// are filled in BOTH directions: months after the newest cycle (new activity)
+// and months before the oldest cycle (backdated/late imports). It is
 // idempotent and safe to call on every request. If existing cycles no longer
 // end on the billing day (e.g. the day was changed), they are dropped first so
 // they can be regenerated.
@@ -108,19 +109,34 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 		earliest = dateOnly(time.Now())
 	}
 
-	// Latest existing cycle end date (invalid when no cycles exist yet).
-	var latestEnd sql.NullTime
-	err = q.QueryRow(ctx,
-		"SELECT MAX(end_date) FROM billing_cycles WHERE account_id = $1 AND user_id = $2",
-		accountID, userID).Scan(&latestEnd)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	// Months that already have an existing cycle, keyed by the month the cycle
+	// ends in. Missing months are generated below — including months OLDER than
+	// the first existing cycle, so late or backdated imports can still be
+	// attached to the cycle matching their transaction date.
+	coveredMonths := map[time.Time]bool{}
+	rows, err := q.Query(ctx,
+		"SELECT end_date FROM billing_cycles WHERE account_id = $1 AND user_id = $2",
+		accountID, userID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var end time.Time
+		if err := rows.Scan(&end); err != nil {
+			rows.Close()
+			return err
+		}
+		coveredMonths[time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return err
 	}
 
 	today := dateOnly(time.Now())
 	for _, ms := range billingCycleMonths(earliest, today, billingDay) {
-		// Skip months already covered by an existing cycle.
-		if latestEnd.Valid && !ms.After(time.Date(latestEnd.Time.Year(), latestEnd.Time.Month(), 1, 0, 0, 0, 0, time.UTC)) {
+		// Skip months that already have a cycle.
+		if coveredMonths[ms] {
 			continue
 		}
 		start, end := cycleDates(ms, billingDay)
@@ -134,11 +150,14 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	}
 
 	// Suggested default: attach every unassigned transaction to the cycle whose
-	// date range contains its transaction date.
+	// date range contains its transaction date. The cycle is scoped to the
+	// transaction's OWN account and user, so an import can never land on
+	// another account's cycle (which would corrupt that account's totals).
 	_, err = q.Exec(ctx,
 		`UPDATE transactions t SET billing_cycle_id = bc.id
 		 FROM billing_cycles bc
 		 WHERE t.account_id = $1 AND t.user_id = $2
+		   AND bc.account_id = t.account_id AND bc.user_id = t.user_id
 		   AND t.billing_cycle_id IS NULL
 		   AND t.date >= bc.start_date AND t.date <= bc.end_date`,
 		accountID, userID)
