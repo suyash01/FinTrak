@@ -28,6 +28,12 @@ from .icici_bank_extractor import (
     to_csv_bytes as _icici_bank_to_csv_bytes,
 )
 
+from .slice_bank_extractor import (
+    PdfPasswordRequired,
+    extract_transactions as _slice_bank_extract_transactions,
+    to_csv_bytes as _slice_bank_to_csv_bytes,
+)
+
 
 @dataclass(frozen=True)
 class ExtractorSpec:
@@ -94,6 +100,9 @@ register_extractor("icici_cc", "ICICI Credit Card", _icici_extract_transactions,
 register_extractor("sbi_cc", "SBI Credit Card", _sbi_extract_transactions, _sbi_to_csv_bytes)
 register_extractor(
     "icici_bank", "ICICI Bank Statement", _icici_bank_extract_transactions, _icici_bank_to_csv_bytes
+)
+register_extractor(
+    "slice_bank", "Slice Small Finance Bank", _slice_bank_extract_transactions, _slice_bank_to_csv_bytes
 )
 
 __all__ = [
