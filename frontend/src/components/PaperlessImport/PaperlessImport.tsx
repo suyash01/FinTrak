@@ -1233,7 +1233,7 @@ export default function PaperlessImport() {
                 No transactions were parsed from these documents.
               </div>
             ) : (
-              <div className="max-h-80 overflow-y-auto border border-border rounded-lg bg-background">
+              <div className="max-h-80 overflow-auto border border-border rounded-lg bg-background">
                 <DataTable
                   columns={previewColumns}
                   data={preview.transactions.slice(0, 500)}
@@ -1337,7 +1337,7 @@ export default function PaperlessImport() {
             </div>
 
             {/* Per-transaction list */}
-            <div className="border border-border rounded-lg overflow-y-auto flex-1 bg-background">
+            <div className="border border-border rounded-lg overflow-auto flex-1 bg-background">
               <DataTable
                 columns={validationColumns}
                 data={validationResult.results}

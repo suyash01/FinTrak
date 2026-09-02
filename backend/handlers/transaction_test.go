@@ -734,11 +734,26 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 		WithArgs(userID, accountID.String(), 50, 0).
 		WillReturnRows(rows)
 
-	// buildAccountSummaryRows: account lookup (no billing day -> no summary rows).
+	// buildAccountSummaryRows: account lookup — no billing day, so the account
+	// gets month-end "Running balance" summary rows instead of cycle rows.
 	mock.ExpectQuery("SELECT a.name, a.billing_day").
 		WithArgs(accountID.String(), userID).
 		WillReturnRows(pgxmock.NewRows([]string{"name", "billing_day"}).
 			AddRow("Savings", nil))
+
+	// computeMonthEndBalanceRows: per-month net over the full ledger (one
+	// row: the current month, a single 250.5 debit).
+	today := dateOnly(now)
+	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT date_trunc\\('month'").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"month", "net", "count"}).
+			AddRow(monthStart, -250.5, 1))
+	// The current month is still in progress: balance as of the range end.
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(").
+		WithArgs(accountID, userID, dateOnly(now)).
+		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).
+			AddRow(-250.5, 1))
 
 	req, _ := http.NewRequest("GET", "/transactions?accountId="+accountID.String(), nil)
 	w := httptest.NewRecorder()
@@ -750,8 +765,13 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 		Data []models.Transaction `json:"data"`
 	}
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
-	// Accounts without a billing day get no synthetic summary rows.
-	assert.Len(t, res.Data, 1)
+	// Accounts without a billing day get a month-end "Running balance" row
+	// (desc order: same date as the transaction, the row comes first).
+	assert.Len(t, res.Data, 2)
+	assert.True(t, res.Data[0].IsSummary)
+	assert.Equal(t, "Running balance", res.Data[0].Description)
+	assert.Equal(t, -250.5, res.Data[0].Amount)
+	assert.Equal(t, "Savings", res.Data[0].AccountName)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

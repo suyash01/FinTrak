@@ -34,6 +34,12 @@ from .slice_bank_extractor import (
     to_csv_bytes as _slice_bank_to_csv_bytes,
 )
 
+from .indusind_bank_extractor import (
+    PdfPasswordRequired,
+    extract_transactions as _indusind_bank_extract_transactions,
+    to_csv_bytes as _indusind_bank_to_csv_bytes,
+)
+
 
 @dataclass(frozen=True)
 class ExtractorSpec:
@@ -103,6 +109,9 @@ register_extractor(
 )
 register_extractor(
     "slice_bank", "Slice Small Finance Bank", _slice_bank_extract_transactions, _slice_bank_to_csv_bytes
+)
+register_extractor(
+    "indusind_bank", "IndusInd Bank Statement", _indusind_bank_extract_transactions, _indusind_bank_to_csv_bytes
 )
 
 __all__ = [

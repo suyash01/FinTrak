@@ -19,6 +19,8 @@ Template shape (every page):
         "01 Sep '25 Add Funds 202252447542774 ₹10,000.00 ₹10,000.00"
         "11 Sep '25 UPI Debit-SUYASH MITTAL-7044793121@ybl-52 804252545646524 -₹50,000.00 ₹50,143.24"
     Debit amounts carry a "-" prefix, credits are unsigned (no C/D column).
+    2026 template: REF NO. runs up to 17 digits and the UPI detail prefix is
+    hyphenated ("UPI-Credit-...", "UPI-Debit-...", "Account Transfer-Credit-...").
     The DETAILS column wraps onto the following line (no date/refno/amount on
     the wrap), e.g. "5463946648-Payment from slice".
   - Page footer:        "Need help? Contact our support team ... slice small finance bank"
@@ -29,11 +31,16 @@ Notes (hard-won, do not regress):
     statement-internal reference; the UPI refs live inside DETAILS).
   - Wrapped DETAILS continuation lines are stitched onto the previous
     transaction with NO space when the continuation starts mid-token
-    (digit, lowercase, '@' or '/' - the UPI string is split mid-reference by
-    the column wrap, e.g. "...@ybl-52" + "5463946648-Payment from slice" ->
+    (the UPI string is split mid-reference by the column wrap, e.g.
+    "...@ybl-52" + "5463946648-Payment from slice" ->
     "...@ybl-525463946648-Payment from slice"). A plain space-join would
-    leave a bogus gap inside the UPI reference. All continuations observed in
-    this template start with a digit or '@'; none start at a word boundary.
+    leave a bogus gap inside the UPI reference. Mid-token starters, across
+    both templates: digit, lowercase, '@', '/' and '-' (2026:
+    "...Begusarai" + "-PYTM0123456-..."), plus uppercase letters glued to
+    the token (2026: "...MITTAL-ICI" + "C0000570-..." and "...KUMAR SINH" +
+    "A-IBKL0001077-..."). A continuation whose first TWO chars are uppercase
+    letters is a genuine word wrap ("...using Paytm" + "UPI") and keeps its
+    space.
   - The embedded Rubik font has no ToUnicode mapping for the "fl" and "fi"
     ligature glyphs, so pdfplumber renders them as "(cid:53)" and "(cid:65)"
     (verified against the embedded font program's glyph table: glyphID 53 =
@@ -171,17 +178,21 @@ _DATE_LED = r"\d{2} [A-Za-z]{3} '\d{2}"
 
 # One transaction row:
 #   date | DETAILS (greedy, may contain 10-digit phone/UPI tokens) |
-#   REF NO. (the last 12-16 consecutive digits on the line) |
+#   REF NO. (the last 12-17 consecutive digits on the line) |
 #   AMOUNT (₹ or -₹) | BALANCE (₹)
-# The greedy DETAILS backtracking pins REF NO. to the LAST 12-16-digit run,
+# The greedy DETAILS backtracking pins REF NO. to the LAST 12-17-digit run,
 # which is always the statement's ref column (phone numbers in UPI ids are
-# 10 digits and sit inside DETAILS).
+# 10 digits and sit inside DETAILS).  The pre-2026 template tops out at 16
+# digits; the 2026 template added 17-digit refs (e.g. "20260805380562101"),
+# so the range is 12-17 across both templates.  Amounts/balances carry
+# 0-2 DECIMAL PLACES: the 2026 PDF generator trims trailing zeros
+# ("₹19,500", "₹26.7", "₹1,86,018.5" - the decimals are optional).
 _TXN_RE = re.compile(
     r"^(?P<date>" + _DATE_LED + r")\s+"
     r"(?P<details>.+)\s+"
-    r"(?P<refno>\d{12,16})\s+"
-    r"(?P<amount>-?₹[\d,]+\.\d{2})\s+"
-    r"(?P<balance>₹[\d,]+\.\d{2})$"
+    r"(?P<refno>\d{12,17})\s+"
+    r"(?P<amount>-?₹[\d,]+(?:\.\d{1,2})?)\s+"
+    r"(?P<balance>₹[\d,]+(?:\.\d{1,2})?)$"
 )
 
 # Any non-transaction line that still begins with a date (the per-page
@@ -249,10 +260,22 @@ def _starts_mid_token(line: str) -> bool:
     """True when `line` is a wrapped continuation of the previous line's
     token rather than a new field. The DETAILS column splits UPI strings
     mid-reference at the wrap ("...@ybl-52" + "5463946648-Payment from
-    slice"), so continuations start with a digit, lowercase letter, '@' or
-    '/' — join them with NO separator to reassemble the reference intact."""
+    slice"), so continuations join with NO separator to reassemble the
+    reference intact. Verified starters, across both templates:
+      - lowercase / digit / '@' / '/'   (pre-2026 and 2026 templates)
+      - '-'                             (2026: "...Begusarai" + "-PYTM0123456-...")
+      - uppercase glued to the token    (2026: "...MITTAL-ICI" + "C0000570-..."
+                                         and "...KUMAR SINH" + "A-IBKL0001077-...")
+    A continuation whose first TWO chars are uppercase letters is a genuine
+    word wrap ("...using Paytm" + "UPI") and keeps its space.
+    """
     first: str = line[0]
-    return first.islower() or first.isdigit() or first in "@/"
+    if first.islower() or first.isdigit() or first in "@/-":
+        return True
+    if first.isupper() and len(line) > 1:
+        second: str = line[1]
+        return second.isdigit() or second in "-/@"
+    return False
 
 
 def _build_transaction(match: "re.Match[str]") -> Transaction:
@@ -355,9 +378,11 @@ _PERIOD_RE = re.compile(
 # The printed five-figure summary row (page 1, under the "+ + - =" sign row):
 #   ₹0.00 ₹1,56,030.00 ₹384.27 ₹52,187.34 ₹1,04,226.93
 # = opening | total credits | interest earned | total debits | closing.
+# Decimals are optional (0-2 places) - the 2026 generator trims trailing
+# zeros, e.g. "₹80,786.54 ₹1,04,500 ₹731.96 ₹0 ₹1,86,018.5".
 _SUMMARY_AMOUNTS_RE = re.compile(
-    r"₹([\d,]+\.\d{2})\s+₹([\d,]+\.\d{2})\s+₹([\d,]+\.\d{2})\s+"
-    r"₹([\d,]+\.\d{2})\s+₹([\d,]+\.\d{2})"
+    r"₹([\d,]+(?:\.\d{1,2})?)\s+₹([\d,]+(?:\.\d{1,2})?)\s+₹([\d,]+(?:\.\d{1,2})?)\s+"
+    r"₹([\d,]+(?:\.\d{1,2})?)\s+₹([\d,]+(?:\.\d{1,2})?)"
 )
 _SUMMARY_KEYS = (
     "opening_balance",

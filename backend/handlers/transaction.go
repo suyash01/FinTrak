@@ -254,13 +254,16 @@ func GetTransactions(c *gin.Context) {
 	}
 
 	// When a single account is filtered and sorted by date, inject computed
-	// summary rows: the per-cycle total outstanding for accounts that have a
-	// billing day set. These are synthetic and are never persisted. Summary
-	// rows only make sense in a date-ordered list, so other sort columns skip
-	// them; accounts without a billing day show their raw transactions only.
+	// summary rows: per-cycle "Total outstanding" rows for accounts with a
+	// billing day set, and month-end "Running balance" rows for accounts
+	// without one (loan accounts never reach this path — the frontend filters
+	// them via loanAccountId). These are synthetic and are never persisted.
+	// Summary rows only make sense in a date-ordered list, so other sort
+	// columns skip them entirely.
 	if accountID != "" && sortBy == "date" {
-		summaryTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
+		summaryTxns, balanceTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
+		transactions = mergeMonthEndRows(transactions, balanceTxns, sortOrder)
 	}
 
 	pages := 1
@@ -1172,9 +1175,10 @@ var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 
 // buildAccountSummaryRows looks up the filtered account and returns the
 // synthetic summary rows to display. Accounts with a billing day set get
-// per-cycle summary rows (regardless of account type); accounts without one
-// show their raw transactions only.
-func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) []models.Transaction {
+// per-cycle "Total outstanding" rows (regardless of account type); accounts
+// without one get month-end "Running balance" rows instead. Both sets are
+// synthetic, never persisted, and only meaningful in a date-ordered list.
+func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) ([]models.Transaction, []models.Transaction) {
 	var acctName string
 	var billingDay *int
 	err := db.Pool.QueryRow(c,
@@ -1182,15 +1186,136 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 		 FROM accounts a
 		 WHERE a.id = $1 AND a.user_id = $2`,
 		accountID, userID).Scan(&acctName, &billingDay)
-	if err != nil || billingDay == nil {
-		return nil
+	if err != nil {
+		slog.Error("buildAccountSummaryRows (account lookup)", "error", err)
+		return nil, nil
+	}
+	if billingDay == nil {
+		return nil, computeMonthEndBalanceRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
 	}
 
 	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), *billingDay); err != nil {
 		slog.Error("buildAccountSummaryRows (ensure billing cycles)", "error", err)
+		return nil, nil
+	}
+	return computeSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo), nil
+}
+
+// computeMonthEndBalanceRows builds the synthetic "Running balance" rows for an
+// account without a billing day: the account's ledger balance (credits minus
+// debits) at the end of every calendar month that has transactions — the same
+// shape as the "Total outstanding" rows billing-day accounts get at cycle
+// ends. The balance is the account's FULL running balance up to each month
+// end, independent of any active view filter, so the same numbers appear on
+// every page and filter combination. The month containing the range end is
+// still in progress, so it gets its row at the range end carrying the balance
+// as of that date (mirroring the in-progress-cycle row).
+func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
+	var from, to time.Time
+	if dateFrom != "" {
+		if t, err := time.Parse("2006-01-02", dateFrom); err == nil {
+			from = t
+		}
+	}
+	if dateTo != "" {
+		if t, err := time.Parse("2006-01-02", dateTo); err == nil {
+			to = t
+		}
+	}
+	if to.IsZero() {
+		to = dateOnly(time.Now())
+	}
+
+	// Per-month net activity over the account's full ledger, oldest month
+	// first. The running sum of these nets is the balance at each month end.
+	rows, err := db.Pool.Query(c,
+		`SELECT date_trunc('month', t.date)::date,
+		        COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount WHEN t.type = 'debit' THEN -t.amount ELSE 0 END), 0),
+		        COUNT(t.id)
+		 FROM transactions t
+		 WHERE t.account_id = $1 AND t.user_id = $2
+		 GROUP BY 1 ORDER BY 1`,
+		accountID, userID)
+	if err != nil {
+		slog.Error("computeMonthEndBalanceRows (monthly net)", "error", err)
 		return nil
 	}
-	return computeSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
+	type monthNet struct {
+		month time.Time // first day of the month
+		net   float64
+		count int
+	}
+	nets := []monthNet{}
+	for rows.Next() {
+		var m time.Time
+		var net float64
+		var count int
+		if err := rows.Scan(&m, &net, &count); err != nil {
+			rows.Close()
+			slog.Error("computeMonthEndBalanceRows (scan)", "error", err)
+			return nil
+		}
+		nets = append(nets, monthNet{month: m, net: net, count: count})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		slog.Error("computeMonthEndBalanceRows (iterate)", "error", err)
+		return nil
+	}
+	if len(nets) == 0 {
+		return nil
+	}
+
+	buildRow := func(date time.Time, balance float64) models.Transaction {
+		return models.Transaction{
+			ID:          summaryID(accountID.String(), "running-balance", date),
+			AccountID:   accountID,
+			Date:        date,
+			Description: "Running balance",
+			Amount:      balance,
+			Type:        "credit",
+			AccountName: acctName,
+			IsSummary:   true,
+		}
+	}
+
+	currentMonthEnd := time.Date(to.Year(), to.Month()+1, 0, 0, 0, 0, 0, time.UTC)
+	inProgress := currentMonthEnd.After(to)
+
+	out := []models.Transaction{}
+	balance := 0.0
+	for _, n := range nets {
+		balance += n.net
+		if n.count == 0 {
+			continue
+		}
+		end := time.Date(n.month.Year(), n.month.Month()+1, 0, 0, 0, 0, 0, time.UTC)
+		// The in-progress month (the one containing the range end, whose end
+		// date is beyond the range): the row sits at the range end with the
+		// balance as of that date instead of the projected month-end balance.
+		if inProgress && end.Equal(currentMonthEnd) {
+			var total float64
+			var count int
+			err := db.Pool.QueryRow(c,
+				`SELECT COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount WHEN t.type = 'debit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)
+				 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
+				accountID, userID, to).Scan(&total, &count)
+			if err != nil {
+				slog.Error("computeMonthEndBalanceRows (in-progress month)", "error", err)
+				return nil
+			}
+			if count > 0 {
+				out = append(out, buildRow(to, total))
+			}
+			continue
+		}
+		// Only rows whose month end falls inside the viewed range.
+		if (!from.IsZero() && end.Before(from)) || end.After(to) {
+			continue
+		}
+		out = append(out, buildRow(end, balance))
+	}
+	return out
 }
 
 // computeSummaryRows builds the synthetic "Total outstanding" rows
@@ -1386,6 +1511,60 @@ func mergeByDate(transactions []models.Transaction, rows []models.Transaction, s
 		}
 	}
 
+	return merged
+}
+
+// mergeMonthEndRows interleaves the month-end "Running balance" rows into the
+// date-ordered transaction list. Unlike mergeByDate (which groups transactions
+// by billing cycle), month-end rows carry no cycle, so placement is purely
+// date-based: in ascending order a row lands right after its month's last
+// transaction, in descending order right before it — the balance sits at the
+// month's end either way. A transaction dated on the month's final day ties
+// with the row: the row comes after it in ascending order and before it in
+// descending order.
+func mergeMonthEndRows(transactions []models.Transaction, rows []models.Transaction, sortOrder string) []models.Transaction {
+	if len(rows) == 0 {
+		return transactions
+	}
+	// Only keep the rows whose month window overlaps the transactions on the
+	// current page, so rows are spread across pages instead of repeating.
+	rows = filterSummaryRowsForPage(transactions, rows)
+	if len(rows) == 0 {
+		return transactions
+	}
+
+	asc := sortOrder == "ASC"
+	sort.Slice(rows, func(i, j int) bool {
+		if asc {
+			return rows[i].Date.Before(rows[j].Date)
+		}
+		return rows[i].Date.After(rows[j].Date)
+	})
+
+	merged := make([]models.Transaction, 0, len(transactions)+len(rows))
+	i, j := 0, 0
+	for i < len(transactions) && j < len(rows) {
+		td, rd := dateOnly(transactions[i].Date), dateOnly(rows[j].Date)
+		if asc {
+			if td.Before(rd) {
+				merged = append(merged, transactions[i])
+				i++
+			} else {
+				merged = append(merged, rows[j])
+				j++
+			}
+		} else {
+			if td.After(rd) {
+				merged = append(merged, transactions[i])
+				i++
+			} else {
+				merged = append(merged, rows[j])
+				j++
+			}
+		}
+	}
+	merged = append(merged, transactions[i:]...)
+	merged = append(merged, rows[j:]...)
 	return merged
 }
 

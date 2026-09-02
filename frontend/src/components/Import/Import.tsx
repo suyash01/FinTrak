@@ -1732,7 +1732,7 @@ export default function Import() {
               transactions are not validated or imported.
             </p>
 
-            <div className="border border-border rounded-lg overflow-y-auto max-h-125 bg-background">
+            <div className="border border-border rounded-lg overflow-auto max-h-125 bg-background">
               <DataTable
                 columns={previewColumns}
                 data={parsedTransactions.slice(0, 100)}
@@ -1824,7 +1824,7 @@ export default function Import() {
                 : null}
               .
             </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-4 justify-center">
               <Button
                 variant="outline"
                 className="px-6"
@@ -1987,7 +1987,7 @@ export default function Import() {
               </div>
 
               {/* Per-transaction list */}
-              <div className="border border-border rounded-lg overflow-y-auto flex-1 min-h-0 bg-background">
+              <div className="border border-border rounded-lg overflow-auto flex-1 min-h-0 bg-background">
                 <DataTable
                   columns={validationColumns}
                   data={validationResult.results}
