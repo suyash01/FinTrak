@@ -1233,7 +1233,7 @@ export default function PaperlessImport() {
                 No transactions were parsed from these documents.
               </div>
             ) : (
-              <div className="max-h-80 overflow-auto border border-border rounded-lg bg-background">
+              <div className="overflow-hidden border border-border rounded-lg bg-background">
                 <DataTable
                   columns={previewColumns}
                   data={preview.transactions}

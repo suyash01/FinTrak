@@ -1732,7 +1732,7 @@ export default function Import() {
               transactions are not validated or imported.
             </p>
 
-            <div className="border border-border rounded-lg overflow-auto max-h-125 bg-background">
+            <div className="border border-border rounded-lg overflow-hidden bg-background">
               <DataTable
                 columns={previewColumns}
                 data={parsedTransactions}
