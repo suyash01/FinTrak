@@ -1236,8 +1236,10 @@ export default function PaperlessImport() {
               <div className="max-h-80 overflow-auto border border-border rounded-lg bg-background">
                 <DataTable
                   columns={previewColumns}
-                  data={preview.transactions.slice(0, 500)}
+                  data={preview.transactions}
                   containerClassName=""
+                  virtualize
+                  maxHeight={320}
                   headerClassName=""
                   cellClassName=""
                 />

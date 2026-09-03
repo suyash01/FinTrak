@@ -130,6 +130,19 @@ export function DataTable<TData, TValue>({
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const rows = table.getRowModel().rows;
+  // Virtualization needs a measurable scroll viewport. jsdom (component tests)
+  // reports clientHeight 0, which would render zero rows; stay virtualized only
+  // while the scroll container reports height, and fall back to rendering all
+  // rows when it can't (unmeasured or zero-height viewport).
+  const [viewportMeasured, setViewportMeasured] = React.useState<
+    boolean | null
+  >(null);
+  React.useLayoutEffect(() => {
+    if (!virtualize) return;
+    const el = scrollRef.current;
+    setViewportMeasured(Boolean(el && el.clientHeight > 0));
+  }, [virtualize]);
+  const isVirtual = virtualize && viewportMeasured !== false;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -140,7 +153,7 @@ export function DataTable<TData, TValue>({
     },
     overscan: 10,
   });
-  const virtualItems = virtualize ? virtualizer.getVirtualItems() : [];
+  const virtualItems = isVirtual ? virtualizer.getVirtualItems() : [];
   const totalSize = virtualizer.getTotalSize();
   const measureRow = React.useCallback(
     (el: HTMLTableRowElement | null) => {
@@ -173,11 +186,11 @@ export function DataTable<TData, TValue>({
   const tableElement = (
     <Table
       className={tableClassName}
-      wrapperClassName={virtualize ? "relative w-full" : undefined}
+      wrapperClassName={isVirtual ? "relative w-full" : undefined}
     >
       <TableHeader
         className={cn(
-          virtualize && "sticky top-0 z-10 bg-card",
+          isVirtual && "sticky top-0 z-10 bg-card",
           theadClassName,
         )}
       >
@@ -221,7 +234,7 @@ export function DataTable<TData, TValue>({
               {emptyMessage}
             </TableCell>
           </TableRow>
-        ) : virtualize ? (
+        ) : isVirtual ? (
           <>
             {virtualItems.length > 0 && virtualItems[0].start > 0 && (
               <TableRow

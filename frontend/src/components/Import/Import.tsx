@@ -1735,20 +1735,16 @@ export default function Import() {
             <div className="border border-border rounded-lg overflow-auto max-h-125 bg-background">
               <DataTable
                 columns={previewColumns}
-                data={parsedTransactions.slice(0, 100)}
+                data={parsedTransactions}
                 containerClassName=""
                 tableClassName="min-w-150"
+                virtualize
+                maxHeight={500}
                 theadClassName="sticky top-0 bg-card z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-border"
                 headerClassName=""
                 cellClassName=""
               />
             </div>
-
-            {parsedTransactions.length > 100 && (
-              <p className="text-sm text-center text-muted-foreground mt-4">
-                Showing first 100 of {parsedTransactions.length} transactions
-              </p>
-            )}
 
             <div className="pt-5 mt-6 border-t border-border flex justify-between gap-4">
               <Button
