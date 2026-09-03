@@ -24,6 +24,20 @@ def _word(text, x0, x1, top):
     return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 9.0}
 
 
+# Fonts used by the OpTransactionHistory layout.
+_F_SEMI = "Mulish-SemiBold"  # amounts row: serial no., date, amounts, balance
+_F_REG = "Mulish-Regular"  # the actual remarks / description lines
+_F_BLACK = "Mulish-Black"  # bold channel/category line (excluded)
+
+
+def _w(text, x0, x1, top, font=_F_REG):
+    return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 9.0, "fontname": font}
+
+
+def _oph_rule(top):
+    return {"x0": 47.0, "x1": 117.0, "top": top, "bottom": top, "y0": top, "y1": top}
+
+
 # One statement page: a B/F (opening) row with no amount, a withdrawal row whose
 # particulars wrap to a second line, a deposit row with its particulars line
 # rendered ABOVE its own date, and a row that has a MODE prefix.
@@ -473,6 +487,191 @@ class IciciBankTemplateRegressionTests(unittest.TestCase):
         )
         # Empty/blank lines are dropped silently.
         self.assertEqual(_join_particulars_lines(["A", "", "  ", "B"]), "A B")
+
+    @mock.patch("statement_parser.icici_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_bank_extractor.PdfReader")
+    def test_ophistory_excludes_bold_category_and_parses_dotted_dates(self, mock_reader_cls, mock_open):
+        # OpTransactionHistory layout: each record is a bold Black category
+        # line ("TATA CONSULTANCY", "Mastercard trxn") + a SemiBold amounts
+        # row + regular-font remarks below. The bold category line must be
+        # excluded from the description; dd.mm.yyyy dates must parse.
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+        words = [
+            _w("Remarks", 297.0, 330.0, 222.0, _F_SEMI),  # column header
+            # record 1
+            _w("TATA", 192.0, 216.8, 242.0, _F_BLACK),
+            _w("CONSULTANCY", 216.8, 260.0, 242.0, _F_BLACK),
+            _w("1", 30.1, 37.0, 247.0, _F_SEMI),
+            _w("04.07.2019", 61.4, 85.0, 247.0, _F_SEMI),
+            _w("12000.00", 431.9, 461.0, 247.0, _F_SEMI),
+            _w("12000.00", 535.5, 565.0, 247.0, _F_SEMI),
+            _w("NEFT-190704249GN07853-TATA", 192.0, 321.4, 252.0),
+            _w("CONSULTANCY-", 321.4, 360.0, 252.0),
+            _w("600002073661-0660407001-DEUT0784BBY", 192.0, 360.0, 262.1),
+            _w("Mastercard", 192.0, 239.6, 272.0, _F_BLACK),  # record 2's category
+            _w("trxn", 239.6, 258.0, 272.0, _F_BLACK),
+            # record 2
+            _w("2", 30.1, 37.0, 277.0, _F_SEMI),
+            _w("08.07.2019", 61.4, 85.0, 277.0, _F_SEMI),
+            _w("74.00", 431.9, 461.0, 277.0, _F_SEMI),
+            _w("11926.00", 535.5, 565.0, 277.0, _F_SEMI),
+            _w("MPS/CHEF", 192.0, 234.2, 282.0),
+            _w("TALK", 234.2, 258.6, 282.0),
+            _w("/201907081327/008871/PUNE", 258.6, 340.0, 282.0),
+            _w("Bil", 192.0, 204.5, 292.0, _F_BLACK),
+            _w("Payment", 204.5, 240.0, 292.0, _F_BLACK),
+            # footer boilerplate BELOW record 2, outside the last band (rule)
+            _w("This is a system generated statement.", 192.0, 390.0, 305.0),
+        ]
+        lines = [_oph_rule(297.0)]  # bounds record 2's band; footer stays out
+        mock_open.side_effect = lambda path, password="": _FakePdf([_FakePage(words, lines=lines)])
+        result = extract_transactions("/tmp/statement.pdf")
+
+        self.assertEqual(result["transaction_count"], 2)
+        first, second = result["transactions"]
+        self.assertEqual(first["date"], "2019-07-04")
+        self.assertEqual(
+            first["description"],
+            "NEFT-190704249GN07853-TATA CONSULTANCY-600002073661-0660407001-DEUT0784BBY",
+        )
+        # the bold first line is excluded (not a description prefix)
+        self.assertFalse(first["description"].startswith("TATA CONSULTANCY"))
+        self.assertNotIn("Mastercard", first["description"])
+        self.assertNotIn("Bil Payment", second["description"])
+        self.assertEqual(second["description"], "MPS/CHEF TALK /201907081327/008871/PUNE")
+        self.assertEqual(first["withdrawal"], 12000.0)
+        self.assertIsNone(first["deposit"])
+        self.assertEqual(first["type"], "Debit")
+        self.assertEqual(first["balance"], 12000.0)
+        self.assertEqual(second["withdrawal"], 74.0)
+        # footer boilerplate must not bleed into the last record
+        self.assertNotIn("system generated", second["description"])
+
+    @mock.patch("statement_parser.icici_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_bank_extractor.PdfReader")
+    def test_ophistory_shifted_amount_columns(self, mock_reader_cls, mock_open):
+        # Some pages render the grid a few points more compressed: the
+        # balance value sits at x0 ~530.7 instead of ~535.5. Amounts must be
+        # assigned by horizontal order (rightmost = balance), never leaving a
+        # row with both deposit+withdrawal or a missing balance.
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+        words = [
+            _w("Remarks", 297.0, 330.0, 222.0, _F_SEMI),
+            _w("1", 30.1, 37.0, 247.0, _F_SEMI),
+            _w("04.07.2019", 61.4, 85.0, 247.0, _F_SEMI),
+            _w("40.00", 427.1, 461.0, 247.0, _F_SEMI),   # withdrawal
+            _w("114275.50", 530.7, 565.0, 247.0, _F_SEMI),  # balance (shifted)
+            _w("MPS/TATA /201907311247/050052/PUNE", 192.0, 340.0, 252.0),
+            _w("Mastercard", 192.0, 239.6, 262.0, _F_BLACK),
+            _w("trxn", 239.6, 258.0, 262.0, _F_BLACK),
+            _w("2", 30.1, 37.0, 277.0, _F_SEMI),
+            _w("04.07.2019", 61.4, 85.0, 277.0, _F_SEMI),
+            _w("11.30", 497.9, 530.0, 277.0, _F_SEMI),    # deposit
+            _w("114286.80", 530.7, 565.0, 277.0, _F_SEMI),  # balance
+            _w("EBA/FreeCardRfnd/20190704074302", 192.0, 340.0, 282.0),
+        ]
+        mock_open.side_effect = lambda path, password="": _FakePdf([_FakePage(words)])
+        result = extract_transactions("/tmp/statement.pdf")
+
+        self.assertEqual(result["transaction_count"], 2)
+        one, two = result["transactions"]
+        self.assertEqual(one["withdrawal"], 40.0)
+        self.assertIsNone(one["deposit"])
+        self.assertEqual(one["balance"], 114275.5)
+        self.assertEqual(two["deposit"], 11.3)
+        self.assertIsNone(two["withdrawal"])
+        self.assertEqual(two["balance"], 114286.8)
+
+    @mock.patch("statement_parser.icici_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_bank_extractor.PdfReader")
+    def test_ophistory_deposit_column_and_account_from_title(self, mock_reader_cls, mock_open):
+        # A deposit row (amount in the Deposit column -> Credit) plus the
+        # account number from the "Saving Account no. XXXX in INR" title.
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+        words = [
+            _w("Statement", 27.0, 111.2, 99.0, _F_SEMI),
+            _w("of", 111.2, 121.7, 99.0, _F_SEMI),
+            _w("Saving", 185.2, 214.9, 99.0, _F_SEMI),
+            _w("Account", 214.9, 249.8, 99.0, _F_SEMI),
+            _w("no.", 249.8, 264.2, 99.0, _F_SEMI),
+            _w("057001527034", 264.2, 324.1, 99.0, _F_SEMI),
+            _w("in", 324.1, 333.7, 99.0, _F_SEMI),
+            _w("INR", 333.7, 350.4, 99.0, _F_SEMI),
+            _w("Remarks", 297.0, 330.0, 222.0, _F_SEMI),
+            _w("1", 30.1, 37.0, 247.0, _F_SEMI),
+            _w("04.07.2019", 61.4, 85.0, 247.0, _F_SEMI),
+            _w("12000.00", 483.5, 513.0, 247.0, _F_SEMI),  # deposit column
+            _w("12000.00", 535.5, 565.0, 247.0, _F_SEMI),
+            _w("NEFT/CREDIT/INWARD/REMITTANCE", 192.0, 340.0, 252.0),
+            _w("Credit", 192.0, 215.0, 257.0, _F_BLACK),
+            _w("trxn", 215.0, 234.0, 257.0, _F_BLACK),
+        ]
+        mock_open.side_effect = lambda path, password="": _FakePdf([_FakePage(words)])
+        result = extract_transactions("/tmp/statement.pdf")
+
+        self.assertEqual(result["transaction_count"], 1)
+        txn = result["transactions"][0]
+        self.assertIsNone(txn["withdrawal"])
+        self.assertEqual(txn["deposit"], 12000.0)
+        self.assertEqual(txn["type"], "Credit")
+        self.assertEqual(txn["account_number"], "057001527034")
+        self.assertEqual(txn["description"], "NEFT/CREDIT/INWARD/REMITTANCE")
+
+    @mock.patch("statement_parser.icici_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_bank_extractor.PdfReader")
+    def test_ophistory_serial_number_crosscheck(self, mock_reader_cls, mock_open):
+        # Serial numbers must run 1..N; a discontinuity lands in
+        # validation_errors.
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+        base = [
+            _w("Remarks", 297.0, 330.0, 222.0, _F_SEMI),
+            _w("NN", 30.1, 37.0, 247.0, _F_SEMI),
+            _w("04.07.2019", 61.4, 85.0, 247.0, _F_SEMI),
+            _w("10.00", 431.9, 461.0, 247.0, _F_SEMI),
+            _w("10.00", 535.5, 565.0, 247.0, _F_SEMI),
+            _w("remark one", 192.0, 260.0, 252.0),
+            _w("NN", 30.1, 37.0, 277.0, _F_SEMI),
+            _w("08.07.2019", 61.4, 85.0, 277.0, _F_SEMI),
+            _w("5.00", 431.9, 461.0, 277.0, _F_SEMI),
+            _w("15.00", 535.5, 565.0, 277.0, _F_SEMI),
+            _w("remark two", 192.0, 260.0, 282.0),
+        ]
+        good = [dict(w) for w in base]
+        good[1] = _w("1", 30.1, 37.0, 247.0, _F_SEMI)   # serial 1 (index 1)
+        good[6] = _w("2", 30.1, 37.0, 277.0, _F_SEMI)   # serial 2 (index 6)
+        mock_open.side_effect = lambda path, password="": _FakePdf([_FakePage(good)])
+        result = extract_transactions("/tmp/statement.pdf")
+        self.assertEqual(result["transaction_count"], 2)
+        self.assertEqual(result["validation_errors"], [])
+
+        bad = [dict(w) for w in base]
+        bad[1] = _w("1", 30.1, 37.0, 247.0, _F_SEMI)
+        bad[6] = _w("9", 30.1, 37.0, 277.0, _F_SEMI)   # broken sequence
+        mock_open.side_effect = lambda path, password="": _FakePdf([_FakePage(bad)])
+        result = extract_transactions("/tmp/statement.pdf")
+        self.assertTrue(
+            any("serial number sequence broken" in e for e in result["validation_errors"]),
+            result["validation_errors"],
+        )
+
+    def test_metadata_ophistory_name_and_account_no(self):
+        text = (
+            "Statement of Transactions in Saving Account no. 057001527034 in INR "
+            "for the period April 1, 2019 - March 31, 2020\n"
+            "SUYASH MITTAL Your Base Branch: ICICI BANK LIMITED,\n"
+        )
+        metadata = _extract_metadata(text)
+        self.assertEqual(metadata["account_holder"], "Suyash Mittal")
+        self.assertEqual(metadata["statement_period_from"], "2019-04-01")
+        self.assertEqual(metadata["statement_period_to"], "2020-03-31")
 
     def test_metadata_name_cust_id_accounts_and_period(self):
         text = (

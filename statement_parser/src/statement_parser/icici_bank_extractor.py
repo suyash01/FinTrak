@@ -240,9 +240,9 @@ def _parse_amount(text: Optional[str]) -> Optional[float]:
 
 
 def _parse_date(text: str) -> str:
-    """Convert dd-mm-yyyy -> yyyy-mm-dd. Falls back to the raw text if it
-    doesn't match the expected pattern."""
-    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", text)
+    """Convert dd-mm-yyyy / dd.mm.yyyy -> yyyy-mm-dd. Falls back to the raw
+    text if it doesn't match the expected pattern."""
+    m = re.match(r"^(\d{2})[-.](\d{2})[-.](\d{4})$", text)
     if not m:
         return text
     dd, mm, yyyy = m.groups()
@@ -266,7 +266,7 @@ def _open_pdf(path: str, password: Optional[str]) -> PDF:
 # Per-page parsing
 # ---------------------------------------------------------------------
 
-_ACCOUNT_TITLE_RE = re.compile(r"Account\s+(?:Number:?\s+)?([X\d]{6,})\s+in\s+INR")
+_ACCOUNT_TITLE_RE = re.compile(r"Account\s+(?:[Nn]umber:?|[Nn]o\.?)?\s*([X\d]{6,})\s+in\s+INR")
 
 
 def _find_section_account(words: List[Word]) -> Optional[str]:
@@ -295,6 +295,9 @@ class _PageParseResult:
     # final totals are cross-checked at the statement level in
     # extract_transactions(); per-page totals are cross-checked per page.
     final_total: bool = False
+    # Serial numbers of the records on this page (OpTransactionHistory
+    # layout only); used to cross-check the statement's record count.
+    serials: List[Optional[int]] = field(default_factory=list)
 
 
 def _starts_mid_token(line: str) -> bool:
@@ -329,6 +332,43 @@ def _join_particulars_lines(lines: List[str]) -> str:
         else:
             parts.append(stripped)
     return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+
+def _record_to_transaction(rec: _RawRecord, account_number: Optional[str]) -> Transaction:
+    """Assemble the canonical Transaction dict from a raw parsed record.
+    Shared by the ruled/anchored page parser and the OpTransactionHistory
+    page parser so both emit the identical app import contract."""
+    ordered_lines: List[str] = [
+        rec["particulars_lines"][k] for k in sorted(rec["particulars_lines"].keys())
+    ]
+    particulars: str = _join_particulars_lines(ordered_lines)
+    mode_text: Optional[str] = rec["mode"] or None
+
+    deposit: Optional[float] = _parse_amount(rec["deposit_raw"])
+    withdrawal: Optional[float] = _parse_amount(rec["withdrawal_raw"])
+
+    # The app's import contract expects a single amount + sign; derive it
+    # from the deposit/withdrawal split (exactly one of the two is set).
+    amount: float = 0.0
+    txn_type: str = "Credit"
+    if deposit:
+        amount = deposit
+    elif withdrawal:
+        amount = withdrawal
+        txn_type = "Debit"
+
+    return Transaction(
+        date=_parse_date(rec["date_raw"]),
+        mode=mode_text,
+        particulars=particulars,
+        deposit=deposit,
+        withdrawal=withdrawal,
+        balance=_parse_amount(rec["balance_raw"]),
+        account_number=account_number,
+        description=f"{mode_text} {particulars}".strip() if mode_text else particulars,
+        amount=amount,
+        type=txn_type,
+    )
 
 
 def _parse_page(page: Page) -> Optional[_PageParseResult]:
@@ -521,42 +561,9 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
             nearest_anchor: float = min(amount_anchors, key=lambda a: abs(a - line_top))
             records[nearest_anchor]["particulars_lines"][line_top] = text
 
-    transactions: List[Transaction] = []
-    for top in anchor_tops:
-        rec: _RawRecord = records[top]
-        ordered_lines: List[str] = [
-            rec["particulars_lines"][k] for k in sorted(rec["particulars_lines"].keys())
-        ]
-        particulars: str = _join_particulars_lines(ordered_lines)
-        mode_text: Optional[str] = rec["mode"] or None
-
-        deposit: Optional[float] = _parse_amount(rec["deposit_raw"])
-        withdrawal: Optional[float] = _parse_amount(rec["withdrawal_raw"])
-
-        # The app's import contract expects a single amount + sign; derive it
-        # from the deposit/withdrawal split (exactly one of the two is set).
-        amount: float = 0.0
-        txn_type: str = "Credit"
-        if deposit:
-            amount = deposit
-        elif withdrawal:
-            amount = withdrawal
-            txn_type = "Debit"
-
-        transactions.append(
-            Transaction(
-                date=_parse_date(rec["date_raw"]),
-                mode=mode_text,
-                particulars=particulars,
-                deposit=deposit,
-                withdrawal=withdrawal,
-                balance=_parse_amount(rec["balance_raw"]),
-                account_number=account_number,
-                description=f"{mode_text} {particulars}".strip() if mode_text else particulars,
-                amount=amount,
-                type=txn_type,
-            )
-        )
+    transactions: List[Transaction] = [
+        _record_to_transaction(records[top], account_number) for top in anchor_tops
+    ]
 
     # Printed subtotal row for this page, used only as a validation check.
     total_words: List[Word] = sorted(
@@ -579,6 +586,173 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
         printed_closing_balance=printed_closing_balance,
         final_total=total_word == "TOTAL",
     )
+
+
+# ---------------------------------------------------------------------
+# "Operation Transaction History" layout (serial-numbered rows)
+# ---------------------------------------------------------------------
+# The OpTransactionHistory template (older statements, dd.mm.yyyy dates)
+# renders each record as three stacked pieces: a BOLD channel/category line
+# ("Mastercard trxn", "Bil Payment", "ATM trxn", "Credit trxn", ...), the
+# amounts row (serial number + dotted date + withdrawal/deposit + balance,
+# all in a semi-bold font), and the actual remarks below (regular font,
+# wrapping onto 1-3 lines). The bold category line is not part of the
+# description, so descriptions are assembled from regular-font words in the
+# remarks column only.
+
+_DOTTED_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
+_BOLD_FONT_RE = re.compile(r"(?i)bold|black|semibold|medium")
+
+# Column x0 boundaries for the OpTransactionHistory grid (from the column
+# rules and observed word positions). The serial-number and date cells both
+# start left of 117; only the dotted date is used as an anchor token.
+_OPH_DATE_MAX_X0 = 117.0
+_OPH_REMARKS_MAX_X0 = 388.0
+_OPH_WITHDRAWAL_MAX_X0 = 461.0
+_OPH_DEPOSIT_MAX_X0 = 532.0
+
+
+def _oph_column(x0: float) -> Column:
+    if x0 < _OPH_DATE_MAX_X0:
+        return "date"  # serial number + transaction date cell
+    if x0 < _OPH_REMARKS_MAX_X0:
+        return "particulars"  # cheque number + transaction remarks cell
+    if x0 < _OPH_WITHDRAWAL_MAX_X0:
+        return "withdrawal"
+    if x0 < _OPH_DEPOSIT_MAX_X0:
+        return "deposit"
+    return "balance"
+
+
+def _font_is_bold(fontname: Optional[str]) -> bool:
+    return bool(fontname) and bool(_BOLD_FONT_RE.search(fontname))
+
+
+def _parse_ophistory_page(page: Page) -> Optional[_PageParseResult]:
+    """Parse one page of the OpTransactionHistory layout, identified by its
+    "Remarks" column header. Returns None for any other page layout."""
+    words: List[Word] = cast(
+        List[Word],
+        page.extract_words(
+            use_text_flow=False, keep_blank_chars=False, extra_attrs=["fontname"]
+        ),
+    )
+    if not words:
+        return None
+    remarks_tops: List[float] = [w["top"] for w in words if w["text"] == "Remarks"]
+    if not remarks_tops:
+        return None
+    header_top: float = remarks_tops[0]
+
+    anchor_tops: List[float] = sorted(
+        {
+            round(w["top"], 1)
+            for w in words
+            if w["top"] > header_top
+            and _oph_column(w["x0"]) == "date"
+            and _DOTTED_DATE_RE.match(w["text"])
+        }
+    )
+    if not anchor_tops:
+        return None
+
+    # The last record's band has no next anchor; bound it with the first
+    # date-cell rule below it (when present) so that page-footer boilerplate
+    # stays out of the final description.
+    below_last: float = float(getattr(page, "height", 842.0))
+    for l in (getattr(page, "lines", None) or []):
+        if (
+            abs(l["y0"] - l["y1"]) < 0.5
+            and 40 < l["x0"] < 55
+            and l["x1"] < 130
+            and l["top"] > anchor_tops[-1] + _ROW_TOLERANCE
+        ):
+            below_last = min(below_last, l["top"])
+
+    account_number: Optional[str] = _find_section_account(words)
+
+    records: Dict[float, _RawRecord] = {}
+    serials: List[Optional[int]] = []
+    for i, top in enumerate(anchor_tops):
+        band_end: float = anchor_tops[i + 1] if i + 1 < len(anchor_tops) else below_last
+        band_words: List[Word] = [w for w in words if top <= w["top"] < band_end]
+
+        date_word: Optional[Word] = next(
+            (
+                w
+                for w in band_words
+                if _oph_column(w["x0"]) == "date" and _DOTTED_DATE_RE.match(w["text"])
+            ),
+            None,
+        )
+        if date_word is None:
+            continue
+
+        # Description words: regular-font words in the remarks/cheque column.
+        # Bold channel/category lines (the "first line of description") are
+        # deliberately excluded.
+        remark_words: List[Word] = [
+            w
+            for w in band_words
+            if _oph_column(w["x0"]) == "particulars" and not _font_is_bold(w.get("fontname"))
+        ]
+        lines_by_top: Dict[float, List[Word]] = defaultdict(list)
+        for w in remark_words:
+            lines_by_top[round(w["top"], 1)].append(w)
+        particulars_lines: Dict[float, str] = {
+            t: " ".join(ww["text"] for ww in sorted(ws, key=lambda ww: ww["x0"]))
+            for t, ws in lines_by_top.items()
+        }
+
+        serial_word: Optional[str] = next(
+            (w["text"] for w in band_words if w["x0"] < 47.0), None
+        )
+
+        # Amount columns: the deposit/balance cell boundaries drift slightly
+        # between pages (the balance value can sit a few points either side of
+        # the fixed x0 cut), so collect all amount-column words and assign by
+        # horizontal order instead of fixed bands: the rightmost amount is
+        # always the balance, the remaining one is the deposit/withdrawal.
+        amount_words: List[Word] = [
+            w
+            for w in band_words
+            if _oph_column(w["x0"]) in ("withdrawal", "deposit", "balance")
+        ]
+        amount_words.sort(key=lambda w: w["x0"])
+        deposit_raw: Optional[str] = None
+        withdrawal_raw: Optional[str] = None
+        balance_raw: Optional[str] = None
+        if len(amount_words) == 1:
+            balance_raw = amount_words[0]["text"]
+        elif len(amount_words) == 2:
+            balance_raw = amount_words[-1]["text"]
+            if amount_words[0]["x0"] < 455.0:
+                withdrawal_raw = amount_words[0]["text"]
+            else:
+                deposit_raw = amount_words[0]["text"]
+        elif len(amount_words) >= 3:
+            withdrawal_raw = amount_words[0]["text"]
+            deposit_raw = amount_words[1]["text"]
+            balance_raw = amount_words[2]["text"]
+
+        records[top] = _RawRecord(
+            date_raw=date_word["text"],
+            mode="",  # this layout has no MODE column; the bold category
+                      # label is excluded per the app's requirement
+            deposit_raw=deposit_raw,
+            withdrawal_raw=withdrawal_raw,
+            balance_raw=balance_raw,
+            particulars_lines=particulars_lines,
+        )
+        serials.append(int(serial_word) if serial_word and serial_word.isdigit() else None)
+
+    if not records:
+        return None
+
+    transactions: List[Transaction] = [
+        _record_to_transaction(records[top], account_number) for top in records
+    ]
+    return _PageParseResult(transactions=transactions, serials=serials)
 
 
 # ---------------------------------------------------------------------
@@ -634,6 +808,15 @@ def _extract_metadata(statement_text: str) -> Metadata:
             metadata["account_holder"] = (
                 f"{name_match.group(1).title()}.{name_match.group(2).strip().title()}"
             )
+            break
+
+        # Some templates print the name without a salutation prefix
+        # ("SUYASH MITTAL Your Base Branch: ...").
+        plain_match = re.match(
+            r"^([A-Z][A-Z.\s'-]{2,60}?)\s+Your\s+Base\s+Branch", line
+        )
+        if plain_match:
+            metadata["account_holder"] = plain_match.group(1).strip().title()
             break
 
     id_match = _CUSTOMER_ID_RE.search(statement_text)
@@ -727,12 +910,17 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         page_number: int
         page: Page
         final_printed: Optional[_PageParseResult] = None
+        oph_serials: List[Optional[int]] = []
         for page_number, page in enumerate(pdf.pages, start=1):
-            result: Optional[_PageParseResult] = _parse_page(page)
+            # The two table layouts are detected per page by their column
+            # headers ("PARTICULARS" vs "Remarks").
+            result: Optional[_PageParseResult] = _parse_page(page) or _parse_ophistory_page(page)
             if result is None or not result.transactions:
                 continue
 
             transactions.extend(result.transactions)
+            if result.serials:
+                oph_serials.extend(result.serials)
 
             page_deposit_sum: float = round(sum(t["deposit"] or 0.0 for t in result.transactions), 2)
             page_withdrawal_sum: float = round(
@@ -764,6 +952,24 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
                     f"page {page_number}: withdrawal subtotal mismatch "
                     f"(computed {page_withdrawal_sum}, printed {result.printed_withdrawal_total})"
                 )
+
+        if oph_serials:
+            expected: List[int] = list(range(1, len(oph_serials) + 1))
+            if oph_serials != expected:
+                mismatch: int = next(
+                    (i for i, (a, b) in enumerate(zip(oph_serials, expected)) if a != b),
+                    len(oph_serials),
+                )
+                if mismatch < len(expected):
+                    validation_errors.append(
+                        f"serial number sequence broken at record {mismatch + 1} "
+                        f"(parsed {oph_serials[mismatch]}, expected {expected[mismatch]})"
+                    )
+                else:
+                    validation_errors.append(
+                        f"serial number sequence truncated "
+                        f"({len(oph_serials)} records parsed, last serial {oph_serials[-1]})"
+                    )
 
         # The statement title (with the account number) only appears on the
         # first table page; later pages carry no title, so backfill the
