@@ -32,6 +32,28 @@ class IciciParseLineTests(unittest.TestCase):
         self.assertEqual(txn.type, "Debit")
         self.assertIsNone(txn.card_number)
 
+    def test_parses_line_without_reward_points(self):
+        # Pre-Feb-2023 template has no Reward Points column.
+        txn = _parse_line(
+            "18/12/2022 6963434489 GANGARAM FAMILY RESTAU BEGUSARAI IN 1,028.00",
+            None,
+        )
+        self.assertIsNotNone(txn)
+        self.assertEqual(txn.reward_points, 0)
+        self.assertEqual(txn.amount, 1028.00)
+        self.assertEqual(txn.type, "Debit")
+
+    def test_parses_credit_line_without_reward_points(self):
+        txn = _parse_line(
+            "26/12/2022 6988385507 UPI Payment Received 1,973.00 CR",
+            "4315XXXXXXXX9005",
+        )
+        self.assertIsNotNone(txn)
+        self.assertEqual(txn.reward_points, 0)
+        self.assertEqual(txn.amount, 1973.00)
+        self.assertEqual(txn.type, "Credit")
+        self.assertEqual(txn.card_number, "4315XXXXXXXX9005")
+
     def test_parses_credit_line_with_card_number(self):
         txn = _parse_line(
             "02/11/2024 10182675820 BBPS Payment received 0 1,40,439.00 CR",
@@ -226,6 +248,29 @@ class IciciExtractTransactionsTests(unittest.TestCase):
         self.assertEqual(result["transaction_count"], 2)
         self.assertEqual(result["transactions"][0]["card_number"], "4315XXXXXXXX9005")
         self.assertEqual(result["transactions"][0]["type"], "Debit")
+        self.assertEqual(result["transactions"][1]["type"], "Credit")
+
+    @mock.patch("statement_parser.icici_cc_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_cc_extractor.PdfReader")
+    def test_extracts_transactions_without_reward_points_column(self, mock_reader_cls, mock_open):
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+
+        pdf = mock.Mock()
+        pdf.pages = [
+            self._make_page(
+                "4315XXXXXXXX9005\n"
+                "18/12/2022 6963434489 GANGARAM FAMILY RESTAU BEGUSARAI IN 1,028.00\n"
+                "26/12/2022 6988385507 UPI Payment Received 1,973.00 CR\n"
+            ),
+        ]
+        mock_open.return_value.__enter__.return_value = pdf
+
+        result = extract_transactions("/tmp/x.pdf")
+
+        self.assertEqual(result["transaction_count"], 2)
+        self.assertEqual(result["transactions"][0]["reward_points"], 0)
         self.assertEqual(result["transactions"][1]["type"], "Credit")
 
     @mock.patch("statement_parser.icici_cc_extractor.pdfplumber.open")

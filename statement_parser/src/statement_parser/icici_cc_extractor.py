@@ -54,7 +54,9 @@ from pypdf import PdfReader
 #   22/10/2024 10120266708 Reversal of Fuel Surcharge 0 10.00 CR
 #   02/11/2024 10182675820 BBPS Payment received 0 1,40,439.00 CR
 # date | ser no. | description (can contain spaces/punctuation) |
-# reward points | amount | optional CR marker
+# reward points (OPTIONAL: absent on pre-Feb-2023 templates that lack
+# the Reward Points column, e.g. the Jan-2023 Amazon Pay statement) |
+# amount | optional CR marker
 #
 # NOTE: not anchored at the start of the line (only at the end). ICICI's
 # statement layout places a sidebar promo/offer column next to the
@@ -67,7 +69,7 @@ TXN_LINE_RE = re.compile(
     r"(?P<date>\d{2}/\d{2}/\d{4})\s+"
     r"(?P<ser_no>\d+)\s+"
     r"(?P<description>.+?)\s+"
-    r"(?P<reward_points>\d+)\s+"
+    r"(?:(?P<reward_points>\d+)\s+)?"
     r"(?P<amount>[\d,]+\.\d{2})"
     r"(?:\s+(?P<crdr>CR))?$"
 )
@@ -133,7 +135,7 @@ def _parse_line(line: str, current_card: Optional[str]) -> Optional[Transaction]
         date=match.group("date"),
         ser_no=match.group("ser_no"),
         description=" ".join(match.group("description").split()),
-        reward_points=int(match.group("reward_points")),
+        reward_points=int(match.group("reward_points") or 0),
         amount=amount,
         type="Credit" if is_credit else "Debit",
         card_number=current_card,
