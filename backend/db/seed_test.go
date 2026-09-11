@@ -84,40 +84,16 @@ func TestSeedAccountTypes(t *testing.T) {
 	mock := setupMock(t)
 
 	mock.ExpectExec("INSERT INTO account_types").
-			WithArgs("bank", "Bank Account", "credit").
-			WillReturnResult(pgxmock.NewResult("INSERT", 1))
-		mock.ExpectExec("INSERT INTO account_types").
-			WithArgs("credit_card", "Credit Card", "credit").
-			WillReturnResult(pgxmock.NewResult("INSERT", 1))
-		mock.ExpectExec("INSERT INTO account_types").
-			WithArgs("loan", "Loan / EMI", "debit").
-			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		WithArgs("bank", "Bank Account", "credit").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO account_types").
+		WithArgs("credit_card", "Credit Card", "credit").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO account_types").
+		WithArgs("loan", "Loan / EMI", "debit").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	SeedAccountTypes()
-
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestPromoteAdminUsers(t *testing.T) {
-	mock := setupMock(t)
-
-	mock.ExpectExec("UPDATE users SET role = 'admin'").
-		WithArgs("admin@example.com").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE users SET role = 'admin'").
-		WithArgs("owner@example.com").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	PromoteAdminUsers([]string{"admin@example.com", "owner@example.com"})
-
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestPromoteAdminUsersEmptyListIsNoop(t *testing.T) {
-	mock := setupMock(t)
-
-	PromoteAdminUsers(nil)
-	PromoteAdminUsers([]string{"", "  "})
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

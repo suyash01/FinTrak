@@ -43,7 +43,6 @@ func main() {
 	db.RunMigrations(cfg.DatabaseURL)
 	db.SeedAccountTypes()
 	db.SeedCategoryGroups()
-	db.PromoteAdminUsers(cfg.AdminEmails)
 
 	// Setup Gin
 	r := setupRouter(cfg)

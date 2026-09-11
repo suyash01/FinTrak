@@ -540,15 +540,42 @@ func TestDeleteLink(t *testing.T) {
 	toID := uuid.New()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT from_txn_id, to_txn_id FROM links WHERE id").
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id").
 		WithArgs(linkID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"from_txn_id", "to_txn_id"}).AddRow(fromID, toID))
+		WillReturnRows(pgxmock.NewRows([]string{"type", "from_txn_id", "to_txn_id"}).AddRow("transfer", fromID, toID))
 	mock.ExpectExec("DELETE FROM links WHERE id").
 		WithArgs(linkID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec("UPDATE transactions").
 		WithArgs([]uuid.UUID{fromID, toID}, userID, linkID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest("DELETE", "/links/"+linkID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDeleteLinkNonTransferKeepsCategory(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.DELETE("/links/:id", DeleteLink)
+
+	userID := testUserID()
+	linkID := uuid.New()
+	fromID := uuid.New()
+	toID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id").
+		WithArgs(linkID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"type", "from_txn_id", "to_txn_id"}).AddRow("cashback", fromID, toID))
+	mock.ExpectExec("DELETE FROM links WHERE id").
+		WithArgs(linkID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	// No UPDATE expected: non-transfer links leave category/payee intact.
 	mock.ExpectCommit()
 
 	req, _ := http.NewRequest("DELETE", "/links/"+linkID.String(), nil)
@@ -567,7 +594,7 @@ func TestDeleteLinkNotFound(t *testing.T) {
 	linkID := uuid.New()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT from_txn_id, to_txn_id FROM links WHERE id").
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id").
 		WithArgs(linkID, userID).
 		WillReturnError(pgx.ErrNoRows)
 
@@ -604,16 +631,50 @@ func TestBulkDeleteLinks(t *testing.T) {
 	reqBody := models.BulkDeleteLinksRequest{IDs: []uuid.UUID{linkID1, linkID2}}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT from_txn_id, to_txn_id FROM links WHERE id = ANY").
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id = ANY").
 		WithArgs([]uuid.UUID{linkID1, linkID2}, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"from_txn_id", "to_txn_id"}).
-			AddRow(fromID, toID))
+		WillReturnRows(pgxmock.NewRows([]string{"type", "from_txn_id", "to_txn_id"}).
+			AddRow("transfer", fromID, toID))
 	mock.ExpectExec("DELETE FROM links WHERE id = ANY").
 		WithArgs([]uuid.UUID{linkID1, linkID2}, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 2))
 	mock.ExpectExec("UPDATE transactions SET category_id = NULL").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/links/bulk-delete", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"deletedCount":2`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBulkDeleteLinksNonTransferKeepsCategory(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", BulkDeleteLinks)
+
+	userID := testUserID()
+	linkID1 := uuid.New()
+	linkID2 := uuid.New()
+	fromID := uuid.New()
+	toID := uuid.New()
+
+	reqBody := models.BulkDeleteLinksRequest{IDs: []uuid.UUID{linkID1, linkID2}}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id = ANY").
+		WithArgs([]uuid.UUID{linkID1, linkID2}, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"type", "from_txn_id", "to_txn_id"}).
+			AddRow("refund", fromID, toID))
+	mock.ExpectExec("DELETE FROM links WHERE id = ANY").
+		WithArgs([]uuid.UUID{linkID1, linkID2}, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 2))
+	// No UPDATE expected: non-transfer links leave category/payee intact.
 	mock.ExpectCommit()
 
 	body, _ := json.Marshal(reqBody)

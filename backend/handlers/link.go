@@ -323,8 +323,11 @@ func BulkCreateLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"createdCount": createdCount})
 }
 
-// DeleteLink removes a link and clears the transfer-derived category/payee from
-// its two transactions — but only when no other link still references them.
+// DeleteLink removes a link. If the link was a transfer, it also clears the
+// transfer-derived category/payee from its two transactions — but only when no
+// other link still references them. Non-transfer links (cashback, refund,
+// bill_payment) never touched category/payee, so deleting them leaves the
+// user's own categorization intact.
 func DeleteLink(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -340,9 +343,11 @@ func DeleteLink(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
-	// Get associated transactions
+	// Get associated transactions and the link type: only transfers mutate
+	// category/payee, so only those are reset on delete.
+	var linkType string
 	var fromTxnID, toTxnID uuid.UUID
-	err = tx.QueryRow(c, "SELECT from_txn_id, to_txn_id FROM links WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c)).Scan(&fromTxnID, &toTxnID)
+	err = tx.QueryRow(c, "SELECT type, from_txn_id, to_txn_id FROM links WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c)).Scan(&linkType, &fromTxnID, &toTxnID)
 	if err != nil {
 		slog.Error("looking up link in DeleteLink", "error", err)
 		validation.RespondError(c, "link not found", http.StatusNotFound)
@@ -357,23 +362,26 @@ func DeleteLink(c *gin.Context) {
 		return
 	}
 
-	// Clear category and payee for both transactions, but only if no other
-	// link still references them (a txn may belong to multiple links).
-	_, err = tx.Exec(c, `
-		UPDATE transactions 
-		SET category_id = NULL, payee_id = NULL 
-		WHERE id = ANY($1) AND user_id = $2
-		  AND NOT EXISTS (
-		      SELECT 1 FROM links l2 
-		      WHERE (l2.from_txn_id = transactions.id OR l2.to_txn_id = transactions.id)
-		        AND l2.id != $3
-		  )`,
-		[]uuid.UUID{fromTxnID, toTxnID}, auth.GetUserID(c), id,
-	)
-	if err != nil {
-		slog.Error("resetting transactions in DeleteLink", "error", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
+	// Clear category and payee for both transactions, but only for transfers
+	// and only if no other link still references them (a txn may belong to
+	// multiple links).
+	if linkType == "transfer" {
+		_, err = tx.Exec(c, `
+			UPDATE transactions 
+			SET category_id = NULL, payee_id = NULL 
+			WHERE id = ANY($1) AND user_id = $2
+			  AND NOT EXISTS (
+			      SELECT 1 FROM links l2 
+			      WHERE (l2.from_txn_id = transactions.id OR l2.to_txn_id = transactions.id)
+			        AND l2.id != $3
+			  )`,
+			[]uuid.UUID{fromTxnID, toTxnID}, auth.GetUserID(c), id,
+		)
+		if err != nil {
+			slog.Error("resetting transactions in DeleteLink", "error", err)
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err := tx.Commit(c); err != nil {
@@ -385,8 +393,10 @@ func DeleteLink(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
-// BulkDeleteLinks removes many links at once and resets the transfer-derived
-// category/payee on any transaction no longer referenced by a remaining link.
+// BulkDeleteLinks removes many links at once. For the transfer links among
+// them, it resets the transfer-derived category/payee on any transaction no
+// longer referenced by a remaining link. Non-transfer links are deleted without
+// touching the user's own category/payee.
 func BulkDeleteLinks(c *gin.Context) {
 	var req models.BulkDeleteLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -410,8 +420,10 @@ func BulkDeleteLinks(c *gin.Context) {
 	}
 	defer tx.Rollback(c)
 
-	// Get all associated transaction IDs before deleting links
-	rows, err := tx.Query(c, "SELECT from_txn_id, to_txn_id FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
+	// Collect the transactions of the transfer links being deleted. Only
+	// transfers mutate category/payee, so non-transfer links contribute no
+	// transaction IDs to reset.
+	rows, err := tx.Query(c, "SELECT type, from_txn_id, to_txn_id FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("querying links in BulkDeleteLinks", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -421,12 +433,15 @@ func BulkDeleteLinks(c *gin.Context) {
 
 	txnIDs := []uuid.UUID{}
 	for rows.Next() {
+		var linkType string
 		var fromID, toID uuid.UUID
-		if err := rows.Scan(&fromID, &toID); err != nil {
+		if err := rows.Scan(&linkType, &fromID, &toID); err != nil {
 			slog.Error("scanning link row in BulkDeleteLinks", "error", err)
 			continue
 		}
-		txnIDs = append(txnIDs, fromID, toID)
+		if linkType == "transfer" {
+			txnIDs = append(txnIDs, fromID, toID)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("iterating links in BulkDeleteLinks", "error", err)

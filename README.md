@@ -83,6 +83,8 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod-no-db.yml up -d
 ```
 
+`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, and `LOG_LEVEL` are optional (log level defaults to `info` in production). See `.env.example` for the full list.
+
 The backend runs schema migrations on startup, and the frontend reverse-proxies `/api/v1` to the backend.
 
 ---
@@ -116,7 +118,7 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 
 The backend exposes a RESTful API under `/api/v1`:
 
-- `POST /auth/register`: Create an account (returns a JWT). Body: `{ email, password, setupToken? }`. Emails are stored lowercase. Regular registrations get the `user` role. An email listed in `ADMIN_EMAILS` is a reserved identity: registering it grants `admin` only when `setupToken` matches the `ADMIN_SETUP_TOKEN` environment variable, otherwise the request is refused (403) — an unverified registrant can neither self-promote nor squat the address. Alternative: register a normal account, add its email to `ADMIN_EMAILS`, and restart the backend (existing users are promoted at startup).
+- `POST /auth/register`: Create an account (returns a JWT). Body: `{ email, password, setupToken? }`. Emails are stored lowercase. Regular registrations get the `user` role. An email listed in `ADMIN_EMAILS` is a reserved identity: registering it grants `admin` only when `setupToken` matches the `ADMIN_SETUP_TOKEN` environment variable, otherwise the request is refused (403) — an unverified registrant can neither self-promote nor squat the address. This is the **only** path to the `admin` role: existing accounts are never promoted automatically, so an operator must grant it deliberately (self-register the admin email with the setup token, or update `users.role` directly).
 - `POST /auth/login`: Sign in (returns a JWT).
 - `GET /accounts`: List all financial accounts. Accounts carry an `isDefault` flag and an optional `billingDay` (1-31, clamped to the month length; `null` when unset); the single default account (per user) is used to pre-fill account filters across the app (except the import screen).
 - `GET /accounts/:id/billing-cycles`: List the billing cycles for an account with a `billingDay` set, auto-generating any missing cycles first (one per month, ending on the account's `billingDay`; changing the day regenerates the cycles). Each cycle carries `{ id, accountId, startDate, endDate, label, totalOutstanding, transactionCount }` where `totalOutstanding` is the account's running balance at the cycle's end date — all debits minus all credits (purchases, payments, refunds, cashbacks) posted up to that date. Accounts without a billing day return an empty list — cycles are never generated for them.

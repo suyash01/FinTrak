@@ -412,10 +412,12 @@ func TestImportPaperlessDocumentUnconfigured(t *testing.T) {
 func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 
+	// A compromised Paperless instance could serve HTML with attacker script;
+	// the proxy must pin the content type and harden the response.
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
 		assert.Equal(t, "/api/documents/42/download/", r.URL.Path)
-		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte("%PDF-1.4 fake content"))
 	}))
 	defer paperless.Close()
@@ -427,6 +429,8 @@ func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "application/pdf", w.Header().Get("Content-Type"))
+	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, `inline; filename="42.pdf"`, w.Header().Get("Content-Disposition"))
 	assert.Equal(t, "%PDF-1.4 fake content", w.Body.String())
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

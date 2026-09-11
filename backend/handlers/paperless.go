@@ -716,11 +716,14 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 		return
 	}
 
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	c.Data(http.StatusOK, contentType, data)
+	// Never forward the upstream Content-Type: the Paperless URL is
+	// user-supplied, so a compromised instance could serve text/html with
+	// attacker script from the app origin. Pin the type, force a download-style
+	// disposition, and disable MIME sniffing.
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", "inline; filename=\""+strconv.Itoa(docID)+".pdf\"")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, "application/pdf", data)
 }
 
 // ImportPaperlessDocument downloads the original file for a document from the

@@ -9,10 +9,18 @@
 #   POSTGRES_PASSWORD - Database password
 #   DATABASE_URL      - Full connection string (e.g. postgres://user:pass@db:5432/dbname?sslmode=disable)
 #   JWT_SECRET        - Secret used to sign auth tokens (set a long random value)
+#   TOKEN_ENCRYPTION_KEY - Key used to encrypt Paperless tokens at rest (required
+#                       when APP_ENV=production; backend refuses to start without it)
 #
 # Optional:
 #   ALLOWED_ORIGINS - Comma-separated list of allowed CORS origins
 #                     (default: http://localhost:3000,http://127.0.0.1:3000)
+#   ADMIN_EMAILS    - Comma-separated admin email allowlist. While empty, no
+#                     email is reserved as an admin identity.
+#   ADMIN_SETUP_TOKEN - Shared secret letting an admin-listed email self-register
+#                     with the 'admin' role. Empty disables admin self-registration
+#                     entirely.
+#   LOG_LEVEL       - debug|info|warn|error (default: info in production)
 #   IMAGE_REPO      - Registry prefix (default: ghcr.io/suyash01)
 #   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
 #                     version (e.g. v1.2.3) for reproducible deployments.
