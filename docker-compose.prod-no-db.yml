@@ -5,6 +5,10 @@
 # for docker-compose.prod.yml, which extends it with a bundled PostgreSQL
 # database service.
 #
+# Only the frontend (3000) and backend (8080) are published to the host. The
+# unauthenticated statement-parser is reachable solely on the internal Docker
+# network.
+#
 # Required environment variables (set in .env or export):
 #   DATABASE_URL          - Full connection string to an external database
 #   JWT_SECRET            - Secret used to sign auth tokens (set a long random value)
@@ -49,6 +53,17 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     networks:
       - app-net
@@ -61,15 +76,37 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     networks:
       - app-net
 
+  # Internal only: the parser is unauthenticated and parses arbitrary uploads,
+  # so it must never be published to the host.
   statement-parser:
     container_name: statement-parser
     image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-statement-parser:${IMAGE_TAG:-latest}
-    ports:
-      - "5000:5000"
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     networks:
       - app-net

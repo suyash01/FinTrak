@@ -4,9 +4,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
@@ -22,9 +28,23 @@ import (
 // Falls back to a dev version for local builds.
 var Version = "0.1.0-alpha"
 
+// HTTP server timeouts. ReadHeaderTimeout is the primary slowloris defense;
+// the others bound body reads, response writes, and idle keep-alive conns.
+// WriteTimeout is generous because statement parsing proxies to an upstream
+// service that can take up to ~60s.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 60 * time.Second
+	writeTimeout      = 120 * time.Second
+	idleTimeout       = 120 * time.Second
+	shutdownTimeout   = 15 * time.Second
+)
+
 // main boots the FinTrak API: it initializes request validation, loads
 // configuration, connects to the database (applying migrations and seeders),
-// and finally starts the HTTP server on the configured port.
+// and finally starts the HTTP server on the configured port. It shuts down
+// gracefully on SIGINT/SIGTERM so in-flight requests drain and the database
+// connection is closed.
 func main() {
 	validation.Init()
 
@@ -48,9 +68,39 @@ func main() {
 	r := setupRouter(cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	slog.Info("FinTrak API starting", "version", Version, "env", cfg.Env, "addr", addr)
-	if err := r.Run(addr); err != nil {
-		slog.Error("server exited", "error", err)
+	srv := newServer(addr, r)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		slog.Info("FinTrak API starting", "version", Version, "env", cfg.Env, "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server exited", "error", err)
+			stop()
+		}
+	}()
+
+	<-ctx.Done()
+	slog.Info("shutting down FinTrak API")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown", "error", err)
+	}
+}
+
+// newServer returns an http.Server with production timeouts applied. It is
+// extracted from main so the timeout policy is explicit and testable.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 
@@ -69,6 +119,11 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		)
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}))
+
+	// Conservative security headers. nginx owns the SPA's CSP; these cover API
+	// responses (including proxied Paperless content) so a compromised upstream
+	// can never have the browser sniff or frame it.
+	r.Use(securityHeaders())
 
 	// Structured request logging. Emits an access line for every request and,
 	// at debug level (development), captures and logs request/response bodies.
@@ -91,20 +146,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		c.Next()
 	})
 
-	// CORS
-	r.Use(cors.New(cors.Config{
-		AllowOriginFunc: func(origin string) bool {
-			for _, o := range cfg.AllowedOrigins {
-				if o == "*" || o == origin {
-					return true
-				}
-			}
-			return false
-		},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
-		AllowCredentials: true,
-	}))
+	// CORS. A wildcard origin is incompatible with credentialed requests, so
+	// buildCORSConfig disables credentials whenever "*" is configured.
+	r.Use(cors.New(buildCORSConfig(cfg.AllowedOrigins)))
 
 	// API Routes
 	api := r.Group("/api/v1")
@@ -209,4 +253,44 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	}
 
 	return r
+}
+
+// securityHeaders sets conservative security headers on every response.
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+		c.Next()
+	}
+}
+
+// buildCORSConfig returns the CORS middleware configuration for the allowed
+// origins. Access-Control-Allow-Credentials must never be combined with a
+// wildcard origin (browsers reject the pair, and reflecting arbitrary origins
+// with credentials would let any site make authenticated requests), so
+// credentials are disabled whenever "*" appears in origins.
+func buildCORSConfig(origins []string) cors.Config {
+	allowCredentials := true
+	for _, o := range origins {
+		if o == "*" {
+			allowCredentials = false
+			break
+		}
+	}
+
+	return cors.Config{
+		AllowOriginFunc: func(origin string) bool {
+			for _, o := range origins {
+				if o == "*" || o == origin {
+					return true
+				}
+			}
+			return false
+		},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
+		AllowCredentials: allowCredentials,
+	}
 }

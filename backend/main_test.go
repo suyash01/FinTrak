@@ -132,6 +132,60 @@ func TestCORSRejectsUnknownOrigin(t *testing.T) {
 	assert.Empty(t, w.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestCORSWildcardDisablesCredentials(t *testing.T) {
+	r := testRouter() // testRouter configures a "*" origin
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req.Header.Set("Origin", "https://anything.example.com")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Header().Get("Access-Control-Allow-Credentials"))
+}
+
+func TestCORSConfiguredOriginAllowsCredentials(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := setupRouter(&config.Config{
+		DatabaseURL:    "postgres://test",
+		Port:           "8080",
+		AllowedOrigins: []string{"http://localhost:5173"},
+		JWTSecret:      "test-secret",
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"))
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	r := testRouter()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
+	assert.Equal(t, "no-referrer", w.Header().Get("Referrer-Policy"))
+	assert.NotEmpty(t, w.Header().Get("Content-Security-Policy"))
+}
+
+func TestNewServerTimeouts(t *testing.T) {
+	srv := newServer(":0", http.NewServeMux())
+
+	assert.Equal(t, readHeaderTimeout, srv.ReadHeaderTimeout)
+	assert.Equal(t, readTimeout, srv.ReadTimeout)
+	assert.Equal(t, writeTimeout, srv.WriteTimeout)
+	assert.Equal(t, idleTimeout, srv.IdleTimeout)
+}
+
+
 func TestRouterRegistersExpectedRoutes(t *testing.T) {
 	r := testRouter()
 
