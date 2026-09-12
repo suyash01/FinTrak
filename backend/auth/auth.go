@@ -19,8 +19,14 @@ import (
 const (
 	ctxUserIDKey   = "userID"
 	ctxUserRoleKey = "userRole"
-	// tokenTTL is how long an issued JWT stays valid.
-	tokenTTL = 24 * time.Hour
+	// tokenTTL is how long an issued JWT stays valid. Kept short because the
+	// role is embedded in the token and cannot be revoked before it expires.
+	tokenTTL = 2 * time.Hour
+	// tokenIssuer and tokenAudience are validated on every request so tokens
+	// minted for another service (or with the same secret but different intent)
+	// are rejected.
+	tokenIssuer   = "fintrak"
+	tokenAudience = "fintrak-api"
 )
 
 // Claims is the JWT payload for FinTrak tokens: the user ID, role, and standard
@@ -44,11 +50,18 @@ func CheckPassword(hash, password string) bool {
 
 // GenerateToken signs an HS256 JWT for the given user and role using the secret.
 func GenerateToken(userID uuid.UUID, role, secret string) (string, error) {
+	now := time.Now()
 	claims := Claims{
-		UserID:    userID,
-		Role:      role,
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
-		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		UserID: userID,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    tokenIssuer,
+			Subject:   userID.String(),
+			Audience:  jwt.ClaimStrings{tokenAudience},
+			ID:        uuid.NewString(),
+			ExpiresAt: jwt.NewNumericDate(now.Add(tokenTTL)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
@@ -74,7 +87,11 @@ func RequireAuth(secret string) gin.HandlerFunc {
 				return nil, errors.New("unexpected signing method")
 			}
 			return []byte(secret), nil
-		})
+		},
+			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+			jwt.WithIssuer(tokenIssuer),
+			jwt.WithAudience(tokenAudience),
+		)
 		if err != nil || !token.Valid {
 			validation.RespondAuthError(c, "invalid or expired token")
 			return

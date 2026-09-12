@@ -253,16 +253,20 @@ type PaperlessImportRequest struct {
 // ADMIN_EMAILS the registration is refused unless it is present and correct,
 // so the admin role can only be self-assigned with proof of privileged access
 // and admin-listed addresses can't be squatted by an unverified registrant.
+// The password must be at least 12 characters and at most 72 bytes (bcrypt's
+// input limit; the maxbytes tag measures bytes, not characters).
 type RegisterRequest struct {
 	Email      string `json:"email" binding:"required,email"`
-	Password   string `json:"password" binding:"required,min=6"`
+	Password   string `json:"password" binding:"required,min=12,maxbytes=72"`
 	SetupToken string `json:"setupToken"`
 }
 
-// LoginRequest is the body for POST /api/v1/auth/login.
+// LoginRequest is the body for POST /api/v1/auth/login. It intentionally does
+// not enforce a minimum length: accounts created under an older, weaker policy
+// must still be able to sign in. The 72-byte cap mirrors bcrypt's limit.
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required,maxbytes=72"`
 }
 
 // AuthResponse is returned by the register and login endpoints.

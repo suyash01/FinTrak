@@ -999,7 +999,7 @@ func ImportTransactions(c *gin.Context) {
 	// context outlives the request; tagPaperlessDocuments applies its own
 	// overall timeout and bounded concurrency.
 	if len(req.PaperlessDocumentIDs) > 0 {
-		go tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, c.GetString("tokenEncryptionKey"))
+		go tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, c.GetString("tokenEncryptionKey"), c.GetString("appEnv"))
 	}
 
 	c.JSON(http.StatusOK, gin.H{

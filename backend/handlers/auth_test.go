@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/ratelimit"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/time/rate"
 )
 
 const testJWTSecret = "test-secret"
@@ -44,7 +48,7 @@ func TestRegister(t *testing.T) {
 	r.POST("/auth/register", Register)
 
 	userID := uuid.New()
-	reqBody := models.RegisterRequest{Email: "test@example.com", Password: "password123"}
+	reqBody := models.RegisterRequest{Email: "test@example.com", Password: "password1234"}
 
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
@@ -77,6 +81,72 @@ func TestRegister(t *testing.T) {
 	assert.Equal(t, reqBody.Email, res.User.Email)
 	assert.Equal(t, "user", res.User.Role)
 
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRegisterRejectsWeakPassword(t *testing.T) {
+	r := newAuthTestRouter()
+	r.POST("/auth/register", Register)
+
+	post := func(password string) *httptest.ResponseRecorder {
+		reqBody := models.RegisterRequest{Email: "weak@example.com", Password: password}
+		jsonBody, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("too short", func(t *testing.T) {
+		w := post("short")
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "at least 12")
+	})
+
+	t.Run("too many bytes", func(t *testing.T) {
+		w := post(strings.Repeat("a", 73))
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "at most 72 bytes")
+	})
+}
+
+func TestLoginAllowsLegacyShortPassword(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newAuthTestRouter()
+	r.POST("/auth/login", Login)
+
+	userID := uuid.New()
+	// A 6-character password predates the stronger registration policy; login
+	// must not reject it at the binding layer.
+	password := "abcdef"
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqBody := models.LoginRequest{Email: "legacy@example.com", Password: password}
+	mock.ExpectQuery("SELECT id, email, password_hash, role FROM users").
+		WithArgs(reqBody.Email).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
+			AddRow(userID, reqBody.Email, hash, "user"))
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -126,7 +196,7 @@ func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 			// Mixed-case admin email: normalized to lowercase before the
 			// allowlist check, so the token gate applies to the identity, not
 			// the exact string.
-			reqBody := models.RegisterRequest{Email: "ADMIN@example.com", Password: "password123", SetupToken: setupToken}
+			reqBody := models.RegisterRequest{Email: "ADMIN@example.com", Password: "password1234", SetupToken: setupToken}
 			jsonBody, _ := json.Marshal(reqBody)
 			req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
 			req.Header.Set("Content-Type", "application/json")
@@ -173,7 +243,7 @@ func TestRegisterAdminEmailWithoutConfiguredToken(t *testing.T) {
 	})
 	r.POST("/auth/register", Register)
 
-	reqBody := models.RegisterRequest{Email: "admin@example.com", Password: "password123", SetupToken: "anything"}
+	reqBody := models.RegisterRequest{Email: "admin@example.com", Password: "password1234", SetupToken: "anything"}
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -202,7 +272,7 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	// Mixed-case input is normalized to lowercase before the INSERT, so the
 	// case-sensitive UNIQUE constraint on users.email rejects a case-variant
 	// duplicate the same way it rejects an identical one (23505 -> 409).
-	reqBody := models.RegisterRequest{Email: "DUP@example.com", Password: "password123"}
+	reqBody := models.RegisterRequest{Email: "DUP@example.com", Password: "password1234"}
 
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs("dup@example.com", pgxmock.AnyArg(), "user").
@@ -235,7 +305,7 @@ func TestLogin(t *testing.T) {
 	r.POST("/auth/login", Login)
 
 	userID := uuid.New()
-	password := "password123"
+	password := "password1234"
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +351,7 @@ func TestLoginNormalizesEmail(t *testing.T) {
 	r.POST("/auth/login", Login)
 
 	userID := uuid.New()
-	password := "password123"
+	password := "password1234"
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatal(err)
@@ -340,6 +410,50 @@ func TestLoginInvalidPassword(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoginRateLimited(t *testing.T) {
+	// A zero-refill, single-token bucket means the second request from the same
+	// IP is rejected before it reaches the database.
+	SetAuthRateLimiter(ratelimit.New(ratelimit.Config{Rate: rate.Limit(0), Burst: 1, TTL: time.Minute}))
+	t.Cleanup(func() { SetAuthRateLimiter(nil) })
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	r := newAuthTestRouter()
+	r.POST("/auth/login", Login)
+
+	reqBody := models.LoginRequest{Email: "limited@example.com", Password: "whatever"}
+	jsonBody, _ := json.Marshal(reqBody)
+
+	// First attempt is allowed through to the (empty) user lookup.
+	mock.ExpectQuery("SELECT id, email, password_hash, role FROM users").
+		WithArgs(reqBody.Email).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}))
+
+	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	// Second attempt is throttled; no further DB query is expected.
+	req, _ = http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Equal(t, "30", w.Header().Get("Retry-After"))
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

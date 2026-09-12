@@ -65,6 +65,8 @@ func message(fe validator.FieldError) string {
 		return fmt.Sprintf("%s must be at least %s characters", fe.Field(), fe.Param())
 	case "max":
 		return fmt.Sprintf("%s must be at most %s characters", fe.Field(), fe.Param())
+	case "maxbytes":
+		return fmt.Sprintf("%s must be at most %s bytes", fe.Field(), fe.Param())
 	case "oneof":
 		return fmt.Sprintf("%s must be one of [%s]", fe.Field(), fe.Param())
 	default:

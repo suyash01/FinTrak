@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -61,6 +62,11 @@ func TestGenerateToken(t *testing.T) {
 	assert.NotNil(t, claims.ExpiresAt)
 	assert.NotNil(t, claims.IssuedAt)
 	assert.True(t, claims.ExpiresAt.After(claims.IssuedAt.Time))
+	assert.Equal(t, tokenIssuer, claims.Issuer)
+	assert.Equal(t, jwt.ClaimStrings{tokenAudience}, claims.Audience)
+	assert.Equal(t, userID.String(), claims.Subject)
+	assert.NotEmpty(t, claims.ID)
+	assert.WithinDuration(t, time.Now().Add(tokenTTL), claims.ExpiresAt.Time, time.Minute)
 }
 
 func TestRequireAuth(t *testing.T) {
@@ -118,6 +124,42 @@ func TestRequireAuth(t *testing.T) {
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 		assert.Contains(t, w.Body.String(), "invalid or expired token")
+	})
+
+	sign := func(issuer string, audience jwt.ClaimStrings) string {
+		now := time.Now()
+		claims := Claims{
+			UserID: uuid.New(),
+			Role:   "user",
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    issuer,
+				Audience:  audience,
+				ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+				IssuedAt:  jwt.NewNumericDate(now),
+			},
+		}
+		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		signed, err := tok.SignedString([]byte(testSecret))
+		require.NoError(t, err)
+		return signed
+	}
+
+	t.Run("wrong issuer", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+sign("not-fintrak", jwt.ClaimStrings{tokenAudience}))
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("wrong audience", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+sign(tokenIssuer, jwt.ClaimStrings{"other-api"}))
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
 	})
 
 	t.Run("malformed token", func(t *testing.T) {

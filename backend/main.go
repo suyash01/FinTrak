@@ -19,6 +19,7 @@ import (
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/handlers"
 	"github.com/fintrak/backend/internal/logger"
+	"github.com/fintrak/backend/internal/ratelimit"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -67,11 +68,17 @@ func main() {
 	// Setup Gin
 	r := setupRouter(cfg)
 
+	// Throttle unauthenticated auth endpoints (per-IP and per-account).
+	authLimiter := ratelimit.New(ratelimit.DefaultConfig())
+	handlers.SetAuthRateLimiter(authLimiter)
+
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := newServer(addr, r)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go authLimiter.StartJanitor(ctx.Done(), 0)
 
 	go func() {
 		slog.Info("FinTrak API starting", "version", Version, "env", cfg.Env, "addr", addr)

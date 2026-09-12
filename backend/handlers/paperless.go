@@ -184,15 +184,27 @@ func validatePaperlessURL(raw string) error {
 }
 
 // paperlessClient builds an HTTP client for the user's Paperless-ngx instance
-// that refuses to follow redirects leaving the configured origin.
-func paperlessClient(s models.UserSettings) (*http.Client, error) {
+// that refuses to follow redirects leaving the configured origin and dials only
+// addresses vetted by isDisallowedPaperlessIP. Resolving and dialing inside the
+// custom DialContext closes the DNS-rebinding (TOCTOU) gap that would exist if
+// validation and connection happened as separate lookups.
+func paperlessClient(s models.UserSettings, appEnv string) (*http.Client, error) {
 	origin, err := paperlessOrigin(s)
 	if err != nil {
 		return nil, err
 	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           paperlessDialContext(appEnv),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &http.Client{
 		Timeout:   paperlessClientTimeout,
-		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
+		Transport: logger.LoggingRoundTripper(transport, slog.Default()),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme+"://"+req.URL.Host != origin {
 				return http.ErrUseLastResponse
@@ -202,27 +214,114 @@ func paperlessClient(s models.UserSettings) (*http.Client, error) {
 	}, nil
 }
 
-// validatePaperlessHost enforces SSRF boundaries in production: HTTPS is
-// required and the configured host must not resolve to a loopback, private,
-// link-local, multicast, or unspecified address.
-func validatePaperlessHost(ctx context.Context, s models.UserSettings, appEnv string) error {
-	if appEnv != "production" {
-		return nil
+// paperlessAllowedPort reports whether a Paperless URL may use the given port.
+// Restricting production traffic to the standard web ports stops a user-supplied
+// URL from reaching arbitrary internal services (databases, caches, admin
+// endpoints) on non-web ports.
+func paperlessAllowedPort(port string) bool {
+	return port == "80" || port == "443"
+}
+
+// isDisallowedPaperlessIP reports whether ip is outside the public Internet.
+// allowPrivate (true outside production, so a locally-hosted Paperless remains
+// reachable) permits loopback and RFC1918/ULA addresses. Unspecified,
+// multicast, link-local (including cloud metadata endpoints), and CGNAT
+// addresses are never permitted.
+func isDisallowedPaperlessIP(ip net.IP, allowPrivate bool) bool {
+	if ip == nil {
+		return true
 	}
+	// Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) so the IPv4 range
+	// checks below apply to it.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsUnspecified() || ip.IsMulticast() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || isCGNAT(ip) {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return !allowPrivate
+	}
+	return false
+}
+
+// isCGNAT reports whether ip is in 100.64.0.0/10 (carrier-grade NAT), which is
+// not covered by net.IP.IsPrivate.
+func isCGNAT(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
+}
+
+// paperlessDialContext returns a net.Dialer-style function that resolves the
+// target hostname, rejects disallowed addresses, and connects to the validated
+// IP directly.
+func paperlessDialContext(appEnv string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	allowPrivate := appEnv != "production"
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if !allowPrivate && !paperlessAllowedPort(port) {
+			return nil, fmt.Errorf("paperless port %q is not allowed", port)
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve paperless host: %w", err)
+		}
+		var lastErr error
+		for _, ipAddr := range ips {
+			if isDisallowedPaperlessIP(ipAddr.IP, allowPrivate) {
+				lastErr = fmt.Errorf("paperless host resolves to a disallowed address %s", ipAddr.IP)
+				continue
+			}
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr == nil {
+			lastErr = errors.New("paperless host has no usable address")
+		}
+		return nil, lastErr
+	}
+}
+
+// validatePaperlessHost rejects obviously unsafe Paperless URLs before any
+// request is made: production requires HTTPS and a standard web port, and the
+// configured host must not resolve to a disallowed address. The custom
+// DialContext re-checks the concrete IP at connect time, so this pre-check is a
+// fast-fail courtesy rather than the security boundary.
+func validatePaperlessHost(ctx context.Context, s models.UserSettings, appEnv string) error {
 	u, err := url.Parse(paperlessBase(s))
 	if err != nil {
 		return err
 	}
-	if u.Scheme != "https" {
-		return errors.New("paperless URL must use https in production")
+	allowPrivate := appEnv != "production"
+	if !allowPrivate {
+		if u.Scheme != "https" {
+			return errors.New("paperless URL must use https in production")
+		}
+		port := u.Port()
+		if port == "" {
+			port = "443"
+		}
+		if !paperlessAllowedPort(port) {
+			return errors.New("paperless URL must use port 80 or 443 in production")
+		}
 	}
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, u.Hostname())
 	if err != nil {
 		return fmt.Errorf("could not resolve paperless host: %w", err)
 	}
 	for _, ip := range ips {
-		if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() ||
-			ip.IP.IsLinkLocalMulticast() || ip.IP.IsMulticast() || ip.IP.IsUnspecified() {
+		if isDisallowedPaperlessIP(ip.IP, allowPrivate) {
 			return errors.New("paperless host resolves to a non-public address")
 		}
 	}
@@ -473,7 +572,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings)
+	client, err := paperlessClient(settings, c.GetString("appEnv"))
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -654,7 +753,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings)
+	client, err := paperlessClient(settings, c.GetString("appEnv"))
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -745,7 +844,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings)
+	client, err := paperlessClient(settings, c.GetString("appEnv"))
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -824,7 +923,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 // surfaced) and runs with bounded concurrency: a single document can cost up
 // to four upstream round-trips, so tagging serially inside the request would
 // stall the import response behind the caller's Paperless instance.
-func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []int, tokenEncryptionKey string) {
+func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []int, tokenEncryptionKey, appEnv string) {
 	if len(documentIDs) == 0 {
 		return
 	}
@@ -836,7 +935,7 @@ func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []
 	if !paperlessConfigured(settings) || strings.TrimSpace(settings.PaperlessTag) == "" {
 		return
 	}
-	client, err := paperlessClient(settings)
+	client, err := paperlessClient(settings, appEnv)
 	if err != nil {
 		slog.Error("tagPaperlessDocuments (client)", "error", err)
 		return

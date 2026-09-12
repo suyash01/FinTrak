@@ -66,6 +66,12 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	// Throttle before the expensive bcrypt hash so brute-force attempts cannot
+	// pin CPU or exhaust the database.
+	if !allowAuthAttempt(c, "register", req.Email) {
+		return
+	}
+
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		slog.Error("hashing password in Register", "error", err)
@@ -128,6 +134,13 @@ func Login(c *gin.Context) {
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
+		return
+	}
+
+	// Throttle by IP and by account before touching the database or running
+	// bcrypt, slowing online brute force without revealing whether the account
+	// exists.
+	if !allowAuthAttempt(c, "login", req.Email) {
 		return
 	}
 

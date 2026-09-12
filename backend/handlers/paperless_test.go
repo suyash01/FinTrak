@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -374,7 +375,7 @@ func TestTagPaperlessDocuments(t *testing.T) {
 
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
 
-	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key")
+	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -383,7 +384,7 @@ func TestTagPaperlessDocumentsNoIDs(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 
 	// No document IDs means no settings lookup and no Paperless calls.
-	tagPaperlessDocuments(context.Background(), testUserID(), nil, "test-key")
+	tagPaperlessDocuments(context.Background(), testUserID(), nil, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -392,7 +393,7 @@ func TestTagPaperlessDocumentsUnconfigured(t *testing.T) {
 	mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
 
-	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key")
+	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -667,6 +668,45 @@ func TestValidatePaperlessHost(t *testing.T) {
 	assert.Error(t, err)
 	err = validatePaperlessHost(context.Background(), models.UserSettings{PaperlessURL: "https://localhost:8000"}, "production")
 	assert.Error(t, err)
+}
+
+func TestValidatePaperlessHostRejectsNonStandardPort(t *testing.T) {
+	err := validatePaperlessHost(context.Background(), models.UserSettings{PaperlessURL: "https://paperless.example.com:8000"}, "production")
+	assert.Error(t, err)
+}
+
+func TestPaperlessAllowedPort(t *testing.T) {
+	assert.True(t, paperlessAllowedPort("80"))
+	assert.True(t, paperlessAllowedPort("443"))
+	assert.False(t, paperlessAllowedPort("8000"))
+	assert.False(t, paperlessAllowedPort("5432"))
+}
+
+func TestIsDisallowedPaperlessIP(t *testing.T) {
+	cases := []struct {
+		name         string
+		ip           string
+		allowPrivate bool
+		disallowed   bool
+	}{
+		{"loopback allowed in dev", "127.0.0.1", true, false},
+		{"loopback blocked in prod", "127.0.0.1", false, true},
+		{"private allowed in dev", "10.0.0.5", true, false},
+		{"private blocked in prod", "10.0.0.5", false, true},
+		{"ipv6 loopback allowed in dev", "::1", true, false},
+		{"ipv4-mapped loopback blocked in prod", "::ffff:127.0.0.1", false, true},
+		{"cloud metadata always blocked", "169.254.169.254", true, true},
+		{"cgnat always blocked", "100.64.0.1", true, true},
+		{"unspecified always blocked", "0.0.0.0", true, true},
+		{"public allowed", "8.8.8.8", false, false},
+		{"public allowed in dev", "8.8.8.8", true, false},
+		{"ula blocked in prod", "fd00::1", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.disallowed, isDisallowedPaperlessIP(net.ParseIP(tc.ip), tc.allowPrivate))
+		})
+	}
 }
 
 func TestReadAllLimited(t *testing.T) {
