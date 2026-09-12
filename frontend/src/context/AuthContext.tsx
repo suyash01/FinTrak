@@ -3,20 +3,17 @@ import {
   useContext,
   useState,
   useCallback,
+  useEffect,
   type ReactNode,
 } from "react";
-import api, {
-  getToken,
-  setToken,
-  getStoredUser,
-  storeUser,
-} from "../api/client";
+import api, { getStoredUser, storeUser } from "../api/client";
 import type { AuthResponse, User } from "../types";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
+  // initializing is true while the session cookie is verified on mount.
+  initializing: boolean;
   user: User | null;
-  token: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
@@ -25,13 +22,36 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setTokenState] = useState<string | null>(getToken);
+  // Optimistically hydrate from the cached (non-sensitive) user so the app
+  // doesn't flash the login screen, then verify against the server because the
+  // JWT itself lives in an httpOnly cookie that JavaScript cannot read.
   const [user, setUser] = useState<User | null>(getStoredUser);
+  const [initializing, setInitializing] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .me()
+      .then((current) => {
+        if (cancelled) return;
+        setUser(current);
+        storeUser(current);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setUser(null);
+        storeUser(null);
+      })
+      .finally(() => {
+        if (!cancelled) setInitializing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const applyAuth = useCallback((res: AuthResponse) => {
-    setTokenState(res.token);
     setUser(res.user);
-    setToken(res.token);
     storeUser(res.user);
   }, []);
 
@@ -52,16 +72,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    setTokenState(null);
     setUser(null);
-    setToken(null);
     storeUser(null);
+    // Expire the httpOnly session cookie server-side; best-effort.
+    api.logout().catch(() => {});
   }, []);
 
   const value: AuthContextValue = {
-    isAuthenticated: !!token,
+    isAuthenticated: !!user,
+    initializing,
     user,
-    token,
     login,
     register,
     logout,

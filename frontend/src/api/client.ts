@@ -52,25 +52,16 @@ import type {
   ValidateTransactionsResponse,
 } from "../types";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8080/api/v1";
+const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
-const TOKEN_KEY = "fintrak_token";
 const USER_KEY = "fintrak_user";
 
 const REQUEST_TIMEOUT = 15000;
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setToken(token: string | null): void {
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(TOKEN_KEY);
-  }
-}
-
+// The session JWT is held in an httpOnly cookie the backend sets on login, so
+// it is intentionally unreadable here. Only the non-sensitive user object is
+// cached to avoid a flash of the login screen on reload; it is re-verified via
+// api.me() on mount.
 export function getStoredUser(): User | null {
   try {
     return JSON.parse(localStorage.getItem(USER_KEY) || "null");
@@ -131,8 +122,6 @@ async function request<T>(
     "Content-Type": "application/json",
     ...options.headers,
   };
-  const token = getToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   // Combine a caller-provided abort signal with a request timeout
   const controller = new AbortController();
@@ -155,6 +144,7 @@ async function request<T>(
       ...options,
       signal: controller.signal,
       headers,
+      credentials: "include",
     });
   } catch (err) {
     if ((err as Error).name === "AbortError") {
@@ -167,8 +157,12 @@ async function request<T>(
     if (externalSignal) externalSignal.removeEventListener("abort", abort);
   }
 
-  if (res.status === 401 && url !== "/auth/login" && url !== "/auth/register") {
-    setToken(null);
+  if (
+    res.status === 401 &&
+    url !== "/auth/login" &&
+    url !== "/auth/register" &&
+    url !== "/auth/me"
+  ) {
     storeUser(null);
     if (!window.location.pathname.startsWith("/login")) {
       window.location.href = "/login";
@@ -188,18 +182,13 @@ async function request<T>(
   return text ? (JSON.parse(text) as T) : (null as T);
 }
 
-// requestMultipart POSTs a FormData payload (multipart/form-data) with the auth
-// header but without forcing a JSON content type, which the browser must set
-// itself (including the boundary). Used for statement PDF uploads.
+// requestMultipart POSTs a FormData payload (multipart/form-data) without
+// forcing a JSON content type, which the browser must set itself (including the
+// boundary). Used for statement PDF uploads. Auth rides on the session cookie.
 async function requestMultipart<T>(
   url: string,
   formData: FormData,
 ): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = token
-    ? { Authorization: `Bearer ${token}` }
-    : {};
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   let res: Response;
@@ -207,8 +196,8 @@ async function requestMultipart<T>(
     res = await fetch(`${API_BASE}${url}`, {
       method: "POST",
       body: formData,
-      headers,
       signal: controller.signal,
+      credentials: "include",
     });
   } catch (err) {
     if ((err as Error).name === "AbortError")
@@ -219,7 +208,6 @@ async function requestMultipart<T>(
   }
 
   if (res.status === 401 && url !== "/auth/login" && url !== "/auth/register") {
-    setToken(null);
     storeUser(null);
     if (!window.location.pathname.startsWith("/login")) {
       window.location.href = "/login";
@@ -239,9 +227,8 @@ async function requestMultipart<T>(
 }
 
 export async function downloadCSV(path: string): Promise<void> {
-  const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    credentials: "include",
   });
   if (!res.ok) {
     throw new Error("Export failed");
@@ -268,6 +255,9 @@ const api = {
     request("/auth/register", { method: "POST", body: JSON.stringify(data) }),
   login: (data: LoginRequest): Promise<AuthResponse> =>
     request("/auth/login", { method: "POST", body: JSON.stringify(data) }),
+  logout: (): Promise<null> =>
+    request("/auth/logout", { method: "POST" }),
+  me: (): Promise<User> => request("/auth/me"),
 
   // Accounts
   getAccounts: (): Promise<Account[]> => request("/accounts"),
@@ -443,9 +433,8 @@ const api = {
       body: JSON.stringify(data),
     }),
   getPaperlessDocumentFile: async (id: number): Promise<Blob> => {
-    const token = getToken();
     const res = await fetch(`${API_BASE}/paperless/documents/${id}/file`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "include",
     });
     if (!res.ok) {
       const err = new Error("Failed to load document file") as ApiError;

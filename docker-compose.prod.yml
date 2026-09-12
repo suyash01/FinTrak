@@ -21,6 +21,8 @@
 #                     with the 'admin' role. Empty disables admin self-registration
 #                     entirely.
 #   LOG_LEVEL       - debug|info|warn|error (default: info in production)
+#   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
+#                     only for plain-HTTP deployments with no TLS terminator.
 #   IMAGE_REPO      - Registry prefix (default: ghcr.io/suyash01)
 #   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
 #                     version (e.g. v1.2.3) for reproducible deployments.

@@ -75,6 +75,24 @@ func TestLoadLogBodyLimit(t *testing.T) {
 	assert.Equal(t, 0, Load().LogBodyLimit)
 }
 
+func TestLoadCookieSecure(t *testing.T) {
+	unsetEnv(t, "APP_ENV", "COOKIE_SECURE")
+
+	// Development defaults to a non-Secure cookie (plain HTTP).
+	assert.False(t, Load().CookieSecure)
+
+	// Production defaults to Secure (JWT_SECRET/TOKEN_ENCRYPTION_KEY are
+	// required there, so provide them before loading).
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv("TOKEN_ENCRYPTION_KEY", "test-key")
+	assert.True(t, Load().CookieSecure)
+
+	// Explicit override wins (e.g. plain-HTTP isolated deployment).
+	t.Setenv("COOKIE_SECURE", "false")
+	assert.False(t, Load().CookieSecure)
+}
+
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, k := range keys {

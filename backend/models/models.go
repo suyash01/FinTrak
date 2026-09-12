@@ -269,10 +269,10 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required,maxbytes=72"`
 }
 
-// AuthResponse is returned by the register and login endpoints.
+// AuthResponse is returned by the register and login endpoints. The JWT is
+// delivered as an httpOnly session cookie, never in the body.
 type AuthResponse struct {
-	Token string `json:"token"`
-	User  User   `json:"user"`
+	User User `json:"user"`
 }
 
 // CreateAccountRequest is the body for POST /api/v1/accounts.

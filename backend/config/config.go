@@ -25,6 +25,10 @@ type Config struct {
 	LogLevel           string
 	LogBodyLimit       int
 	TokenEncryptionKey string
+	// CookieSecure marks the session cookie Secure (HTTPS-only). Defaults to
+	// true in production; set COOKIE_SECURE=false for an isolated plain-HTTP
+	// deployment (behind no TLS terminator).
+	CookieSecure bool
 	// AdminSetupToken is the shared secret that lets a registrant whose email
 	// is in AdminEmails self-register with the 'admin' role. Empty disables
 	// admin self-registration entirely (admin-listed emails are refused at
@@ -118,6 +122,15 @@ func Load() *Config {
 	// means admin-listed addresses cannot self-register at all.
 	adminSetupToken := os.Getenv("ADMIN_SETUP_TOKEN")
 
+	// Session cookie Secure flag. Production defaults to true (HTTPS); an
+	// operator with a deliberately plain-HTTP deployment can opt out.
+	cookieSecure := env == "production"
+	if raw := os.Getenv("COOKIE_SECURE"); raw != "" {
+		if b, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+			cookieSecure = b
+		}
+	}
+
 	return &Config{
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		Port:               port,
@@ -130,5 +143,6 @@ func Load() *Config {
 		LogBodyLimit:       logBodyLimit,
 		TokenEncryptionKey: tokenEncryptionKey,
 		AdminSetupToken:    adminSetupToken,
+		CookieSecure:       cookieSecure,
 	}
 }

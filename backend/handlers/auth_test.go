@@ -76,10 +76,17 @@ func TestRegister(t *testing.T) {
 	var res models.AuthResponse
 	err = json.Unmarshal(w.Body.Bytes(), &res)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, res.Token)
 	assert.Equal(t, userID, res.User.ID)
 	assert.Equal(t, reqBody.Email, res.User.Email)
 	assert.Equal(t, "user", res.User.Role)
+
+	// The JWT is delivered as an httpOnly session cookie, not in the body.
+	cookies := w.Result().Cookies()
+	assert.Len(t, cookies, 1)
+	assert.Equal(t, auth.AuthCookieName, cookies[0].Name)
+	assert.True(t, cookies[0].HttpOnly)
+	assert.NotEmpty(t, cookies[0].Value)
+	assert.NotContains(t, w.Body.String(), "token")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -329,9 +336,10 @@ func TestLogin(t *testing.T) {
 	var res models.AuthResponse
 	err = json.Unmarshal(w.Body.Bytes(), &res)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, res.Token)
 	assert.Equal(t, userID, res.User.ID)
 	assert.Equal(t, "user", res.User.Role)
+	assert.Len(t, w.Result().Cookies(), 1)
+	assert.Equal(t, auth.AuthCookieName, w.Result().Cookies()[0].Name)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -484,5 +492,61 @@ func TestLoginUnknownUser(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLogout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("cookieSecure", true)
+		c.Next()
+	})
+	r.POST("/auth/logout", Logout)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/auth/logout", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	cookies := w.Result().Cookies()
+	assert.Len(t, cookies, 1)
+	assert.Equal(t, auth.AuthCookieName, cookies[0].Name)
+	assert.Equal(t, "", cookies[0].Value)
+	assert.Less(t, cookies[0].MaxAge, 0)
+}
+
+func TestMe(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	oldPool := db.Pool
+	db.Pool = mock
+	defer func() { db.Pool = oldPool }()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(testAuthMiddleware())
+	r.GET("/auth/me", Me)
+
+	userID := testUserID()
+	mock.ExpectQuery("SELECT id, email, role FROM users").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+			AddRow(userID, "me@example.com", "admin"))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/auth/me", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var user models.User
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &user))
+	assert.Equal(t, userID, user.ID)
+	assert.Equal(t, "me@example.com", user.Email)
+	assert.Equal(t, "admin", user.Role)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

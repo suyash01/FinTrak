@@ -149,6 +149,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		c.Set("adminEmails", cfg.AdminEmails)
 		c.Set("adminSetupToken", cfg.AdminSetupToken)
 		c.Set("appEnv", cfg.Env)
+		c.Set("cookieSecure", cfg.CookieSecure)
 		c.Set("tokenEncryptionKey", cfg.TokenEncryptionKey)
 		c.Next()
 	})
@@ -168,10 +169,14 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// Public: authentication
 	api.POST("/auth/register", handlers.Register)
 	api.POST("/auth/login", handlers.Login)
+	api.POST("/auth/logout", handlers.Logout)
 
 	// Protected routes
 	api.Use(auth.RequireAuth(cfg.JWTSecret))
 	{
+		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
+		api.GET("/auth/me", handlers.Me)
+
 		// Accounts
 		accounts := api.Group("/accounts")
 		accounts.GET("", handlers.GetAccounts)

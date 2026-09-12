@@ -155,7 +155,6 @@ export interface PaperlessDocument {
 }
 
 export interface AuthResponse {
-  token: string;
   user: User;
 }
 

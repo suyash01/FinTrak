@@ -86,7 +86,7 @@ func TestRequireAuth(t *testing.T) {
 		newRouter().ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
-		assert.Contains(t, w.Body.String(), "missing authorization header")
+		assert.Contains(t, w.Body.String(), "missing authentication")
 	})
 
 	t.Run("invalid header scheme", func(t *testing.T) {
@@ -96,7 +96,21 @@ func TestRequireAuth(t *testing.T) {
 		newRouter().ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
-		assert.Contains(t, w.Body.String(), "invalid authorization header")
+		assert.Contains(t, w.Body.String(), "missing authentication")
+	})
+
+	t.Run("valid session cookie", func(t *testing.T) {
+		userID := uuid.New()
+		token, err := GenerateToken(userID, "user", testSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.AddCookie(&http.Cookie{Name: AuthCookieName, Value: token})
+		newRouter().ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), userID.String())
 	})
 
 	t.Run("valid token", func(t *testing.T) {
@@ -169,6 +183,48 @@ func TestRequireAuth(t *testing.T) {
 		newRouter().ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+}
+
+func TestSetAndClearAuthCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newCtx := func() (*gin.Context, *httptest.ResponseRecorder) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		return c, w
+	}
+
+	t.Run("production sets Secure and HttpOnly", func(t *testing.T) {
+		c, w := newCtx()
+		SetAuthCookie(c, "tok", true)
+
+		cookies := w.Result().Cookies()
+		require.Len(t, cookies, 1)
+		assert.Equal(t, AuthCookieName, cookies[0].Name)
+		assert.True(t, cookies[0].HttpOnly)
+		assert.True(t, cookies[0].Secure)
+		assert.Equal(t, http.SameSiteLaxMode, cookies[0].SameSite)
+		assert.NotEmpty(t, cookies[0].Value)
+	})
+
+	t.Run("development omits Secure", func(t *testing.T) {
+		c, w := newCtx()
+		SetAuthCookie(c, "tok", false)
+
+		cookies := w.Result().Cookies()
+		require.Len(t, cookies, 1)
+		assert.False(t, cookies[0].Secure)
+	})
+
+	t.Run("clear expires the cookie", func(t *testing.T) {
+		c, w := newCtx()
+		ClearAuthCookie(c, true)
+
+		cookies := w.Result().Cookies()
+		require.Len(t, cookies, 1)
+		assert.Equal(t, "", cookies[0].Value)
+		assert.Less(t, cookies[0].MaxAge, 0)
 	})
 }
 

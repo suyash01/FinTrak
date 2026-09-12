@@ -18,8 +18,8 @@ export default function Login() {
     setError("");
 
     if (mode === "register") {
-      if (password.length < 6) {
-        setError("Password must be at least 6 characters");
+      if (password.length < 12) {
+        setError("Password must be at least 12 characters");
         return;
       }
       if (password !== confirm) {
@@ -93,7 +93,7 @@ export default function Login() {
               <Input
                 type="password"
                 required
-                minLength={mode === "register" ? 6 : undefined}
+                minLength={mode === "register" ? 12 : undefined}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -108,7 +108,7 @@ export default function Login() {
                 <Input
                   type="password"
                   required
-                  minLength={6}
+                  minLength={12}
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   placeholder="••••••••"

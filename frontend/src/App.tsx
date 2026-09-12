@@ -554,7 +554,17 @@ export default function App() {
 }
 
 function Root() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, initializing } = useAuth();
+
+  // Wait for the session cookie to be verified before choosing the auth screen,
+  // otherwise a locked-down reload would briefly render the login page.
+  if (initializing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary" />
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (

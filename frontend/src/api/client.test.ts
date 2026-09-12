@@ -1,13 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import api, {
-  getToken,
-  setToken,
-  getStoredUser,
-  storeUser,
-  downloadCSV,
-} from "./client";
+import api, { getStoredUser, storeUser, downloadCSV } from "./client";
 
-const API_BASE = "http://localhost:8080/api/v1";
+const API_BASE = "/api/v1";
 
 function jsonResponse(
   body: unknown,
@@ -26,21 +20,6 @@ function jsonResponse(
       new Blob([typeof body === "string" ? body : JSON.stringify(body)]),
   };
 }
-
-describe("token storage", () => {
-  beforeEach(() => localStorage.clear());
-
-  it("setToken stores and getToken retrieves", () => {
-    setToken("abc123");
-    expect(getToken()).toBe("abc123");
-  });
-
-  it("setToken(null) removes the token", () => {
-    setToken("abc123");
-    setToken(null);
-    expect(getToken()).toBeNull();
-  });
-});
 
 describe("user storage", () => {
   beforeEach(() => localStorage.clear());
@@ -96,22 +75,23 @@ describe("api request", () => {
   });
 
   it("sends JSON requests to the API base URL", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ token: "t", user: { id: 1 } }));
+    fetchMock.mockResolvedValue(jsonResponse({ user: { id: 1 } }));
     const res = await api.login({ email: "a@b.c", password: "pw" });
-    expect(res).toEqual({ token: "t", user: { id: 1 } });
+    expect(res).toEqual({ user: { id: 1 } });
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe(`${API_BASE}/auth/login`);
     expect(opts.method).toBe("POST");
     expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect(opts.credentials).toBe("include");
     expect(JSON.parse(opts.body)).toEqual({ email: "a@b.c", password: "pw" });
   });
 
-  it("attaches the bearer token when present", async () => {
-    setToken("tok123");
+  it("never attaches an Authorization header", async () => {
     fetchMock.mockResolvedValue(jsonResponse([]));
     await api.getAccounts();
     const [, opts] = fetchMock.mock.calls[0];
-    expect(opts.headers.Authorization).toBe("Bearer tok123");
+    expect(opts.headers.Authorization).toBeUndefined();
+    expect(opts.credentials).toBe("include");
   });
 
   it("builds query strings for list endpoints", async () => {
@@ -204,12 +184,10 @@ describe("api request", () => {
     await expect(promise).rejects.toThrow("Request timed out");
   });
 
-  it("clears auth and redirects to /login on 401", async () => {
-    setToken("tok");
+  it("clears the stored user and redirects to /login on 401", async () => {
     storeUser({ id: 1 } as any);
     fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
     await expect(api.getAccounts()).rejects.toThrow("Unauthorized");
-    expect(getToken()).toBeNull();
     expect(getStoredUser()).toBeNull();
     expect(window.location.href).toBe("/login");
   });
@@ -221,6 +199,12 @@ describe("api request", () => {
     await expect(api.login({ email: "a", password: "b" })).rejects.toThrow(
       "Bad credentials",
     );
+    expect(window.location.href).not.toBe("/login");
+  });
+
+  it("does not redirect for 401 on the session check", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
+    await expect(api.me()).rejects.toThrow("Unauthorized");
     expect(window.location.href).not.toBe("/login");
   });
 });

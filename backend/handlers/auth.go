@@ -124,7 +124,9 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, models.AuthResponse{Token: token, User: user})
+	auth.SetAuthCookie(c, token, c.GetBool("cookieSecure"))
+
+	c.JSON(http.StatusCreated, models.AuthResponse{User: user})
 }
 
 // Login verifies the email/password against the users table and returns a fresh
@@ -176,5 +178,36 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, models.AuthResponse{Token: token, User: user})
+	auth.SetAuthCookie(c, token, c.GetBool("cookieSecure"))
+
+	c.JSON(http.StatusOK, models.AuthResponse{User: user})
+}
+
+// Me returns the authenticated user for the session cookie. The frontend calls
+// it on mount to rehydrate auth state, since the JWT cookie is httpOnly and
+// therefore unreadable from JavaScript.
+func Me(c *gin.Context) {
+	userID := auth.GetUserID(c)
+	var user models.User
+	err := db.Pool.QueryRow(c,
+		"SELECT id, email, role FROM users WHERE id = $1",
+		userID,
+	).Scan(&user.ID, &user.Email, &user.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		validation.RespondAuthError(c, "user not found")
+		return
+	}
+	if err != nil {
+		slog.Error("Me", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, user)
+}
+
+// Logout clears the session cookie. It is unauthenticated on purpose so an
+// expired or invalid cookie can still be removed.
+func Logout(c *gin.Context) {
+	auth.ClearAuthCookie(c, c.GetBool("cookieSecure"))
+	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }
