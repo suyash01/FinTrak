@@ -9,15 +9,26 @@ import {
   ReceiptText,
   Wallet,
   AlertCircle,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import api from "../../api/client";
 import { useDomainData } from "../../context/DomainDataContext";
+import { useSettings } from "../../context/SettingsContext";
 import type { Payee } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -55,12 +66,14 @@ const NO_ACCOUNT = "none";
 
 export default function Payees() {
   const { payees, accounts, loading, refreshPayees } = useDomainData();
+  const { compactLayout } = useSettings();
   const [searchParams, setSearchParams] = useSearchParams();
   const syncedUrlRef = useRef(searchParams.toString());
   const [search, setSearch] = useState(() => searchParams.get("search") || "");
   const [showModal, setShowModal] = useState(false);
   const [editingPayee, setEditingPayee] = useState<Payee | null>(null);
   const [formData, setFormData] = useState<PayeeForm>(EMPTY_FORM);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // Keep the search filter in sync with the URL so it is shareable and
   // back/forward friendly.
@@ -126,141 +139,204 @@ export default function Payees() {
     setShowModal(true);
   };
 
-  const filteredPayees = useMemo(
-    () =>
-      payees.filter((p) =>
-        p.name.toLowerCase().includes(search.toLowerCase()),
-      ),
-    [payees, search],
+  const accountNameById = useMemo(
+    () => new Map(accounts.map((a) => [a.id, a.name])),
+    [accounts],
   );
+
+  const filteredPayees = useMemo(() => {
+    const list = payees.filter((p) =>
+      p.name.toLowerCase().includes(search.toLowerCase()),
+    );
+    return [...list].sort((x, y) =>
+      sortDir === "asc"
+        ? x.name.localeCompare(y.name)
+        : y.name.localeCompare(x.name),
+    );
+  }, [payees, search, sortDir]);
+
+  const toggleSort = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+
+  const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
+  const headerBase = `${cellPad} text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
 
   return (
     <div className="flex flex-col h-full">
       <div className="shrink-0 px-8 pt-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-              <Users className="text-primary" />
-              Payees
-            </h1>
-            <p className="text-muted-foreground text-sm mt-1">
-              Manage entities you pay or receive money from
-            </p>
+        <h1 className="text-2xl font-bold text-foreground mb-1 flex items-center gap-2">
+          <Users className="text-primary" />
+          Payees
+        </h1>
+        <p className="text-muted-foreground text-sm">
+          Manage entities you pay or receive money from
+        </p>
+      </div>
+
+      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
+        <div className="flex justify-between items-center mb-5 gap-4">
+          <div className="relative group w-full max-w-md">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors"
+              size={16}
+            />
+            <Input
+              type="text"
+              placeholder="Search payees..."
+              className={`pl-9 ${compactLayout ? "h-8" : "h-10"}`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
-          <Button onClick={() => openModal(null)}>
+          <Button
+            size="lg"
+            className="px-4 shrink-0"
+            onClick={() => openModal(null)}
+          >
             <Plus />
             Add Payee
           </Button>
         </div>
-      </div>
 
-      <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full space-y-6">
-        {/* Search Bar */}
-        <div className="relative group max-w-2xl">
-          <Search
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors"
-            size={18}
-          />
-          <Input
-            type="text"
-            placeholder="Search payees..."
-            className="pl-12 h-11 rounded-2xl"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-
-        {/* Grid */}
         {loading ? (
           <div className="flex justify-center p-20">
             <Spinner className="size-10 text-primary" />
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {filteredPayees.map((payee) => (
-              <div
-                key={payee.id}
-                className="bg-card border border-border p-5 rounded-2xl hover:border-primary/30 transition-all group relative shadow-md"
+        ) : filteredPayees.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
+            <Users className="w-16 h-16 text-muted-foreground opacity-50 mb-4" />
+            <h3 className="text-lg font-semibold text-foreground mb-2">
+              {payees.length === 0 ? "No Payees Yet" : "No matching payees"}
+            </h3>
+            <p className="text-muted-foreground text-sm mb-6 max-w-md">
+              {payees.length === 0
+                ? "Add a payee to track who you pay or receive money from."
+                : "Try a different search term."}
+            </p>
+            {payees.length === 0 && (
+              <Button
+                size="lg"
+                className="px-4"
+                onClick={() => openModal(null)}
               >
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${payee.accountId ? "bg-violet-500/10 text-violet-400 border-violet-500/20" : "bg-background text-primary border-border"}`}
-                    >
-                      {payee.accountId ? (
-                        <Wallet size={20} />
+                Add Payee
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="bg-card border border-border rounded-xl overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead
+                    className={`${headerBase} cursor-pointer select-none`}
+                    onClick={toggleSort}
+                  >
+                    <span className="flex items-center gap-1">
+                      Name
+                      {sortDir === "asc" ? (
+                        <ArrowUp size={12} />
                       ) : (
-                        <ReceiptText size={20} />
+                        <ArrowDown size={12} />
                       )}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-bold text-foreground">
+                    </span>
+                  </TableHead>
+                  <TableHead className={headerBase}>Type</TableHead>
+                  <TableHead className={headerBase}>Linked Account</TableHead>
+                  <TableHead className={`${headerBase} text-right`}>
+                    Actions
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredPayees.map((payee) => (
+                  <TableRow key={payee.id} className="border-border">
+                    <TableCell className={cellPad}>
+                      <div className="flex items-center gap-2.5">
+                        {payee.accountId ? (
+                          <Wallet
+                            size={compactLayout ? 16 : 18}
+                            className="text-violet-400 shrink-0"
+                          />
+                        ) : (
+                          <ReceiptText
+                            size={compactLayout ? 16 : 18}
+                            className="text-primary shrink-0"
+                          />
+                        )}
+                        <span className="font-medium text-foreground">
                           {payee.name}
-                        </h3>
+                        </span>
                         {payee.accountId && (
                           <Badge className="bg-violet-500/20 text-violet-400 hover:bg-violet-500/20">
                             Account
                           </Badge>
                         )}
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
-                        ID: {payee.id.slice(0, 8)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => openModal(payee)}
-                      title="Edit Payee"
+                    </TableCell>
+                    <TableCell
+                      className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}
                     >
-                      <Edit2 />
-                    </Button>
-                    {!payee.accountId && (
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            title="Delete Payee"
-                            className="text-muted-foreground hover:text-destructive"
-                          >
-                            <Trash2 />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Delete payee?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              Are you sure you want to delete "{payee.name}"?
-                              This will NOT delete transactions but will remove
-                              the link.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction
-                              variant="destructive"
-                              onClick={() => handleDelete(payee.id)}
-                            >
-                              Delete
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {filteredPayees.length === 0 && !loading && (
-              <div className="col-span-full py-20 text-center border-2 border-dashed border-border rounded-2xl">
-                <Users size={40} className="mx-auto text-muted-foreground/50 mb-4" />
-                <p className="text-muted-foreground">No payees found.</p>
-              </div>
-            )}
+                      {payee.accountId ? "Linked" : "Standalone"}
+                    </TableCell>
+                    <TableCell
+                      className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}
+                    >
+                      {payee.accountId
+                        ? accountNameById.get(payee.accountId) || "—"
+                        : "—"}
+                    </TableCell>
+                    <TableCell className={`${cellPad} text-right`}>
+                      <div className="flex items-center justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+                          onClick={() => openModal(payee)}
+                          title="Edit payee"
+                        >
+                          <Edit2 size={14} />
+                        </Button>
+                        {!payee.accountId && (
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                title="Delete payee"
+                                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 size={14} />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>
+                                  Delete payee?
+                                </AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Are you sure you want to delete "
+                                  {payee.name}"? This will NOT delete
+                                  transactions but will remove the link.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  variant="destructive"
+                                  onClick={() => handleDelete(payee.id)}
+                                >
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
         )}
       </div>
