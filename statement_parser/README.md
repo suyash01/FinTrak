@@ -8,8 +8,10 @@ later without changing the app flow.
 
 ## Setup
 
+Requires [uv](https://docs.astral.sh/uv/). Install dependencies from the lockfile:
+
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Run the web app
@@ -17,13 +19,13 @@ pip install -r requirements.txt
 For local development (Flask dev server):
 
 ```bash
-python -m statement_parser
+uv run python -m statement_parser
 ```
 
 For production, serve with gunicorn (the WSGI server used in the Docker image):
 
 ```bash
-gunicorn -b 0.0.0.0:5000 statement_parser.app:app
+uv run gunicorn -b 0.0.0.0:5000 statement_parser.app:app
 ```
 
 Uploads are capped at 20 MB, and extraction refuses PDFs with more than
@@ -82,7 +84,7 @@ If the PDF is encrypted and no/wrong password is given, the API responds
 ## Command line
 
 ```bash
-python -m statement_parser.sbi_cc_extractor statement.pdf --password 1234 --out transactions.csv
+uv run python -m statement_parser.sbi_cc_extractor statement.pdf --password 1234 --out transactions.csv
 # or omit --out to print JSON to stdout
 ```
 
@@ -107,4 +109,4 @@ query parameter in the web API.
 - `extractor.py` — extractor registry and public entry points for multiple parsers
 - `app.py` — Flask app (web UI + REST API)
 - `index.html` — upload form and results view
-- `requirements.txt` — dependencies
+- `pyproject.toml` / `uv.lock` — dependencies (managed with uv)

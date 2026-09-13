@@ -39,7 +39,7 @@ test:
 	cd backend && go test ./...
 
 test-parser:
-	cd statement_parser && python -m unittest discover -s tests -v
+	cd statement_parser && uv run python -m unittest discover -s tests -v
 
 vet:
 	cd backend && go vet ./...

@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { TrendingUp, TrendingDown, Wallet, ArrowUpDown } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -171,7 +171,7 @@ export default function Dashboard() {
   }, [loadSummary]);
 
   const recentColumnHelper = createColumnHelper<Transaction>();
-  const recentColumns = useMemo<ColumnDef<Transaction>[]>(() => {
+  const recentColumns = useMemo<ColumnDef<Transaction, any>[]>(() => {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
     const headBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`;
     return [

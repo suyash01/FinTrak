@@ -66,31 +66,32 @@ func GetDashboardSummary(c *gin.Context) {
 		addCond("account_id", "=", accountID)
 	}
 
+	// Run every read in a single read-only, repeatable-read transaction so the
+	// stats reflect one consistent snapshot (concurrent writes can't partially
+	// land between queries) and share a single connection.
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		slog.Error("GetDashboardSummary (begin)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+	q := tx
+
 	// Total accounts
-	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
 		slog.Error("GetDashboardSummary (total accounts)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// Total transactions
-	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM transactions WHERE user_id = $1"+plainFilter, args...).Scan(&summary.TotalTransactions); err != nil {
-		slog.Error("GetDashboardSummary (total transactions)", "error", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Income / Expense totals
-	incomeQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'credit' AND user_id = $1" + plainFilter
-	if err := db.Pool.QueryRow(ctx, incomeQuery, args...).Scan(&summary.TotalIncome); err != nil {
-		slog.Error("GetDashboardSummary (total income)", "error", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	expenseQuery := "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'debit' AND user_id = $1" + plainFilter
-	if err := db.Pool.QueryRow(ctx, expenseQuery, args...).Scan(&summary.TotalExpense); err != nil {
-		slog.Error("GetDashboardSummary (total expense)", "error", err)
+	// Transaction count, income, and expense totals in a single round-trip.
+	scalarQuery := `SELECT COUNT(*),
+					 COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0),
+					 COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0)
+					 FROM transactions WHERE user_id = $1` + plainFilter
+	if err := q.QueryRow(ctx, scalarQuery, args...).Scan(&summary.TotalTransactions, &summary.TotalIncome, &summary.TotalExpense); err != nil {
+		slog.Error("GetDashboardSummary (totals)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -105,7 +106,7 @@ func GetDashboardSummary(c *gin.Context) {
 				 ORDER BY total DESC
 				 LIMIT 15`
 
-	catRows, err := db.Pool.Query(ctx, catQuery, args...)
+	catRows, err := q.Query(ctx, catQuery, args...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (by category)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -132,7 +133,7 @@ func GetDashboardSummary(c *gin.Context) {
 				 ORDER BY total DESC
 				 LIMIT 15`
 
-	incomeCatRows, err := db.Pool.Query(ctx, incomeCatQuery, args...)
+	incomeCatRows, err := q.Query(ctx, incomeCatQuery, args...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (income by category)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -158,7 +159,7 @@ func GetDashboardSummary(c *gin.Context) {
 					 GROUP BY TO_CHAR(date, 'YYYY-MM')
 					 ORDER BY month`
 
-	monthRows, err := db.Pool.Query(ctx, monthlyQuery, args...)
+	monthRows, err := q.Query(ctx, monthlyQuery, args...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (monthly trend)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -190,7 +191,7 @@ func GetDashboardSummary(c *gin.Context) {
 					ORDER BY t.date DESC, t.created_at DESC
 					LIMIT 10`
 
-	recentRows, err := db.Pool.Query(ctx, recentQuery, args...)
+	recentRows, err := q.Query(ctx, recentQuery, args...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (recent transactions)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -220,6 +221,12 @@ func GetDashboardSummary(c *gin.Context) {
 	}
 	if summary.RecentTransactions == nil {
 		summary.RecentTransactions = []models.Transaction{}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("GetDashboardSummary (commit)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	c.JSON(http.StatusOK, summary)
@@ -267,7 +274,18 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 
-	cycles, err := listBillingCycles(ctx, db.Pool, userID, accountID)
+	// Read the summary inside a single read-only snapshot once cycle generation
+	// (which writes) has finished.
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		slog.Error("GetDashboardSummary (begin)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+	q := tx
+
+	cycles, err := listBillingCycles(ctx, q, userID, accountID)
 	if err != nil {
 		slog.Error("GetDashboardSummary (list billing cycles)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -283,7 +301,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 	}
 
 	// Total accounts
-	if err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
 		slog.Error("GetDashboardSummary (total accounts)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -330,7 +348,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 			      AND t.date >= bc.start_date AND t.date <= bc.end_date
 			 WHERE t.user_id = $1 AND t.account_id = $2
 			   AND bc.end_date >= $3 AND bc.end_date <= $4`
-	if err := db.Pool.QueryRow(ctx, cycleStatsQuery, userID, accountID, windowStart, windowEnd).
+	if err := q.QueryRow(ctx, cycleStatsQuery, userID, accountID, windowStart, windowEnd).
 		Scan(&summary.TotalTransactions, &summary.TotalIncome, &summary.TotalExpense); err != nil {
 		slog.Error("GetDashboardSummary (cycle window stats)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -348,7 +366,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 			   AND bc.end_date >= $3 AND bc.end_date <= $4
 			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date
 			 ORDER BY bc.start_date ASC`
-	trendRows, err := db.Pool.Query(ctx, trendQuery, accountID, userID, windowStart, windowEnd)
+	trendRows, err := q.Query(ctx, trendQuery, accountID, userID, windowStart, windowEnd)
 	if err != nil {
 		slog.Error("GetDashboardSummary (billing cycle trend)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -386,7 +404,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
 				 LIMIT 15`
-	catRows, err := db.Pool.Query(ctx, catQuery, catArgs...)
+	catRows, err := q.Query(ctx, catQuery, catArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (by category)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -411,7 +429,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC
 				 LIMIT 15`
-	incomeCatRows, err := db.Pool.Query(ctx, incomeCatQuery, catArgs...)
+	incomeCatRows, err := q.Query(ctx, incomeCatQuery, catArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (income by category)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -444,7 +462,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 					  AND t.date >= $3 AND t.date <= $4
 					ORDER BY t.date DESC, t.created_at DESC
 					LIMIT 10`
-	recentRows, err := db.Pool.Query(ctx, recentQuery, userID, accountID, windowStart, windowEnd)
+	recentRows, err := q.Query(ctx, recentQuery, userID, accountID, windowStart, windowEnd)
 	if err != nil {
 		slog.Error("GetDashboardSummary (recent transactions)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -461,6 +479,12 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 			return
 		}
 		summary.RecentTransactions = append(summary.RecentTransactions, t)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("GetDashboardSummary (commit)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	c.JSON(http.StatusOK, summary)

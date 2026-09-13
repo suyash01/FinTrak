@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pashagolub/pgxmock/v3"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -294,7 +294,7 @@ func TestCreateRule(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO rules").
 		WithArgs(userID, "Swiggy", "contains", catID, &payeeID, 5).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
-			AddRow(ruleID, "Swiggy", "contains", catID, payeeID, 5))
+			AddRow(ruleID, "Swiggy", "contains", catID, &payeeID, 5))
 
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))

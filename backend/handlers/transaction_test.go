@@ -16,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pashagolub/pgxmock/v3"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -231,7 +231,11 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(covered)
 
-	// ensureBillingCycles: back-fill (attaches this transaction by date).
+	// ensureBillingCycles: unassigned exists -> back-fill (attaches this
+	// transaction by date).
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -305,7 +309,10 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(covered)
 
-	// ensureBillingCycles: back-fill.
+	// ensureBillingCycles: unassigned exists -> back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -543,10 +550,14 @@ func TestValidateTransactionsSuccess(t *testing.T) {
 		WillReturnRows(mock.NewRows([]string{"user_id"}).AddRow(userID))
 
 	// One existing transaction that matches the first candidate, and one that
-	// does not match anything.
+	// does not match anything. The lookup is scoped to the batch's distinct
+	// dates (sorted ascending).
 	existingDate := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("SELECT date, amount, type, description FROM transactions").
-		WithArgs(accountID, userID).
+		WithArgs(accountID, userID, []time.Time{
+			time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
+			time.Date(2024, 1, 16, 0, 0, 0, 0, time.UTC),
+		}).
 		WillReturnRows(mock.NewRows([]string{"date", "amount", "type", "description"}).
 			AddRow(existingDate, 250.5, "debit", "Coffee").
 			AddRow(existingDate, 99.0, "credit", "Cashback"))
@@ -823,6 +834,9 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(accountID, userID).
 		WillReturnRows(covered)
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))

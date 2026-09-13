@@ -225,7 +225,11 @@ func GetTransactions(c *gin.Context) {
 
 	// Get total count
 	var total int
-	db.Pool.QueryRow(c, countQuery, countArgs...).Scan(&total)
+	if err := db.Pool.QueryRow(c, countQuery, countArgs...).Scan(&total); err != nil {
+		slog.Error("GetTransactions (count)", "error", err)
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	offset := (page - 1) * limit
 	query += fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", sortCol, sortOrder, paramIdx, paramIdx+1)
@@ -887,32 +891,13 @@ func ImportTransactions(c *gin.Context) {
 	defer tx.Rollback(c)
 
 	// When the user asks to skip duplicates, load the existing transactions for
-	// this account so we can compare against a consistent snapshot.
+	// this account so we can compare against a consistent snapshot. The lookup is
+	// scoped to the batch's dates so it never scans the account's whole history.
 	existing := map[string]bool{}
 	if action == "skip" {
-		rows, err := tx.Query(c,
-			"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
-			req.AccountID, userID)
+		existing, err = loadExistingFingerprints(c, tx, req.AccountID, userID, req.Transactions)
 		if err != nil {
 			slog.Error("ImportTransactions (loading existing transactions)", "error", err)
-			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		for rows.Next() {
-			var d time.Time
-			var amount float64
-			var typ, description string
-			if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
-				rows.Close()
-				slog.Error("ImportTransactions (scanning existing transactions)", "error", err)
-				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			slog.Error("ImportTransactions (iterating existing transactions)", "error", err)
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1018,6 +1003,65 @@ func transactionFingerprint(date string, amount float64, typ, description string
 	return fmt.Sprintf("%s\x00%d\x00%s\x00%s", date, cents, typ, strings.ToLower(strings.TrimSpace(description)))
 }
 
+// transactionQueryer is the minimal query surface needed to load a
+// duplicate-detection snapshot. Both *pgxpool.Pool (via db.DBPool) and pgx.Tx
+// satisfy it.
+type transactionQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// transactionDates returns the distinct dates present in a batch, sorted
+// ascending. Duplicate detection is scoped to these dates because the
+// fingerprint embeds the date, so rows on other dates can never match.
+func transactionDates(txns []models.ImportTransaction) []time.Time {
+	seen := map[string]time.Time{}
+	for _, t := range txns {
+		if _, ok := seen[t.Date]; ok {
+			continue
+		}
+		if d, err := time.Parse("2006-01-02", t.Date); err == nil {
+			seen[t.Date] = d
+		}
+	}
+	dates := make([]time.Time, 0, len(seen))
+	for _, d := range seen {
+		dates = append(dates, d)
+	}
+	sort.Slice(dates, func(i, j int) bool { return dates[i].Before(dates[j]) })
+	return dates
+}
+
+// loadExistingFingerprints builds the fingerprint set used for duplicate
+// detection for the given account. It only loads transactions whose date is in
+// the batch, so the work is bounded by the import window rather than the
+// account's entire history.
+func loadExistingFingerprints(ctx context.Context, q transactionQueryer, accountID, userID uuid.UUID, txns []models.ImportTransaction) (map[string]bool, error) {
+	existing := map[string]bool{}
+	dates := transactionDates(txns)
+	if len(dates) == 0 {
+		return existing, nil
+	}
+
+	rows, err := q.Query(ctx,
+		"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2 AND date = ANY($3)",
+		accountID, userID, dates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var d time.Time
+		var amount float64
+		var typ, description string
+		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
+			return nil, err
+		}
+		existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
+	}
+	return existing, rows.Err()
+}
+
 // ValidateTransactions is a read-only check that reports which of the given
 // candidate transactions already exist in the selected account. It reuses the
 // same fingerprint matching as ImportTransactions (so the results agree with
@@ -1074,31 +1118,11 @@ func ValidateTransactions(c *gin.Context) {
 	}
 
 	// Load the account's existing transactions into a fingerprint set so each
-	// candidate can be compared in memory.
-	existing := map[string]bool{}
-	rows, err := db.Pool.Query(c,
-		"SELECT date, amount, type, description FROM transactions WHERE account_id = $1 AND user_id = $2",
-		req.AccountID, userID)
+	// candidate can be compared in memory. Scoped to the candidate dates so the
+	// query stays bounded by the import window rather than the full history.
+	existing, err := loadExistingFingerprints(c, db.Pool, req.AccountID, userID, req.Transactions)
 	if err != nil {
 		slog.Error("ValidateTransactions (loading existing transactions)", "error", err)
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	for rows.Next() {
-		var d time.Time
-		var amount float64
-		var typ, description string
-		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
-			rows.Close()
-			slog.Error("ValidateTransactions (scanning existing transactions)", "error", err)
-			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		existing[transactionFingerprint(d.Format("2006-01-02"), amount, typ, description)] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		slog.Error("ValidateTransactions (iterating existing transactions)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

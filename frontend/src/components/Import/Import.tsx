@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, type ChangeEvent } from "react";
 import Papa from "papaparse";
-import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import {
   ChevronRight,
   Check,
@@ -807,7 +807,7 @@ export default function Import() {
   ];
 
   // Dynamic columns for the raw-CSV preview (one per header).
-  const csvPreviewColumns = useMemo<ColumnDef<CsvRow>[]>(() => {
+  const csvPreviewColumns = useMemo<ColumnDef<CsvRow, any>[]>(() => {
     const colHelper = createColumnHelper<CsvRow>();
     return csvHeaders.map((h) =>
       colHelper.accessor((row) => row[h], {
@@ -842,7 +842,7 @@ export default function Import() {
   }, [csvHeaders, csvTarget]);
 
   // Step 4 parsed-transactions preview.
-  const previewColumns = useMemo<ColumnDef<ImportTransaction>[]>(() => {
+  const previewColumns = useMemo<ColumnDef<ImportTransaction, any>[]>(() => {
     const colHelper = createColumnHelper<ImportTransaction>();
     const headBase =
       "py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";
@@ -962,7 +962,7 @@ export default function Import() {
   }, [payees, excluded, parsedTransactions]);
 
   // Validation-results dialog table.
-  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
+  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult, any>[]>(() => {
     const colHelper = createColumnHelper<ValidateTransactionResult>();
     const headBase =
       "py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";

@@ -15,7 +15,7 @@ import (
 	"github.com/fintrak/backend/internal/crypto"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
-	"github.com/pashagolub/pgxmock/v3"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -1,5 +1,6 @@
 import * as React from "react";
 import {
+  type CellData,
   type Column,
   type ColumnDef,
   type OnChangeFn,
@@ -8,13 +9,14 @@ import {
   type RowData,
   type RowSelectionState,
   type SortingState,
-  type Table as TanstackTable,
+  type TableFeatures,
+  type ReactTable,
   flexRender,
   getCoreRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
-} from "@tanstack/react-table";
+} from "@/lib/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,15 +31,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-declare module "@tanstack/react-table" {
+declare module "@tanstack/table-core" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  interface ColumnMeta<TData extends RowData, TValue> {
+  interface ColumnMeta<
+    in out TFeatures extends TableFeatures,
+    in out TData extends RowData,
+    TValue extends CellData = CellData,
+  > {
     headerClassName?: string;
     cellClassName?: string;
   }
 }
 
-interface DataTableProps<TData, TValue> {
+interface DataTableProps<TData extends RowData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   loading?: boolean;
@@ -64,7 +70,7 @@ interface DataTableProps<TData, TValue> {
   theadClassName?: string;
   headerClassName?: string;
   cellClassName?: string;
-  footer?: (table: TanstackTable<TData>) => React.ReactNode;
+  footer?: (table: ReactTable<TData>) => React.ReactNode;
   // Row virtualization: when enabled, only the rows near the scroll position
   // are rendered inside a vertically scrollable region bounded by `maxHeight`,
   // which keeps large pages (e.g. 1000 transactions) light. `estimateRowSize`
@@ -74,7 +80,7 @@ interface DataTableProps<TData, TValue> {
   estimateRowSize?: number;
 }
 
-export function DataTable<TData, TValue>({
+export function DataTable<TData extends RowData, TValue>({
   columns,
   data,
   loading = false,
@@ -108,7 +114,9 @@ export function DataTable<TData, TValue>({
 
   const table = useReactTable({
     data,
-    columns,
+    // v9's legacy types are invariant in TValue while the v8 API accepted any
+    // column value type, so widen the columns array to the table's default.
+    columns: columns as unknown as ColumnDef<TData, unknown>[],
     getRowId,
     state: { sorting, pagination, rowSelection },
     onSortingChange,
@@ -287,7 +295,7 @@ export function DataTable<TData, TValue>({
   );
 }
 
-export function DataTableColumnHeader<TData, TValue>({
+export function DataTableColumnHeader<TData extends RowData, TValue>({
   column,
   title,
   className,
@@ -325,10 +333,10 @@ export function DataTableColumnHeader<TData, TValue>({
   );
 }
 
-export function DataTablePagination<TData>({
+export function DataTablePagination<TData extends RowData>({
   table,
 }: {
-  table: TanstackTable<TData>;
+  table: ReactTable<TData>;
 }) {
   const pageIndex = table.getState().pagination.pageIndex;
   const pageCount = table.getPageCount();

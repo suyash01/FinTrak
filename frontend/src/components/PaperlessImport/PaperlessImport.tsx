@@ -34,7 +34,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   createColumnHelper,
   type ColumnDef,
-} from "@tanstack/react-table";
+} from "@/lib/react-table";
 import { DataTable } from "@/components/ui/data-table";
 import {
   Dialog,
@@ -662,7 +662,7 @@ export default function PaperlessImport() {
   const excludedCount = parsedCount - includedTransactions.length;
 
   // Preview table (parsed transactions from the selected documents).
-  const previewColumns = useMemo<ColumnDef<ImportTransaction>[]>(() => {
+  const previewColumns = useMemo<ColumnDef<ImportTransaction, any>[]>(() => {
     const colHelper = createColumnHelper<ImportTransaction>();
     const headBase =
       "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
@@ -764,7 +764,7 @@ export default function PaperlessImport() {
   }, [excluded, parsedCount, preview]);
 
   // Validation-results dialog table.
-  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult>[]>(() => {
+  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult, any>[]>(() => {
     const colHelper = createColumnHelper<ValidateTransactionResult>();
     const headBase =
       "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";

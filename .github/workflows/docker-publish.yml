@@ -72,18 +72,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
         with:
-          python-version: "3.12"
-      - name: Install dependencies
+          version: "0.12.13"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "statement_parser/uv.lock"
+      - name: Verify uv.lock is up to date
         run: |
           cd statement_parser
-          pip install -r requirements.txt
+          uv lock --check
       - name: Run tests
         run: |
           cd statement_parser
-          python -m unittest discover -s tests -v
+          uv run --frozen python -m unittest discover -s tests -v
 
   publish-backend:
     needs: [test-backend, publish-parser]

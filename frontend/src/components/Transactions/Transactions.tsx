@@ -14,7 +14,7 @@ import {
   type PaginationState,
   type RowSelectionState,
   type SortingState,
-} from "@tanstack/react-table";
+} from "@/lib/react-table";
 import {
   Search,
   Trash2,
@@ -722,7 +722,7 @@ export default function Transactions() {
   const headerBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
 
   // Column definitions for the transactions table.
-  const columns = useMemo<ColumnDef<Transaction>[]>(
+  const columns = useMemo<ColumnDef<Transaction, any>[]>(
     () => [
       columnHelper.display({
         id: "select",

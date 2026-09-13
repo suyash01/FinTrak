@@ -516,9 +516,12 @@ func GetTransferSuggestions(c *gin.Context) {
 			  AND t.user_id = d.user_id
 			  AND t.type = 'credit'
 			  AND t.amount = d.amount
-			  AND ABS(t.date - d.date) <= 3
+			  AND t.date >= d.date - 3
+			  AND t.date <= d.date + 3
 			  AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = d.id OR to_txn_id = d.id))
 			  AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = t.id OR to_txn_id = t.id))
+			ORDER BY t.date DESC
+			LIMIT 5
 			) cr
 		JOIN accounts ca ON cr.account_id = ca.id
 		WHERE d.type = 'debit' AND d.user_id = $1

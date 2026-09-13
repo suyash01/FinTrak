@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pashagolub/pgxmock/v3"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -93,10 +93,10 @@ func TestEnsureBillingCyclesUpToDate(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(covered)
 
-	// Back-fill unassigned transactions.
-	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
+	// Nothing unassigned -> the back-fill UPDATE is skipped.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
 		WithArgs(acctID, userID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
 
 	err = ensureBillingCycles(context.Background(), mock, userID, acctID, 1)
 	assert.NoError(t, err)
@@ -130,6 +130,11 @@ func TestEnsureBillingCyclesGenerates(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+
+	// An unassigned transaction exists -> generate then back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 	// One INSERT per month from (earliest month - 1) through the in-progress
 	// month. Cycles end on the account's billing day (the 1st by default).
@@ -187,6 +192,11 @@ func TestEnsureBillingCyclesRegeneratesOnBillingDayChange(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+
+	// An unassigned transaction exists -> generate then back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 	months := billingCycleMonths(earliest, now, 5)
 	for _, ms := range months {
@@ -250,6 +260,11 @@ func TestGetBillingCycles(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(covered)
+
+	// unassigned exists -> back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 	// ensureBillingCycles: back-fill.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -323,6 +338,11 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(covered)
+
+	// unassigned exists -> back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 	// ensureBillingCycles: back-fill.
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
@@ -451,6 +471,11 @@ func TestEnsureBillingCyclesBackfillScopesCycleToOwnAccount(t *testing.T) {
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(covered)
+
+	// An unassigned transaction exists -> back-fill.
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
 	// The back-fill must scope the cycle to the transaction's OWN account and
 	// user, otherwise an import can be attached to another account's cycle

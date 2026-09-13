@@ -134,7 +134,34 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	}
 
 	today := dateOnly(time.Now())
-	for _, ms := range billingCycleMonths(earliest, today, billingDay) {
+	months := billingCycleMonths(earliest, today, billingDay)
+
+	// If every desired month already has a cycle we can skip the per-month
+	// INSERT loop entirely — the common case on every read.
+	allCovered := true
+	for _, ms := range months {
+		if !coveredMonths[ms] {
+			allCovered = false
+			break
+		}
+	}
+
+	// The back-fill UPDATE scans the account's transactions, so only run it when
+	// an unassigned transaction actually exists. Combined with allCovered this
+	// keeps the steady-state read path to a handful of index lookups instead of
+	// a full scan plus one INSERT per month.
+	var hasUnassigned bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = $1 AND user_id = $2 AND billing_cycle_id IS NULL)`,
+		accountID, userID).Scan(&hasUnassigned); err != nil {
+		return err
+	}
+
+	if allCovered && !hasUnassigned {
+		return nil
+	}
+
+	for _, ms := range months {
 		// Skip months that already have a cycle.
 		if coveredMonths[ms] {
 			continue
@@ -147,6 +174,10 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 			accountID, userID, start, end, end.Format("Jan 2006")); err != nil {
 			return err
 		}
+	}
+
+	if !hasUnassigned {
+		return nil
 	}
 
 	// Suggested default: attach every unassigned transaction to the cycle whose
