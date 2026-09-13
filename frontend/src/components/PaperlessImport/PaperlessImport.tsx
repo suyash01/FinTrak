@@ -55,7 +55,7 @@ import api from "../../api/client";
 import { toastApiError } from "../../lib/errors";
 import { useDomainData } from "../../context/DomainDataContext";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
-import { filterExcluded, siblingIndices } from "../Import/Import";
+import { filterExcluded, siblingIndices } from "../Import/importHelpers";
 import type {
   PaperlessDocument,
   StatementExtractor,

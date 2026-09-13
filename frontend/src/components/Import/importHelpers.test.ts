@@ -12,7 +12,7 @@ import {
   apiDate,
   buildParsedTransactions,
   autoDetectMapping,
-} from "./Import";
+} from "./importHelpers";
 import type { Account, AccountType, ImportTransaction } from "../../types";
 
 describe("targetFieldsFor", () => {

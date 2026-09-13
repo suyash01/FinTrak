@@ -339,7 +339,7 @@ func TestImportPaperlessDocumentDoesNotTagOnParse(t *testing.T) {
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
 
 	r := newPaperlessTestRouter()
-	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc","tagOnImport":true}`)
+	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
 
