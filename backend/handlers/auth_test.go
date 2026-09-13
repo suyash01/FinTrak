@@ -15,6 +15,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
@@ -512,4 +513,54 @@ func TestMe(t *testing.T) {
 	assert.Equal(t, "me@example.com", user.Email)
 	assert.Equal(t, "admin", user.Role)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMeErrors(t *testing.T) {
+	t.Run("user not found", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		srv := newTestServer(mock)
+
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.Use(testAuthMiddleware())
+		r.GET("/auth/me", srv.Me)
+
+		mock.ExpectQuery("SELECT id, email, role FROM users").
+			WithArgs(testUserID()).
+			WillReturnError(pgx.ErrNoRows)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("database error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		srv := newTestServer(mock)
+
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.Use(testAuthMiddleware())
+		r.GET("/auth/me", srv.Me)
+
+		mock.ExpectQuery("SELECT id, email, role FROM users").
+			WithArgs(testUserID()).
+			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }

@@ -49,6 +49,10 @@ jobs:
         run: |
           cd backend
           go test -v -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Enforce coverage floor
+        run: |
+          cd backend
+          go run ./cmd/covercheck -profile coverage.out -min 85
       - name: Upload backend coverage
         if: always()
         uses: actions/upload-artifact@v7

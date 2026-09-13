@@ -92,4 +92,128 @@ describe("PreviewStep", () => {
     renderStep({ dupCount: 1, existingDupCount: 1 });
     expect(screen.getByText(/look like duplicates/)).toBeInTheDocument();
   });
+
+  it("reports CSV rows skipped as empty or invalid", () => {
+    renderStep({
+      csvData: [
+        { Date: "1", Narration: "a", Amount: "1" },
+        { Date: "2", Narration: "b", Amount: "2" },
+        { Date: "bad", Narration: "c", Amount: "x" },
+        { Date: "3", Narration: "d", Amount: "3" },
+      ],
+    });
+    expect(screen.getByText(/2 rows skipped/)).toBeInTheDocument();
+  });
+
+  it("uses singular copy for one excluded transaction", () => {
+    renderStep({ includedCount: 1, excludedCount: 1 });
+    expect(
+      screen.getByText(/1 transaction excluded from import/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("(1 selected)")).toBeInTheDocument();
+  });
+
+  it("breaks down existing and in-file duplicates", () => {
+    renderStep({ dupCount: 3, existingDupCount: 2, inFileDupCount: 1 });
+    expect(
+      screen.getByText(/2 already exist in this account/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/repeats? within this file/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the statement summary entries", () => {
+    renderStep({ statementSummary: { total_amount: "1250", entries: 4 } });
+    expect(screen.getByText("Statement Summary")).toBeInTheDocument();
+    expect(screen.getByText("total amount:")).toBeInTheDocument();
+    expect(screen.getByText("1250")).toBeInTheDocument();
+  });
+
+  it("renders an empty preview with disabled actions", () => {
+    renderStep({ parsedTransactions: [], includedCount: 0 });
+    expect(screen.getByText(/Preview — 0 transactions/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Import 0 Transactions" }),
+    ).toBeDisabled();
+  });
+
+  it("shows validating and importing progress states", () => {
+    renderStep({ validating: true, importing: true });
+    expect(
+      screen.getByRole("button", { name: /Validating/ }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Importing/ })).toBeDisabled();
+  });
+
+  it("makes the back button return to upload for a PDF import", async () => {
+    const user = userEvent.setup();
+    const props = renderStep({
+      statementTxns: TXNS,
+      pdfFile: new File(["pdf"], "s.pdf", { type: "application/pdf" }),
+    });
+    await user.click(screen.getByRole("button", { name: "Back to Upload" }));
+    expect(props.onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the reparse controls and invokes reparse", async () => {
+    const user = userEvent.setup();
+    const props = renderStep({
+      statementTxns: TXNS,
+      pdfFile: new File(["pdf"], "s.pdf", { type: "application/pdf" }),
+      extractors: [{ name: "sbi_cc", display_name: "SBI Credit Card" }],
+    });
+    expect(screen.getByText("Reparse with extractor")).toBeInTheDocument();
+    expect(screen.getByText("Date Format")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reparse PDF" }));
+    expect(props.onReparse).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables reparse and relabels it while parsing", () => {
+    renderStep({
+      statementTxns: TXNS,
+      pdfFile: new File(["pdf"], "s.pdf", { type: "application/pdf" }),
+      parsing: true,
+    });
+    expect(screen.getByRole("button", { name: /Reparsing/ })).toBeDisabled();
+  });
+
+  it("renders and updates the billing cycle selection", async () => {
+    const user = userEvent.setup();
+    const props = renderStep({
+      selectedAccountHasBillingDay: 15,
+      billingCycles: [
+        {
+          id: "bc1",
+          accountId: "acct-1",
+          startDate: "2024-03-01",
+          endDate: "2024-03-31",
+          label: "March",
+          totalOutstanding: 0,
+          transactionCount: 0,
+        },
+      ],
+      importBillingCycleId: "",
+    });
+    expect(
+      screen.getByText(/attach all imported transactions/i),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: /March/ }));
+    expect(props.onImportBillingCycleChange).toHaveBeenCalledWith("bc1");
+  });
+
+  it("maps the billing cycle Auto option back to an empty id", async () => {
+    const user = userEvent.setup();
+    const props = renderStep({
+      selectedAccountHasBillingDay: 15,
+      billingCycles: [],
+      importBillingCycleId: "bc1",
+    });
+    await user.click(screen.getByRole("combobox"));
+    await user.click(
+      await screen.findByRole("option", { name: /Auto \(by transaction date\)/ }),
+    );
+    expect(props.onImportBillingCycleChange).toHaveBeenCalledWith("");
+  });
 });

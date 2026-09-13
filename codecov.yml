@@ -8,10 +8,30 @@ coverage:
       default:
         target: auto
         threshold: 1%
+      backend:
+        target: 85%
+        threshold: 1%
+        flags:
+          - backend
+      frontend:
+        target: 75%
+        threshold: 1%
+        flags:
+          - frontend
+      parser:
+        target: 90%
+        threshold: 1%
+        flags:
+          - parser
     patch:
       default:
         target: auto
         threshold: 1%
+
+# Process bootstrap (main()) is exercised only by launching the real binary, not
+# by unit tests; the local covercheck gate excludes the same region.
+ignore:
+  - "backend/main.go"
 
 comment:
   layout: "reach,diff,flags,tree"

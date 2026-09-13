@@ -107,3 +107,31 @@ func TestValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(3193999), v)
 }
+
+func TestFloat64CentsAndAbs(t *testing.T) {
+	assert.Equal(t, 1.23, Amount(123).Float64())
+	assert.Equal(t, -0.01, Amount(-1).Float64())
+	assert.Equal(t, int64(123), Amount(123).Cents())
+	assert.Equal(t, Amount(123), Amount(-123).Abs())
+	assert.Equal(t, Amount(123), Amount(123).Abs())
+}
+
+func TestScanNumericTypes(t *testing.T) {
+	var a Amount
+
+	require.NoError(t, a.Scan(int(7)))
+	assert.Equal(t, Amount(7), a)
+
+	require.NoError(t, a.Scan(int32(8)))
+	assert.Equal(t, Amount(8), a)
+
+	assert.Error(t, a.Scan([]byte("not-a-number")))
+	assert.Error(t, a.Scan("not-a-number"))
+}
+
+func TestUnmarshalJSONErrors(t *testing.T) {
+	var a Amount
+	assert.Error(t, a.UnmarshalJSON([]byte(`"abc"`)))
+	assert.Error(t, a.UnmarshalJSON([]byte(`""`)))
+	assert.Error(t, a.UnmarshalJSON([]byte(`"1.2.3"`)))
+}

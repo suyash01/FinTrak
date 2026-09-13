@@ -317,3 +317,171 @@ func TestDeleteCategoryNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestGetCategoriesScanError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newCategoryTestRouter(srv)
+
+	// One column for an eight-column Scan forces a row scan failure.
+	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.group_id").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
+
+	req, _ := http.NewRequest(http.MethodGet, "/categories", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateCategoryErrors(t *testing.T) {
+	t.Run("invalid id", func(t *testing.T) {
+		r := newCategoryTestRouter(newTestServer(nil))
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/not-a-uuid", bytes.NewBufferString(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		r := newCategoryTestRouter(newTestServer(nil))
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/"+uuid.New().String(), bytes.NewBufferString("{"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("success without group change", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newCategoryTestRouter(newTestServer(mock))
+
+		catID := uuid.New()
+		mock.ExpectQuery("UPDATE categories").
+			WithArgs(catID, "Renamed", "", "", "", testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+				AddRow(catID, "Renamed", "home", "#6366f1", "expense"))
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/"+catID.String(), bytes.NewBufferString(`{"name":"Renamed"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("group check database error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newCategoryTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs("expense", testUserID()).
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/"+uuid.New().String(), bytes.NewBufferString(`{"groupId":"expense"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("group not usable", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newCategoryTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs("foreign", testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/"+uuid.New().String(), bytes.NewBufferString(`{"groupId":"foreign"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("database error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newCategoryTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("UPDATE categories").
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodPut, "/categories/"+uuid.New().String(), bytes.NewBufferString(`{"name":"Nope"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestDeleteCategoryErrors(t *testing.T) {
+	t.Run("invalid id", func(t *testing.T) {
+		r := newCategoryTestRouter(newTestServer(nil))
+
+		req, _ := http.NewRequest(http.MethodDelete, "/categories/not-a-uuid", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("transaction error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newCategoryTestRouter(newTestServer(mock))
+
+		catID := uuid.New()
+		mock.ExpectBegin()
+		mock.ExpectExec("UPDATE transactions SET category_id = NULL").
+			WithArgs(catID, testUserID()).
+			WillReturnError(assert.AnError)
+		mock.ExpectRollback()
+
+		req, _ := http.NewRequest(http.MethodDelete, "/categories/"+catID.String(), nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}

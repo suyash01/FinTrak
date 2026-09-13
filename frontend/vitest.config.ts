@@ -34,10 +34,10 @@ export default defineConfig({
       // Regression floor, set just below the current baseline. Ratchet these up
       // as component-test coverage (TEST-1) lands.
       thresholds: {
-        statements: 57,
-        branches: 53,
-        functions: 50,
-        lines: 58,
+        statements: 76,
+        branches: 67,
+        functions: 71,
+        lines: 78,
       },
     },
   },

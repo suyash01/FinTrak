@@ -53,7 +53,7 @@ export default function AccountTypesManager() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      if (editingId) {
+      if (editingId && editingId !== "new") {
         await api.updateAccountType(editingId, {
           name: formData.name,
           positiveTxnType: formData.positiveTxnType,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -425,4 +426,48 @@ func mustAttr(t *testing.T, r slog.Record, key string) string {
 	val, ok := recordAttr(t, r, key)
 	require.True(t, ok, "expected attr %q", key)
 	return val
+}
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		level string
+		env   string
+		want  slog.Level
+	}{
+		{"debug", "production", slog.LevelDebug},
+		{"info", "development", slog.LevelInfo},
+		{"WARN", "", slog.LevelWarn},
+		{" error ", "", slog.LevelError},
+		{"", "production", slog.LevelInfo},
+		{"", "development", slog.LevelDebug},
+		{"bogus", "production", slog.LevelInfo},
+		{"bogus", "development", slog.LevelDebug},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level+"_"+tt.env, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseLevel(tt.level, tt.env))
+		})
+	}
+}
+
+func TestNewConfiguresDefaultLoggerAndBridge(t *testing.T) {
+	oldDefault := slog.Default()
+	oldOutput := log.Writer()
+	t.Cleanup(func() {
+		slog.SetDefault(oldDefault)
+		log.SetOutput(oldOutput)
+	})
+
+	require.NotNil(t, New("production", ""))
+	_, ok := log.Writer().(logBridge)
+	require.True(t, ok, "New should route the stdlib logger through the slog bridge")
+
+	h := &collectHandler{level: slog.LevelDebug}
+	slog.SetDefault(slog.New(h))
+
+	n, err := logBridge{}.Write([]byte("hello\n"))
+	require.NoError(t, err)
+	assert.Equal(t, len("hello\n"), n)
+	require.Len(t, h.records, 1)
+	assert.Equal(t, "hello", h.records[0].Message)
 }

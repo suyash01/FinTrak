@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 )
 
@@ -23,6 +24,41 @@ func TestNilLimiterAllowsEverything(t *testing.T) {
 	var l *Limiter
 	assert.True(t, l.Allow("anything"))
 	l.Evict()
+	// A nil limiter's janitor returns immediately without blocking.
+	l.StartJanitor(make(chan struct{}), time.Second)
+}
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.Equal(t, 5, cfg.Burst)
+	assert.Equal(t, 10*time.Minute, cfg.TTL)
+	assert.Equal(t, rate.Every(6*time.Second), cfg.Rate)
+}
+
+func TestNewAppliesMinimums(t *testing.T) {
+	l := New(Config{})
+	assert.Equal(t, 1, l.cfg.Burst)
+	assert.Equal(t, 10*time.Minute, l.cfg.TTL)
+}
+
+func TestStartJanitorEvictsUntilStopped(t *testing.T) {
+	base := time.Now()
+	l := New(Config{Rate: rate.Inf, Burst: 1, TTL: 20 * time.Millisecond})
+	l.now = func() time.Time { return base }
+	assert.True(t, l.Allow("stale"))
+	l.now = func() time.Time { return base.Add(time.Hour) }
+
+	stop := make(chan struct{})
+	// A non-positive interval defaults to half the TTL.
+	go l.StartJanitor(stop, 0)
+
+	require.Eventually(t, func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.entries) == 0
+	}, time.Second, 5*time.Millisecond)
+
+	close(stop)
 }
 
 func TestEvictRemovesIdleKeys(t *testing.T) {

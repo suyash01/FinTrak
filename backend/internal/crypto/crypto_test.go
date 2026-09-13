@@ -109,6 +109,33 @@ func TestReencryptSealsPlaintext(t *testing.T) {
 	assert.Equal(t, "plain-token", dec)
 }
 
+func TestNewGCMRejectsInvalidKeySize(t *testing.T) {
+	_, err := newGCM([]byte("too-short"))
+	assert.Error(t, err)
+}
+
+func TestDecryptRejectsShortPayloads(t *testing.T) {
+	short := base64.StdEncoding.EncodeToString([]byte("short"))
+	_, err := Decrypt(PrefixV2+short, "key")
+	assert.Error(t, err)
+
+	_, err = Decrypt(Prefix+short, "key")
+	assert.Error(t, err)
+}
+
+func TestReencryptPropagatesDecryptError(t *testing.T) {
+	_, err := Reencrypt(PrefixV2+"not-base64!!", "old-key", "new-key")
+	assert.Error(t, err)
+}
+
+func TestEncryptDecryptEmptyString(t *testing.T) {
+	enc, err := Encrypt("", "key")
+	require.NoError(t, err)
+	dec, err := Decrypt(enc, "key")
+	require.NoError(t, err)
+	assert.Equal(t, "", dec)
+}
+
 // v1Ciphertext builds a value in the pre-HKDF format the same way the legacy
 // production code did: a bare SHA-256 key and nonce || sealed.
 func v1Ciphertext(t *testing.T, key, plaintext string) string {

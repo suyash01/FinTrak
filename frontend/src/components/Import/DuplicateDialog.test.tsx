@@ -54,4 +54,66 @@ describe("DuplicateDialog", () => {
     expect(props.onSkip).toHaveBeenCalledTimes(1);
     expect(props.onKeep).toHaveBeenCalledTimes(1);
   });
+
+  it("renders nothing while closed", () => {
+    renderDialog({ open: false });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("closes through onOpenChange when cancelled", async () => {
+    const user = userEvent.setup();
+    const props = renderDialog();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(props.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("disables every action while importing", () => {
+    renderDialog({ importing: true });
+    expect(
+      screen.getByRole("button", { name: "Skip duplicates" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Keep all (import everything)" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  });
+
+  it("hides the in-file line when there are no within-file repeats", () => {
+    renderDialog({ dupCount: 2, existingDupCount: 2, inFileDupCount: 0 });
+    const items = screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(
+      items.some((t) => t.includes("already exist in this account")),
+    ).toBe(true);
+    expect(items.some((t) => t.includes("within this file"))).toBe(false);
+  });
+
+  it("hides the existing-account line when no duplicates already exist", () => {
+    renderDialog({ dupCount: 2, existingDupCount: 0, inFileDupCount: 2 });
+    const items = screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(
+      items.some((t) => t.includes("already exist in this account")),
+    ).toBe(false);
+    expect(
+      items.some((t) => t.includes("repeat") && t.includes("within this file")),
+    ).toBe(true);
+  });
+
+  it("uses singular wording for a single duplicated transaction", () => {
+    renderDialog({
+      dupCount: 1,
+      includedCount: 1,
+      existingDupCount: 1,
+      inFileDupCount: 0,
+    });
+    expect(
+      screen.getByText(/1 of the 1 transaction match/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 already exists in this account/),
+    ).toBeInTheDocument();
+  });
 });

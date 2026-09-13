@@ -99,3 +99,9 @@ func TestCloseWithNilPool(t *testing.T) {
 	// Close must be a no-op (not panic) when the pool is nil.
 	assert.NotPanics(t, Close)
 }
+
+func TestMigrateRejectsInvalidURL(t *testing.T) {
+	// A malformed DSN fails while constructing the migrate instance, before any
+	// network connection is attempted.
+	assert.Error(t, Migrate("://not-a-valid-dsn"))
+}

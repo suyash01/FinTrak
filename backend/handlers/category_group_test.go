@@ -340,3 +340,189 @@ func TestDeleteGlobalCategory(t *testing.T) {
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestGetGroupsScanError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newGroupTestRouter(srv)
+
+	mock.ExpectQuery("SELECT id, name, icon, color, is_base, user_id, sort_order FROM category_groups").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("income"))
+
+	req, _ := http.NewRequest(http.MethodGet, "/groups", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateGroupErrors(t *testing.T) {
+	t.Run("immutable global group", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("UPDATE category_groups").
+			WithArgs("expense", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
+			WillReturnError(pgx.ErrNoRows)
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs("expense").
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+
+		req, _ := http.NewRequest(http.MethodPut, "/groups/expense", bytes.NewBufferString(`{"name":"Nope"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "immutable")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("UPDATE category_groups").
+			WithArgs("ghost", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
+			WillReturnError(pgx.ErrNoRows)
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs("ghost").
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+		req, _ := http.NewRequest(http.MethodPut, "/groups/ghost", bytes.NewBufferString(`{"name":"Nope"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("not found when existence check fails", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("UPDATE category_groups").
+			WithArgs("ghost", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
+			WillReturnError(pgx.ErrNoRows)
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs("ghost").
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodPut, "/groups/ghost", bytes.NewBufferString(`{"name":"Nope"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("database error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("UPDATE category_groups").
+			WithArgs("vacation", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodPut, "/groups/vacation", bytes.NewBufferString(`{"name":"Nope"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestDeleteGroupErrors(t *testing.T) {
+	t.Run("count error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("SELECT COUNT").
+			WithArgs("vacation", testUserID()).
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodDelete, "/groups/vacation", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("SELECT COUNT").
+			WithArgs("ghost", testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec("DELETE FROM category_groups").
+			WithArgs("ghost", testUserID()).
+			WillReturnResult(pgxmock.NewResult("DELETE", 0))
+
+		req, _ := http.NewRequest(http.MethodDelete, "/groups/ghost", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("delete error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newGroupTestRouter(newTestServer(mock))
+
+		mock.ExpectQuery("SELECT COUNT").
+			WithArgs("vacation", testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec("DELETE FROM category_groups").
+			WithArgs("vacation", testUserID()).
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodDelete, "/groups/vacation", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
