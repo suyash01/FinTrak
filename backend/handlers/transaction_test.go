@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -194,7 +195,7 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 		CategoryID:  &catID,
 	}
@@ -208,7 +209,7 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -266,7 +267,7 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 		AccountID:      accountID,
 		Date:           "2024-01-15",
 		Description:    "Coffee",
-		Amount:         250.5,
+		Amount:         money.FromFloat(250.5),
 		Type:           "debit",
 		CategoryID:     &catID,
 		BillingCycleID: &cycleID,
@@ -286,7 +287,7 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -367,7 +368,7 @@ func TestImportTransactionsValidatesPayload(t *testing.T) {
 	valid := models.ImportTransaction{
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 	}
 
@@ -383,9 +384,9 @@ func TestImportTransactionsValidatesPayload(t *testing.T) {
 		{name: "empty transactions", request: models.ImportRequest{AccountID: accountID}},
 		{name: "too many transactions", request: models.ImportRequest{AccountID: accountID, Transactions: tooMany}},
 		{name: "invalid duplicate action", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{valid}, DuplicateAction: "maybe"}},
-		{name: "invalid type", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "refund"}}}},
-		{name: "invalid amount", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 0, Type: "debit"}}}},
-		{name: "invalid date", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "15/01/2024", Description: "X", Amount: 1, Type: "debit"}}}},
+		{name: "invalid type", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "refund"}}}},
+		{name: "invalid amount", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(0), Type: "debit"}}}},
+		{name: "invalid date", request: models.ImportRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "15/01/2024", Description: "X", Amount: money.FromFloat(1), Type: "debit"}}}},
 	}
 
 	for _, tt := range tests {
@@ -411,7 +412,7 @@ func TestImportTransactionsAccountNotFound(t *testing.T) {
 
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID:    accountID,
-		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
 	})
 	w := postImport(r, body)
 
@@ -429,7 +430,7 @@ func TestImportTransactionsAccountForbidden(t *testing.T) {
 
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID:    accountID,
-		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
 	})
 	w := postImport(r, body)
 
@@ -470,7 +471,7 @@ func TestValidateTransactionsValidatesPayload(t *testing.T) {
 	valid := models.ImportTransaction{
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 	}
 
@@ -485,9 +486,9 @@ func TestValidateTransactionsValidatesPayload(t *testing.T) {
 	}{
 		{name: "empty transactions", request: models.ValidateTransactionsRequest{AccountID: accountID}},
 		{name: "too many transactions", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: tooMany}},
-		{name: "invalid type", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "refund"}}}},
-		{name: "invalid amount", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 0, Type: "debit"}}}},
-		{name: "invalid date", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "15/01/2024", Description: "X", Amount: 1, Type: "debit"}}}},
+		{name: "invalid type", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "refund"}}}},
+		{name: "invalid amount", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(0), Type: "debit"}}}},
+		{name: "invalid date", request: models.ValidateTransactionsRequest{AccountID: accountID, Transactions: []models.ImportTransaction{{Date: "15/01/2024", Description: "X", Amount: money.FromFloat(1), Type: "debit"}}}},
 	}
 
 	for _, tt := range tests {
@@ -513,7 +514,7 @@ func TestValidateTransactionsAccountNotFound(t *testing.T) {
 
 	body, _ := json.Marshal(models.ValidateTransactionsRequest{
 		AccountID:    accountID,
-		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
 	})
 	w := postValidate(r, body)
 
@@ -531,7 +532,7 @@ func TestValidateTransactionsAccountForbidden(t *testing.T) {
 
 	body, _ := json.Marshal(models.ValidateTransactionsRequest{
 		AccountID:    accountID,
-		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
 	})
 	w := postValidate(r, body)
 
@@ -565,8 +566,8 @@ func TestValidateTransactionsSuccess(t *testing.T) {
 	body, _ := json.Marshal(models.ValidateTransactionsRequest{
 		AccountID: accountID,
 		Transactions: []models.ImportTransaction{
-			{Date: "2024-01-15", Description: "Coffee", Amount: 250.5, Type: "debit"},    // exists
-			{Date: "2024-01-16", Description: "Groceries", Amount: 120.0, Type: "debit"}, // new
+			{Date: "2024-01-15", Description: "Coffee", Amount: money.FromFloat(250.5), Type: "debit"},    // exists
+			{Date: "2024-01-16", Description: "Groceries", Amount: money.FromFloat(120.0), Type: "debit"}, // new
 		},
 	})
 	w := postValidate(r, body)
@@ -613,25 +614,25 @@ func TestAttachTransactionsToCycle(t *testing.T) {
 
 func TestTransactionFingerprint(t *testing.T) {
 	assert.Equal(t,
-		transactionFingerprint("2024-01-15", 250.5, "debit", "Coffee"),
-		transactionFingerprint("2024-01-15", 250.5, "debit", "  Coffee "),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "Coffee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "  Coffee "),
 	)
 	assert.Equal(t,
-		transactionFingerprint("2024-01-15", 250.5, "debit", "Coffee"),
-		transactionFingerprint("2024-01-15", 250.499999, "debit", "CoFFee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "Coffee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.499999), "debit", "CoFFee"),
 	)
 	assert.NotEqual(t,
-		transactionFingerprint("2024-01-15", 250.5, "debit", "Coffee"),
-		transactionFingerprint("2024-01-15", 250.51, "debit", "Coffee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "Coffee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.51), "debit", "Coffee"),
 	)
 	assert.NotEqual(t,
-		transactionFingerprint("2024-01-15", 250.5, "debit", "Coffee"),
-		transactionFingerprint("2024-01-16", 250.5, "debit", "Coffee"),
+		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "Coffee"),
+		transactionFingerprint("2024-01-16", money.FromFloat(250.5), "debit", "Coffee"),
 	)
 }
 
 func TestDedupeTransactions(t *testing.T) {
-	mk := func(date string, amt float64, desc string) models.ImportTransaction {
+	mk := func(date string, amt money.Amount, desc string) models.ImportTransaction {
 		return models.ImportTransaction{Date: date, Description: desc, Amount: amt, Type: "debit"}
 	}
 
@@ -717,7 +718,7 @@ func TestGetTransactions(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	assert.Len(t, res.Data, 1)
 	assert.Equal(t, "Coffee", res.Data[0].Description)
-	assert.Equal(t, 250.5, res.Data[0].Amount)
+	assert.Equal(t, money.FromFloat(250.5), res.Data[0].Amount)
 	assert.Equal(t, 1, res.Total)
 	assert.Equal(t, 1, res.Pages)
 
@@ -794,7 +795,7 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 	assert.Len(t, res.Data, 2)
 	assert.True(t, res.Data[0].IsSummary)
 	assert.Equal(t, "Running balance", res.Data[0].Description)
-	assert.Equal(t, -250.5, res.Data[0].Amount)
+	assert.Equal(t, money.FromFloat(-250.5), res.Data[0].Amount)
 	assert.Equal(t, "Savings", res.Data[0].AccountName)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -875,7 +876,7 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	assert.Len(t, res.Data, 2)
 	assert.True(t, res.Data[0].IsSummary)
 	assert.Equal(t, "Total outstanding", res.Data[0].Description)
-	assert.Equal(t, 500.0, res.Data[0].Amount)
+	assert.Equal(t, money.FromFloat(500.0), res.Data[0].Amount)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -1070,7 +1071,7 @@ func TestCreateTransaction(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 		CategoryID:  &catID,
 		PayeeID:     &payeeID,
@@ -1087,7 +1088,7 @@ func TestCreateTransaction(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, &payeeID, []string{"food"}, "morning").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string{"food"}, "morning").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1116,7 +1117,7 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Zomato Order #123",
-		Amount:      500.0,
+		Amount:      money.FromFloat(500.0),
 		Type:        "debit",
 	}
 
@@ -1135,7 +1136,7 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 
 	// Insert with auto-categorized category (no payee from rules).
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", 500.0, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1186,7 +1187,7 @@ func TestCreateTransactionAccountNotFound(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 	}
 
@@ -1214,7 +1215,7 @@ func TestCreateTransactionForbidden(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 	}
 
@@ -1453,7 +1454,7 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 		CategoryID:  &catID,
 	}
@@ -1465,7 +1466,7 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -1491,7 +1492,7 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 		CategoryID:  &catID,
 		PayeeID:     &payeeID,
@@ -1502,7 +1503,7 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &catID, &payeeID, []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string(nil), "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -1528,7 +1529,7 @@ func TestCreateTransactionBillingCycleNotOwned(t *testing.T) {
 		AccountID:      accountID,
 		Date:           "2024-01-15",
 		Description:    "Coffee",
-		Amount:         250.5,
+		Amount:         money.FromFloat(250.5),
 		Type:           "debit",
 		CategoryID:     &catID,
 		BillingCycleID: &cycleID,
@@ -1615,7 +1616,7 @@ func TestImportTransactionsBillingCycleNotOwned(t *testing.T) {
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID:      accountID,
 		BillingCycleID: &cycleID,
-		Transactions:   []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit"}},
+		Transactions:   []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
 	})
 	w := postImport(r, body)
 
@@ -1640,7 +1641,7 @@ func TestImportTransactionsPayeeNotOwned(t *testing.T) {
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID: accountID,
 		Transactions: []models.ImportTransaction{
-			{Date: "2024-01-15", Description: "X", Amount: 1, Type: "debit", PayeeID: &payeeID},
+			{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit", PayeeID: &payeeID},
 		},
 	})
 	w := postImport(r, body)
@@ -1695,11 +1696,11 @@ func TestComputeSummaryRows(t *testing.T) {
 	assert.Len(t, rows, 3)
 	assert.Equal(t, "Total outstanding", rows[0].Description)
 	assert.Equal(t, time.Date(2024, 2, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[0].Date))
-	assert.Equal(t, 150.0, rows[0].Amount)
+	assert.Equal(t, money.FromFloat(150.0), rows[0].Amount)
 	assert.Equal(t, time.Date(2024, 3, 5, 0, 0, 0, 0, time.UTC), dateOnly(rows[1].Date))
-	assert.Equal(t, 350.0, rows[1].Amount)
+	assert.Equal(t, money.FromFloat(350.0), rows[1].Amount)
 	assert.Equal(t, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), dateOnly(rows[2].Date))
-	assert.Equal(t, 410.0, rows[2].Amount)
+	assert.Equal(t, money.FromFloat(410.0), rows[2].Amount)
 	assert.True(t, rows[0].IsSummary)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -1744,13 +1745,13 @@ func TestComputeSummaryRowsFirstOfMonth(t *testing.T) {
 
 	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
-	var found float64
+	var found money.Amount
 	for _, r := range rows {
 		if r.Description == "Total outstanding" && dateOnly(r.Date).Equal(time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)) {
 			found = r.Amount
 		}
 	}
-	assert.Equal(t, 100.0, found)
+	assert.Equal(t, money.FromFloat(100.0), found)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -1844,7 +1845,7 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 		CategoryID:  &globalCatID,
 	}
@@ -1859,7 +1860,7 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 	// the matcher pins the exact predicate so a future revert to a
 	// user-only check fails this test.
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))")).
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", 250.5, "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()

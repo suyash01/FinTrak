@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/fintrak/backend/internal/money"
 	"github.com/google/uuid"
 )
 
@@ -45,9 +46,9 @@ type Account struct {
 	IsDefault       bool      `json:"isDefault"`
 	// Closed marks an account as closed: transactions can no longer be added,
 	// removed, or edited on it (linking remains possible).
-	Closed    bool      `json:"closed"`
-	Balance   float64   `json:"balance"`
-	CreatedAt time.Time `json:"createdAt"`
+	Closed    bool         `json:"closed"`
+	Balance   money.Amount `json:"balance"`
+	CreatedAt time.Time    `json:"createdAt"`
 	// BillingDay is the day of the month on which billing cycles end (1-31,
 	// clamped to the month length). It is optional; when set, per-cycle summary
 	// rows are shown for the account regardless of its type.
@@ -99,18 +100,18 @@ type Category struct {
 // fields (AccountName, CategoryName, ...) are populated by read queries and are
 // absent on writes.
 type Transaction struct {
-	ID          uuid.UUID  `json:"id"`
-	AccountID   uuid.UUID  `json:"accountId"`
-	Date        time.Time  `json:"date"`
-	Description string     `json:"description"`
-	Amount      float64    `json:"amount"`
-	Type        string     `json:"type"`
-	CategoryID  *uuid.UUID `json:"categoryId"`
-	Tags        []string   `json:"tags"`
-	Notes       string     `json:"notes"`
-	PayeeID     *uuid.UUID `json:"payeeId,omitempty"`
-	Payee       string     `json:"payee"`
-	CreatedAt   time.Time  `json:"createdAt"`
+	ID          uuid.UUID    `json:"id"`
+	AccountID   uuid.UUID    `json:"accountId"`
+	Date        time.Time    `json:"date"`
+	Description string       `json:"description"`
+	Amount      money.Amount `json:"amount"`
+	Type        string       `json:"type"`
+	CategoryID  *uuid.UUID   `json:"categoryId"`
+	Tags        []string     `json:"tags"`
+	Notes       string       `json:"notes"`
+	PayeeID     *uuid.UUID   `json:"payeeId,omitempty"`
+	Payee       string       `json:"payee"`
+	CreatedAt   time.Time    `json:"createdAt"`
 	// Joined fields
 	AccountName   string `json:"accountName,omitempty"`
 	CategoryName  string `json:"categoryName,omitempty"`
@@ -135,13 +136,13 @@ type Transaction struct {
 // credits (purchases net of payments, refunds, and cashbacks) posted up to
 // that date.
 type BillingCycle struct {
-	ID               uuid.UUID `json:"id"`
-	AccountID        uuid.UUID `json:"accountId"`
-	StartDate        time.Time `json:"startDate"`
-	EndDate          time.Time `json:"endDate"`
-	Label            string    `json:"label"`
-	TotalOutstanding float64   `json:"totalOutstanding"`
-	TransactionCount int       `json:"transactionCount"`
+	ID               uuid.UUID    `json:"id"`
+	AccountID        uuid.UUID    `json:"accountId"`
+	StartDate        time.Time    `json:"startDate"`
+	EndDate          time.Time    `json:"endDate"`
+	Label            string       `json:"label"`
+	TotalOutstanding money.Amount `json:"totalOutstanding"`
+	TransactionCount int          `json:"transactionCount"`
 }
 
 // Rule automatically assigns a category (and optionally a payee) to a
@@ -436,30 +437,30 @@ func (o *OptionalInt) Value() *int {
 // fields allow an explicit null to clear a foreign key while an absent key
 // leaves it untouched.
 type UpdateTransactionRequest struct {
-	CategoryID     OptionalUUID `json:"categoryId"`
-	Tags           *[]string    `json:"tags"`
-	Notes          *string      `json:"notes"`
-	PayeeID        OptionalUUID `json:"payeeId"`
-	Date           *string      `json:"date"`
-	Description    *string      `json:"description"`
-	Amount         *float64     `json:"amount"`
-	Type           *string      `json:"type"`
-	AccountID      *uuid.UUID   `json:"accountId"`
-	BillingCycleID OptionalUUID `json:"billingCycleId"`
+	CategoryID     OptionalUUID  `json:"categoryId"`
+	Tags           *[]string     `json:"tags"`
+	Notes          *string       `json:"notes"`
+	PayeeID        OptionalUUID  `json:"payeeId"`
+	Date           *string       `json:"date"`
+	Description    *string       `json:"description"`
+	Amount         *money.Amount `json:"amount"`
+	Type           *string       `json:"type"`
+	AccountID      *uuid.UUID    `json:"accountId"`
+	BillingCycleID OptionalUUID  `json:"billingCycleId"`
 }
 
 // CreateTransactionRequest is the body for POST /api/v1/transactions.
 type CreateTransactionRequest struct {
-	AccountID      uuid.UUID  `json:"accountId" binding:"required"`
-	Date           string     `json:"date" binding:"required"`
-	Description    string     `json:"description" binding:"required"`
-	Amount         float64    `json:"amount" binding:"required"`
-	Type           string     `json:"type" binding:"required"`
-	CategoryID     *uuid.UUID `json:"categoryId"`
-	PayeeID        *uuid.UUID `json:"payeeId"`
-	Tags           []string   `json:"tags"`
-	Notes          string     `json:"notes"`
-	BillingCycleID *uuid.UUID `json:"billingCycleId"`
+	AccountID      uuid.UUID    `json:"accountId" binding:"required"`
+	Date           string       `json:"date" binding:"required"`
+	Description    string       `json:"description" binding:"required"`
+	Amount         money.Amount `json:"amount" binding:"required"`
+	Type           string       `json:"type" binding:"required"`
+	CategoryID     *uuid.UUID   `json:"categoryId"`
+	PayeeID        *uuid.UUID   `json:"payeeId"`
+	Tags           []string     `json:"tags"`
+	Notes          string       `json:"notes"`
+	BillingCycleID *uuid.UUID   `json:"billingCycleId"`
 }
 
 // BulkCategorizeRequest reassigns one category to many transactions at once.
@@ -520,12 +521,12 @@ type ValidateTransactionsRequest struct {
 // already exists in the target account. Index aligns with the request's
 // Transactions slice so the client can map results back to its preview rows.
 type ValidateTransactionResult struct {
-	Index       int     `json:"index"`
-	Exists      bool    `json:"exists"`
-	Date        string  `json:"date"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Type        string  `json:"type"`
+	Index       int          `json:"index"`
+	Exists      bool         `json:"exists"`
+	Date        string       `json:"date"`
+	Description string       `json:"description"`
+	Amount      money.Amount `json:"amount"`
+	Type        string       `json:"type"`
 }
 
 // ValidateTransactionsResponse summarizes a validation run for the frontend's
@@ -539,11 +540,11 @@ type ValidateTransactionsResponse struct {
 
 // ImportTransaction is a single candidate row in an import or validation batch.
 type ImportTransaction struct {
-	Date        string     `json:"date"`
-	Description string     `json:"description"`
-	Amount      float64    `json:"amount"`
-	Type        string     `json:"type"`
-	PayeeID     *uuid.UUID `json:"payeeId"`
+	Date        string       `json:"date"`
+	Description string       `json:"description"`
+	Amount      money.Amount `json:"amount"`
+	Type        string       `json:"type"`
+	PayeeID     *uuid.UUID   `json:"payeeId"`
 }
 
 // CreateRuleRequest is the body for POST /api/v1/rules.
@@ -597,8 +598,8 @@ type BulkDeleteLinksRequest struct {
 type DashboardSummary struct {
 	TotalAccounts      int             `json:"totalAccounts"`
 	TotalTransactions  int             `json:"totalTransactions"`
-	TotalIncome        float64         `json:"totalIncome"`
-	TotalExpense       float64         `json:"totalExpense"`
+	TotalIncome        money.Amount    `json:"totalIncome"`
+	TotalExpense       money.Amount    `json:"totalExpense"`
 	ByCategory         []CategorySpend `json:"byCategory"`
 	IncomeByCategory   []CategorySpend `json:"incomeByCategory"`
 	MonthlyTrend       []MonthlyData   `json:"monthlyTrend"`
@@ -621,28 +622,28 @@ type CurrentCycleInfo struct {
 // BillingCycleTrendItem holds income and expense totals for one billing cycle,
 // keyed by its label (e.g. "Aug 2026").
 type BillingCycleTrendItem struct {
-	Label     string    `json:"label"`
-	StartDate time.Time `json:"startDate"`
-	EndDate   time.Time `json:"endDate"`
-	Income    float64   `json:"income"`
-	Expense   float64   `json:"expense"`
+	Label     string       `json:"label"`
+	StartDate time.Time    `json:"startDate"`
+	EndDate   time.Time    `json:"endDate"`
+	Income    money.Amount `json:"income"`
+	Expense   money.Amount `json:"expense"`
 }
 
 // CategorySpend aggregates spend/income for a single category.
 type CategorySpend struct {
-	CategoryID    uuid.UUID `json:"categoryId"`
-	CategoryName  string    `json:"categoryName"`
-	CategoryColor string    `json:"categoryColor"`
-	CategoryIcon  string    `json:"categoryIcon"`
-	Total         float64   `json:"total"`
-	Count         int       `json:"count"`
+	CategoryID    uuid.UUID    `json:"categoryId"`
+	CategoryName  string       `json:"categoryName"`
+	CategoryColor string       `json:"categoryColor"`
+	CategoryIcon  string       `json:"categoryIcon"`
+	Total         money.Amount `json:"total"`
+	Count         int          `json:"count"`
 }
 
 // MonthlyData holds income and expense totals for one month (keyed "YYYY-MM").
 type MonthlyData struct {
-	Month   string  `json:"month"`
-	Income  float64 `json:"income"`
-	Expense float64 `json:"expense"`
+	Month   string       `json:"month"`
+	Income  money.Amount `json:"income"`
+	Expense money.Amount `json:"expense"`
 }
 
 // TransferSuggestion proposes that two transactions be linked, e.g. a debit and

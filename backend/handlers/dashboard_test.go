@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -98,8 +99,8 @@ func TestGetDashboardSummary(t *testing.T) {
 
 	assert.Equal(t, 2, summary.TotalAccounts)
 	assert.Equal(t, 120, summary.TotalTransactions)
-	assert.Equal(t, 50000.00, summary.TotalIncome)
-	assert.Equal(t, 30000.50, summary.TotalExpense)
+	assert.Equal(t, money.FromFloat(50000.00), summary.TotalIncome)
+	assert.Equal(t, money.FromFloat(30000.50), summary.TotalExpense)
 
 	assert.Len(t, summary.ByCategory, 1)
 	assert.Equal(t, "Food", summary.ByCategory[0].CategoryName)
@@ -371,8 +372,8 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 
 	assert.Equal(t, 3, summary.TotalAccounts)
 	assert.Equal(t, 18, summary.TotalTransactions)
-	assert.Equal(t, 21000.00, summary.TotalIncome)
-	assert.Equal(t, 6700.50, summary.TotalExpense)
+	assert.Equal(t, money.FromFloat(21000.00), summary.TotalIncome)
+	assert.Equal(t, money.FromFloat(6700.50), summary.TotalExpense)
 
 	assert.NotNil(t, summary.CurrentCycle)
 	assert.Equal(t, "Aug 2026", summary.CurrentCycle.Label)
@@ -380,8 +381,8 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 
 	assert.Len(t, summary.BillingCycleTrend, 3)
 	assert.Equal(t, "Jul 2026", summary.BillingCycleTrend[1].Label)
-	assert.Equal(t, 6000.00, summary.BillingCycleTrend[1].Income)
-	assert.Equal(t, 2400.00, summary.BillingCycleTrend[1].Expense)
+	assert.Equal(t, money.FromFloat(6000.00), summary.BillingCycleTrend[1].Income)
+	assert.Equal(t, money.FromFloat(2400.00), summary.BillingCycleTrend[1].Expense)
 
 	assert.Len(t, summary.ByCategory, 1)
 	assert.Equal(t, "Food", summary.ByCategory[0].CategoryName)

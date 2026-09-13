@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,12 +32,12 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "perfect match",
 			debitTxn: models.Transaction{
-				Amount:      1000,
+				Amount:      money.FromFloat(1000),
 				Date:        now,
 				Description: "Transfer to Savings",
 			},
 			creditTxn: models.Transaction{
-				Amount:      1000,
+				Amount:      money.FromFloat(1000),
 				Date:        now,
 				Description: "Transfer from Checking",
 			},
@@ -46,12 +47,12 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "date difference",
 			debitTxn: models.Transaction{
-				Amount:      1000,
+				Amount:      money.FromFloat(1000),
 				Date:        now,
 				Description: "Rent",
 			},
 			creditTxn: models.Transaction{
-				Amount:      1000,
+				Amount:      money.FromFloat(1000),
 				Date:        now.Add(48 * time.Hour), // 2 days later
 				Description: "Rent",
 			},
@@ -61,12 +62,12 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "keyword boost",
 			debitTxn: models.Transaction{
-				Amount:      500,
+				Amount:      money.FromFloat(500),
 				Date:        now,
 				Description: "UPI-PAY-123",
 			},
 			creditTxn: models.Transaction{
-				Amount:      500,
+				Amount:      money.FromFloat(500),
 				Date:        now,
 				Description: "UPI-REC-123",
 			},
@@ -76,11 +77,11 @@ func TestCalculateTransferScore(t *testing.T) {
 		{
 			name: "amount mismatch",
 			debitTxn: models.Transaction{
-				Amount: 1000,
+				Amount: money.FromFloat(1000),
 				Date:   now,
 			},
 			creditTxn: models.Transaction{
-				Amount: 1050, // 50 diff
+				Amount: money.FromFloat(1050), // 50 diff
 				Date:   now,
 			},
 			minScore: 0,

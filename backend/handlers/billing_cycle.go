@@ -9,6 +9,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -290,10 +291,10 @@ func listBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uu
 	defer rows.Close()
 
 	cycles := []models.BillingCycle{}
-	runningBalance := 0.0
+	runningBalance := money.Amount(0)
 	for rows.Next() {
 		var bc models.BillingCycle
-		var net float64
+		var net money.Amount
 		if err := rows.Scan(&bc.ID, &bc.StartDate, &bc.EndDate, &bc.Label, &net, &bc.TransactionCount); err != nil {
 			return nil, err
 		}

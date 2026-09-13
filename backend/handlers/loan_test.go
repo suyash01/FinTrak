@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -484,7 +485,7 @@ func TestCreateTransactionClosedAccount(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "Coffee",
-		Amount:      250.5,
+		Amount:      money.FromFloat(250.5),
 		Type:        "debit",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -514,7 +515,7 @@ func TestCreateTransactionLoanAccountRejected(t *testing.T) {
 		AccountID:   accountID,
 		Date:        "2024-01-15",
 		Description: "EMI",
-		Amount:      15000,
+		Amount:      money.FromFloat(15000),
 		Type:        "debit",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -542,7 +543,7 @@ func TestImportTransactionsClosedAccount(t *testing.T) {
 	body, _ := json.Marshal(models.ImportRequest{
 		AccountID: accountID,
 		Transactions: []models.ImportTransaction{
-			{Date: "2024-01-15", Description: "Coffee", Amount: 250.5, Type: "debit"},
+			{Date: "2024-01-15", Description: "Coffee", Amount: money.FromFloat(250.5), Type: "debit"},
 		},
 	})
 	req, _ := http.NewRequest("POST", "/transactions/import", bytes.NewBuffer(body))
@@ -650,7 +651,7 @@ func TestGetAccountsCarriesClosedAndLoanBalanceSQL(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &accounts))
 	assert.Len(t, accounts, 1)
 	assert.Equal(t, "Home Loan", accounts[0].Name)
-	assert.Equal(t, 450000.0, accounts[0].Balance)
+	assert.Equal(t, money.FromFloat(450000.0), accounts[0].Balance)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

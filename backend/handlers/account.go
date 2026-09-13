@@ -11,6 +11,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -359,7 +360,7 @@ func ExportAccount(c *gin.Context) {
 		var (
 			date        time.Time
 			description string
-			amount      float64
+			amount      money.Amount
 			txnType     string
 			tags        []string
 			notes       string
@@ -376,7 +377,7 @@ func ExportAccount(c *gin.Context) {
 		record := []string{
 			date.Format("2006-01-02"),
 			description,
-			fmt.Sprintf("%.2f", amount),
+			amount.String(),
 			txnType,
 			strings.Join(tags, ";"),
 			notes,

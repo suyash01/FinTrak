@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -62,7 +63,7 @@ func TestGetAccounts(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, accounts, 2)
 	assert.Equal(t, "Savings", accounts[0].Name)
-	assert.Equal(t, 1000.50, accounts[0].Balance)
+	assert.Equal(t, money.FromFloat(1000.50), accounts[0].Balance)
 	assert.Equal(t, createdAt, accounts[0].CreatedAt)
 
 	assert.NoError(t, mock.ExpectationsWereMet())

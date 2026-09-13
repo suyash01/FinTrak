@@ -557,12 +557,12 @@ func GetTransferSuggestions(c *gin.Context) {
 // (capped at 100) when the descriptions contain transfer-related keywords.
 func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
 	// Calculate score based on amount match and date proximity
-	amountDiff := math.Abs(debitTxn.Amount - creditTxn.Amount)
+	amountDiff := (debitTxn.Amount - creditTxn.Amount).Abs()
 	dTime := debitTxn.Date
 	cTime := creditTxn.Date
 	daysDiff := math.Abs(float64(dTime.Sub(cTime).Hours() / 24))
 
-	score := 100 - amountDiff*10 - daysDiff*5
+	score := 100 - amountDiff.Float64()*10 - daysDiff*5
 	if score < 0 {
 		score = 0
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -288,7 +289,7 @@ func TestGetBillingCycles(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	assert.Len(t, res.Data, 1)
 	assert.Equal(t, cycleID, res.Data[0].ID)
-	assert.Equal(t, 150.0, res.Data[0].TotalOutstanding)
+	assert.Equal(t, money.FromFloat(150.0), res.Data[0].TotalOutstanding)
 	assert.Equal(t, 2, res.Data[0].TransactionCount)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -369,9 +370,9 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 	assert.Len(t, res.Data, 2)
 	// Running balance through each cycle end: A = 10000, B = 10000 − 5500 = 4500.
 	assert.Equal(t, cycleA, res.Data[0].ID)
-	assert.Equal(t, 10000.0, res.Data[0].TotalOutstanding)
+	assert.Equal(t, money.FromFloat(10000.0), res.Data[0].TotalOutstanding)
 	assert.Equal(t, cycleB, res.Data[1].ID)
-	assert.Equal(t, 4500.0, res.Data[1].TotalOutstanding)
+	assert.Equal(t, money.FromFloat(4500.0), res.Data[1].TotalOutstanding)
 	assert.Equal(t, 3, res.Data[1].TransactionCount)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

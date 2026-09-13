@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/internal/logger"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -199,7 +200,7 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 		result.Transactions = append(result.Transactions, models.ImportTransaction{
 			Date:        normalizeParserDate(t.Date, dateFormat),
 			Description: t.Description,
-			Amount:      t.Amount,
+			Amount:      money.FromFloat(t.Amount),
 			Type:        normalizeParserType(t.Type),
 		})
 	}

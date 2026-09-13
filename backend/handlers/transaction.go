@@ -14,6 +14,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -145,7 +146,7 @@ func GetTransactions(c *gin.Context) {
 		f.param("t.payee_id = $%d", payeeID)
 	}
 	if amountStr != "" {
-		if amount, err := strconv.ParseFloat(amountStr, 64); err == nil {
+		if amount, err := money.Parse(amountStr); err == nil {
 			f.param("t.amount = $%d", amount)
 		}
 	}
@@ -997,8 +998,8 @@ func ImportTransactions(c *gin.Context) {
 // transactionFingerprint collapses a row into a stable value used for duplicate
 // detection. Amounts are compared as integer cents so penny rounding and float
 // noise don't produce false matches.
-func transactionFingerprint(date string, amount float64, typ, description string) string {
-	cents := int(math.Round(amount * 100))
+func transactionFingerprint(date string, amount money.Amount, typ, description string) string {
+	cents := amount.Cents()
 	return fmt.Sprintf("%s\x00%d\x00%s\x00%s", date, cents, typ, strings.ToLower(strings.TrimSpace(description)))
 }
 
@@ -1051,7 +1052,7 @@ func loadExistingFingerprints(ctx context.Context, q transactionQueryer, account
 
 	for rows.Next() {
 		var d time.Time
-		var amount float64
+		var amount money.Amount
 		var typ, description string
 		if err := rows.Scan(&d, &amount, &typ, &description); err != nil {
 			return nil, err
@@ -1265,13 +1266,13 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 	}
 	type monthNet struct {
 		month time.Time // first day of the month
-		net   float64
+		net   money.Amount
 		count int
 	}
 	nets := []monthNet{}
 	for rows.Next() {
 		var m time.Time
-		var net float64
+		var net money.Amount
 		var count int
 		if err := rows.Scan(&m, &net, &count); err != nil {
 			rows.Close()
@@ -1289,7 +1290,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 		return nil
 	}
 
-	buildRow := func(date time.Time, balance float64) models.Transaction {
+	buildRow := func(date time.Time, balance money.Amount) models.Transaction {
 		return models.Transaction{
 			ID:          summaryID(accountID.String(), "running-balance", date),
 			AccountID:   accountID,
@@ -1306,7 +1307,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 	inProgress := currentMonthEnd.After(to)
 
 	out := []models.Transaction{}
-	balance := 0.0
+	balance := money.Amount(0)
 	for _, n := range nets {
 		balance += n.net
 		if n.count == 0 {
@@ -1317,7 +1318,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 		// date is beyond the range): the row sits at the range end with the
 		// balance as of that date instead of the projected month-end balance.
 		if inProgress && end.Equal(currentMonthEnd) {
-			var total float64
+			var total money.Amount
 			var count int
 			err := db.Pool.QueryRow(c,
 				`SELECT COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount WHEN t.type = 'debit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)
@@ -1377,7 +1378,7 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 		}
 	}
 
-	buildRow := func(kind, description string, date time.Time, amount float64, billingCycleID *uuid.UUID) models.Transaction {
+	buildRow := func(kind, description string, date time.Time, amount money.Amount, billingCycleID *uuid.UUID) models.Transaction {
 		return models.Transaction{
 			ID:             summaryID(accountID.String(), kind, date),
 			AccountID:      accountID,
@@ -1411,7 +1412,7 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 	// the range end with the running balance up to that date: every debit minus
 	// every credit (payments, refunds, cashbacks) posted to the account so far.
 	if current != nil && dateOnly(current.EndDate).After(to) {
-		var total float64
+		var total money.Amount
 		var count int
 		err := db.Pool.QueryRow(c,
 			`SELECT COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount WHEN t.type = 'credit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)

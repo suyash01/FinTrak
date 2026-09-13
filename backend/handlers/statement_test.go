@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fintrak/backend/internal/money"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -197,7 +198,7 @@ func TestParseStatementSuccess(t *testing.T) {
 	require.Len(t, res.Transactions, 3)
 	assert.Equal(t, "2026-05-18", res.Transactions[0].Date)
 	assert.Equal(t, "credit", res.Transactions[0].Type)
-	assert.Equal(t, 310.0, res.Transactions[0].Amount)
+	assert.Equal(t, money.FromFloat(310.0), res.Transactions[0].Amount)
 	assert.Equal(t, "2026-05-04", res.Transactions[1].Date)
 	assert.Equal(t, "debit", res.Transactions[1].Type)
 	assert.Equal(t, "2024-12-12", res.Transactions[2].Date)
