@@ -7,6 +7,14 @@ import Dashboard from "./Dashboard";
 import { formatCurrency } from "../../utils/formatters";
 import type { Account, DashboardSummary } from "../../types";
 
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => (
     <div>{children}</div>
@@ -83,6 +91,16 @@ function page() {
   );
 }
 
+function expectedFinancialYear(): { dateFrom: string; dateTo: string } {
+  const now = new Date();
+  const startYear =
+    now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    dateFrom: `${startYear}-04-01`,
+    dateTo: `${startYear + 1}-03-31`,
+  };
+}
+
 // DomainDataContext returns stable state references across renders; the mock
 // mirrors that (a fixed object) so prefill only re-runs when accounts change.
 function setDomain(accounts: Account[]) {
@@ -126,6 +144,30 @@ describe("Dashboard", () => {
       expect(apiMock.getDashboardSummary).toHaveBeenCalledWith(
         expect.objectContaining({ accountId: "a1" }),
       ),
+    );
+  });
+
+  it("switches the range to the current financial year", async () => {
+    const user = userEvent.setup();
+    renderLoaded([account()]);
+    await screen.findByText("Total Income");
+
+    const trigger = screen.getByRole("combobox", { name: "Period" });
+    expect(trigger).toHaveTextContent("Last 12 months");
+
+    await user.click(trigger);
+    await user.click(
+      await screen.findByRole("option", { name: "Current financial year" }),
+    );
+
+    const { dateFrom, dateTo } = expectedFinancialYear();
+    await waitFor(() =>
+      expect(apiMock.getDashboardSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ dateFrom, dateTo }),
+      ),
+    );
+    expect(screen.getByRole("combobox", { name: "Period" })).toHaveTextContent(
+      "Current financial year",
     );
   });
 

@@ -1,0 +1,381 @@
+openapi: 3.0.3
+info:
+  title: FinTrak Statement Parser
+  description: |
+    Standalone Flask service that extracts the transaction table from supported
+    bank and credit-card statement PDFs. It is consumed by the FinTrak backend
+    over HTTP (see `backend/handlers/statement.go`).
+
+    ## Extractors
+    Parsing is delegated to a registry of per-issuer extractors. List them with
+    `GET /api/extractors` and select one with the `extractor` query parameter on
+    `POST /api/extract`. The response shape varies slightly by extractor:
+    credit-card extractors return a slim `{transactions, summary, page_count,
+    transaction_count}` envelope, while bank-account extractors add statement
+    metadata (`bank`, `account_holder`, `accounts`, balances, ...) and a
+    `validation_errors` list.
+
+    ## Errors
+    Responses that fail carry `{"error": "<message>"}`. A password-protected PDF
+    without a (correct) password additionally sets `password_required: true` and
+    returns `401`.
+  version: 0.1.0-alpha.0
+  contact:
+    name: FinTrak
+  license:
+    name: AGPL v3.0
+
+servers:
+  - url: http://localhost:5000
+    description: Development server
+
+tags:
+  - name: System
+  - name: Statements
+
+paths:
+  /:
+    get:
+      tags:
+        - System
+      summary: Web upload UI
+      description: |
+        Server-rendered HTML page with a form to upload a statement PDF
+        (optionally password-protected) and view/download the extracted
+        transactions.
+      operationId: getIndex
+      responses:
+        "200":
+          description: The upload/result UI.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /health:
+    get:
+      tags:
+        - System
+      summary: Health check
+      description: Liveness probe used by the Docker HEALTHCHECK.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/extractors:
+    get:
+      tags:
+        - Statements
+      summary: List available extractors
+      description: Returns the registered statement extractors, sorted by name.
+      operationId: listExtractors
+      responses:
+        "200":
+          description: The registered extractors.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractorListResponse"
+
+  /api/extract:
+    post:
+      tags:
+        - Statements
+      summary: Extract transactions from a statement PDF
+      description: |
+        Uploads a PDF (up to 20 MB) and extracts its transactions using the
+        selected extractor. By default the result is JSON; pass
+        `?format=csv` to download it as a CSV attachment instead.
+
+        The CSV columns are extractor-specific:
+
+        - `sbi_cc`: `date, description, amount, type`
+        - `icici_cc`: `date, ser_no, description, reward_points, amount, type, card_number`
+        - `icici_bank`: `date, mode, particulars, deposit, withdrawal, balance, account_number`
+        - `slice_bank`, `indusind_bank`: `date, description, amount, type`
+
+        `date_format` is accepted for compatibility with the FinTrak backend but
+        is not currently consumed by this service.
+      operationId: extract
+      parameters:
+        - in: query
+          name: format
+          required: false
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: Output format. `csv` returns a downloadable CSV attachment.
+        - in: query
+          name: extractor
+          required: false
+          schema:
+            type: string
+            default: sbi_cc
+            example: sbi_cc
+          description: |
+            Registered extractor name. See `GET /api/extractors`. Unknown names
+            return `400`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Statement PDF (must end in `.pdf`).
+                password:
+                  type: string
+                  description: PDF password, when the file is encrypted.
+                date_format:
+                  type: string
+                  description: Date format hint (accepted but currently ignored by this service).
+      responses:
+        "200":
+          description: |
+            Extracted statement. JSON by default; a CSV attachment when
+            `format=csv`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResult"
+            text/csv:
+              schema:
+                type: string
+                description: CSV export of the extracted transactions.
+        "400":
+          description: |
+            No file attached, no file selected, a non-PDF upload, or an
+            unsupported extractor name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: The PDF is encrypted and no/correct password was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordRequiredResponse"
+        "413":
+          description: The uploaded file exceeds the 20 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: |
+            The PDF could not be processed (e.g. it has more than `MAX_PAGES`
+            pages, or parsing failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+
+    Extractor:
+      type: object
+      properties:
+        name:
+          type: string
+          example: sbi_cc
+        display_name:
+          type: string
+          example: SBI Credit Card
+
+    ExtractorListResponse:
+      type: object
+      properties:
+        extractors:
+          type: array
+          items:
+            $ref: "#/components/schemas/Extractor"
+
+    ExtractResult:
+      type: object
+      description: |
+        Extraction envelope. The exact shape depends on the selected extractor:
+        credit-card extractors (`sbi_cc`, `icici_cc`) return only
+        `transactions`, `summary`, `page_count` and `transaction_count`; bank
+        extractors add the statement metadata, balances and validation fields.
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        summary:
+          type: object
+          description: Best-effort headline figures; keys vary by extractor.
+          additionalProperties:
+            type: string
+        page_count:
+          type: integer
+          description: Number of pages in the PDF.
+        transaction_count:
+          type: integer
+          description: Number of importable transactions returned.
+        bank:
+          type: string
+          description: Bank extractors only (e.g. "ICICI Bank").
+        statement_type:
+          type: string
+          description: Bank extractors only (e.g. "savings_current_account").
+        account_holder:
+          type: string
+          nullable: true
+          description: Bank extractors only.
+        customer_id:
+          type: string
+          nullable: true
+          description: Bank extractors only.
+        statement_period_from:
+          type: string
+          nullable: true
+          format: date
+          description: Bank extractors only (ISO `YYYY-MM-DD`).
+        statement_period_to:
+          type: string
+          nullable: true
+          format: date
+          description: Bank extractors only (ISO `YYYY-MM-DD`).
+        accounts:
+          type: array
+          description: Bank extractors only.
+          items:
+            $ref: "#/components/schemas/AccountInfo"
+        opening_balance:
+          type: number
+          nullable: true
+          description: Bank extractors only.
+        closing_balance:
+          type: number
+          nullable: true
+          description: Bank extractors only.
+        total_deposits:
+          type: number
+          description: Bank extractors only.
+        total_withdrawals:
+          type: number
+          description: Bank extractors only.
+        validation_errors:
+          type: array
+          description: |
+            Bank extractors only. Non-empty when a rebuilt subtotal did not match
+            the printed one (parsing drift).
+          items:
+            type: string
+
+    Transaction:
+      type: object
+      required:
+        - date
+        - description
+        - amount
+        - type
+      properties:
+        date:
+          type: string
+          description: |
+            Transaction date in the extractor's output format (bank extractors
+            normalize to ISO `YYYY-MM-DD`; credit-card extractors preserve the
+            statement's native format).
+          example: "2024-04-02"
+        description:
+          type: string
+          description: Normalized transaction description / particulars.
+        amount:
+          type: number
+          description: Absolute amount; see `type` for the sign.
+          example: 2000.0
+        type:
+          type: string
+          enum: [Credit, Debit]
+        # Credit-card (icici_cc) fields
+        ser_no:
+          type: string
+          description: ICICI credit-card serial number.
+        reward_points:
+          type: integer
+          description: ICICI credit-card reward points.
+        card_number:
+          type: string
+          nullable: true
+          description: ICICI credit-card masked card number, when the statement has multiple cards.
+        # Bank-account fields
+        mode:
+          type: string
+          nullable: true
+          description: ICICI bank transaction mode.
+        particulars:
+          type: string
+          description: ICICI bank full particulars text.
+        deposit:
+          type: number
+          nullable: true
+          description: Credit amount (bank extractors).
+        withdrawal:
+          type: number
+          nullable: true
+          description: Debit amount (bank extractors).
+        balance:
+          type: number
+          nullable: true
+          description: Running balance after the transaction (bank extractors).
+        account_number:
+          type: string
+          nullable: true
+          description: Account the transaction belongs to (ICICI bank).
+
+    AccountInfo:
+      type: object
+      properties:
+        type:
+          type: string
+          example: Savings
+        number:
+          type: string
+          example: XXXXXXXX7034
+        balance:
+          type: number
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        password_required:
+          type: boolean
+          description: Present and `true` when the failure is a missing/incorrect PDF password.
+
+    PasswordRequiredResponse:
+      type: object
+      required:
+        - error
+        - password_required
+      properties:
+        error:
+          type: string
+        password_required:
+          type: boolean
+          enum: [true]

@@ -49,6 +49,15 @@ import type {
 
 const ALL_ACCOUNTS = "all";
 
+const PERIOD_LAST_12_MONTHS = "last_12_months";
+const PERIOD_CURRENT_FY = "current_fy";
+const PERIOD_CUSTOM = "custom";
+const PERIOD_VALUES = [
+  PERIOD_LAST_12_MONTHS,
+  PERIOD_CURRENT_FY,
+  PERIOD_CUSTOM,
+];
+
 const recentColumnHelper = createColumnHelper<Transaction>();
 
 function toISODate(d: Date): string {
@@ -62,6 +71,22 @@ function lastTwelveMonthsRange(): { dateFrom: string; dateTo: string } {
   const to = new Date();
   const from = new Date(to.getFullYear(), to.getMonth() - 12, to.getDate() + 1);
   return { dateFrom: toISODate(from), dateTo: toISODate(to) };
+}
+
+function currentFinancialYearRange(): { dateFrom: string; dateTo: string } {
+  const now = new Date();
+  const startYear =
+    now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    dateFrom: toISODate(new Date(startYear, 3, 1)),
+    dateTo: toISODate(new Date(startYear + 1, 2, 31)),
+  };
+}
+
+function periodRange(period: string): { dateFrom: string; dateTo: string } {
+  return period === PERIOD_CURRENT_FY
+    ? currentFinancialYearRange()
+    : lastTwelveMonthsRange();
 }
 
 export default function Dashboard() {
@@ -84,6 +109,14 @@ export default function Dashboard() {
     searchParams.get("groupBy") === "billing_cycle" ? "billing_cycle" : "",
   );
   const [cycles, setCycles] = useState(searchParams.get("cycles") || "12");
+  const [period, setPeriod] = useState(() => {
+    const p = searchParams.get("period");
+    if (p && PERIOD_VALUES.includes(p)) return p;
+    if (searchParams.get("dateFrom") || searchParams.get("dateTo")) {
+      return PERIOD_CUSTOM;
+    }
+    return PERIOD_LAST_12_MONTHS;
+  });
   const { compactLayout } = useSettings();
 
   const selectedAccount = accounts.find((a) => a.id === accountId);
@@ -108,6 +141,7 @@ export default function Dashboard() {
       params.groupBy = "billing_cycle";
       params.cycles = cycles;
     } else {
+      if (period) params.period = period;
       if (dateFrom) params.dateFrom = dateFrom;
       if (dateTo) params.dateTo = dateTo;
     }
@@ -115,7 +149,7 @@ export default function Dashboard() {
     if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
       setSearchParams(params, { replace: true });
     }
-  }, [accountId, dateFrom, dateTo, isBillingCycleMode, cycles, searchParams, setSearchParams]);
+  }, [accountId, dateFrom, dateTo, isBillingCycleMode, cycles, period, searchParams, setSearchParams]);
 
   useEffect(() => {
     setAccountId(searchParams.get("accountId") || "");
@@ -125,6 +159,16 @@ export default function Dashboard() {
     const cyc = searchParams.get("cycles");
     if (cyc && ["6", "12", "24"].includes(cyc)) {
       setCycles(cyc);
+    }
+    const per = searchParams.get("period");
+    if (per && PERIOD_VALUES.includes(per)) {
+      setPeriod(per);
+    } else {
+      setPeriod(
+        searchParams.get("dateFrom") || searchParams.get("dateTo")
+          ? PERIOD_CUSTOM
+          : PERIOD_LAST_12_MONTHS,
+      );
     }
     // React to external URL changes only; the setters above are stable and
     // including the derived defaults would re-sync on state we just wrote.
@@ -142,6 +186,15 @@ export default function Dashboard() {
       setGroupBy("");
     }
   }, [isBillingCycleMode, accountId, selectedAccount]);
+
+  const applyPeriod = (value: string) => {
+    setPeriod(value);
+    if (value === PERIOD_LAST_12_MONTHS || value === PERIOD_CURRENT_FY) {
+      const range = periodRange(value);
+      setDateFrom(range.dateFrom);
+      setDateTo(range.dateTo);
+    }
+  };
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
@@ -315,18 +368,41 @@ export default function Dashboard() {
             </Select>
           ) : (
             <>
+              <Select value={period} onValueChange={applyPeriod}>
+                <SelectTrigger
+                  aria-label="Period"
+                  className={`${compactLayout ? "h-8" : "h-10"} bg-background w-44`}
+                >
+                  <SelectValue placeholder="Period" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={PERIOD_LAST_12_MONTHS}>
+                    Last 12 months
+                  </SelectItem>
+                  <SelectItem value={PERIOD_CURRENT_FY}>
+                    Current financial year
+                  </SelectItem>
+                  <SelectItem value={PERIOD_CUSTOM}>Custom range</SelectItem>
+                </SelectContent>
+              </Select>
               <Input
                 type="date"
                 className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setPeriod(PERIOD_CUSTOM);
+                }}
                 title="From date"
               />
               <Input
                 type="date"
                 className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setPeriod(PERIOD_CUSTOM);
+                }}
                 title="To date"
               />
             </>
