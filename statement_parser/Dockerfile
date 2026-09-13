@@ -1,5 +1,5 @@
 # --- Build Stage ---
-FROM python:3.14-alpine3.24 AS builder
+FROM python:3.14.7-alpine3.24 AS builder
 
 # uv is a fast, lockfile-driven Python package manager. The official distroless
 # image ships a statically-linked binary that runs on musl (alpine).
@@ -20,7 +20,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project --no-dev
 
 # --- Runtime Stage ---
-FROM python:3.14-alpine3.24
+FROM python:3.14.7-alpine3.24
 
 WORKDIR /app
 
