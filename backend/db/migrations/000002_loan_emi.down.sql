@@ -1,2 +1,0 @@
-DROP TABLE IF EXISTS loan_attachments;
-ALTER TABLE accounts DROP COLUMN IF EXISTS closed;

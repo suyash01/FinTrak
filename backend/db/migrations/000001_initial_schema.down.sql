@@ -1,5 +1,6 @@
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS rules;
+DROP TABLE IF EXISTS loan_attachments;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS categories;
 DROP TABLE IF EXISTS category_groups;
