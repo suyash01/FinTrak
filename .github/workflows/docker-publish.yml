@@ -122,6 +122,9 @@ jobs:
 
   test-parser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - name: Set up uv
@@ -138,7 +141,23 @@ jobs:
       - name: Run tests
         run: |
           cd statement_parser
-          uv run --frozen python -m unittest discover -s tests -v
+          uv run --frozen coverage run --source=statement_parser -m unittest discover -s tests -v
+          uv run --frozen coverage xml -o coverage.xml
+      - name: Upload parser coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parser-coverage
+          path: statement_parser/coverage.xml
+          if-no-files-found: ignore
+      - name: Upload parser coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./statement_parser/coverage.xml
+          flags: parser
+          fail_ci_if_error: false
 
   # Smoke-build every Dockerfile on PRs and branch pushes so the images are
   # actually exercised before a release tag (tag pushes run the publish jobs

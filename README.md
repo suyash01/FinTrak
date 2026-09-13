@@ -1,8 +1,10 @@
 # 🚀 FinTrak
 
 [![CI](https://github.com/suyash01/FinTrak/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/suyash01/FinTrak/actions/workflows/docker-publish.yml)
-[![Backend coverage](https://codecov.io/gh/suyash01/FinTrak/branch/master/graph/badge.svg?flag=backend)](https://codecov.io/gh/suyash01/FinTrak)
-[![Frontend coverage](https://codecov.io/gh/suyash01/FinTrak/branch/master/graph/badge.svg?flag=frontend)](https://codecov.io/gh/suyash01/FinTrak)
+[![Codecov](https://img.shields.io/codecov/c/github/suyash01/FinTrak?branch=master&logo=codecov)](https://codecov.io/gh/suyash01/FinTrak)
+[![Backend coverage](https://img.shields.io/codecov/c/github/suyash01/FinTrak?branch=master&flag=backend&label=backend&logo=codecov)](https://codecov.io/gh/suyash01/FinTrak)
+[![Frontend coverage](https://img.shields.io/codecov/c/github/suyash01/FinTrak?branch=master&flag=frontend&label=frontend&logo=codecov)](https://codecov.io/gh/suyash01/FinTrak)
+[![Parser coverage](https://img.shields.io/codecov/c/github/suyash01/FinTrak?branch=master&flag=parser&label=parser&logo=codecov)](https://codecov.io/gh/suyash01/FinTrak)
 
 **FinTrak** is a powerful, modern, and high-performance personal finance tracking application built with a **Go** backend and a **React + TypeScript** (Vite, bun) frontend. It simplifies transaction management, categorizes expenses using smart rules, and provides insightful dashboard visualizations to help you stay on top of your finances.
 
