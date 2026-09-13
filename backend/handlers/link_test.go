@@ -780,7 +780,7 @@ func TestGetTransferSuggestionsExcludesLinkedCredits(t *testing.T) {
 	// either side of a link — the strict matcher pins the exact clause so a
 	// future revert to the debit-side-only check fails this test.
 	mock.ExpectQuery(regexp.QuoteMeta("AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = t.id OR to_txn_id = t.id))")).
-		WithArgs(testUserID()).
+		WithArgs(testUserID(), defaultSuggestionLimit+1, 0).
 		WillReturnRows(pgxmock.NewRows([]string{"d_id", "d_account_id", "d_date", "d_description", "d_amount", "d_type", "d_account",
 			"c_id", "c_account_id", "c_date", "c_description", "c_amount", "c_type", "c_account"}))
 
@@ -805,7 +805,7 @@ func TestGetTransferSuggestions(t *testing.T) {
 			uuid.New(), uuid.New(), now, "UPI Received", 100.0, "credit", "Savings")
 
 	mock.ExpectQuery("SELECT d.id, d.account_id").
-		WithArgs(userID).
+		WithArgs(userID, defaultSuggestionLimit+1, 0).
 		WillReturnRows(rows)
 
 	req, _ := http.NewRequest("GET", "/links/transfer-suggestions", nil)
@@ -814,12 +814,102 @@ func TestGetTransferSuggestions(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var suggestions []models.TransferSuggestion
-	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &suggestions))
-	assert.Len(t, suggestions, 1)
-	assert.Equal(t, "UPI Transfer", suggestions[0].DebitTxn.Description)
-	assert.Equal(t, "UPI Received", suggestions[0].CreditTxn.Description)
-	assert.Greater(t, suggestions[0].Score, 0.0)
+	var resp struct {
+		Data    []models.TransferSuggestion `json:"data"`
+		Page    int                         `json:"page"`
+		Limit   int                         `json:"limit"`
+		HasMore bool                        `json:"hasMore"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data, 1)
+	assert.Equal(t, 1, resp.Page)
+	assert.Equal(t, defaultSuggestionLimit, resp.Limit)
+	assert.False(t, resp.HasMore)
+	assert.Equal(t, "UPI Transfer", resp.Data[0].DebitTxn.Description)
+	assert.Equal(t, "UPI Received", resp.Data[0].CreditTxn.Description)
+	assert.Greater(t, resp.Data[0].Score, 0.0)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransferSuggestionsPagination(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+
+	userID := testUserID()
+
+	// page=2, limit=10 -> offset 10 and an 11-row fetch for hasMore.
+	mock.ExpectQuery("SELECT d.id, d.account_id").
+		WithArgs(userID, 11, 10).
+		WillReturnRows(pgxmock.NewRows([]string{"d_id", "d_account_id", "d_date", "d_description", "d_amount", "d_type", "d_account",
+			"c_id", "c_account_id", "c_date", "c_description", "c_amount", "c_type", "c_account"}))
+
+	req, _ := http.NewRequest("GET", "/links/transfer-suggestions?page=2&limit=10", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"page":2`)
+	assert.Contains(t, w.Body.String(), `"limit":10`)
+	assert.Contains(t, w.Body.String(), `"hasMore":false`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransferSuggestionsClampsLimit(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+
+	userID := testUserID()
+
+	// limit=1000 is clamped to maxSuggestionLimit; the extra row keeps hasMore.
+	mock.ExpectQuery("SELECT d.id, d.account_id").
+		WithArgs(userID, maxSuggestionLimit+1, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"d_id", "d_account_id", "d_date", "d_description", "d_amount", "d_type", "d_account",
+			"c_id", "c_account_id", "c_date", "c_description", "c_amount", "c_type", "c_account"}))
+
+	req, _ := http.NewRequest("GET", "/links/transfer-suggestions?limit=1000", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"limit":100`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransferSuggestionsHasMore(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+
+	userID := testUserID()
+	now := time.Now()
+
+	// limit=1 but two rows returned: the extra row signals another page and is
+	// dropped from the payload.
+	rows := pgxmock.NewRows([]string{"d_id", "d_account_id", "d_date", "d_description", "d_amount", "d_type", "d_account",
+		"c_id", "c_account_id", "c_date", "c_description", "c_amount", "c_type", "c_account"}).
+		AddRow(uuid.New(), uuid.New(), now, "A", 100.0, "debit", "Checking",
+			uuid.New(), uuid.New(), now, "A credit", 100.0, "credit", "Savings").
+		AddRow(uuid.New(), uuid.New(), now, "B", 200.0, "debit", "Checking",
+			uuid.New(), uuid.New(), now, "B credit", 200.0, "credit", "Savings")
+
+	mock.ExpectQuery("SELECT d.id, d.account_id").
+		WithArgs(userID, 2, 0).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET", "/links/transfer-suggestions?limit=1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp struct {
+		Data    []models.TransferSuggestion `json:"data"`
+		HasMore bool                        `json:"hasMore"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data, 1)
+	assert.True(t, resp.HasMore)
+	assert.Equal(t, "A", resp.Data[0].DebitTxn.Description)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -837,7 +927,7 @@ func TestGetCashbackSuggestions(t *testing.T) {
 			uuid.New(), uuid.New(), now, "Purchase", 500.0, "debit", "Savings")
 
 	mock.ExpectQuery("SELECT cb.id, cb.account_id").
-		WithArgs(userID).
+		WithArgs(userID, defaultSuggestionLimit+1, 0).
 		WillReturnRows(rows)
 
 	req, _ := http.NewRequest("GET", "/links/cashback-suggestions", nil)
@@ -846,11 +936,40 @@ func TestGetCashbackSuggestions(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var suggestions []models.TransferSuggestion
-	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &suggestions))
-	assert.Len(t, suggestions, 1)
-	assert.Equal(t, "Cashback reward", suggestions[0].CreditTxn.Description)
-	assert.Equal(t, 70.0, suggestions[0].Score)
+	var resp struct {
+		Data    []models.TransferSuggestion `json:"data"`
+		Page    int                         `json:"page"`
+		Limit   int                         `json:"limit"`
+		HasMore bool                        `json:"hasMore"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Data, 1)
+	assert.Equal(t, 1, resp.Page)
+	assert.Equal(t, defaultSuggestionLimit, resp.Limit)
+	assert.False(t, resp.HasMore)
+	assert.Equal(t, "Cashback reward", resp.Data[0].CreditTxn.Description)
+	assert.Equal(t, 70.0, resp.Data[0].Score)
 
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetCashbackSuggestionsPagination(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.GET("/links/cashback-suggestions", GetCashbackSuggestions)
+
+	userID := testUserID()
+
+	mock.ExpectQuery("SELECT cb.id, cb.account_id").
+		WithArgs(userID, 6, 5).
+		WillReturnRows(pgxmock.NewRows([]string{"cb_id", "cb_account_id", "cb_date", "cb_description", "cb_amount", "cb_type", "ca_name",
+			"o_id", "o_account_id", "o_date", "o_description", "o_amount", "o_type", "oa_name"}))
+
+	req, _ := http.NewRequest("GET", "/links/cashback-suggestions?page=2&limit=5", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"page":2`)
+	assert.Contains(t, w.Body.String(), `"limit":5`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

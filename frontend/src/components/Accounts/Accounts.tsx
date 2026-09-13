@@ -1,31 +1,13 @@
 import { useMemo, useState } from "react";
-import {
-  Plus,
-  Trash2,
-  CreditCard,
-  Building2,
-  Landmark,
-  X,
-  Pencil,
-  Download,
-  Star,
-  Lock,
-  LockOpen,
-  ArrowUp,
-  ArrowDown,
-} from "lucide-react";
+import { Plus, Building2, ArrowUp, ArrowDown } from "lucide-react";
 import api, { downloadCSV } from "../../api/client";
-import { formatDate, formatCurrency } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
-import type { Account, UpdateAccountRequest } from "../../types";
+import type { Account } from "../../types";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
-  TableCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -38,13 +20,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -55,56 +30,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-
-interface AccountForm {
-  name: string;
-  accountTypeId: string;
-  bank: string;
-  color: string;
-  currency: string;
-  billingDay: number | null;
-  closed: boolean;
-}
-
-const EMPTY_NEW_ACCOUNT: AccountForm = {
-  name: "",
-  accountTypeId: "bank",
-  bank: "",
-  color: "#06b6d4",
-  currency: "INR",
-  billingDay: null,
-  closed: false,
-};
-
-const ordinal = (n: number): string => {
-  const suffixes = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return suffixes[(v - 20) % 10] || suffixes[v] || suffixes[0];
-};
-
-// parseBillingDay maps a number-input value to a billing day. An empty value
-// clears the field (null = no billing day / no summary rows).
-const parseBillingDay = (v: string): number | null => {
-  if (v === "") return null;
-  const n = Number(v);
-  if (Number.isNaN(n)) return null;
-  return Math.max(1, Math.min(31, n));
-};
-
-// balanceLabel picks the display label for an account's balance value by type.
-const balanceLabel = (acc: Account): string => {
-  if (acc.accountTypeId === "loan") return "Repaid";
-  if (acc.accountTypeId === "credit_card") return "Outstanding";
-  return "Balance";
-};
-
-const getTypeIcon = (accountTypeId: string, color: string, size: number) => {
-  if (accountTypeId === "credit_card")
-    return <CreditCard size={size} style={{ color }} />;
-  if (accountTypeId === "loan")
-    return <Landmark size={size} style={{ color }} />;
-  return <Building2 size={size} style={{ color }} />;
-};
+import AccountFormDialog from "./AccountFormDialog";
+import AccountRow from "./AccountRow";
+import {
+  EMPTY_NEW_ACCOUNT,
+  toUpdatePayload,
+  type AccountForm,
+} from "./accountHelpers";
 
 export default function Accounts() {
   const { accounts, accountTypes, setAccounts } = useDomainData();
@@ -330,9 +262,7 @@ export default function Accounts() {
                   </TableHead>
                   <TableHead className={headerBase}>Type</TableHead>
                   <TableHead className={headerBase}>Bank</TableHead>
-                  <TableHead
-                    className={`${headerBase} text-right`}
-                  >
+                  <TableHead className={`${headerBase} text-right`}>
                     Balance
                   </TableHead>
                   <TableHead className={headerBase}>Billing Day</TableHead>
@@ -344,123 +274,17 @@ export default function Accounts() {
               </TableHeader>
               <TableBody>
                 {visibleAccounts.map((acc) => (
-                  <TableRow key={acc.id} className="border-border">
-                    <TableCell className={cellPad}>
-                      <div className="flex items-center gap-2.5">
-                        {getTypeIcon(
-                          acc.accountTypeId,
-                          acc.color,
-                          compactLayout ? 16 : 18,
-                        )}
-                        <span
-                          className={`font-medium ${
-                            acc.closed
-                              ? "text-muted-foreground"
-                              : "text-foreground"
-                          }`}
-                        >
-                          {acc.name}
-                        </span>
-                        {acc.isDefault && (
-                          <span className="shrink-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
-                            Default
-                          </span>
-                        )}
-                        {acc.closed && (
-                          <span className="shrink-0 text-[9px] font-bold bg-destructive/10 text-destructive px-1.5 py-0.5 rounded uppercase tracking-wider">
-                            Closed
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
-                      {acc.accountTypeName}
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
-                      {acc.bank || "—"}
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-right whitespace-nowrap`}>
-                      <div className="text-sm font-semibold text-foreground font-mono">
-                        {formatCurrency(acc.balance, acc.currency)}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
-                        {balanceLabel(acc)}
-                      </div>
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
-                      {acc.billingDay
-                        ? `${acc.billingDay}${ordinal(acc.billingDay)}`
-                        : "—"}
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-sm whitespace-nowrap`}>
-                      {acc.closed ? (
-                        <span className="text-destructive">Closed</span>
-                      ) : (
-                        <span className="text-emerald-500">Open</span>
-                      )}
-                    </TableCell>
-                    <TableCell className={`${cellPad} text-right`}>
-                      <div className="flex items-center justify-end gap-0.5">
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className={
-                            acc.isDefault
-                              ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
-                              : "text-muted-foreground hover:text-amber-400 hover:bg-accent"
-                          }
-                          onClick={() => handleSetDefault(acc)}
-                          title={
-                            acc.isDefault
-                              ? "Remove as default account"
-                              : "Set as default account"
-                          }
-                        >
-                          <Star size={15} fill={acc.isDefault ? "currentColor" : "none"} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-muted-foreground hover:text-primary hover:bg-primary/10"
-                          onClick={() => handleExport(acc.id)}
-                          title="Export transactions (CSV)"
-                        >
-                          <Download size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-muted-foreground hover:text-primary hover:bg-primary/10"
-                          onClick={() => startEdit(acc)}
-                          title="Edit account"
-                        >
-                          <Pencil size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-muted-foreground hover:text-amber-400 hover:bg-accent"
-                          onClick={() => handleToggleClosed(acc)}
-                          title={
-                            acc.closed
-                              ? "Reopen account"
-                              : "Close account (transactions become read-only)"
-                          }
-                        >
-                          {acc.closed ? <LockOpen size={14} /> : <Lock size={14} />}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                          onClick={() => setDeleteTarget(acc)}
-                          title="Delete account"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
+                  <AccountRow
+                    key={acc.id}
+                    account={acc}
+                    cellPad={cellPad}
+                    compactLayout={compactLayout}
+                    onSetDefault={handleSetDefault}
+                    onExport={handleExport}
+                    onEdit={startEdit}
+                    onToggleClosed={handleToggleClosed}
+                    onDelete={setDeleteTarget}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -468,223 +292,39 @@ export default function Accounts() {
         )}
       </div>
 
-      {/* Create account dialog */}
-      <Dialog
+      <AccountFormDialog
         open={createOpen}
         onOpenChange={(o) => {
-          if (!o) {
-            setCreateOpen(false);
-            resetNew();
-          }
+          setCreateOpen(o);
+          if (!o) resetNew();
         }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>New Account</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">Name</Label>
-              <Input
-                className="h-10"
-                placeholder="e.g. HDFC Savings"
-                value={newAcc.name}
-                onChange={(e) =>
-                  setNewAcc({ ...newAcc, name: e.target.value })
-                }
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">Type</Label>
-              <Select
-                value={newAcc.accountTypeId}
-                onValueChange={(v) =>
-                  setNewAcc({ ...newAcc, accountTypeId: v })
-                }
-              >
-                <SelectTrigger className="w-full h-10">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {accountTypes.map((at) => (
-                    <SelectItem key={at.id} value={at.id}>
-                      {at.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">Bank</Label>
-              <Input
-                className="h-10"
-                placeholder="e.g. HDFC"
-                value={newAcc.bank}
-                onChange={(e) =>
-                  setNewAcc({ ...newAcc, bank: e.target.value })
-                }
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">Color</Label>
-              <input
-                type="color"
-                value={newAcc.color}
-                onChange={(e) =>
-                  setNewAcc({ ...newAcc, color: e.target.value })
-                }
-                className="w-full h-10 cursor-pointer bg-background border border-border rounded-lg p-1"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">
-                Billing Day
-              </Label>
-              <Input
-                type="number"
-                min={1}
-                max={31}
-                placeholder="None"
-                className="h-10"
-                value={newAcc.billingDay ?? ""}
-                onChange={(e) =>
-                  setNewAcc({
-                    ...newAcc,
-                    billingDay: parseBillingDay(e.target.value),
-                  })
-                }
-              />
-              <span className="text-[11px] text-muted-foreground">
-                Optional. Set to show monthly summary rows for this account.
-              </span>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              size="lg"
-              className="px-4"
-              onClick={handleCreate}
-              disabled={!newAcc.name}
-            >
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        title="New Account"
+        form={newAcc}
+        onChange={setNewAcc}
+        onSubmit={handleCreate}
+        accountTypes={accountTypes}
+        submitLabel="Create"
+        billingDayHint="Optional. Set to show monthly summary rows for this account."
+      />
 
-      {/* Edit account dialog */}
       {editing && editAcc && (
-        <Dialog open onOpenChange={(o) => !o && setEditing(null)}>
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Edit Account</DialogTitle>
-            </DialogHeader>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs text-muted-foreground">Name</Label>
-                <Input
-                  className="h-10"
-                  placeholder="Name"
-                  value={editAcc.name}
-                  onChange={(e) =>
-                    setEditAcc({ ...editAcc, name: e.target.value })
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs text-muted-foreground">Type</Label>
-                <Select
-                  value={editAcc.accountTypeId}
-                  onValueChange={(v) =>
-                    setEditAcc({ ...editAcc, accountTypeId: v })
-                  }
-                >
-                  <SelectTrigger className="w-full h-10">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {accountTypes.map((at) => (
-                      <SelectItem key={at.id} value={at.id}>
-                        {at.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs text-muted-foreground">Bank</Label>
-                <Input
-                  className="h-10"
-                  placeholder="Bank"
-                  value={editAcc.bank}
-                  onChange={(e) =>
-                    setEditAcc({ ...editAcc, bank: e.target.value })
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs text-muted-foreground">Color</Label>
-                <input
-                  type="color"
-                  value={editAcc.color}
-                  onChange={(e) =>
-                    setEditAcc({ ...editAcc, color: e.target.value })
-                  }
-                  className="w-full h-10 cursor-pointer bg-background border border-border rounded-lg p-1"
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs text-muted-foreground">
-                  Billing Day
-                </Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={31}
-                  placeholder="None"
-                  className="h-10"
-                  value={editAcc.billingDay ?? ""}
-                  onChange={(e) =>
-                    setEditAcc({
-                      ...editAcc,
-                      billingDay: parseBillingDay(e.target.value),
-                    })
-                  }
-                />
-                <span className="text-[11px] text-muted-foreground">
-                  Optional. Set to show monthly summary rows for this account.
-                  Leave empty to disable.
-                </span>
-              </div>
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={editAcc.closed}
-                    onChange={(e) =>
-                      setEditAcc({ ...editAcc, closed: e.target.checked })
-                    }
-                    className="h-4 w-4 rounded border-border accent-primary"
-                  />
-                  Closed account
-                  <span className="text-[11px] text-muted-foreground">
-                    (transactions become read-only; linking stays possible)
-                  </span>
-                </label>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button
-                size="lg"
-                className="px-4"
-                onClick={handleSave}
-                disabled={!editAcc.name}
-              >
-                Save
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <AccountFormDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) {
+              setEditing(null);
+              setEditAcc(null);
+            }
+          }}
+          title="Edit Account"
+          form={editAcc}
+          onChange={setEditAcc}
+          onSubmit={handleSave}
+          accountTypes={accountTypes}
+          submitLabel="Save"
+          billingDayHint="Optional. Set to show monthly summary rows for this account. Leave empty to disable."
+          showClosed
+        />
       )}
 
       {/* Delete confirmation */}
@@ -720,28 +360,4 @@ export default function Accounts() {
       </AlertDialog>
     </>
   );
-}
-
-// toUpdatePayload flattens an AccountForm (or Account) into the partial-update
-// request shape used by PUT /accounts/:id.
-function toUpdatePayload(
-  form: {
-    name: string;
-    accountTypeId: string;
-    bank: string;
-    color: string;
-    currency: string;
-    billingDay?: number | null;
-    closed: boolean;
-  },
-): UpdateAccountRequest {
-  return {
-    name: form.name,
-    accountTypeId: form.accountTypeId,
-    bank: form.bank || "",
-    currency: form.currency || "INR",
-    color: form.color,
-    billingDay: form.billingDay ?? null,
-    closed: form.closed,
-  };
 }

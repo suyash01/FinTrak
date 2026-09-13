@@ -1,61 +1,18 @@
-import {
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-  useRef,
-  type CSSProperties,
-} from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  createColumnHelper,
-  type ColumnDef,
   type OnChangeFn,
   type PaginationState,
   type RowSelectionState,
   type SortingState,
 } from "@/lib/react-table";
-import {
-  Search,
-  Trash2,
-  Tags,
-  Link2,
-  Pencil,
-  Plus,
-  Folder,
-} from "lucide-react";
+import { Plus } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
-import AccountSelect from "@/components/AccountSelect/AccountSelect";
-import { Checkbox } from "@/components/ui/checkbox";
+import { DataTable, DataTablePagination } from "@/components/ui/data-table";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  DataTable,
-  DataTableColumnHeader,
-  DataTablePagination,
-} from "@/components/ui/data-table";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
-import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import type {
@@ -65,129 +22,17 @@ import type {
   QueryParams,
 } from "../../types";
 import { buildCategorySections } from "../../lib/categories";
-
-// Sentinel value for the bulk "Link to Loan" action: detach instead of attach.
-const UNLINK_LOAN = "__unlink__";
-
-interface SelectOption {
-  value: string;
-  label: string;
-}
-
-interface EditableSelectGroup {
-  label: string;
-  options: SelectOption[];
-}
-
-interface EditableSelectProps {
-  value?: string | null;
-  options?: SelectOption[];
-  optionGroups?: EditableSelectGroup[];
-  onChange: (value: string) => void;
-  placeholder: string;
-  displayText?: string;
-  style?: CSSProperties;
-}
-
-function EditableSelect({
-  value,
-  options,
-  optionGroups,
-  onChange,
-  placeholder,
-  displayText,
-  style,
-}: EditableSelectProps) {
-  const isPlaceholder = !value;
-  const allOptions = optionGroups?.flatMap((g) => g.options) ?? options ?? [];
-  const isMissing = Boolean(value) && !allOptions.some((o) => o.value === value);
-
-  return (
-    <select
-      className={`bg-transparent border-none text-[13px] outline-none focus:ring-0 w-full rounded px-1 py-0.5 cursor-pointer appearance-none hover:bg-accent transition-all block truncate ${isPlaceholder ? "text-muted-foreground italic" : ""}`}
-      style={{ ...style, backgroundImage: "none" }}
-      value={value || ""}
-      onChange={(e) => onChange(e.target.value)}
-      title="Click to edit"
-    >
-      <option value="" className="bg-popover text-muted-foreground not-italic">
-        {placeholder}
-      </option>
-      {isMissing && (
-        <option
-          value={value ?? ""}
-          className="bg-popover text-foreground not-italic"
-          hidden
-        >
-          {displayText}
-        </option>
-      )}
-      {optionGroups
-        ? optionGroups.map((g) => (
-            <optgroup
-              key={g.label}
-              label={g.label}
-              className="bg-popover text-muted-foreground"
-            >
-              {g.options.map((o) => (
-                <option
-                  key={o.value}
-                  value={o.value}
-                  className="bg-popover text-foreground not-italic"
-                >
-                  {o.label}
-                </option>
-              ))}
-            </optgroup>
-          ))
-        : options?.map((o) => (
-            <option
-              key={o.value}
-              value={o.value}
-              className="bg-popover text-foreground not-italic"
-            >
-              {o.label}
-            </option>
-          ))}
-    </select>
-  );
-}
-
-const columnHelper = createColumnHelper<Transaction>();
-
-const URL_PARAMS = [
-  "search",
-  "accountId",
-  "categoryId",
-  "groupId",
-  "payeeId",
-  "type",
-  "dateFrom",
-  "dateTo",
-  "linked",
-  "sortBy",
-  "sortOrder",
-  "page",
-];
-
-const DEFAULT_FILTERS: Record<string, string | number> = {
-  search: "",
-  accountId: "",
-  categoryId: "",
-  groupId: "",
-  payeeId: "",
-  type: "",
-  dateFrom: "",
-  dateTo: "",
-  linked: "",
-  sortBy: "date",
-  sortOrder: "DESC",
-  page: 1,
-};
-
-const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 500, 1000];
-const MAX_PAGE_SIZE = 1000;
-const PAGE_SIZE_LS_KEY = "txPageSize";
+import { useTransactionColumns } from "./useTransactionColumns";
+import BulkActionBar, { UNLINK_LOAN } from "./BulkActionBar";
+import TransactionFilters from "./TransactionFilters";
+import DeleteTransactionDialogs from "./DeleteTransactionDialogs";
+import {
+  URL_PARAMS,
+  DEFAULT_FILTERS,
+  PAGE_SIZE_OPTIONS,
+  MAX_PAGE_SIZE,
+  PAGE_SIZE_LS_KEY,
+} from "./transactionConstants";
 
 export default function Transactions() {
   const {
@@ -750,207 +595,16 @@ export default function Transactions() {
   const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
   const headerBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
 
-  // Column definitions for the transactions table.
-  const columns = useMemo<ColumnDef<Transaction, any>[]>(
-    () => [
-      columnHelper.display({
-        id: "select",
-        header: ({ table }) => (
-          <Checkbox
-            checked={table.getIsAllPageRowsSelected()}
-            onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
-          />
-        ),
-        cell: ({ row }) =>
-          row.original.isSummary ? null : (
-            <Checkbox
-              checked={row.getIsSelected()}
-              onCheckedChange={(v) => row.toggleSelected(!!v)}
-            />
-          ),
-        meta: { headerClassName: "w-10" },
-      }),
-      columnHelper.accessor("date", {
-        header: ({ column }) => (
-          <DataTableColumnHeader column={column} title="Date" />
-        ),
-        cell: ({ row }) =>
-          row.original.isSummary ? (
-            <span className="text-sm text-muted-foreground whitespace-nowrap">
-              {formatDate(row.original.date)}
-            </span>
-          ) : (
-            <span className="text-sm whitespace-nowrap">
-              {formatDate(row.original.date)}
-            </span>
-          ),
-        meta: { cellClassName: "text-sm whitespace-nowrap" },
-      }),
-      columnHelper.accessor("description", {
-        header: ({ column }) => (
-          <DataTableColumnHeader column={column} title="Description" />
-        ),
-        cell: ({ row }) =>
-          row.original.isSummary ? (
-            <span className="text-sm font-semibold text-primary">
-              {row.original.description}
-            </span>
-          ) : (
-            <span
-              className="block text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap"
-              title={row.original.description}
-            >
-              {row.original.description}
-            </span>
-          ),
-        meta: {
-          cellClassName:
-            "text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap",
-        },
-      }),
-      columnHelper.display({
-        id: "payee",
-        header: () => "Payee",
-        cell: ({ row }) =>
-          row.original.isSummary ? null : (
-            <EditableSelect
-              value={row.original.payeeId}
-              options={payeeOptions}
-              onChange={(val) =>
-                handlePayeeChange(row.original.id, val, row.original)
-              }
-              placeholder="No Payee"
-              displayText={row.original.payee}
-            />
-          ),
-        meta: { cellClassName: "text-sm min-w-25" },
-      }),
-      columnHelper.accessor("accountName", {
-        header: () => "Account",
-        cell: ({ row }) => (
-          <span
-            className={`text-sm whitespace-nowrap ${
-              row.original.isSummary ? "text-muted-foreground" : ""
-            }`}
-          >
-            {row.original.accountName}
-          </span>
-        ),
-        meta: { cellClassName: "text-sm whitespace-nowrap" },
-      }),
-      columnHelper.display({
-        id: "category",
-        header: () => "Category",
-        cell: ({ row }) =>
-          row.original.isSummary ? null : (
-            <EditableSelect
-              value={row.original.categoryId}
-              optionGroups={categoryOptionGroups}
-              onChange={(val) =>
-                handleCategoryChange(row.original.id, val, row.original)
-              }
-              placeholder="Uncategorized"
-              displayText={
-                row.original.categoryId ? row.original.categoryName : ""
-              }
-              style={
-                row.original.categoryColor
-                  ? { color: row.original.categoryColor }
-                  : undefined
-              }
-            />
-          ),
-        meta: { cellClassName: "text-sm" },
-      }),
-      columnHelper.accessor("amount", {
-        header: ({ column }) => (
-          <DataTableColumnHeader column={column} title="Amount" />
-        ),
-        cell: ({ row }) =>
-          row.original.isSummary ? (
-            <span className="text-sm text-right font-bold text-foreground font-mono whitespace-nowrap">
-              {formatCurrency(row.original.amount)}
-            </span>
-          ) : (
-            <span
-              className={`text-sm text-right font-semibold whitespace-nowrap ${
-                row.original.type === "debit"
-                  ? "text-destructive"
-                  : "text-emerald-500"
-              }`}
-            >
-              {row.original.type === "debit" ? "−" : "+"}
-              {formatCurrency(row.original.amount)}
-            </span>
-          ),
-        meta: {
-          headerClassName: "text-right",
-          cellClassName: "text-sm text-right whitespace-nowrap",
-        },
-      }),
-      columnHelper.display({
-        id: "actions",
-        header: () => "",
-        cell: ({ row }) => {
-          const t = row.original;
-          if (t.isSummary) return null;
-          // Closed accounts are immutable: only linking stays possible.
-          const accountClosed = closedById.get(t.accountId) ?? false;
-          return (
-            <div className="flex items-center gap-1">
-              {!accountClosed && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground hover:text-primary hover:bg-primary/10"
-                  onClick={() => setEditingTxn(t)}
-                  title="Edit transaction"
-                >
-                  <Pencil size={14} />
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className={`${
-                  t.isLinked
-                    ? "text-primary bg-primary/10 hover:bg-primary/20 hover:text-primary"
-                    : "text-muted-foreground hover:text-primary hover:bg-primary/10"
-                }`}
-                onClick={() => setLinkingTxn(t)}
-                title={t.isLinked ? "Manage links" : "Find match and link"}
-              >
-                <Link2 size={14} />
-              </Button>
-              {!accountClosed && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  onClick={() => handleDelete(t.id)}
-                  title="Delete transaction"
-                >
-                  <Trash2 size={14} />
-                </Button>
-              )}
-            </div>
-          );
-        },
-        meta: { headerClassName: "w-12.5" },
-      }),
-    ],
-    [
-      pad,
-      categoryOptionGroups,
-      payeeOptions,
-      handleCategoryChange,
-      handlePayeeChange,
-      handleDelete,
-      setLinkingTxn,
-      setEditingTxn,
-      closedById,
-    ],
-  );
+  const columns = useTransactionColumns({
+    payeeOptions,
+    categoryOptionGroups,
+    closedById,
+    onCategoryChange: handleCategoryChange,
+    onPayeeChange: handlePayeeChange,
+    onDelete: handleDelete,
+    onLink: setLinkingTxn,
+    onEdit: setEditingTxn,
+  });
 
   return (
     <>
@@ -974,276 +628,37 @@ export default function Transactions() {
         </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
-        {/* Filters */}
-        <div className={`relative w-full ${compactLayout ? "mb-3" : "mb-5"}`}>
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            className={`pl-9 ${compactLayout ? "h-8" : "h-10"} bg-background`}
-            placeholder="Search descriptions..."
-            value={filters.search}
-            onChange={(e) => updateFilter("search", e.target.value)}
-          />
-        </div>
-        <div
-          className={`flex flex-wrap items-center ${compactLayout ? "gap-2 mb-3" : "gap-3 mb-5"}`}
-        >
-          <AccountSelect
-            accounts={accounts}
-            value={String(filters.accountId || "all")}
-            onValueChange={(v) =>
-              updateFilter("accountId", v === "all" ? "" : v)
-            }
-            placeholder="All Accounts"
-            triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            extraItems={<SelectItem value="all">All Accounts</SelectItem>}
-          />
-          <Select
-            value={String(filters.groupId || filters.categoryId || "all")}
-            onValueChange={(v) => {
-              if (v === "all") {
-                updateFilter("categoryId", "");
-                updateFilter("groupId", "");
-              } else if (groupIds.has(v)) {
-                updateFilter("categoryId", "");
-                updateFilter("groupId", v);
-              } else {
-                updateFilter("groupId", "");
-                updateFilter("categoryId", v);
-              }
-            }}
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Categories" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Categories</SelectItem>
-              <SelectItem value="uncategorized" className="font-semibold">
-                Uncategorized
-              </SelectItem>
-              {categorySections.map((s) => (
-                <SelectGroup key={s.group.id}>
-                  <SelectItem value={s.group.id} className="font-semibold">
-                    <span className="flex items-center gap-2">
-                      <Folder size={12} className="text-muted-foreground" />
-                      {s.group.name}
-                    </span>
-                  </SelectItem>
-                  {s.items.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={String(filters.payeeId || "all")}
-            onValueChange={(v) => updateFilter("payeeId", v === "all" ? "" : v)}
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Payees" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Payees</SelectItem>
-              {payees.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={String(filters.type || "all")}
-            onValueChange={(v) => updateFilter("type", v === "all" ? "" : v)}
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Types" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Types</SelectItem>
-              <SelectItem value="debit">Debit</SelectItem>
-              <SelectItem value="credit">Credit</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={String(filters.linked || "all")}
-            onValueChange={(v) => updateFilter("linked", v === "all" ? "" : v)}
-          >
-            <SelectTrigger
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background`}
-            >
-              <SelectValue placeholder="All Link Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Link Status</SelectItem>
-              <SelectItem value="true">Linked Only</SelectItem>
-              <SelectItem value="false">Not Linked Only</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
-            value={filters.dateFrom}
-            onChange={(e) => updateFilter("dateFrom", e.target.value)}
-            title="From date"
-          />
-          <Input
-            type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
-            value={filters.dateTo}
-            onChange={(e) => updateFilter("dateTo", e.target.value)}
-            title="To date"
-          />
+        <TransactionFilters
+          compactLayout={compactLayout}
+          filters={filters}
+          onFilterChange={updateFilter}
+          accounts={accounts}
+          payees={payees}
+          categorySections={categorySections}
+          groupIds={groupIds}
+          preset={preset}
+          customInput={customInput}
+          onPresetChange={handlePresetChange}
+          onCustomInputChange={setCustomInput}
+          onCommitCustom={commitCustom}
+        />
 
-          {/* Page size control, floated right to stay visually separate */}
-          <div className={`ml-auto flex items-center gap-2`}>
-            <label className="text-sm text-muted-foreground">
-              Rows per page
-            </label>
-            <Select value={preset} onValueChange={handlePresetChange}>
-              <SelectTrigger
-                className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZE_OPTIONS.map((o) => (
-                  <SelectItem key={o} value={String(o)}>
-                    {o}
-                  </SelectItem>
-                ))}
-                <SelectItem value="custom">Custom...</SelectItem>
-              </SelectContent>
-            </Select>
-            {preset === "custom" && (
-              <Input
-                type="number"
-                min="1"
-                max="1000"
-                value={customInput}
-                onChange={(e) => setCustomInput(e.target.value)}
-                onBlur={commitCustom}
-                onKeyDown={(e) => e.key === "Enter" && commitCustom()}
-                placeholder="Custom"
-                className={`w-24 ${compactLayout ? "h-8" : "h-9"} bg-background`}
-              />
-            )}
-          </div>
-        </div>
-
-        {/* Bulk actions */}
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 px-4 py-3 bg-primary/10 border border-primary/20 rounded-lg mb-4">
-            <Tags size={16} className="text-primary" />
-            <span className="text-sm font-medium text-foreground">
-              {selected.size} selected
-            </span>
-            <select
-              className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
-              onChange={(e) => {
-                if (e.target.value) handleBulkCategorize(e.target.value);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Categorize as...</option>
-              <option
-                value="uncategorized"
-                className="bg-popover text-muted-foreground font-semibold"
-              >
-                Uncategorized
-              </option>
-              {categorySections.map((s) => (
-                <optgroup
-                  key={s.group.id}
-                  label={s.group.name}
-                  className="bg-popover text-muted-foreground"
-                >
-                  {s.items.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-            <select
-              className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
-              onChange={(e) => {
-                if (e.target.value) handleBulkUpdatePayee(e.target.value);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Set Payee...</option>
-              {payees.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            {hasBillingDayFilter && (
-              <select
-                className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
-                onChange={(e) => {
-                  if (e.target.value) handleBulkSetBillingCycle(e.target.value);
-                  e.target.value = "";
-                }}
-              >
-                <option value="">
-                  {loadingCycles
-                    ? "Loading billing cycles..."
-                    : "Set Billing Cycle..."}
-                </option>
-                {billingCycles.map((bc) => (
-                  <option key={bc.id} value={bc.id}>
-                    {bc.label} ({formatDate(bc.startDate)} –{" "}
-                    {formatDate(bc.endDate)})
-                  </option>
-                ))}
-              </select>
-            )}
-            {loanAccounts.length > 0 && (
-              <select
-                className="px-3 py-1.5 bg-background border border-border rounded text-foreground text-[13px] focus:outline-none focus:border-primary transition-all ml-2"
-                onChange={(e) => {
-                  if (e.target.value) handleBulkLinkLoan(e.target.value);
-                  e.target.value = "";
-                }}
-              >
-                <option value="">Link to Loan...</option>
-                <option value={UNLINK_LOAN}>Unlink from loan</option>
-                {loanAccounts.map((la) => (
-                  <option key={la.id} value={la.id}>
-                    {la.name}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-destructive hover:text-destructive ml-2"
-              onClick={handleBulkDelete}
-            >
-              <Trash2 size={14} />
-              Delete
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto"
-              onClick={() => setSelected(new Set())}
-            >
-              Clear
-            </Button>
-          </div>
+          <BulkActionBar
+            selectedCount={selected.size}
+            categorySections={categorySections}
+            payees={payees}
+            hasBillingDayFilter={hasBillingDayFilter}
+            loadingCycles={loadingCycles}
+            billingCycles={billingCycles}
+            loanAccounts={loanAccounts}
+            onCategorize={handleBulkCategorize}
+            onUpdatePayee={handleBulkUpdatePayee}
+            onSetBillingCycle={handleBulkSetBillingCycle}
+            onLinkLoan={handleBulkLinkLoan}
+            onDelete={handleBulkDelete}
+            onClear={() => setSelected(new Set())}
+          />
         )}
 
         {/* Table */}
@@ -1322,58 +737,15 @@ export default function Transactions() {
           }}
         />
       )}
-      <AlertDialog
-        open={deleteTxnId !== null}
-        onOpenChange={(open) => !open && setDeleteTxnId(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this transaction?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the transaction. This action cannot
-              be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const id = deleteTxnId;
-                setDeleteTxnId(null);
-                if (id) confirmDelete(id);
-              }}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Delete {selected.size} selected transactions?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the selected transactions. This
-              action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                setBulkDeleteOpen(false);
-                confirmBulkDelete();
-              }}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteTransactionDialogs
+        deleteTxnId={deleteTxnId}
+        onCancelDelete={() => setDeleteTxnId(null)}
+        onConfirmDelete={confirmDelete}
+        bulkDeleteOpen={bulkDeleteOpen}
+        onBulkDeleteOpenChange={setBulkDeleteOpen}
+        selectedCount={selected.size}
+        onConfirmBulkDelete={confirmBulkDelete}
+      />
     </>
   );
 }

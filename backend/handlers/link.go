@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/fintrak/backend/auth"
@@ -498,12 +499,48 @@ func BulkDeleteLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted", "deletedCount": len(req.IDs)})
 }
 
+// Suggestion pagination. The suggestion endpoints expose the same page/limit
+// contract as GetTransactions, but with a much lower page cap: every row is a
+// scored pair and the LATERAL match expansion makes a large page costly. The
+// handlers fetch one extra row (limit+1) to report hasMore without running a
+// second count query across the LATERAL.
+const (
+	defaultSuggestionLimit = 50
+	maxSuggestionLimit     = 100
+)
+
+// parseSuggestionPaging reads and clamps the page/limit query params shared by
+// the transfer and cashback suggestion endpoints, mirroring GetTransactions.
+// Invalid or out-of-range values fall back to the defaults so a crafted request
+// cannot force an unbounded scan.
+func parseSuggestionPaging(c *gin.Context) (page, limit, offset int) {
+	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+
+	limit, _ = strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultSuggestionLimit)))
+	if limit < 1 {
+		limit = defaultSuggestionLimit
+	}
+	if limit > maxSuggestionLimit {
+		limit = maxSuggestionLimit
+	}
+
+	offset = (page - 1) * limit
+	return page, limit, offset
+}
+
 // GetTransferSuggestions proposes debit/credit pairs across different accounts
 // that are likely transfers: same amount within ±3 days, not already linked.
-// Each suggestion carries a confidence score.
+// Each suggestion carries a confidence score. Results are paginated newest
+// first; the per-debit match expansion stays capped at five credits.
 func GetTransferSuggestions(c *gin.Context) {
+	page, limit, offset := parseSuggestionPaging(c)
+
 	// Find debit transactions that might match credit transactions in other accounts
-	// within ±3 days and same amounts
+	// within ±3 days and same amounts. The outer ORDER BY ends with d.id so
+	// paging is deterministic when several debits share a date.
 	rows, err := db.Pool.Query(c, `
 		SELECT d.id, d.account_id, d.date, d.description, d.amount, d.type, da.name as d_account,
 			   cr.id, cr.account_id, cr.date, cr.description, cr.amount, cr.type, ca.name as c_account
@@ -520,14 +557,14 @@ func GetTransferSuggestions(c *gin.Context) {
 			  AND t.date <= d.date + 3
 			  AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = d.id OR to_txn_id = d.id))
 			  AND NOT EXISTS (SELECT 1 FROM links WHERE (from_txn_id = t.id OR to_txn_id = t.id))
-			ORDER BY t.date DESC
+			ORDER BY t.date DESC, t.id
 			LIMIT 5
 			) cr
 		JOIN accounts ca ON cr.account_id = ca.id
 		WHERE d.type = 'debit' AND d.user_id = $1
-		ORDER BY d.date DESC
-		LIMIT 50
-	`, auth.GetUserID(c))
+		ORDER BY d.date DESC, d.id
+		LIMIT $2 OFFSET $3
+	`, auth.GetUserID(c), limit+1, offset)
 	if err != nil {
 		slog.Error("GetTransferSuggestions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -549,7 +586,17 @@ func GetTransferSuggestions(c *gin.Context) {
 		suggestions = append(suggestions, s)
 	}
 
-	c.JSON(http.StatusOK, suggestions)
+	hasMore := len(suggestions) > limit
+	if hasMore {
+		suggestions = suggestions[:limit]
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":    suggestions,
+		"page":    page,
+		"limit":   limit,
+		"hasMore": hasMore,
+	})
 }
 
 // calculateTransferScore ranks a transfer suggestion from 0-100. It starts at
@@ -582,8 +629,10 @@ func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
 // GetCashbackSuggestions finds credit transactions whose description suggests a
 // cashback/reward/refund and pairs each with up to three prior debits on the
 // same account (within 90 days) as the likely originating purchase, excluding
-// already-linked cashbacks.
+// already-linked cashbacks. Results are paginated newest first.
 func GetCashbackSuggestions(c *gin.Context) {
+	page, limit, offset := parseSuggestionPaging(c)
+
 	rows, err := db.Pool.Query(c, `
 		SELECT cb.id, cb.account_id, cb.date, cb.description, cb.amount, cb.type, ca.name,
 		       orig.id, orig.account_id, orig.date, orig.description, orig.amount, orig.type, oa.name
@@ -598,7 +647,7 @@ func GetCashbackSuggestions(c *gin.Context) {
 			  AND t.date <= cb.date
 			  AND t.date >= cb.date - 90
 			  AND NOT EXISTS (SELECT 1 FROM links WHERE type = 'cashback' AND to_txn_id = cb.id)
-			ORDER BY t.date DESC
+			ORDER BY t.date DESC, t.id
 			LIMIT 3
 		) orig
 		JOIN accounts oa ON orig.account_id = oa.id
@@ -609,9 +658,9 @@ func GetCashbackSuggestions(c *gin.Context) {
 		       OR cb.description ILIKE '%reward%'
 		       OR cb.description ILIKE '%refund%')
 		  AND NOT EXISTS (SELECT 1 FROM links WHERE type = 'cashback' AND to_txn_id = cb.id)
-		ORDER BY cb.date DESC
-		LIMIT 50
-	`, auth.GetUserID(c))
+		ORDER BY cb.date DESC, cb.id
+		LIMIT $2 OFFSET $3
+	`, auth.GetUserID(c), limit+1, offset)
 	if err != nil {
 		slog.Error("GetCashbackSuggestions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -634,5 +683,15 @@ func GetCashbackSuggestions(c *gin.Context) {
 		suggestions = append(suggestions, s)
 	}
 
-	c.JSON(http.StatusOK, suggestions)
+	hasMore := len(suggestions) > limit
+	if hasMore {
+		suggestions = suggestions[:limit]
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":    suggestions,
+		"page":    page,
+		"limit":   limit,
+		"hasMore": hasMore,
+	})
 }
