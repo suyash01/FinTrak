@@ -89,6 +89,8 @@ from typing import Any, Dict, Iterable, List, Optional, TypedDict
 import pdfplumber
 from pypdf import PdfReader
 
+from .limits import ensure_page_limit
+
 
 class Transaction(TypedDict):
     date: str
@@ -477,7 +479,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
     _decrypt_if_needed(path, password)
     pdf = _open_pdf(path, password)
     try:
-        page_count: int = len(pdf.pages)
+        page_count: int = ensure_page_limit(pdf)
         # Page 1 (and 2, defensively) carries the name block, summary row and
         # period line; the transaction table spans every page.
         lookahead_text: str = "\n".join(

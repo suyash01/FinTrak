@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,14 +24,16 @@ import (
 
 const testJWTSecret = "test-secret"
 
+// TestMain installs the JWT secret the auth handlers read from package config
+// (secrets are no longer carried in the request context).
+func TestMain(m *testing.M) {
+	SetJWTSecret(testJWTSecret)
+	os.Exit(m.Run())
+}
+
 func newAuthTestRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.Use(func(c *gin.Context) {
-		c.Set("jwtSecret", testJWTSecret)
-		c.Next()
-	})
-	return r
+	return gin.Default()
 }
 
 func TestRegister(t *testing.T) {
@@ -168,14 +171,11 @@ func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 	db.Pool = mock
 	defer func() { db.Pool = oldPool }()
 
+	SetAdminConfig([]string{"admin@example.com"}, "op-secret-token-123")
+	t.Cleanup(func() { SetAdminConfig(nil, "") })
+
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
-	r.Use(func(c *gin.Context) {
-		c.Set("jwtSecret", testJWTSecret)
-		c.Set("adminEmails", []string{"admin@example.com"})
-		c.Set("adminSetupToken", "op-secret-token-123")
-		c.Next()
-	})
 	r.POST("/auth/register", Register)
 
 	userID := uuid.New()
@@ -239,15 +239,11 @@ func TestRegisterAdminEmailWithoutConfiguredToken(t *testing.T) {
 	db.Pool = mock
 	defer func() { db.Pool = oldPool }()
 
+	SetAdminConfig([]string{"admin@example.com"}, "")
+	t.Cleanup(func() { SetAdminConfig(nil, "") })
+
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
-	r.Use(func(c *gin.Context) {
-		c.Set("jwtSecret", testJWTSecret)
-		c.Set("adminEmails", []string{"admin@example.com"})
-		// adminSetupToken intentionally absent: the operator has not
-		// configured one, so admin-listed emails must be refused entirely.
-		c.Next()
-	})
 	r.POST("/auth/register", Register)
 
 	reqBody := models.RegisterRequest{Email: "admin@example.com", Password: "password1234", SetupToken: "anything"}
@@ -496,12 +492,11 @@ func TestLoginUnknownUser(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
+	SetCookieSecure(true)
+	t.Cleanup(func() { SetCookieSecure(false) })
+
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(func(c *gin.Context) {
-		c.Set("cookieSecure", true)
-		c.Next()
-	})
 	r.POST("/auth/logout", Logout)
 
 	w := httptest.NewRecorder()

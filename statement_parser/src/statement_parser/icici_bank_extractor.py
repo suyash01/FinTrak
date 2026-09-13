@@ -70,6 +70,8 @@ from pdfplumber.page import Page
 from pdfplumber.pdf import PDF
 from pypdf import PdfReader
 
+from .limits import ensure_page_limit
+
 #: The masked/right-aligned word blocks pdfplumber.Page.extract_words()
 #: returns. All keys are required (extract_words() always emits them);
 #: extra keys it also emits (e.g. "bottom", "upright", "direction") are
@@ -893,6 +895,8 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
     _decrypt_if_needed(path, password)
     pdf = _open_pdf(path, password)
     try:
+        ensure_page_limit(pdf)
+
         # Customer name/ID live on page 1; the account list and statement
         # period line live on the page that starts the transaction table
         # (typically page 2 or 3, right after any promotional page). A

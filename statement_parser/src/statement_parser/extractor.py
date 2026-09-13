@@ -10,6 +10,8 @@ registered for different statement formats.
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from .limits import PageLimitExceeded
+
 from .icici_cc_extractor import (
     PdfPasswordRequired,
     extract_transactions as _icici_extract_transactions,
@@ -116,6 +118,7 @@ register_extractor(
 
 __all__ = [
     "ExtractorSpec",
+    "PageLimitExceeded",
     "PdfPasswordRequired",
     "extract_transactions",
     "get_extractor",

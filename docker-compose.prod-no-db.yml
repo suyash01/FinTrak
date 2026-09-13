@@ -26,14 +26,14 @@
 #   LOG_LEVEL       - debug|info|warn|error (default: info in production)
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
-#   IMAGE_REPO      - Registry prefix (default: ghcr.io/suyash01)
+#   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
 #   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
 #                     version (e.g. v1.2.3) for reproducible deployments.
 
 services:
   backend:
     container_name: backend
-    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-backend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-backend:${IMAGE_TAG:-latest}
     ports:
       - "8080:8080"
     environment:
@@ -73,7 +73,7 @@ services:
 
   frontend:
     container_name: frontend
-    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-frontend:${IMAGE_TAG:-latest}
     ports:
       - "3000:8080"
     depends_on:
@@ -98,7 +98,7 @@ services:
   # so it must never be published to the host.
   statement-parser:
     container_name: statement-parser
-    image: ${IMAGE_REPO:-ghcr.io/suyash01}/fintrak-statement-parser:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-statement-parser:${IMAGE_TAG:-latest}
     mem_limit: 512m
     cpus: 1.0
     security_opt:

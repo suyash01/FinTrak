@@ -7,7 +7,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from statement_parser.app import app
-from statement_parser.extractor import PdfPasswordRequired
+from statement_parser.extractor import PageLimitExceeded, PdfPasswordRequired
 
 DEFAULT_MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20 MB
 
@@ -143,7 +143,21 @@ class AppTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
         self.assertEqual(resp.status_code, 422)
-        self.assertIn("Failed to process PDF", resp.get_json()["error"])
+        self.assertEqual(resp.get_json()["error"], "Failed to process the statement")
+        self.assertNotIn("boom", resp.get_json()["error"])
+
+    @mock.patch("statement_parser.app.extract_transactions")
+    def test_api_extract_page_limit(self, mock_extract):
+        mock_extract.side_effect = PageLimitExceeded(
+            "statement has 600 pages, exceeding the 500-page limit"
+        )
+        resp = self.client.post(
+            "/api/extract",
+            data=_pdf_upload(),
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("exceeding", resp.get_json()["error"])
 
     def test_too_large_returns_413(self):
         app.config["MAX_CONTENT_LENGTH"] = 1024  # shrink limit for the test

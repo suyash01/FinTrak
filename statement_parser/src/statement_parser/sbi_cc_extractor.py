@@ -29,6 +29,8 @@ from typing import Any, List, Optional
 import pdfplumber
 from pypdf import PdfReader
 
+from .limits import ensure_page_limit
+
 
 # A transaction line looks like:
 #   18 May 26 UPI-SUYASH MITTAL 310.00 C
@@ -136,7 +138,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> dict[str,
     full_text_parts: List[str] = []
 
     with pdfplumber.open(path, password=password) as pdf:
-        page_count = len(pdf.pages)
+        page_count = ensure_page_limit(pdf)
         for page in pdf.pages:
             text = page.extract_text() or ""
             full_text_parts.append(text)

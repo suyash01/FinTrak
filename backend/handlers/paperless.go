@@ -402,7 +402,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 		if token == "" {
 			args = append(args, "")
 		} else {
-			enc, err := crypto.Encrypt(token, c.GetString("tokenEncryptionKey"))
+			enc, err := crypto.Encrypt(token, tokenEncryptionKey)
 			if err != nil {
 				slog.Error("UpdatePaperlessSettings (encrypt token)", "error", err)
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -568,16 +568,16 @@ func ListPaperlessDocuments(c *gin.Context) {
 		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
-	if err := validatePaperlessHost(c.Request.Context(), settings, c.GetString("appEnv")); err != nil {
+	if err := validatePaperlessHost(c.Request.Context(), settings, appEnv); err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, c.GetString("appEnv"))
+	client, err := paperlessClient(settings, appEnv)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, err := paperlessToken(c, settings, c.GetString("tokenEncryptionKey"))
+	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
 		slog.Error("ListPaperlessDocuments (decrypt token)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -749,16 +749,16 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
-	if err := validatePaperlessHost(c.Request.Context(), settings, c.GetString("appEnv")); err != nil {
+	if err := validatePaperlessHost(c.Request.Context(), settings, appEnv); err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, c.GetString("appEnv"))
+	client, err := paperlessClient(settings, appEnv)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, err := paperlessToken(c, settings, c.GetString("tokenEncryptionKey"))
+	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
 		slog.Error("GetPaperlessDocumentFile (decrypt token)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -840,16 +840,16 @@ func ImportPaperlessDocument(c *gin.Context) {
 		validation.RespondError(c, "Paperless is not configured", http.StatusBadRequest)
 		return
 	}
-	if err := validatePaperlessHost(c.Request.Context(), settings, c.GetString("appEnv")); err != nil {
+	if err := validatePaperlessHost(c.Request.Context(), settings, appEnv); err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, c.GetString("appEnv"))
+	client, err := paperlessClient(settings, appEnv)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, err := paperlessToken(c, settings, c.GetString("tokenEncryptionKey"))
+	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
 		slog.Error("ImportPaperlessDocument (decrypt token)", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

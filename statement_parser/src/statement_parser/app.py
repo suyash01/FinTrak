@@ -21,6 +21,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 try:
     from .extractor import (
+        PageLimitExceeded,
         PdfPasswordRequired,
         extract_transactions,
         list_extractors,
@@ -28,6 +29,7 @@ try:
     )
 except ImportError:  # pragma: no cover - allows direct script execution
     from extractor import (  # type: ignore[import-not-found]
+        PageLimitExceeded,
         PdfPasswordRequired,
         extract_transactions,
         list_extractors,
@@ -99,10 +101,15 @@ def api_extract():
         )
     except PdfPasswordRequired as e:
         return jsonify({"error": str(e), "password_required": True}), 401
+    except PageLimitExceeded as e:
+        return jsonify({"error": str(e)}), 422
     except KeyError as e:
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": f"Failed to process PDF: {e}"}), 422
+    except Exception:
+        # Log the real traceback server-side; never leak library internals or
+        # stack fragments to the client.
+        app.logger.exception("Failed to process uploaded statement")
+        return jsonify({"error": "Failed to process the statement"}), 422
     finally:
         os.remove(tmp_path)
 

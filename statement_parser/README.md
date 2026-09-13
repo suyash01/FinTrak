@@ -26,6 +26,11 @@ For production, serve with gunicorn (the WSGI server used in the Docker image):
 gunicorn -b 0.0.0.0:5000 statement_parser.app:app
 ```
 
+Uploads are capped at 20 MB, and extraction refuses PDFs with more than
+`MAX_PAGES` pages (default 500) to bound CPU/memory use against crafted
+"decompression bomb" files. Override the cap with the `MAX_PAGES` environment
+variable.
+
 Then open http://localhost:5000 — upload a PDF, enter a password if the file
 is protected, and view/download the extracted transactions.
 

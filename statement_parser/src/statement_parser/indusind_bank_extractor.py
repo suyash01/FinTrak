@@ -90,6 +90,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
 import pdfplumber
 from pypdf import PdfReader
 
+from .limits import ensure_page_limit
+
 
 class Word(TypedDict):
     text: str
@@ -516,7 +518,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
     _decrypt_if_needed(path, password)
     pdf = _open_pdf(path, password)
     try:
-        page_count: int = len(pdf.pages)
+        page_count: int = ensure_page_limit(pdf)
 
         # Metadata comes from the text layer (cover page + account details);
         # transaction rows come from word geometry.

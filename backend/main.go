@@ -142,17 +142,14 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// Point the statement handler at the standalone parser service.
 	handlers.SetStatementParserURL(cfg.ParserURL)
 
-	// Expose JWT secret, admin allowlist, environment, and the token
-	// encryption key to handlers via the request context.
-	r.Use(func(c *gin.Context) {
-		c.Set("jwtSecret", cfg.JWTSecret)
-		c.Set("adminEmails", cfg.AdminEmails)
-		c.Set("adminSetupToken", cfg.AdminSetupToken)
-		c.Set("appEnv", cfg.Env)
-		c.Set("cookieSecure", cfg.CookieSecure)
-		c.Set("tokenEncryptionKey", cfg.TokenEncryptionKey)
-		c.Next()
-	})
+	// Install handler configuration as package-level values rather than
+	// per-request context entries, so secrets are never copied into every
+	// request (including public routes).
+	handlers.SetJWTSecret(cfg.JWTSecret)
+	handlers.SetTokenEncryptionKey(cfg.TokenEncryptionKey)
+	handlers.SetAdminConfig(cfg.AdminEmails, cfg.AdminSetupToken)
+	handlers.SetAppEnv(cfg.Env)
+	handlers.SetCookieSecure(cfg.CookieSecure)
 
 	// CORS. A wildcard origin is incompatible with credentialed requests, so
 	// buildCORSConfig disables credentials whenever "*" is configured.

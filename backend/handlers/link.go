@@ -102,6 +102,14 @@ func CreateLink(c *gin.Context) {
 		return
 	}
 
+	// A transaction cannot be linked to itself; the DB enforces this with a
+	// CHECK constraint, but reject it here so the client gets a clear 400
+	// instead of a constraint-violation 500.
+	if req.FromTxnID == req.ToTxnID {
+		validation.RespondError(c, "cannot link a transaction to itself", http.StatusBadRequest)
+		return
+	}
+
 	// Verify both transactions belong to the requesting user before linking.
 	var link models.Link
 	userID := auth.GetUserID(c)
@@ -228,6 +236,11 @@ func BulkCreateLinks(c *gin.Context) {
 	for _, l := range req.Links {
 		if !isValidLinkType(l.Type) {
 			validation.RespondError(c, "invalid link type", http.StatusBadRequest)
+			return
+		}
+
+		if l.FromTxnID == l.ToTxnID {
+			validation.RespondError(c, "cannot link a transaction to itself", http.StatusBadRequest)
 			return
 		}
 

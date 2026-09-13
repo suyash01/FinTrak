@@ -349,6 +349,30 @@ func TestCreateLinkInvalidType(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCreateLinkRejectsSelfLink(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.POST("/links", CreateLink)
+
+	txnID := uuid.New()
+	reqBody := models.CreateLinkRequest{
+		Type:      "transfer",
+		FromTxnID: txnID,
+		ToTxnID:   txnID,
+	}
+
+	mock.ExpectBegin()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/links", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "itself")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCreateLinkOwnershipNotFound(t *testing.T) {
 	r, mock := newLinkTestRouter(t)
 	r.POST("/links", CreateLink)
@@ -527,6 +551,30 @@ func TestBulkCreateLinksSkipsDuplicates(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"createdCount":0`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBulkCreateLinksRejectsSelfLink(t *testing.T) {
+	r, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk", BulkCreateLinks)
+
+	txnID := uuid.New()
+	reqBody := models.BulkCreateLinksRequest{
+		Links: []models.CreateLinkRequest{
+			{Type: "transfer", FromTxnID: txnID, ToTxnID: txnID},
+		},
+	}
+
+	mock.ExpectBegin()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/links/bulk", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "itself")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

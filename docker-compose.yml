@@ -1,5 +1,8 @@
 # Local Development
 # Usage: docker compose up -d
+# The optional log viewer (dozzle) mounts the Docker socket, so it is behind
+# the "debug" profile and is not started by default:
+#   docker compose --profile debug up -d
 
 services:
   db:
@@ -85,8 +88,12 @@ services:
   dozzle:
     container_name: dozzle
     image: amir20/dozzle:latest
+    profiles:
+      - debug
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only: dozzle only needs to read container logs, and a writable
+      # Docker socket is a container-escape risk on shared hosts.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - dozzle_data:/data
     ports:
       - 8082:8080

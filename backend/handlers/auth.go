@@ -21,17 +21,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// adminEmailsFromContext returns the configured admin email allowlist, or nil
-// when the router did not set it (e.g. unit tests).
-func adminEmailsFromContext(c *gin.Context) []string {
-	if v, ok := c.Get("adminEmails"); ok {
-		if emails, ok := v.([]string); ok {
-			return emails
-		}
-	}
-	return nil
-}
-
 // isAdminEmail reports whether email (already trimmed/lowercased by callers)
 // appears in the configured admin allowlist.
 func isAdminEmail(email string, adminEmails []string) bool {
@@ -86,12 +75,12 @@ func Register(c *gin.Context) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 
 	role := "user"
-	if isAdminEmail(email, adminEmailsFromContext(c)) {
+	if isAdminEmail(email, adminEmails) {
 		// Admin-listed identities are reserved: registering one without the
 		// setup token is refused outright (rather than falling back to a
 		// 'user' role) so an unverified third party can neither take the
 		// address nor self-promote.
-		if !setupTokenMatches(req.SetupToken, c.GetString("adminSetupToken")) {
+		if !setupTokenMatches(req.SetupToken, adminSetupToken) {
 			validation.RespondError(c, "registering an admin email requires a valid admin setup token", http.StatusForbidden)
 			return
 		}
@@ -117,14 +106,14 @@ func Register(c *gin.Context) {
 
 	db.SeedDefaultCategories(c, user.ID)
 
-	token, err := auth.GenerateToken(user.ID, user.Role, c.MustGet("jwtSecret").(string))
+	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {
 		slog.Error("generating token in Register", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	auth.SetAuthCookie(c, token, c.GetBool("cookieSecure"))
+	auth.SetAuthCookie(c, token, cookieSecure)
 
 	c.JSON(http.StatusCreated, models.AuthResponse{User: user})
 }
@@ -171,14 +160,14 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Role, c.MustGet("jwtSecret").(string))
+	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {
 		slog.Error("generating token in Login", "error", err)
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	auth.SetAuthCookie(c, token, c.GetBool("cookieSecure"))
+	auth.SetAuthCookie(c, token, cookieSecure)
 
 	c.JSON(http.StatusOK, models.AuthResponse{User: user})
 }
@@ -208,6 +197,6 @@ func Me(c *gin.Context) {
 // Logout clears the session cookie. It is unauthenticated on purpose so an
 // expired or invalid cookie can still be removed.
 func Logout(c *gin.Context) {
-	auth.ClearAuthCookie(c, c.GetBool("cookieSecure"))
+	auth.ClearAuthCookie(c, cookieSecure)
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }
