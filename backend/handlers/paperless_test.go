@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/crypto"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -20,29 +19,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newPaperlessTestRouter() *gin.Engine {
+func newPaperlessTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/paperless/settings", GetPaperlessSettings)
-	r.PUT("/paperless/settings", UpdatePaperlessSettings)
-	r.GET("/paperless/documents", ListPaperlessDocuments)
-	r.GET("/paperless/documents/:id/file", GetPaperlessDocumentFile)
-	r.POST("/paperless/import", ImportPaperlessDocument)
+	r.GET("/paperless/settings", srv.GetPaperlessSettings)
+	r.PUT("/paperless/settings", srv.UpdatePaperlessSettings)
+	r.GET("/paperless/documents", srv.ListPaperlessDocuments)
+	r.GET("/paperless/documents/:id/file", srv.GetPaperlessDocumentFile)
+	r.POST("/paperless/import", srv.ImportPaperlessDocument)
 	return r
 }
 
-// setupPaperlessMock swaps the DB pool for a pgxmock and preloads the user's
-// Paperless settings row so paperlessConfig resolves.
-func setupPaperlessMock(t *testing.T, url, token string) pgxmock.PgxPoolIface {
+// setupPaperlessMock creates a mock pool, a Server over it, and preloads the
+// user's Paperless settings row so paperlessConfig resolves.
+func setupPaperlessMock(t *testing.T, url, token string) (*Server, pgxmock.PgxPoolIface) {
 	t.Helper()
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	t.Cleanup(mock.Close)
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() { db.Pool = oldPool })
-	return mock
+	return newTestServer(mock), mock
 }
 
 func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token, tag string) {
@@ -86,10 +82,10 @@ func TestFetchNameMapsPaginates(t *testing.T) {
 }
 
 func TestGetPaperlessSettings(t *testing.T) {
-	mock := setupPaperlessMock(t, "http://paperless.local", "tok123")
+	srv, mock := setupPaperlessMock(t, "http://paperless.local", "tok123")
 	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok123", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/settings", nil))
 
@@ -104,10 +100,10 @@ func TestGetPaperlessSettings(t *testing.T) {
 }
 
 func TestGetPaperlessSettingsNoToken(t *testing.T) {
-	mock := setupPaperlessMock(t, "http://paperless.local", "")
+	srv, mock := setupPaperlessMock(t, "http://paperless.local", "")
 	expectPaperlessConfigQuery(mock, "http://paperless.local", "", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/settings", nil))
 
@@ -119,12 +115,12 @@ func TestGetPaperlessSettingsNoToken(t *testing.T) {
 }
 
 func TestUpdatePaperlessSettings(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	mock.ExpectExec("UPDATE users SET paperless_url = \\$1, paperless_token = \\$2 WHERE id = \\$3").
 		WithArgs("http://paperless.local", pgxmock.AnyArg(), testUserID()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"paperlessUrl":"  http://paperless.local  ","paperlessToken":"tok456"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
@@ -138,9 +134,9 @@ func TestUpdatePaperlessSettings(t *testing.T) {
 }
 
 func TestUpdatePaperlessSettingsInvalidURL(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	for _, bad := range []string{"not-a-url", "ftp://paperless", "http://", "http://user:pass@example.com"} {
 		body := bytes.NewBufferString(`{"paperlessUrl":"` + bad + `"}`)
 		w := httptest.NewRecorder()
@@ -151,13 +147,13 @@ func TestUpdatePaperlessSettingsInvalidURL(t *testing.T) {
 }
 
 func TestUpdatePaperlessSettingsWithPageSize(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	pageSize := 100
 	mock.ExpectExec("UPDATE users SET page_size = \\$1 WHERE id = \\$2").
 		WithArgs(&pageSize, testUserID()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"pageSize":100}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
@@ -167,12 +163,12 @@ func TestUpdatePaperlessSettingsWithPageSize(t *testing.T) {
 }
 
 func TestUpdatePaperlessSettingsClearsPageSize(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	mock.ExpectExec("UPDATE users SET page_size = \\$1 WHERE id = \\$2").
 		WithArgs((*int)(nil), testUserID()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"pageSize":null}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
@@ -182,8 +178,8 @@ func TestUpdatePaperlessSettingsClearsPageSize(t *testing.T) {
 }
 
 func TestUpdatePaperlessSettingsNoFields(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
-	r := newPaperlessTestRouter()
+	srv, mock := setupPaperlessMock(t, "", "")
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/paperless/settings", body))
@@ -193,10 +189,10 @@ func TestUpdatePaperlessSettingsNoFields(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsUnconfigured(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
 
@@ -205,7 +201,7 @@ func TestListPaperlessDocumentsUnconfigured(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsSuccess(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Fake Paperless-ngx returning a document list (IDs for FK-like fields) plus
 	// the lookup tables used to humanize names.
@@ -229,7 +225,7 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 	// point paperlessConfig at the fake via the settings row value
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
 
@@ -269,7 +265,7 @@ func TestListPaperlessDocumentsSuccess(t *testing.T) {
 }
 
 func TestImportPaperlessDocumentSuccess(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Fake Paperless serving the original file download.
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -290,14 +286,12 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 	}))
 	defer parser.Close()
 
-	old := statementParserURL
-	statementParserURL = parser.URL
-	defer func() { statementParserURL = old }()
+	srv.parserURL = parser.URL
 
 	// need fresh config query pointing at paperless.URL (not the fake parser)
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
@@ -312,7 +306,7 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 }
 
 func TestImportPaperlessDocumentDoesNotTagOnParse(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Fake Paperless serving the original file. Any tag-related call is made to
 	// fail, proving the import endpoint no longer tags during parsing.
@@ -332,13 +326,11 @@ func TestImportPaperlessDocumentDoesNotTagOnParse(t *testing.T) {
 	}))
 	defer parser.Close()
 
-	old := statementParserURL
-	statementParserURL = parser.URL
-	defer func() { statementParserURL = old }()
+	srv.parserURL = parser.URL
 
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
@@ -348,7 +340,7 @@ func TestImportPaperlessDocumentDoesNotTagOnParse(t *testing.T) {
 }
 
 func TestTagPaperlessDocuments(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Fake Paperless serving tag lookups, tag creation, and the document
 	// fetch/patch used to append the tag.
@@ -375,33 +367,33 @@ func TestTagPaperlessDocuments(t *testing.T) {
 
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "fintrak")
 
-	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
+	srv.tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestTagPaperlessDocumentsNoIDs(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// No document IDs means no settings lookup and no Paperless calls.
-	tagPaperlessDocuments(context.Background(), testUserID(), nil, "test-key", "development")
+	srv.tagPaperlessDocuments(context.Background(), testUserID(), nil, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestTagPaperlessDocumentsUnconfigured(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
 
-	tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
+	srv.tagPaperlessDocuments(context.Background(), testUserID(), []int{42}, "test-key", "development")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 func TestImportPaperlessDocumentUnconfigured(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "", "", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"documentId":1,"extractor":"sbi_cc"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))
@@ -411,7 +403,7 @@ func TestImportPaperlessDocumentUnconfigured(t *testing.T) {
 }
 
 func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// A compromised Paperless instance could serve HTML with attacker script;
 	// the proxy must pin the content type and harden the response.
@@ -424,7 +416,7 @@ func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents/42/file", nil))
 
@@ -437,10 +429,10 @@ func TestGetPaperlessDocumentFileSuccess(t *testing.T) {
 }
 
 func TestGetPaperlessDocumentFileInvalidID(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 	expectPaperlessConfigQuery(mock, "http://paperless.local", "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents/abc/file", nil))
 
@@ -449,7 +441,7 @@ func TestGetPaperlessDocumentFileInvalidID(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsPagination(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Paperless must receive the requested page/page_size directly and the
 	// handler must return its count as pagination metadata.
@@ -471,7 +463,7 @@ func TestListPaperlessDocumentsPagination(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents?page=2&pageSize=25", nil))
 
@@ -497,7 +489,7 @@ func TestListPaperlessDocumentsPagination(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsFilters(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// The name-based UI filters must be translated into Paperless ID filters and
 	// forwarded, so filtering happens server-side rather than in the backend.
@@ -528,7 +520,7 @@ func TestListPaperlessDocumentsFilters(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
 		"/paperless/documents?search=SBI&correspondentInc=SBI&correspondentInc=HDFC&correspondentExc=HDFC&documentTypeInc=Statement&tagInc=credit-card", nil))
@@ -548,7 +540,7 @@ func TestListPaperlessDocumentsFilters(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsMultiWordTitleSearch(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	// Multi-word `title_search` is broken on paperless-ngx 3.0.x ("credit card"
 	// returns nothing even when titles contain both words), so multi-word
@@ -571,7 +563,7 @@ func TestListPaperlessDocumentsMultiWordTitleSearch(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents?search=Credit+Card", nil))
 
@@ -580,7 +572,7 @@ func TestListPaperlessDocumentsMultiWordTitleSearch(t *testing.T) {
 }
 
 func TestListPaperlessDocumentsRejectsCrossOriginRedirect(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -596,7 +588,7 @@ func TestListPaperlessDocumentsRejectsCrossOriginRedirect(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents", nil))
 
@@ -605,7 +597,7 @@ func TestListPaperlessDocumentsRejectsCrossOriginRedirect(t *testing.T) {
 }
 
 func TestGetPaperlessDocumentFileRejectsOversized(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -614,7 +606,7 @@ func TestGetPaperlessDocumentFileRejectsOversized(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents/42/file", nil))
 
@@ -623,7 +615,7 @@ func TestGetPaperlessDocumentFileRejectsOversized(t *testing.T) {
 }
 
 func TestImportPaperlessDocumentRejectsOversized(t *testing.T) {
-	mock := setupPaperlessMock(t, "", "")
+	srv, mock := setupPaperlessMock(t, "", "")
 
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(bytes.Repeat([]byte("x"), maxPaperlessDocument+1))
@@ -631,7 +623,7 @@ func TestImportPaperlessDocumentRejectsOversized(t *testing.T) {
 	defer paperless.Close()
 	expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
 
-	r := newPaperlessTestRouter()
+	r := newPaperlessTestRouter(srv)
 	body := bytes.NewBufferString(`{"documentId":42,"extractor":"sbi_cc"}`)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/paperless/import", body))

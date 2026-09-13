@@ -14,12 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// maxBodyLog caps how many bytes of a request/response body are written to the
-// log. Sensitive fields are redacted before anything is emitted. A value <= 0
-// disables truncation so full bodies are captured; SetMaxBodyLog overrides it
-// (wired from the LOG_BODY_LIMIT config).
-var maxBodyLog = 8192
-
 // RequestIDKey is the gin context key under which the per-request ID is stored.
 const RequestIDKey = "requestID"
 
@@ -31,19 +25,20 @@ const RequestIDKey = "requestID"
 var sensitiveKeyRe = regexp.MustCompile(`(?i)(password|passwd|secret|token|jwt|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|cvv|cvv2|pin|otp)`)
 
 // responseWriter wraps gin.ResponseWriter to capture the response body so it
-// can be logged at debug level. Capturing stops after maxBodyLog bytes.
+// can be logged at debug level. Capturing stops after limit bytes.
 type responseWriter struct {
 	gin.ResponseWriter
-	buf bytes.Buffer
+	buf   bytes.Buffer
+	limit int
 }
 
-// Write captures the written bytes (up to maxBodyLog) while still streaming the
+// Write captures the written bytes (up to limit) while still streaming the
 // real response to the client. The capture buffer gets a bounded prefix of b;
 // the underlying writer always receives the full payload.
 func (w *responseWriter) Write(b []byte) (int, error) {
-	if maxBodyLog <= 0 {
+	if w.limit <= 0 {
 		w.buf.Write(b)
-	} else if remaining := maxBodyLog - w.buf.Len(); remaining > 0 {
+	} else if remaining := w.limit - w.buf.Len(); remaining > 0 {
 		if len(b) > remaining {
 			w.buf.Write(b[:remaining])
 		} else {
@@ -57,8 +52,9 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 // method, path, status, latency, and client metadata. When the logger runs at
 // debug level (development), it additionally captures and logs the request and
 // response bodies, redacting sensitive fields and skipping binary payloads
-// such as multipart uploads, PDFs, and images.
-func RequestLogger(l *slog.Logger) gin.HandlerFunc {
+// such as multipart uploads, PDFs, and images. bodyLimit caps how many bytes of
+// each body are logged; a value <= 0 disables truncation.
+func RequestLogger(l *slog.Logger, bodyLimit int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		debug := l.Enabled(c.Request.Context(), slog.LevelDebug)
@@ -77,10 +73,10 @@ func RequestLogger(l *slog.Logger) gin.HandlerFunc {
 			if isTextual(c.Request.Header.Get("Content-Type")) {
 				if body, err := io.ReadAll(c.Request.Body); err == nil {
 					c.Request.Body = io.NopCloser(bytes.NewReader(body))
-					reqBody, _ = truncate(redact(body))
+					reqBody, _ = truncate(redact(body), bodyLimit)
 				}
 			}
-			c.Writer = &responseWriter{ResponseWriter: c.Writer}
+			c.Writer = &responseWriter{ResponseWriter: c.Writer, limit: bodyLimit}
 		}
 
 		c.Next()
@@ -107,7 +103,7 @@ func RequestLogger(l *slog.Logger) gin.HandlerFunc {
 			if rw, ok := c.Writer.(*responseWriter); ok &&
 				rw.buf.Len() > 0 &&
 				isTextual(c.Writer.Header().Get("Content-Type")) {
-				resp, truncated := truncate(redact(rw.buf.Bytes()))
+				resp, truncated := truncate(redact(rw.buf.Bytes()), bodyLimit)
 				attrs = append(attrs, slog.String("response_body", resp))
 				if truncated {
 					attrs = append(attrs, slog.Bool("response_body_truncated", true))
@@ -132,11 +128,11 @@ func isTextual(contentType string) bool {
 		strings.Contains(ct, "x-www-form-urlencoded")
 }
 
-// truncate limits a logged body to maxBodyLog bytes and reports whether it was
-// cut off. A non-positive cap means no truncation.
-func truncate(s string) (string, bool) {
-	if maxBodyLog > 0 && len(s) > maxBodyLog {
-		return s[:maxBodyLog], true
+// truncate limits a logged body to limit bytes and reports whether it was cut
+// off. A non-positive cap means no truncation.
+func truncate(s string, limit int) (string, bool) {
+	if limit > 0 && len(s) > limit {
+		return s[:limit], true
 	}
 	return s, false
 }

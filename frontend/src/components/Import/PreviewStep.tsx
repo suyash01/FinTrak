@@ -1,17 +1,10 @@
-import { useMemo, type Dispatch, type SetStateAction } from "react";
+import { type Dispatch, type SetStateAction } from "react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
-import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
-import {
-  DATE_FORMAT_OPTIONS,
-  siblingIndices,
-  type CsvRow,
-} from "./importHelpers";
+import { DATE_FORMAT_OPTIONS, type CsvRow } from "./importHelpers";
+import ImportPreviewTable from "./ImportPreviewTable";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { DataTable } from "@/components/ui/data-table";
 import {
   Select,
   SelectContent,
@@ -19,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
 import type {
   BillingCycle,
   ImportTransaction,
@@ -92,134 +85,6 @@ export default function PreviewStep({
   onValidate,
   onImport,
 }: PreviewStepProps) {
-  const previewColumns = useMemo<ColumnDef<ImportTransaction, any>[]>(() => {
-    const colHelper = createColumnHelper<ImportTransaction>();
-    const headBase =
-      "py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";
-    return [
-      colHelper.display({
-        id: "include",
-        header: () => (
-          <Checkbox
-            checked={excluded.size === 0}
-            aria-label="Include all parsed transactions"
-            onCheckedChange={() =>
-              onExcludedChange(
-                excluded.size === 0
-                  ? new Set(
-                      Array.from(
-                        { length: parsedTransactions.length },
-                        (_, i) => i,
-                      ),
-                    )
-                  : new Set(),
-              )
-            }
-          />
-        ),
-        cell: ({ row }) => (
-          <Checkbox
-            checked={!excluded.has(row.index)}
-            aria-label={
-              row.original.description || `Transaction ${row.index + 1}`
-            }
-            onCheckedChange={(c) => {
-              // Toggling one occurrence toggles every identical row (same
-              // date/amount/type/description) in the file, so a duplicated
-              // transaction cannot sneak back in through its twin.
-              onExcludedChange((prev) => {
-                const next = new Set(prev);
-                const sibs = siblingIndices(parsedTransactions, row.index);
-                if (c === true) sibs.forEach((i) => next.delete(i));
-                else sibs.forEach((i) => next.add(i));
-                return next;
-              });
-            }}
-          />
-        ),
-        meta: {
-          headerClassName: `${headBase} w-12`,
-          cellClassName: "py-2.5 px-4",
-        },
-      }),
-      colHelper.accessor("date", {
-        header: () => "Date",
-        cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground whitespace-nowrap">
-            {row.original.date}
-          </span>
-        ),
-        meta: {
-          headerClassName: `${headBase} w-28`,
-          cellClassName: "py-2.5 px-4 text-sm",
-        },
-      }),
-      colHelper.accessor("description", {
-        header: () => "Description",
-        cell: ({ row }) => (
-          <span className="text-sm text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
-            {row.original.description}
-          </span>
-        ),
-        meta: { headerClassName: headBase, cellClassName: "py-2.5 px-4 text-sm" },
-      }),
-      colHelper.accessor("payeeId", {
-        header: () => "Payee",
-        cell: ({ row }) =>
-          row.original.payeeId ? (
-            <span className="text-primary font-medium">
-              {payees.find((p) => p.id === row.original.payeeId)?.name}
-            </span>
-          ) : (
-            <span className="opacity-30 italic">Not found</span>
-          ),
-        meta: {
-          headerClassName: headBase,
-          cellClassName:
-            "py-2.5 px-4 text-sm max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap",
-        },
-      }),
-      colHelper.accessor("type", {
-        header: () => "Type",
-        cell: ({ row }) => (
-          <Badge
-            variant="outline"
-            className={`${
-              row.original.type === "debit"
-                ? "bg-destructive/10 text-destructive border-destructive/30"
-                : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
-            }`}
-          >
-            {row.original.type}
-          </Badge>
-        ),
-        meta: {
-          headerClassName: `${headBase} w-24`,
-          cellClassName: "py-2.5 px-4",
-        },
-      }),
-      colHelper.accessor("amount", {
-        header: () => "Amount",
-        cell: ({ row }) => (
-          <span
-            className={`font-medium whitespace-nowrap ${
-              row.original.type === "debit"
-                ? "text-destructive"
-                : "text-emerald-500"
-            }`}
-          >
-            {row.original.type === "debit" ? "−" : "+"}
-            {formatCurrency(row.original.amount)}
-          </span>
-        ),
-        meta: {
-          headerClassName: `${headBase} text-right w-32`,
-          cellClassName: "py-2.5 px-4 text-right",
-        },
-      }),
-    ];
-  }, [payees, excluded, parsedTransactions, onExcludedChange]);
-
   return (
     <div className="bg-card border border-border rounded-xl p-6">
       <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-2 mb-4">
@@ -393,19 +258,12 @@ export default function PreviewStep({
         not validated or imported.
       </p>
 
-      <div className="border border-border rounded-lg overflow-hidden bg-background">
-        <DataTable
-          columns={previewColumns}
-          data={parsedTransactions}
-          containerClassName=""
-          tableClassName="min-w-150"
-          virtualize
-          maxHeight={500}
-          theadClassName="sticky top-0 bg-card z-10 shadow-[0_1px_0_var(--tw-shadow-color)] shadow-border"
-          headerClassName=""
-          cellClassName=""
-        />
-      </div>
+      <ImportPreviewTable
+        transactions={parsedTransactions}
+        payees={payees}
+        excluded={excluded}
+        onExcludedChange={onExcludedChange}
+      />
 
       <div className="pt-5 mt-6 border-t border-border flex justify-between gap-4">
         <Button variant="outline" onClick={onBack}>

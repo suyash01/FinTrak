@@ -21,9 +21,9 @@ type SeedCategory struct {
 // SeedDefaultCategories inserts the stock income/expense/transfer/cashback
 // categories for a user, but only when the user has none yet (so it is safe to
 // call on every registration and boot). Errors are logged and swallowed.
-func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
+func SeedDefaultCategories(ctx context.Context, pool DBPool, userID uuid.UUID) {
 	var count int
-	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
+	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
 	if err != nil {
 		slog.Error("failed to count categories for user", slog.String("user_id", userID.String()), slog.String("error", err.Error()))
 		return
@@ -70,7 +70,7 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	}
 	query += strings.Join(placeholders, ", ")
 
-	_, err = Pool.Exec(ctx, query, values...)
+	_, err = pool.Exec(ctx, query, values...)
 	if err != nil {
 		slog.Error("failed to seed categories", slog.String("error", err.Error()))
 		return

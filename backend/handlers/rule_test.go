@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -97,15 +96,12 @@ func TestApplyRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/rules/apply", ApplyRules)
+	r.POST("/rules/apply", srv.ApplyRules)
 
 	userID := testUserID()
 	cat1 := uuid.New()
@@ -149,15 +145,12 @@ func TestApplyRulesFailureRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/rules/apply", ApplyRules)
+	r.POST("/rules/apply", srv.ApplyRules)
 
 	userID := testUserID()
 	cat1 := uuid.New()
@@ -224,27 +217,23 @@ func TestRuleMatchSQL(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func newRuleTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newRuleTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	return r, mock
+	return r, srv, mock
 }
 
 func TestGetRules(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.GET("/rules", GetRules)
+	r, srv, mock := newRuleTestRouter(t)
+	r.GET("/rules", srv.GetRules)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -275,8 +264,8 @@ func TestGetRules(t *testing.T) {
 }
 
 func TestCreateRule(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -313,8 +302,8 @@ func TestCreateRule(t *testing.T) {
 }
 
 func TestCreateRuleDefaultsMatchType(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -342,8 +331,8 @@ func TestCreateRuleDefaultsMatchType(t *testing.T) {
 }
 
 func TestCreateRuleBadJSON(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	req, _ := http.NewRequest("POST", "/rules", bytes.NewBufferString("{not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -355,8 +344,8 @@ func TestCreateRuleBadJSON(t *testing.T) {
 }
 
 func TestDeleteRule(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.DELETE("/rules/:id", DeleteRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.DELETE("/rules/:id", srv.DeleteRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -374,8 +363,8 @@ func TestDeleteRule(t *testing.T) {
 }
 
 func TestDeleteRuleNotFound(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.DELETE("/rules/:id", DeleteRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.DELETE("/rules/:id", srv.DeleteRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -393,8 +382,8 @@ func TestDeleteRuleNotFound(t *testing.T) {
 }
 
 func TestDeleteRuleInvalidID(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.DELETE("/rules/:id", DeleteRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.DELETE("/rules/:id", srv.DeleteRule)
 
 	req, _ := http.NewRequest("DELETE", "/rules/not-a-uuid", nil)
 	w := httptest.NewRecorder()
@@ -405,8 +394,8 @@ func TestDeleteRuleInvalidID(t *testing.T) {
 }
 
 func TestUpdateRule(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.PUT("/rules/:id", UpdateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -440,8 +429,8 @@ func TestUpdateRule(t *testing.T) {
 }
 
 func TestUpdateRuleNotFound(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.PUT("/rules/:id", UpdateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
 
 	ruleID := uuid.New()
 	catID := uuid.New()
@@ -466,8 +455,8 @@ func TestUpdateRuleNotFound(t *testing.T) {
 }
 
 func TestUpdateRuleBadJSON(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.PUT("/rules/:id", UpdateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
 
 	req, _ := http.NewRequest("PUT", "/rules/"+uuid.New().String(), bytes.NewBufferString("{not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -479,8 +468,8 @@ func TestUpdateRuleBadJSON(t *testing.T) {
 }
 
 func TestCreateRuleCategoryNotOwned(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	userID := testUserID()
 	otherCatID := uuid.New()
@@ -508,8 +497,8 @@ func TestCreateRuleCategoryNotOwned(t *testing.T) {
 }
 
 func TestCreateRulePayeeNotOwned(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	userID := testUserID()
 	catID := uuid.New()
@@ -538,8 +527,8 @@ func TestCreateRulePayeeNotOwned(t *testing.T) {
 }
 
 func TestUpdateRuleCategoryNotOwned(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.PUT("/rules/:id", UpdateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
 
 	userID := testUserID()
 	ruleID := uuid.New()
@@ -568,8 +557,8 @@ func TestUpdateRuleCategoryNotOwned(t *testing.T) {
 }
 
 func TestCreateRuleWithGlobalCategory(t *testing.T) {
-	r, mock := newRuleTestRouter(t)
-	r.POST("/rules", CreateRule)
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
 
 	userID := testUserID()
 	globalCatID := uuid.New()

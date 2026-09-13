@@ -116,7 +116,7 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 
 ## 📡 API Overview
 
-The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI spec lives in [`backend/openapi.yaml`](backend/openapi.yaml).
+The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI spec lives in [`backend/openapi.yaml`](backend/openapi.yaml) and is also served at `GET /api/v1/openapi.yaml`. A backend test fails whenever a registered route is missing from the spec (or the spec advertises a route that no longer exists), so the contract cannot silently drift; run `make openapi-check` to verify locally.
 
 - `POST /auth/register`: Create an account (sets the session cookie). Body: `{ email, password, setupToken? }`. Emails are stored lowercase. Regular registrations get the `user` role. An email listed in `ADMIN_EMAILS` is a reserved identity: registering it grants `admin` only when `setupToken` matches the `ADMIN_SETUP_TOKEN` environment variable, otherwise the request is refused (403) — an unverified registrant can neither self-promote nor squat the address. This is the **only** path to the `admin` role: existing accounts are never promoted automatically, so an operator must grant it deliberately (self-register the admin email with the setup token, or update `users.role` directly).
 - `POST /auth/login`: Sign in (sets the session cookie). Body: `{ email, password }`.

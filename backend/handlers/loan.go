@@ -32,7 +32,7 @@ const loanAccountTypeID = "loan"
 // payees untouched. Closing an account does not affect linking:
 // attaching/detaching is the "linking" that remains possible on closed
 // accounts, so this endpoint does not consult the closed flag.
-func BulkLinkLoan(c *gin.Context) {
+func (srv *Server) BulkLinkLoan(c *gin.Context) {
 	var req models.BulkLoanRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -51,7 +51,7 @@ func BulkLinkLoan(c *gin.Context) {
 
 	// Every target transaction must exist and belong to the user.
 	var owned int
-	if err := db.Pool.QueryRow(c,
+	if err := srv.db.QueryRow(c,
 		"SELECT COUNT(*) FROM transactions t WHERE t.id = ANY($1) AND t.user_id = $2",
 		req.TransactionIDs, userID).Scan(&owned); err != nil {
 		slog.Error("BulkLinkLoan (checking transactions)", slog.String("error", err.Error()))
@@ -66,7 +66,7 @@ func BulkLinkLoan(c *gin.Context) {
 	// None of the transactions may live on a loan account: loan accounts have
 	// no transactions of their own, so such a row would be nonsense.
 	var onLoan int
-	if err := db.Pool.QueryRow(c,
+	if err := srv.db.QueryRow(c,
 		`SELECT COUNT(*) FROM transactions t
 		 JOIN accounts a ON t.account_id = a.id
 		 WHERE t.id = ANY($1) AND t.user_id = $2 AND a.account_type_id = 'loan'`,
@@ -82,7 +82,7 @@ func BulkLinkLoan(c *gin.Context) {
 
 	// Detach path: loanAccountId absent/null removes the attachments.
 	if req.LoanAccountID == nil {
-		result, err := db.Pool.Exec(c,
+		result, err := srv.db.Exec(c,
 			"DELETE FROM loan_attachments WHERE transaction_id = ANY($1) AND user_id = $2",
 			req.TransactionIDs, userID)
 		if err != nil {
@@ -99,7 +99,7 @@ func BulkLinkLoan(c *gin.Context) {
 	// allowed on closed accounts), so the closed flag is not consulted.
 	var ownerID uuid.UUID
 	var accountTypeID string
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		"SELECT user_id, account_type_id FROM accounts WHERE id = $1",
 		*req.LoanAccountID).Scan(&ownerID, &accountTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -124,7 +124,7 @@ func BulkLinkLoan(c *gin.Context) {
 	// transaction -> one loan account). The UNIQUE index is the hard guard;
 	// this check produces a clean 409 instead of a constraint violation.
 	var already int
-	if err := db.Pool.QueryRow(c,
+	if err := srv.db.QueryRow(c,
 		"SELECT COUNT(*) FROM loan_attachments WHERE transaction_id = ANY($1) AND user_id = $2",
 		req.TransactionIDs, userID).Scan(&already); err != nil {
 		slog.Error("BulkLinkLoan (checking existing attachments)", slog.String("error", err.Error()))
@@ -141,7 +141,7 @@ func BulkLinkLoan(c *gin.Context) {
 	// The write (attachment rows + payee sync) is atomic so a failure never
 	// leaves transactions half-linked.
 	var attached int64
-	err = db.WithTx(c, func(tx pgx.Tx) error {
+	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		res, err := tx.Exec(c,
 			`INSERT INTO loan_attachments (loan_account_id, transaction_id, user_id)
 			 SELECT $1, t, $3 FROM unnest($2::uuid[]) AS t`,

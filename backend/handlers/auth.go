@@ -1,6 +1,6 @@
 // Package handlers implements the HTTP handlers backing every /api/v1 route.
 // Handlers read the authenticated user from the context (see auth.RequireAuth),
-// validate request bodies, run SQL against db.Pool, and render JSON via the
+// validate request bodies, run SQL against the Server's database pool, and render JSON via the
 // validation helpers. This package deliberately keeps its dependencies on a
 // single db.DBPool global so the whole surface can be tested with pgxmock.
 package handlers
@@ -48,7 +48,7 @@ func setupTokenMatches(got, want string) bool {
 // addresses are otherwise refused so they can't be squatted by a registrant
 // who merely knows the address). The password is bcrypt-hashed and the stock
 // default categories are seeded before returning a fresh JWT.
-func Register(c *gin.Context) {
+func (srv *Server) Register(c *gin.Context) {
 	var req models.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -88,7 +88,7 @@ func Register(c *gin.Context) {
 	}
 
 	var user models.User
-	err = db.Pool.QueryRow(c,
+	err = srv.db.QueryRow(c,
 		`INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3)
 			 RETURNING id, email, role`,
 		email, hash, role,
@@ -104,7 +104,7 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	db.SeedDefaultCategories(c, user.ID)
+	db.SeedDefaultCategories(c, srv.db, user.ID)
 
 	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {
@@ -121,7 +121,7 @@ func Register(c *gin.Context) {
 // Login verifies the email/password against the users table and returns a fresh
 // JWT on success. Failed lookups and mismatched passwords both return a generic
 // 401 so the response doesn't reveal which accounts exist.
-func Login(c *gin.Context) {
+func (srv *Server) Login(c *gin.Context) {
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -141,7 +141,7 @@ func Login(c *gin.Context) {
 	// lookup is exact, uses the unique index on users.email, and can never
 	// match more than one row per identity.
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		"SELECT id, email, password_hash, role FROM users WHERE email = $1",
 		email,
 	).Scan(&user.ID, &user.Email, &passwordHash, &user.Role)
@@ -175,10 +175,10 @@ func Login(c *gin.Context) {
 // Me returns the authenticated user for the session cookie. The frontend calls
 // it on mount to rehydrate auth state, since the JWT cookie is httpOnly and
 // therefore unreadable from JavaScript.
-func Me(c *gin.Context) {
+func (srv *Server) Me(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	var user models.User
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		"SELECT id, email, role FROM users WHERE id = $1",
 		userID,
 	).Scan(&user.ID, &user.Email, &user.Role)
@@ -196,7 +196,7 @@ func Me(c *gin.Context) {
 
 // Logout clears the session cookie. It is unauthenticated on purpose so an
 // expired or invalid cookie can still be removed.
-func Logout(c *gin.Context) {
+func (srv *Server) Logout(c *gin.Context) {
 	auth.ClearAuthCookie(c, cookieSecure)
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }

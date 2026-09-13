@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -33,8 +32,8 @@ func rejectBuiltInAccountType(c *gin.Context, id string) bool {
 // GetAccountTypes lists all account types. The list is shared reference data
 // (the same types apply to every user) and is safe for any authenticated user
 // to read.
-func GetAccountTypes(c *gin.Context) {
-	rows, err := db.Pool.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
+func (srv *Server) GetAccountTypes(c *gin.Context) {
+	rows, err := srv.db.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
 	if err != nil {
 		slog.Error("GetAccountTypes", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -58,7 +57,7 @@ func GetAccountTypes(c *gin.Context) {
 
 // CreateAccountType adds a custom account type (admin only), enforcing the slug
 // pattern, valid positiveTxnType, and that built-in IDs are not reused.
-func CreateAccountType(c *gin.Context) {
+func (srv *Server) CreateAccountType(c *gin.Context) {
 	var req models.CreateAccountTypeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -78,7 +77,7 @@ func CreateAccountType(c *gin.Context) {
 	}
 
 	var at models.AccountType
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO account_types (id, name, positive_txn_type) VALUES ($1, $2, $3)
 		 RETURNING id, name, positive_txn_type`,
 		req.ID, req.Name, req.PositiveTxnType,
@@ -95,7 +94,7 @@ func CreateAccountType(c *gin.Context) {
 
 // UpdateAccountType edits a custom account type (admin only). Empty fields keep
 // their current value; built-in types are immutable.
-func UpdateAccountType(c *gin.Context) {
+func (srv *Server) UpdateAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -118,7 +117,7 @@ func UpdateAccountType(c *gin.Context) {
 	}
 
 	var at models.AccountType
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`UPDATE account_types SET name = COALESCE(NULLIF($1, ''), name), 
 		 positive_txn_type = COALESCE(NULLIF($2, ''), positive_txn_type)
 		 WHERE id = $3
@@ -141,7 +140,7 @@ func UpdateAccountType(c *gin.Context) {
 
 // DeleteAccountType removes a custom account type (admin only) and refuses to
 // delete built-in types or types still referenced by existing accounts.
-func DeleteAccountType(c *gin.Context) {
+func (srv *Server) DeleteAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -154,7 +153,7 @@ func DeleteAccountType(c *gin.Context) {
 
 	// Check if any accounts are using this type
 	var count int
-	if err := db.Pool.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count); err != nil {
+	if err := srv.db.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count); err != nil {
 		slog.Error("DeleteAccountType (usage count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -164,7 +163,7 @@ func DeleteAccountType(c *gin.Context) {
 		return
 	}
 
-	result, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
+	result, err := srv.db.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
 	if err != nil {
 		slog.Error("DeleteAccountType", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

@@ -21,29 +21,14 @@ import {
   Plus,
   Minus,
   ShieldCheck,
-  CheckCircle2,
-  PlusCircle,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  createColumnHelper,
-  type ColumnDef,
-} from "@/lib/react-table";
-import { DataTable } from "@/components/ui/data-table";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -54,13 +39,14 @@ import {
 import api from "../../api/client";
 import { toastApiError } from "../../lib/errors";
 import { useDomainData } from "../../context/DomainDataContext";
-import { formatCurrency, formatDateOnly } from "../../utils/formatters";
-import { filterExcluded, siblingIndices } from "../Import/importHelpers";
+import { formatDateOnly } from "../../utils/formatters";
+import { filterExcluded } from "../Import/importHelpers";
+import ImportPreviewTable from "../Import/ImportPreviewTable";
+import ValidationDialog from "../Import/ValidationDialog";
 import type {
   PaperlessDocument,
   StatementExtractor,
   ImportTransaction,
-  ValidateTransactionResult,
   ValidateTransactionsResponse,
 } from "../../types";
 
@@ -729,193 +715,6 @@ export default function PaperlessImport() {
   );
   const excludedCount = parsedCount - includedTransactions.length;
 
-  // Preview table (parsed transactions from the selected documents).
-  const previewColumns = useMemo<ColumnDef<ImportTransaction, any>[]>(() => {
-    const colHelper = createColumnHelper<ImportTransaction>();
-    const headBase =
-      "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
-    return [
-      colHelper.display({
-        id: "include",
-        header: () => (
-          <Checkbox
-            checked={excluded.size === 0}
-            aria-label="Include all parsed transactions"
-            onCheckedChange={() =>
-              setExcluded(
-                excluded.size === 0
-                  ? new Set(Array.from({ length: parsedCount }, (_, i) => i))
-                  : new Set(),
-              )
-            }
-          />
-        ),
-        cell: ({ row }) => (
-          <Checkbox
-            checked={!excluded.has(row.index)}
-            aria-label={
-              row.original.description || `Transaction ${row.index + 1}`
-            }
-            onCheckedChange={(c) => {
-              // Toggling one occurrence toggles every identical row (same
-              // date/amount/type/description) in the file, so a duplicated
-              // transaction cannot sneak back in through its twin.
-              setExcluded((prev) => {
-                const next = new Set(prev);
-                const sibs = siblingIndices(
-                  preview?.transactions || [],
-                  row.index,
-                );
-                if (c === true) sibs.forEach((i) => next.delete(i));
-                else sibs.forEach((i) => next.add(i));
-                return next;
-              });
-            }}
-          />
-        ),
-        meta: {
-          headerClassName: `${headBase} w-10`,
-          cellClassName: "px-4 py-2",
-        },
-      }),
-      colHelper.accessor("date", {
-        header: () => "Date",
-        cell: ({ row }) => (
-          <span className="text-muted-foreground whitespace-nowrap">
-            {row.original.date}
-          </span>
-        ),
-        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
-      }),
-      colHelper.accessor("description", {
-        header: () => "Description",
-        cell: ({ row }) => (
-          <span className="text-foreground">{row.original.description}</span>
-        ),
-        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
-      }),
-      colHelper.accessor("type", {
-        header: () => "Type",
-        cell: ({ row }) => (
-          <Badge
-            className={`uppercase text-[10px] ${
-              row.original.type === "credit"
-                ? "bg-emerald-500/10 text-emerald-400"
-                : "bg-destructive/10 text-destructive"
-            }`}
-          >
-            {row.original.type}
-          </Badge>
-        ),
-        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
-      }),
-      colHelper.accessor("amount", {
-        header: () => "Amount",
-        cell: ({ row }) => (
-          <span
-            className={`text-right font-medium whitespace-nowrap ${
-              row.original.type === "credit"
-                ? "text-emerald-400"
-                : "text-destructive"
-            }`}
-          >
-            {row.original.type === "credit" ? "+" : "−"}
-            {formatCurrency(row.original.amount)}
-          </span>
-        ),
-        meta: {
-          headerClassName: `${headBase} text-right`,
-          cellClassName: "px-4 py-2 text-right",
-        },
-      }),
-    ];
-  }, [excluded, parsedCount, preview]);
-
-  // Validation-results dialog table.
-  const validationColumns = useMemo<ColumnDef<ValidateTransactionResult, any>[]>(() => {
-    const colHelper = createColumnHelper<ValidateTransactionResult>();
-    const headBase =
-      "h-auto px-4 py-2 font-medium text-left text-xs text-muted-foreground";
-    return [
-      colHelper.accessor("date", {
-        header: () => "Date",
-        cell: ({ row }) => (
-          <span className="text-muted-foreground whitespace-nowrap">
-            {row.original.date}
-          </span>
-        ),
-        meta: {
-          headerClassName: `${headBase} w-28`,
-          cellClassName: "px-4 py-2",
-        },
-      }),
-      colHelper.accessor("description", {
-        header: () => "Description",
-        cell: ({ row }) => (
-          <span className="text-foreground max-w-50 overflow-hidden text-ellipsis whitespace-nowrap">
-            {row.original.description}
-          </span>
-        ),
-        meta: { headerClassName: headBase, cellClassName: "px-4 py-2" },
-      }),
-      colHelper.accessor("type", {
-        header: () => "Type",
-        cell: ({ row }) => (
-          <Badge
-            className={`uppercase text-[10px] ${
-              row.original.type === "credit"
-                ? "bg-emerald-500/10 text-emerald-400"
-                : "bg-destructive/10 text-destructive"
-            }`}
-          >
-            {row.original.type}
-          </Badge>
-        ),
-        meta: {
-          headerClassName: `${headBase} w-24`,
-          cellClassName: "px-4 py-2",
-        },
-      }),
-      colHelper.accessor("amount", {
-        header: () => "Amount",
-        cell: ({ row }) => (
-          <span
-            className={`text-right font-medium whitespace-nowrap ${
-              row.original.type === "credit"
-                ? "text-emerald-400"
-                : "text-destructive"
-            }`}
-          >
-            {row.original.type === "credit" ? "+" : "−"}
-            {formatCurrency(row.original.amount)}
-          </span>
-        ),
-        meta: {
-          headerClassName: `${headBase} text-right w-32`,
-          cellClassName: "px-4 py-2 text-right",
-        },
-      }),
-      colHelper.display({
-        id: "status",
-        header: () => "Status",
-        cell: ({ row }) =>
-          row.original.exists ? (
-            <Badge className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/25">
-              <CheckCircle2 size={12} /> Already exists
-            </Badge>
-          ) : (
-            <Badge className="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-              <PlusCircle size={12} /> New
-            </Badge>
-          ),
-        meta: {
-          headerClassName: `${headBase} w-32`,
-          cellClassName: "px-4 py-2",
-        },
-      }),
-    ];
-  }, []);
-
   if (loadingConfig) {
     return (
       <div className="flex-1 px-8 pt-6">
@@ -1313,17 +1112,14 @@ export default function PaperlessImport() {
                 No transactions were parsed from these documents.
               </div>
             ) : (
-              <div className="overflow-hidden border border-border rounded-lg bg-background">
-                <DataTable
-                  columns={previewColumns}
-                  data={preview.transactions}
-                  containerClassName=""
-                  virtualize
-                  maxHeight={320}
-                  headerClassName=""
-                  cellClassName=""
-                />
-              </div>
+              <ImportPreviewTable
+                transactions={preview.transactions}
+                excluded={excluded}
+                onExcludedChange={setExcluded}
+                showPayee={false}
+                maxHeight={320}
+                stickyHeader={false}
+              />
             )}
             {parsedCount > 0 && (
               <div className="flex items-center gap-3 mt-4">
@@ -1370,69 +1166,14 @@ export default function PaperlessImport() {
 
       {/* Validation results dialog */}
       {validationResult && (
-        <Dialog
-          open={!!validationResult}
-          onOpenChange={(open) => {
-            if (!open) setValidationResult(null);
-          }}
-        >
-          <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col">
-            <DialogHeader className="flex flex-row items-center gap-2.5">
-              <ShieldCheck size={20} className="text-primary" />
-              <DialogTitle className="text-lg font-bold">
-                Validation Results
-              </DialogTitle>
-            </DialogHeader>
-            <DialogDescription>
-              Checked against{" "}
-              <span className="font-medium text-foreground">
-                {accounts.find((a) => a.id === selectedAccount)?.name ||
-                  "this account"}
-              </span>
-              . Nothing was imported.
-            </DialogDescription>
-
-            {/* Summary */}
-            <div className="grid grid-cols-3 gap-3">
-              <div className="p-3 bg-background border border-border rounded-lg text-center">
-                <div className="text-2xl font-bold text-foreground">
-                  {validationResult.total}
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Total
-                </div>
-              </div>
-              <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-center">
-                <div className="text-2xl font-bold text-amber-400">
-                  {validationResult.existingCount}
-                </div>
-                <div className="text-xs text-amber-500/80 mt-0.5">
-                  Already exist
-                </div>
-              </div>
-              <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg text-center">
-                <div className="text-2xl font-bold text-emerald-400">
-                  {validationResult.missingCount}
-                </div>
-                <div className="text-xs text-emerald-500/80 mt-0.5">New</div>
-              </div>
-            </div>
-
-            {/* Per-transaction list */}
-            <div className="border border-border rounded-lg overflow-auto flex-1 bg-background">
-              <DataTable
-                columns={validationColumns}
-                data={validationResult.results}
-                getRowId={(row) => String(row.index)}
-                containerClassName=""
-                headerClassName=""
-                cellClassName=""
-              />
-            </div>
-
-            <DialogFooter showCloseButton className="border-border" />
-          </DialogContent>
-        </Dialog>
+        <ValidationDialog
+          result={validationResult}
+          accountName={
+            accounts.find((a) => a.id === selectedAccount)?.name ||
+            "this account"
+          }
+          onClose={() => setValidationResult(null)}
+        />
       )}
 
       {/* File preview modal */}

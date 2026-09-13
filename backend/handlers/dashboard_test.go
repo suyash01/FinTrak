@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -17,11 +16,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newDashboardTestRouter() *gin.Engine {
+func newDashboardTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/dashboard/summary", GetDashboardSummary)
+	r.GET("/dashboard/summary", srv.GetDashboardSummary)
 	return r
 }
 
@@ -31,12 +30,9 @@ func TestGetDashboardSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 	now := time.Now()
 
@@ -125,12 +121,9 @@ func TestGetDashboardSummaryWithDateFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 	dateFrom := "2026-07-01"
 	dateTo := "2026-07-31"
@@ -175,12 +168,9 @@ func TestGetDashboardSummaryWithAccountFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 	accountID := uuid.New()
 	filterArgs := []interface{}{userID, accountID.String()}
@@ -224,12 +214,9 @@ func TestGetDashboardSummaryIncomeQueryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -254,12 +241,9 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 	accountID := uuid.New()
 	catID := uuid.New()
@@ -402,12 +386,9 @@ func TestGetDashboardSummaryBillingCycleNoBillingDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 	userID := testUserID()
 	accountID := uuid.New()
 
@@ -429,12 +410,9 @@ func TestGetDashboardSummaryBillingCycleMissingAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newDashboardTestRouter()
+	r := newDashboardTestRouter(srv)
 
 	req, _ := http.NewRequest(http.MethodGet, "/dashboard/summary?groupBy=billing_cycle", nil)
 	w := httptest.NewRecorder()

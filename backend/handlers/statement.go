@@ -18,19 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// statementParserURL is the base URL of the standalone statement-parser service.
-// It is wired up from configuration in setupRouter so the backend stays decoupled
-// from the parser; the two only talk over HTTP.
-var statementParserURL = "http://localhost:5000"
-
-// SetStatementParserURL updates the base URL used to reach the standalone
-// statement-parser service. Called once at startup from configuration.
-func SetStatementParserURL(url string) {
-	if url != "" {
-		statementParserURL = url
-	}
-}
-
 // maxStatementUpload caps the size of a statement PDF we are willing to forward.
 const maxStatementUpload = 20 * 1024 * 1024 // 20 MB
 
@@ -69,7 +56,7 @@ type rawParserResponse struct {
 // optional password), forwards it to the statement-parser service over HTTP, and
 // returns the extracted transactions normalized to the app's import format so the
 // frontend can preview and import them directly.
-func ParseStatement(c *gin.Context) {
+func (srv *Server) ParseStatement(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
 		validation.RespondError(c, "no file provided. Attach it as 'file'.", http.StatusBadRequest)
@@ -107,7 +94,7 @@ func ParseStatement(c *gin.Context) {
 	}
 	dateFormat := c.PostForm("date_format")
 
-	result, status, errMsg, _ := forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
+	result, status, errMsg, _ := srv.forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
 	if errMsg != "" {
 		validation.RespondError(c, errMsg, status)
 		return
@@ -120,7 +107,7 @@ func ParseStatement(c *gin.Context) {
 // it returns the HTTP status and message the caller should surface; on success
 // status is 200 and errMsg is empty. Shared by both the manual upload path
 // (ParseStatement) and the Paperless import path (ImportPaperlessDocument).
-func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string, bool) {
+func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string, bool) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, err := writer.CreateFormFile("file", filename)
@@ -143,7 +130,7 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 
 	// The extractor selector is passed as a query parameter, which is how the
 	// parser service reads it (see app.py: request.args.get("extractor")).
-	parserURL := strings.TrimRight(statementParserURL, "/") + "/api/extract?format=json&extractor=" + url.QueryEscape(extractor)
+	parserURL := strings.TrimRight(srv.parserURL, "/") + "/api/extract?format=json&extractor=" + url.QueryEscape(extractor)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parserURL, body)
 	if err != nil {
 		slog.Error("forwarding statement (build request)", slog.String("error", err.Error()))
@@ -153,7 +140,7 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 
 	client := &http.Client{
 		Timeout:   60 * time.Second,
-		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
+		Transport: logger.LoggingRoundTripper(nil, slog.Default(), srv.logBodyLimit),
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -272,8 +259,8 @@ func normalizeParserType(t string) string {
 
 // ListStatementExtractors proxies the parser service's extractor registry so the
 // frontend can render a dropdown of available statement parsers.
-func ListStatementExtractors(c *gin.Context) {
-	url := strings.TrimRight(statementParserURL, "/") + "/api/extractors"
+func (srv *Server) ListStatementExtractors(c *gin.Context) {
+	url := strings.TrimRight(srv.parserURL, "/") + "/api/extractors"
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {
@@ -284,7 +271,7 @@ func ListStatementExtractors(c *gin.Context) {
 
 	client := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: logger.LoggingRoundTripper(nil, slog.Default()),
+		Transport: logger.LoggingRoundTripper(nil, slog.Default(), srv.logBodyLimit),
 	}
 	resp, err := client.Do(req)
 	if err != nil {

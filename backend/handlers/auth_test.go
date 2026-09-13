@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/ratelimit"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -31,7 +30,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func newAuthTestRouter() *gin.Engine {
+func newAuthTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	return gin.Default()
 }
@@ -42,13 +41,10 @@ func TestRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/register", Register)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
 
 	userID := uuid.New()
 	reqBody := models.RegisterRequest{Email: "test@example.com", Password: "password1234"}
@@ -95,8 +91,9 @@ func TestRegister(t *testing.T) {
 }
 
 func TestRegisterRejectsWeakPassword(t *testing.T) {
-	r := newAuthTestRouter()
-	r.POST("/auth/register", Register)
+	srv := newTestServer(nil)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
 
 	post := func(password string) *httptest.ResponseRecorder {
 		reqBody := models.RegisterRequest{Email: "weak@example.com", Password: password}
@@ -127,13 +124,10 @@ func TestLoginAllowsLegacyShortPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	userID := uuid.New()
 	// A 6-character password predates the stronger registration policy; login
@@ -166,17 +160,14 @@ func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	SetAdminConfig([]string{"admin@example.com"}, "op-secret-token-123")
 	t.Cleanup(func() { SetAdminConfig(nil, "") })
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
-	r.POST("/auth/register", Register)
+	r.POST("/auth/register", srv.Register)
 
 	userID := uuid.New()
 	const adminEmail = "admin@example.com"
@@ -234,17 +225,14 @@ func TestRegisterAdminEmailWithoutConfiguredToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	SetAdminConfig([]string{"admin@example.com"}, "")
 	t.Cleanup(func() { SetAdminConfig(nil, "") })
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
-	r.POST("/auth/register", Register)
+	r.POST("/auth/register", srv.Register)
 
 	reqBody := models.RegisterRequest{Email: "admin@example.com", Password: "password1234", SetupToken: "anything"}
 	jsonBody, _ := json.Marshal(reqBody)
@@ -264,13 +252,10 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/register", Register)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
 
 	// Mixed-case input is normalized to lowercase before the INSERT, so the
 	// case-sensitive UNIQUE constraint on users.email rejects a case-variant
@@ -299,13 +284,10 @@ func TestLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	userID := uuid.New()
 	password := "password1234"
@@ -346,13 +328,10 @@ func TestLoginNormalizesEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	userID := uuid.New()
 	password := "password1234"
@@ -386,13 +365,10 @@ func TestLoginInvalidPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	userID := uuid.New()
 	hash, err := auth.HashPassword("correct-password")
@@ -428,13 +404,10 @@ func TestLoginRateLimited(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	reqBody := models.LoginRequest{Email: "limited@example.com", Password: "whatever"}
 	jsonBody, _ := json.Marshal(reqBody)
@@ -467,13 +440,10 @@ func TestLoginUnknownUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAuthTestRouter()
-	r.POST("/auth/login", Login)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
 
 	reqBody := models.LoginRequest{Email: "missing@example.com", Password: "whatever"}
 
@@ -497,7 +467,8 @@ func TestLogout(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/auth/logout", Logout)
+	srv := newTestServer(nil)
+	r.POST("/auth/logout", srv.Logout)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/auth/logout", nil)
@@ -517,15 +488,12 @@ func TestMe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(testAuthMiddleware())
-	r.GET("/auth/me", Me)
+	r.GET("/auth/me", srv.Me)
 
 	userID := testUserID()
 	mock.ExpectQuery("SELECT id, email, role FROM users").

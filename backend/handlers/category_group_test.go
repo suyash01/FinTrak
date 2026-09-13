@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -25,14 +24,14 @@ func assertNoRows() error {
 	return pgx.ErrNoRows
 }
 
-func newGroupTestRouter() *gin.Engine {
+func newGroupTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/groups", GetGroups)
-	r.POST("/groups", CreateGroup)
-	r.PUT("/groups/:id", UpdateGroup)
-	r.DELETE("/groups/:id", DeleteGroup)
+	r.GET("/groups", srv.GetGroups)
+	r.POST("/groups", srv.CreateGroup)
+	r.PUT("/groups/:id", srv.UpdateGroup)
+	r.DELETE("/groups/:id", srv.DeleteGroup)
 	return r
 }
 
@@ -50,12 +49,9 @@ func TestGetGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 	userID := testUserID()
 
 	rows := pgxmock.NewRows([]string{"id", "name", "icon", "color", "is_base", "user_id", "sort_order"}).
@@ -92,12 +88,9 @@ func TestCreateGroupInvalidID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter() // registers POST /groups -> CreateGroup
+	r := newGroupTestRouter(srv) // registers POST /groups -> CreateGroup
 
 	// Rejected before any SQL: uppercase, delimiters that would make the id
 	// unroutable via /groups/:id, digit-first, empty, and overlong (51 chars
@@ -127,12 +120,9 @@ func TestCreateGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 	userID := testUserID()
 
 	mock.ExpectQuery("INSERT INTO category_groups").
@@ -156,12 +146,9 @@ func TestCreateGroupConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 
 	mock.ExpectQuery("INSERT INTO category_groups").
 		WithArgs("expense", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
@@ -183,12 +170,9 @@ func TestUpdateGroupImmutableBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 
 	mock.ExpectQuery("UPDATE category_groups").
 		WithArgs("income", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), testUserID()).
@@ -213,12 +197,9 @@ func TestDeleteGroupBlocksWhenNotEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 	userID := testUserID()
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories WHERE group_id").
@@ -239,12 +220,9 @@ func TestDeleteGroupSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newGroupTestRouter()
+	r := newGroupTestRouter(srv)
 	userID := testUserID()
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories WHERE group_id").
@@ -264,10 +242,6 @@ func TestDeleteGroupSuccess(t *testing.T) {
 
 func TestCreateGlobalGroupAndCategory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.Use(testAdminMiddleware())
-	r.POST("/admin/groups", CreateGlobalGroup)
-	r.POST("/admin/categories", CreateGlobalCategory)
 
 	t.Run("create global group", func(t *testing.T) {
 		mock, err := pgxmock.NewPool()
@@ -275,10 +249,11 @@ func TestCreateGlobalGroupAndCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
+		r := gin.Default()
+		r.Use(testAdminMiddleware())
+		r.POST("/admin/groups", srv.CreateGlobalGroup)
 
 		mock.ExpectQuery("INSERT INTO category_groups").
 			WithArgs("merchant_offers", "Merchant Offers", "tag", "#8b5cf6").
@@ -301,10 +276,11 @@ func TestCreateGlobalGroupAndCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
+		r := gin.Default()
+		r.Use(testAdminMiddleware())
+		r.POST("/admin/categories", srv.CreateGlobalCategory)
 
 		catID := uuid.New()
 		mock.ExpectQuery("INSERT INTO categories").
@@ -325,19 +301,17 @@ func TestCreateGlobalGroupAndCategory(t *testing.T) {
 
 func TestDeleteGlobalCategory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := gin.Default()
-	r.Use(testAdminMiddleware())
-	r.DELETE("/admin/categories/:id", DeleteGlobalCategory)
 
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	r := gin.Default()
+	r.Use(testAdminMiddleware())
+	r.DELETE("/admin/categories/:id", srv.DeleteGlobalCategory)
 
 	catID := uuid.New()
 

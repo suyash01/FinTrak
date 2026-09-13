@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,14 +15,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newCategoryTestRouter() *gin.Engine {
+func newCategoryTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/categories", GetCategories)
-	r.POST("/categories", CreateCategory)
-	r.PUT("/categories/:id", UpdateCategory)
-	r.DELETE("/categories/:id", DeleteCategory)
+	r.GET("/categories", srv.GetCategories)
+	r.POST("/categories", srv.CreateCategory)
+	r.PUT("/categories/:id", srv.UpdateCategory)
+	r.DELETE("/categories/:id", srv.DeleteCategory)
 	return r
 }
 
@@ -33,12 +32,9 @@ func TestGetCategories(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newCategoryTestRouter()
+	r := newCategoryTestRouter(srv)
 	userID := testUserID()
 
 	rows := pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id", "is_global", "group_name", "group_is_base"}).
@@ -73,12 +69,9 @@ func TestGetCategoriesQueryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newCategoryTestRouter()
+	r := newCategoryTestRouter(srv)
 
 	mock.ExpectQuery("SELECT c.id, c.name, c.icon, c.color, c.group_id").
 		WithArgs(testUserID()).
@@ -99,12 +92,9 @@ func TestCreateCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newCategoryTestRouter()
+		r := newCategoryTestRouter(srv)
 		userID := testUserID()
 
 		catID := uuid.New()
@@ -134,7 +124,8 @@ func TestCreateCategory(t *testing.T) {
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
-		r := newCategoryTestRouter()
+		srv := newTestServer(nil)
+		r := newCategoryTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodPost, "/categories", bytes.NewBufferString("{"))
 		req.Header.Set("Content-Type", "application/json")
@@ -150,12 +141,9 @@ func TestCreateCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newCategoryTestRouter()
+		r := newCategoryTestRouter(srv)
 
 		mock.ExpectQuery("INSERT INTO categories").
 			WithArgs(testUserID(), "Rent", "home", "#6366f1", "expense").
@@ -177,12 +165,9 @@ func TestCreateCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newCategoryTestRouter()
+		r := newCategoryTestRouter(srv)
 
 		mock.ExpectQuery("INSERT INTO categories").
 			WithArgs(testUserID(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -206,12 +191,9 @@ func TestUpdateCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newCategoryTestRouter()
+		r := newCategoryTestRouter(srv)
 		userID := testUserID()
 		catID := uuid.New()
 
@@ -240,12 +222,9 @@ func TestUpdateCategory(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newCategoryTestRouter()
+		r := newCategoryTestRouter(srv)
 		userID := testUserID()
 		catID := uuid.New()
 
@@ -274,12 +253,9 @@ func TestDeleteCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newCategoryTestRouter()
+	r := newCategoryTestRouter(srv)
 	userID := testUserID()
 	catID := uuid.New()
 
@@ -316,12 +292,9 @@ func TestDeleteCategoryNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newCategoryTestRouter()
+	r := newCategoryTestRouter(srv)
 	userID := testUserID()
 	catID := uuid.New()
 

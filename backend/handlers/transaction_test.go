@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -27,15 +26,12 @@ func TestUpdateTransactionClearsCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	userID := testUserID()
@@ -59,15 +55,12 @@ func TestUpdateTransactionCategoryAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 
@@ -87,15 +80,12 @@ func TestUpdateTransactionSetsCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	catID := uuid.New()
@@ -121,15 +111,12 @@ func TestUpdateTransactionSetsBillingCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	cycleID := uuid.New()
@@ -155,15 +142,12 @@ func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	userID := testUserID()
@@ -183,8 +167,8 @@ func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
 }
 
 func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -254,8 +238,8 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 }
 
 func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -335,23 +319,19 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func newImportTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newImportTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/transactions/import", ImportTransactions)
-	return r, mock
+	r.POST("/transactions/import", srv.ImportTransactions)
+	return r, srv, mock
 }
 
 func postImport(r *gin.Engine, body []byte) *httptest.ResponseRecorder {
@@ -391,7 +371,7 @@ func TestImportTransactionsValidatesPayload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, mock := newImportTestRouter(t)
+			r, _, mock := newImportTestRouter(t)
 
 			body, _ := json.Marshal(tt.request)
 			w := postImport(r, body)
@@ -403,7 +383,7 @@ func TestImportTransactionsValidatesPayload(t *testing.T) {
 }
 
 func TestImportTransactionsAccountNotFound(t *testing.T) {
-	r, mock := newImportTestRouter(t)
+	r, _, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
 	mock.ExpectQuery("SELECT user_id, billing_day").
@@ -421,7 +401,7 @@ func TestImportTransactionsAccountNotFound(t *testing.T) {
 }
 
 func TestImportTransactionsAccountForbidden(t *testing.T) {
-	r, mock := newImportTestRouter(t)
+	r, _, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
 	mock.ExpectQuery("SELECT user_id, billing_day").
@@ -438,23 +418,19 @@ func TestImportTransactionsAccountForbidden(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func newValidateTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newValidateTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/transactions/validate", ValidateTransactions)
-	return r, mock
+	r.POST("/transactions/validate", srv.ValidateTransactions)
+	return r, srv, mock
 }
 
 func postValidate(r *gin.Engine, body []byte) *httptest.ResponseRecorder {
@@ -493,7 +469,7 @@ func TestValidateTransactionsValidatesPayload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, mock := newValidateTestRouter(t)
+			r, _, mock := newValidateTestRouter(t)
 
 			body, _ := json.Marshal(tt.request)
 			w := postValidate(r, body)
@@ -505,7 +481,7 @@ func TestValidateTransactionsValidatesPayload(t *testing.T) {
 }
 
 func TestValidateTransactionsAccountNotFound(t *testing.T) {
-	r, mock := newValidateTestRouter(t)
+	r, _, mock := newValidateTestRouter(t)
 
 	accountID := uuid.New()
 	mock.ExpectQuery("SELECT user_id FROM accounts").
@@ -523,7 +499,7 @@ func TestValidateTransactionsAccountNotFound(t *testing.T) {
 }
 
 func TestValidateTransactionsAccountForbidden(t *testing.T) {
-	r, mock := newValidateTestRouter(t)
+	r, _, mock := newValidateTestRouter(t)
 
 	accountID := uuid.New()
 	mock.ExpectQuery("SELECT user_id FROM accounts").
@@ -541,7 +517,7 @@ func TestValidateTransactionsAccountForbidden(t *testing.T) {
 }
 
 func TestValidateTransactionsSuccess(t *testing.T) {
-	r, mock := newValidateTestRouter(t)
+	r, _, mock := newValidateTestRouter(t)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -663,27 +639,23 @@ func TestDedupeTransactions(t *testing.T) {
 	})
 }
 
-func newTransactionTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newTransactionTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	return r, mock
+	return r, srv, mock
 }
 
 func TestGetTransactions(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -726,8 +698,8 @@ func TestGetTransactions(t *testing.T) {
 }
 
 func TestGetTransactionsRejectsInvalidAccountID(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	req, _ := http.NewRequest("GET", "/transactions?accountId=not-a-uuid", nil)
 	w := httptest.NewRecorder()
@@ -739,8 +711,8 @@ func TestGetTransactionsRejectsInvalidAccountID(t *testing.T) {
 }
 
 func TestGetTransactionsWithAccountSummary(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -802,8 +774,8 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 }
 
 func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -882,8 +854,8 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 }
 
 func TestGetTransactionsCategoryFilter(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	catID := uuid.New()
@@ -919,8 +891,8 @@ func TestGetTransactionsCategoryFilter(t *testing.T) {
 }
 
 func TestGetTransactionsCategoryFilterUncategorized(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -955,8 +927,8 @@ func TestGetTransactionsCategoryFilterUncategorized(t *testing.T) {
 }
 
 func TestGetTransactionsCategoryFilterByType(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	catID := uuid.New()
@@ -991,8 +963,8 @@ func TestGetTransactionsCategoryFilterByType(t *testing.T) {
 }
 
 func TestGetTransactionsGroupFilter(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	groupID := uuid.New()
@@ -1032,8 +1004,8 @@ func TestGetTransactionsGroupFilter(t *testing.T) {
 // count query and the page query receive the identical filter args, so the
 // reported total always matches what the page can return.
 func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -1058,8 +1030,8 @@ func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
 }
 
 func TestCreateTransaction(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1105,8 +1077,8 @@ func TestCreateTransaction(t *testing.T) {
 }
 
 func TestCreateTransactionAutoCategorize(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1152,8 +1124,8 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 }
 
 func TestCreateTransactionValidation(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	accountID := uuid.New()
 	tests := []struct {
@@ -1179,8 +1151,8 @@ func TestCreateTransactionValidation(t *testing.T) {
 }
 
 func TestCreateTransactionAccountNotFound(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	accountID := uuid.New()
 	reqBody := models.CreateTransactionRequest{
@@ -1207,8 +1179,8 @@ func TestCreateTransactionAccountNotFound(t *testing.T) {
 }
 
 func TestCreateTransactionForbidden(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	accountID := uuid.New()
 	reqBody := models.CreateTransactionRequest{
@@ -1236,8 +1208,8 @@ func TestCreateTransactionForbidden(t *testing.T) {
 }
 
 func TestBulkCategorize(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-categorize", BulkCategorize)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-categorize", srv.BulkCategorize)
 
 	userID := testUserID()
 	catID := uuid.New()
@@ -1264,8 +1236,8 @@ func TestBulkCategorize(t *testing.T) {
 }
 
 func TestBulkCategorizeUncategorizedSentinel(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-categorize", BulkCategorize)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-categorize", srv.BulkCategorize)
 
 	userID := testUserID()
 	txnIDs := []uuid.UUID{uuid.New(), uuid.New()}
@@ -1291,8 +1263,8 @@ func TestBulkCategorizeUncategorizedSentinel(t *testing.T) {
 }
 
 func TestBulkUpdatePayee(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-payee", BulkUpdatePayee)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-payee", srv.BulkUpdatePayee)
 
 	userID := testUserID()
 	payeeID := uuid.New()
@@ -1319,8 +1291,8 @@ func TestBulkUpdatePayee(t *testing.T) {
 }
 
 func TestBulkUpdateBillingCycle(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-billing-cycle", BulkUpdateBillingCycle)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-billing-cycle", srv.BulkUpdateBillingCycle)
 
 	userID := testUserID()
 	cycleID := uuid.New()
@@ -1347,8 +1319,8 @@ func TestBulkUpdateBillingCycle(t *testing.T) {
 }
 
 func TestBulkDeleteTransactions(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-delete", BulkDeleteTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-delete", srv.BulkDeleteTransactions)
 
 	userID := testUserID()
 	txnIDs := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
@@ -1371,8 +1343,8 @@ func TestBulkDeleteTransactions(t *testing.T) {
 }
 
 func TestDeleteTransaction(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.DELETE("/transactions/:id", DeleteTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.DELETE("/transactions/:id", srv.DeleteTransaction)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -1390,8 +1362,8 @@ func TestDeleteTransaction(t *testing.T) {
 }
 
 func TestDeleteTransactionNotFound(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.DELETE("/transactions/:id", DeleteTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.DELETE("/transactions/:id", srv.DeleteTransaction)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -1409,8 +1381,8 @@ func TestDeleteTransactionNotFound(t *testing.T) {
 }
 
 func TestDeleteTransactionInvalidID(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.DELETE("/transactions/:id", DeleteTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.DELETE("/transactions/:id", srv.DeleteTransaction)
 
 	req, _ := http.NewRequest("DELETE", "/transactions/not-a-uuid", nil)
 	w := httptest.NewRecorder()
@@ -1443,8 +1415,8 @@ func TestAutoCategorize(t *testing.T) {
 }
 
 func TestCreateTransactionCategoryNotOwned(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1480,8 +1452,8 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 }
 
 func TestCreateTransactionPayeeNotOwned(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1517,8 +1489,8 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 }
 
 func TestCreateTransactionBillingCycleNotOwned(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1555,8 +1527,8 @@ func TestCreateTransactionBillingCycleNotOwned(t *testing.T) {
 }
 
 func TestUpdateTransactionCrossUserCategory(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -1578,8 +1550,8 @@ func TestUpdateTransactionCrossUserCategory(t *testing.T) {
 }
 
 func TestUpdateTransactionCrossUserAccount(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -1600,7 +1572,7 @@ func TestUpdateTransactionCrossUserAccount(t *testing.T) {
 }
 
 func TestImportTransactionsBillingCycleNotOwned(t *testing.T) {
-	r, mock := newImportTestRouter(t)
+	r, _, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -1625,7 +1597,7 @@ func TestImportTransactionsBillingCycleNotOwned(t *testing.T) {
 }
 
 func TestImportTransactionsPayeeNotOwned(t *testing.T) {
-	r, mock := newImportTestRouter(t)
+	r, _, mock := newImportTestRouter(t)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -1656,10 +1628,7 @@ func TestComputeSummaryRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1689,7 +1658,7 @@ func TestComputeSummaryRows(t *testing.T) {
 		WithArgs(acctID, userID, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
 		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(410.0, 3))
 
-	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
+	rows := srv.computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	// Feb 5 (running balance 150), Mar 5 (running balance 150+200=350), and a
 	// current-cycle row at Mar 31 (running balance 350+60=410).
@@ -1712,10 +1681,7 @@ func TestComputeSummaryRowsFirstOfMonth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1743,7 +1709,7 @@ func TestComputeSummaryRowsFirstOfMonth(t *testing.T) {
 		WithArgs(acctID, userID, time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC)).
 		WillReturnRows(pgxmock.NewRows([]string{"total", "count"}).AddRow(100.0, 1))
 
-	rows := computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
+	rows := srv.computeSummaryRows(c, userID, acctID, "Amex", "2024-01-01", "2024-03-31")
 
 	var found money.Amount
 	for _, r := range rows {
@@ -1833,8 +1799,8 @@ func TestMergeSummaryRowsHiddenOnNonDateSort(t *testing.T) {
 }
 
 func TestCreateTransactionWithGlobalCategory(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -1876,8 +1842,8 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 }
 
 func TestUpdateTransactionInvalidDate(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	body, _ := json.Marshal(map[string]interface{}{"date": "15-01-2024"})
@@ -1892,8 +1858,8 @@ func TestUpdateTransactionInvalidDate(t *testing.T) {
 }
 
 func TestUpdateTransactionNonPositiveAmount(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	for _, amount := range []float64{0, -100} {
@@ -1912,8 +1878,8 @@ func TestUpdateTransactionNonPositiveAmount(t *testing.T) {
 }
 
 func TestBulkCategorizeTooManyIDs(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-categorize", BulkCategorize)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-categorize", srv.BulkCategorize)
 
 	ids := make([]uuid.UUID, maxBulkBatch+1)
 	for i := range ids {
@@ -1931,8 +1897,8 @@ func TestBulkCategorizeTooManyIDs(t *testing.T) {
 }
 
 func TestGetTransactionsSearchEscapesWildcards(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 

@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -15,7 +14,7 @@ import (
 
 // BulkCategorize assigns one category to many of the user's transactions in a
 // single UPDATE.
-func BulkCategorize(c *gin.Context) {
+func (srv *Server) BulkCategorize(c *gin.Context) {
 	var req models.BulkCategorizeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -45,7 +44,7 @@ func BulkCategorize(c *gin.Context) {
 		            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 		args = []interface{}{catUUID, req.TransactionIDs, auth.GetUserID(c)}
 	}
-	result, err := db.Pool.Exec(c, query, args...)
+	result, err := srv.db.Exec(c, query, args...)
 	if err != nil {
 		slog.Error("BulkCategorize", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -57,7 +56,7 @@ func BulkCategorize(c *gin.Context) {
 
 // BulkUpdatePayee assigns one payee to many of the user's transactions in a
 // single UPDATE.
-func BulkUpdatePayee(c *gin.Context) {
+func (srv *Server) BulkUpdatePayee(c *gin.Context) {
 	var req models.BulkUpdatePayeeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -72,7 +71,7 @@ func BulkUpdatePayee(c *gin.Context) {
 	          WHERE id = ANY($2) AND user_id = $3
 	            AND EXISTS (SELECT 1 FROM payees p WHERE p.id = $1 AND p.user_id = $3)
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
-	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
+	result, err := srv.db.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkUpdatePayee", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -84,7 +83,7 @@ func BulkUpdatePayee(c *gin.Context) {
 
 // BulkUpdateBillingCycle attaches one billing cycle to many of the user's
 // transactions in a single UPDATE.
-func BulkUpdateBillingCycle(c *gin.Context) {
+func (srv *Server) BulkUpdateBillingCycle(c *gin.Context) {
 	var req models.BulkBillingCycleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -99,7 +98,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 	          WHERE id = ANY($2) AND user_id = $3
 	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
-	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
+	result, err := srv.db.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkUpdateBillingCycle", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -110,7 +109,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 }
 
 // BulkDeleteTransactions deletes many of the user's transactions in one call.
-func BulkDeleteTransactions(c *gin.Context) {
+func (srv *Server) BulkDeleteTransactions(c *gin.Context) {
 	var req models.BulkDeleteTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -123,7 +122,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 
 	query := `DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2
 	          AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
-	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
+	result, err := srv.db.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("BulkDeleteTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

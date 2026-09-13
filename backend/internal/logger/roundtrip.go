@@ -21,10 +21,10 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 // outbound HTTP call the backend makes — Paperless-ngx, the statement parser —
 // shows up in the structured log. Info level records the method, the full URL
 // including its query string, response status, and latency. At debug level the
-// redacted request/response bodies are appended too. Sensitive headers
-// (Authorization, Cookie, ...) and query values are never written; they are
-// replaced with "[REDACTED]".
-func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger) http.RoundTripper {
+// redacted request/response bodies are appended too (capped at bodyLimit
+// bytes; <= 0 disables truncation). Sensitive headers (Authorization, Cookie,
+// ...) and query values are never written; they are replaced with "[REDACTED]".
+func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger, bodyLimit int) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
@@ -73,8 +73,8 @@ func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger) http.RoundTripp
 					attrs = append(attrs, slog.String("redacted_header", strings.ToLower(k)))
 				}
 			}
-			attrs = append(attrs, logBodyAttrs("request_body", reqBody)...)
-			attrs = append(attrs, logBodyAttrs("response_body", respBody)...)
+			attrs = append(attrs, logBodyAttrs("request_body", reqBody, bodyLimit)...)
+			attrs = append(attrs, logBodyAttrs("response_body", respBody, bodyLimit)...)
 		}
 
 		l.LogAttrs(req.Context(), level, "outbound_request", attrs...)
@@ -123,12 +123,12 @@ func redactHeaderValue(k string) bool {
 }
 
 // logBodyAttrs builds the request/response body log attributes, capped by
-// maxBodyLog and with sensitive JSON fields redacted.
-func logBodyAttrs(name string, body []byte) []slog.Attr {
+// bodyLimit and with sensitive JSON fields redacted.
+func logBodyAttrs(name string, body []byte, bodyLimit int) []slog.Attr {
 	if len(body) == 0 {
 		return nil
 	}
-	s, truncated := truncate(redact(body))
+	s, truncated := truncate(redact(body), bodyLimit)
 	attrs := []slog.Attr{slog.String(name, s)}
 	if truncated {
 		attrs = append(attrs, slog.Bool(name+"_truncated", true))

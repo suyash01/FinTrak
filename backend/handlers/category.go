@@ -18,8 +18,8 @@ import (
 // GetCategories lists every category visible to the user: their own categories
 // plus the global (admin-created) ones, in group order (base groups first, then
 // custom groups) and alphabetically by name within each group.
-func GetCategories(c *gin.Context) {
-	rows, err := db.Pool.Query(c, `SELECT c.id, c.name, c.icon, c.color, c.group_id,
+func (srv *Server) GetCategories(c *gin.Context) {
+	rows, err := srv.db.Query(c, `SELECT c.id, c.name, c.icon, c.color, c.group_id,
 		       (c.user_id IS NULL) as is_global, g.name, g.is_base
 		 FROM categories c
 		 JOIN category_groups g ON c.group_id = g.id
@@ -49,7 +49,7 @@ func GetCategories(c *gin.Context) {
 // CreateCategory inserts a user-scoped category, validating that the target
 // group is usable by the user (a base/global group or one of their own custom
 // groups).
-func CreateCategory(c *gin.Context) {
+func (srv *Server) CreateCategory(c *gin.Context) {
 	var req models.CreateCategoryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -57,7 +57,7 @@ func CreateCategory(c *gin.Context) {
 	}
 
 	var cat models.Category
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO categories (user_id, name, icon, color, group_id)
 		 SELECT $1, $2, $3, $4, $5
 		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $5 AND (g.user_id IS NULL OR g.user_id = $1))
@@ -80,7 +80,7 @@ func CreateCategory(c *gin.Context) {
 
 // UpdateCategory edits a user's own category. Global categories are immutable
 // through this endpoint; an admin-only path handles those.
-func UpdateCategory(c *gin.Context) {
+func (srv *Server) UpdateCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -98,7 +98,7 @@ func UpdateCategory(c *gin.Context) {
 	// Validate the new group (when provided) is usable by the user.
 	if req.GroupID != "" {
 		var ok bool
-		err := db.Pool.QueryRow(c,
+		err := srv.db.QueryRow(c,
 			`SELECT EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $1 AND (g.user_id IS NULL OR g.user_id = $2))`,
 			req.GroupID, userID,
 		).Scan(&ok)
@@ -114,7 +114,7 @@ func UpdateCategory(c *gin.Context) {
 	}
 
 	var cat models.Category
-	err = db.Pool.QueryRow(c,
+	err = srv.db.QueryRow(c,
 		`UPDATE categories
 		 SET name = COALESCE(NULLIF($2, ''), name),
 		     icon = COALESCE(NULLIF($3, ''), icon),
@@ -143,7 +143,7 @@ func UpdateCategory(c *gin.Context) {
 // auto-categorization rules pointing at it, so nothing dangles. The response
 // reports how many transactions/rules were affected so the UI can confirm the
 // uncategorization warning.
-func DeleteCategory(c *gin.Context) {
+func (srv *Server) DeleteCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -153,7 +153,7 @@ func DeleteCategory(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	result := models.DeleteCategoryResult{}
 
-	err = db.WithTx(c, func(tx pgx.Tx) error {
+	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		cleared, err := tx.Exec(c, `UPDATE transactions SET category_id = NULL WHERE category_id = $1 AND user_id = $2`, id, userID)
 		if err != nil {
 			return err
@@ -191,7 +191,7 @@ func DeleteCategory(c *gin.Context) {
 
 // DeleteGlobalCategory removes an admin-created global category, clearing the
 // category across every user's transactions and removing referencing rules.
-func DeleteGlobalCategory(c *gin.Context) {
+func (srv *Server) DeleteGlobalCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -200,7 +200,7 @@ func DeleteGlobalCategory(c *gin.Context) {
 
 	result := models.DeleteCategoryResult{}
 
-	err = db.WithTx(c, func(tx pgx.Tx) error {
+	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		cleared, err := tx.Exec(c, `UPDATE transactions SET category_id = NULL WHERE category_id = $1`, id)
 		if err != nil {
 			return err
@@ -238,7 +238,7 @@ func DeleteGlobalCategory(c *gin.Context) {
 
 // CreateGlobalCategory creates an admin-owned, global category visible to every
 // user. The target group must itself be a global group (base or admin-created).
-func CreateGlobalCategory(c *gin.Context) {
+func (srv *Server) CreateGlobalCategory(c *gin.Context) {
 	var req models.CreateCategoryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -246,7 +246,7 @@ func CreateGlobalCategory(c *gin.Context) {
 	}
 
 	var cat models.Category
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO categories (user_id, name, icon, color, group_id)
 		 SELECT NULL, $1, $2, $3, $4
 		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $4 AND g.user_id IS NULL)
@@ -273,7 +273,7 @@ func CreateGlobalCategory(c *gin.Context) {
 }
 
 // UpdateGlobalCategory edits an admin-created global category.
-func UpdateGlobalCategory(c *gin.Context) {
+func (srv *Server) UpdateGlobalCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -288,7 +288,7 @@ func UpdateGlobalCategory(c *gin.Context) {
 
 	if req.GroupID != "" {
 		var ok bool
-		err := db.Pool.QueryRow(c,
+		err := srv.db.QueryRow(c,
 			`SELECT EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $1 AND g.user_id IS NULL)`,
 			req.GroupID,
 		).Scan(&ok)
@@ -304,7 +304,7 @@ func UpdateGlobalCategory(c *gin.Context) {
 	}
 
 	var cat models.Category
-	err = db.Pool.QueryRow(c,
+	err = srv.db.QueryRow(c,
 		`UPDATE categories
 		 SET name = COALESCE(NULLIF($2, ''), name),
 		     icon = COALESCE(NULLIF($3, ''), icon),

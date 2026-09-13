@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -18,8 +17,8 @@ import (
 
 // GetRules lists the user's categorization rules, highest priority first, with
 // the joined category name and payee name.
-func GetRules(c *gin.Context) {
-	rows, err := db.Pool.Query(c,
+func (srv *Server) GetRules(c *gin.Context) {
+	rows, err := srv.db.Query(c,
 		`SELECT r.id, r.pattern, r.match_type, r.category_id, r.payee_id, COALESCE(p.name, '') as payee, r.priority,
 		 COALESCE(c.name, '') as category_name
 		 FROM rules r
@@ -50,7 +49,7 @@ func GetRules(c *gin.Context) {
 
 // CreateRule inserts a categorization rule, defaulting MatchType to "contains"
 // and rejecting references to categories/payees the user doesn't own.
-func CreateRule(c *gin.Context) {
+func (srv *Server) CreateRule(c *gin.Context) {
 	var req models.CreateRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -62,7 +61,7 @@ func CreateRule(c *gin.Context) {
 	}
 
 	var rule models.Rule
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority)
 		 SELECT $1, $2, $3, $4, $5, $6
 		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))
@@ -85,7 +84,7 @@ func CreateRule(c *gin.Context) {
 }
 
 // DeleteRule removes a rule owned by the user.
-func DeleteRule(c *gin.Context) {
+func (srv *Server) DeleteRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -93,7 +92,7 @@ func DeleteRule(c *gin.Context) {
 	}
 
 	userID := auth.GetUserID(c)
-	result, err := db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
+	result, err := srv.db.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
 		slog.Error("DeleteRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -110,7 +109,7 @@ func DeleteRule(c *gin.Context) {
 
 // UpdateRule edits a rule's fields, enforcing ownership of any referenced
 // category/payee and returning 404 when the rule isn't found.
-func UpdateRule(c *gin.Context) {
+func (srv *Server) UpdateRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -124,7 +123,7 @@ func UpdateRule(c *gin.Context) {
 	}
 
 	var rule models.Rule
-	err = db.Pool.QueryRow(c,
+	err = srv.db.QueryRow(c,
 		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5
 		 WHERE id = $6 AND user_id = $7
 		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND (c.user_id = $7 OR c.user_id IS NULL))
@@ -153,11 +152,11 @@ func UpdateRule(c *gin.Context) {
 // (the highest-priority matching) rule, and any failure rolls the whole apply
 // back so a mid-batch error can never commit a silently partial result.
 // Returns the number of transactions updated.
-func ApplyRules(c *gin.Context) {
+func (srv *Server) ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
 	// Get all rules
-	rules, err := loadRules(c, userID)
+	rules, err := srv.loadRules(c, userID)
 	if err != nil {
 		slog.Error("ApplyRules (getting rules)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -165,7 +164,7 @@ func ApplyRules(c *gin.Context) {
 	}
 
 	// Use a transaction for batch updates
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("ApplyRules (starting transaction)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -248,8 +247,8 @@ type ruleEntry struct {
 }
 
 // loadRules fetches the user's rules ordered by descending priority.
-func loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
-	rows, err := db.Pool.Query(c,
+func (srv *Server) loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
+	rows, err := srv.db.Query(c,
 		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
 	if err != nil {
 		return nil, err

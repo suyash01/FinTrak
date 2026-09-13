@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,14 +18,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newPayeeTestRouter() *gin.Engine {
+func newPayeeTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/payees", GetPayees)
-	r.POST("/payees", CreatePayee)
-	r.PUT("/payees/:id", UpdatePayee)
-	r.DELETE("/payees/:id", DeletePayee)
+	r.GET("/payees", srv.GetPayees)
+	r.POST("/payees", srv.CreatePayee)
+	r.PUT("/payees/:id", srv.UpdatePayee)
+	r.DELETE("/payees/:id", srv.DeletePayee)
 	return r
 }
 
@@ -40,12 +39,9 @@ func TestGetPayees(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 	userID := testUserID()
 	now := time.Now()
 	accountID := uuid.New()
@@ -81,12 +77,9 @@ func TestGetPayeesQueryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 
 	mock.ExpectQuery("SELECT id, name, account_id, created_at, updated_at FROM payees").
 		WithArgs(testUserID()).
@@ -107,12 +100,9 @@ func TestCreatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		userID := testUserID()
 		now := time.Now()
 
@@ -147,12 +137,9 @@ func TestCreatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 
 		mock.ExpectQuery("INSERT INTO payees").
 			WithArgs(testUserID(), "Amazon", pgxmock.AnyArg()).
@@ -171,7 +158,8 @@ func TestCreatePayee(t *testing.T) {
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
-		r := newPayeeTestRouter()
+		srv := newTestServer(nil)
+		r := newPayeeTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodPost, "/payees", bytes.NewBufferString("{"))
 		req.Header.Set("Content-Type", "application/json")
@@ -187,12 +175,9 @@ func TestCreatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 
 		mock.ExpectQuery("INSERT INTO payees").
 			WithArgs(testUserID(), "Amazon", pgxmock.AnyArg()).
@@ -217,12 +202,9 @@ func TestUpdatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		userID := testUserID()
 		now := time.Now()
 		payeeID := uuid.New()
@@ -244,7 +226,8 @@ func TestUpdatePayee(t *testing.T) {
 	})
 
 	t.Run("invalid id", func(t *testing.T) {
-		r := newPayeeTestRouter()
+		srv := newTestServer(nil)
+		r := newPayeeTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodPut, "/payees/not-a-uuid", bytes.NewBufferString(`{"name":"x"}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -260,12 +243,9 @@ func TestUpdatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		payeeID := uuid.New()
 		reqBody := models.CreatePayeeRequest{Name: "Ghost"}
 
@@ -289,12 +269,9 @@ func TestUpdatePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		payeeID := uuid.New()
 		reqBody := models.CreatePayeeRequest{Name: "Amazon"}
 
@@ -320,12 +297,9 @@ func TestDeletePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		payeeID := uuid.New()
 
 		mock.ExpectExec("DELETE FROM payees").
@@ -342,7 +316,8 @@ func TestDeletePayee(t *testing.T) {
 	})
 
 	t.Run("invalid id", func(t *testing.T) {
-		r := newPayeeTestRouter()
+		srv := newTestServer(nil)
+		r := newPayeeTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodDelete, "/payees/not-a-uuid", nil)
 		w := httptest.NewRecorder()
@@ -357,12 +332,9 @@ func TestDeletePayee(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newPayeeTestRouter()
+		r := newPayeeTestRouter(srv)
 		payeeID := uuid.New()
 
 		mock.ExpectExec("DELETE FROM payees").
@@ -388,12 +360,9 @@ func TestCreatePayeeNullAccountGuardIsSelfTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 	userID := testUserID()
 	now := time.Now()
 	payeeID := uuid.New()
@@ -422,12 +391,9 @@ func TestUpdatePayeeNullAccountGuardIsSelfTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 	userID := testUserID()
 	now := time.Now()
 	payeeID := uuid.New()
@@ -453,12 +419,9 @@ func TestCreatePayeeAccountNotOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 	otherAccountID := uuid.New()
 	reqBody := models.CreatePayeeRequest{Name: "Amazon", AccountID: &otherAccountID}
 
@@ -483,12 +446,9 @@ func TestUpdatePayeeAccountNotOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newPayeeTestRouter()
+	r := newPayeeTestRouter(srv)
 	payeeID := uuid.New()
 	otherAccountID := uuid.New()
 	reqBody := models.CreatePayeeRequest{Name: "Renamed", AccountID: &otherAccountID}

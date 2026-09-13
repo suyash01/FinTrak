@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -17,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newAccountTypeRoleRouter(role string) *gin.Engine {
+func newAccountTypeRoleRouter(role string, srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(func(c *gin.Context) {
@@ -25,21 +24,21 @@ func newAccountTypeRoleRouter(role string) *gin.Engine {
 		c.Set("userRole", role)
 		c.Next()
 	})
-	r.GET("/account-types", GetAccountTypes)
+	r.GET("/account-types", srv.GetAccountTypes)
 	admin := r.Group("/account-types")
 	admin.Use(auth.RequireAdmin())
-	admin.POST("", CreateAccountType)
-	admin.PUT("/:id", UpdateAccountType)
-	admin.DELETE("/:id", DeleteAccountType)
+	admin.POST("", srv.CreateAccountType)
+	admin.PUT("/:id", srv.UpdateAccountType)
+	admin.DELETE("/:id", srv.DeleteAccountType)
 	return r
 }
 
-func newAccountTypeTestRouter() *gin.Engine {
-	return newAccountTypeRoleRouter("admin")
+func newAccountTypeTestRouter(srv *Server) *gin.Engine {
+	return newAccountTypeRoleRouter("admin", srv)
 }
 
-func newAccountTypeUserRouter() *gin.Engine {
-	return newAccountTypeRoleRouter("user")
+func newAccountTypeUserRouter(srv *Server) *gin.Engine {
+	return newAccountTypeRoleRouter("user", srv)
 }
 
 func TestGetAccountTypes(t *testing.T) {
@@ -48,12 +47,9 @@ func TestGetAccountTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAccountTypeTestRouter()
+	r := newAccountTypeTestRouter(srv)
 
 	rows := pgxmock.NewRows([]string{"id", "name", "positive_txn_type"}).
 		AddRow("bank", "Bank Account", "credit").
@@ -85,12 +81,9 @@ func TestGetAccountTypesQueryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAccountTypeTestRouter()
+	r := newAccountTypeTestRouter(srv)
 
 	mock.ExpectQuery("SELECT id, name, positive_txn_type FROM account_types").
 		WillReturnError(assert.AnError)
@@ -110,12 +103,9 @@ func TestCreateAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("INSERT INTO account_types").
@@ -141,7 +131,8 @@ func TestCreateAccountType(t *testing.T) {
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
-		r := newAccountTypeTestRouter()
+		srv := newTestServer(nil)
+		r := newAccountTypeTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodPost, "/account-types", bytes.NewBufferString("{invalid"))
 		req.Header.Set("Content-Type", "application/json")
@@ -152,7 +143,8 @@ func TestCreateAccountType(t *testing.T) {
 	})
 
 	t.Run("invalid positive txn type", func(t *testing.T) {
-		r := newAccountTypeTestRouter()
+		srv := newTestServer(nil)
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "both"}
 
 		jsonBody, _ := json.Marshal(reqBody)
@@ -171,12 +163,9 @@ func TestCreateAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("INSERT INTO account_types").
@@ -201,12 +190,9 @@ func TestUpdateAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.UpdateAccountTypeRequest{Name: "Bank", PositiveTxnType: "credit"}
 
 		mock.ExpectQuery("UPDATE account_types").
@@ -230,12 +216,9 @@ func TestUpdateAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.UpdateAccountTypeRequest{Name: "Nope"}
 
 		mock.ExpectQuery("UPDATE account_types").
@@ -253,7 +236,8 @@ func TestUpdateAccountType(t *testing.T) {
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
-		r := newAccountTypeTestRouter()
+		srv := newTestServer(nil)
+		r := newAccountTypeTestRouter(srv)
 
 		req, _ := http.NewRequest(http.MethodPut, "/account-types/savings", bytes.NewBufferString("{"))
 		req.Header.Set("Content-Type", "application/json")
@@ -264,7 +248,8 @@ func TestUpdateAccountType(t *testing.T) {
 	})
 
 	t.Run("invalid positive txn type", func(t *testing.T) {
-		r := newAccountTypeTestRouter()
+		srv := newTestServer(nil)
+		r := newAccountTypeTestRouter(srv)
 		reqBody := models.UpdateAccountTypeRequest{PositiveTxnType: "invalid"}
 
 		jsonBody, _ := json.Marshal(reqBody)
@@ -283,12 +268,9 @@ func TestDeleteAccountTypeUsageCountError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	srv := newTestServer(mock)
 
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
-
-	r := newAccountTypeTestRouter()
+	r := newAccountTypeTestRouter(srv)
 
 	// The usage-count gate failing must not fall through to the DELETE: it
 	// returns 500 instead of silently treating the type as unused.
@@ -311,12 +293,9 @@ func TestDeleteAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
 			WithArgs("savings").
@@ -340,12 +319,9 @@ func TestDeleteAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
 			WithArgs("savings").
@@ -365,12 +341,9 @@ func TestDeleteAccountType(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		srv := newTestServer(mock)
 
-		oldPool := db.Pool
-		db.Pool = mock
-		defer func() { db.Pool = oldPool }()
-
-		r := newAccountTypeTestRouter()
+		r := newAccountTypeTestRouter(srv)
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE account_type_id").
 			WithArgs("missing").
@@ -389,7 +362,8 @@ func TestDeleteAccountType(t *testing.T) {
 }
 
 func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
-	r := newAccountTypeUserRouter()
+	srv := newTestServer(nil)
+	r := newAccountTypeUserRouter(srv)
 
 	createBody := `{"id":"savings","name":"Savings","positiveTxnType":"credit"}`
 	updateBody := `{"name":"Savings"}`
@@ -413,6 +387,7 @@ func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
 }
 
 func TestAccountTypeBuiltInProtected(t *testing.T) {
+	srv := newTestServer(nil)
 	createBody := `{"id":"bank","name":"Bank","positiveTxnType":"credit"}`
 	updateBody := `{"name":"Bank"}`
 
@@ -427,7 +402,7 @@ func TestAccountTypeBuiltInProtected(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := newAccountTypeTestRouter()
+			r := newAccountTypeTestRouter(srv)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, tt.req)
 			assert.Equal(t, http.StatusForbidden, w.Code)
@@ -437,7 +412,8 @@ func TestAccountTypeBuiltInProtected(t *testing.T) {
 }
 
 func TestCreateAccountTypeInvalidID(t *testing.T) {
-	r := newAccountTypeTestRouter()
+	srv := newTestServer(nil)
+	r := newAccountTypeTestRouter(srv)
 
 	for _, id := range []string{"1savings", "Bad-ID", "savings account", "x"} {
 		body := `{"id":"` + id + `","name":"X","positiveTxnType":"credit"}`

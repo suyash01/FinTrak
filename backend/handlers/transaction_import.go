@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -26,7 +25,7 @@ import (
 // "skip", applies categorization rules in memory, and commits everything in one
 // transaction. Credit-card imports are attached to billing cycles, and source
 // Paperless documents are tagged only after the commit succeeds.
-func ImportTransactions(c *gin.Context) {
+func (srv *Server) ImportTransactions(c *gin.Context) {
 	var req models.ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -72,7 +71,7 @@ func ImportTransactions(c *gin.Context) {
 	var billingDay *int
 	var closed bool
 	var accountTypeID string
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		"SELECT user_id, billing_day, closed, account_type_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID, &billingDay, &closed, &accountTypeID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -101,7 +100,7 @@ func ImportTransactions(c *gin.Context) {
 	// this user, so a client can't import against another user's records.
 	if req.BillingCycleID != nil {
 		var owned bool
-		err := db.Pool.QueryRow(c,
+		err := srv.db.QueryRow(c,
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
 			*req.BillingCycleID, userID).Scan(&owned)
 		if err != nil {
@@ -127,7 +126,7 @@ func ImportTransactions(c *gin.Context) {
 	}
 	if len(payeeIDs) > 0 {
 		var owned int
-		err := db.Pool.QueryRow(c,
+		err := srv.db.QueryRow(c,
 			"SELECT COUNT(*) FROM payees WHERE id = ANY($1) AND user_id = $2",
 			payeeIDs, userID).Scan(&owned)
 		if err != nil {
@@ -142,7 +141,7 @@ func ImportTransactions(c *gin.Context) {
 	}
 
 	// Load rules once and match in memory to avoid N+1 queries.
-	rules, err := loadRules(c, userID)
+	rules, err := srv.loadRules(c, userID)
 	if err != nil {
 		slog.Error("ImportTransactions (getting rules)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -150,7 +149,7 @@ func ImportTransactions(c *gin.Context) {
 	}
 
 	// Run the whole import in a transaction so it is all-or-nothing.
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("ImportTransactions (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -252,7 +251,7 @@ func ImportTransactions(c *gin.Context) {
 	// context outlives the request; tagPaperlessDocuments applies its own
 	// overall timeout and bounded concurrency.
 	if len(req.PaperlessDocumentIDs) > 0 {
-		go tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, tokenEncryptionKey, appEnv)
+		go srv.tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, tokenEncryptionKey, appEnv)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -334,7 +333,7 @@ func loadExistingFingerprints(ctx context.Context, q transactionQueryer, account
 // candidate transactions already exist in the selected account. It reuses the
 // same fingerprint matching as ImportTransactions (so the results agree with
 // what an import with duplicateAction "skip" would drop) but writes nothing.
-func ValidateTransactions(c *gin.Context) {
+func (srv *Server) ValidateTransactions(c *gin.Context) {
 	var req models.ValidateTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -368,7 +367,7 @@ func ValidateTransactions(c *gin.Context) {
 
 	// The account must exist and belong to the authenticated user.
 	var ownerID uuid.UUID
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		"SELECT user_id FROM accounts WHERE id = $1",
 		req.AccountID).Scan(&ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -388,7 +387,7 @@ func ValidateTransactions(c *gin.Context) {
 	// Load the account's existing transactions into a fingerprint set so each
 	// candidate can be compared in memory. Scoped to the candidate dates so the
 	// query stays bounded by the import window rather than the full history.
-	existing, err := loadExistingFingerprints(c, db.Pool, req.AccountID, userID, req.Transactions)
+	existing, err := loadExistingFingerprints(c, srv.db, req.AccountID, userID, req.Transactions)
 	if err != nil {
 		slog.Error("ValidateTransactions (loading existing transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

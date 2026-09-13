@@ -27,7 +27,7 @@ var errAccountNotFound = errors.New("account not found")
 
 // GetAccounts lists the authenticated user's accounts, newest first, each with
 // a computed running balance based on its account type's positive_txn_type.
-func GetAccounts(c *gin.Context) {
+func (srv *Server) GetAccounts(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	query := `
 		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.is_default, a.billing_day, a.created_at, a.closed,
@@ -50,7 +50,7 @@ func GetAccounts(c *gin.Context) {
 		WHERE a.user_id = $2
 		ORDER BY a.created_at DESC`
 
-	rows, err := db.Pool.Query(c, query, userID, userID)
+	rows, err := srv.db.Query(c, query, userID, userID)
 	if err != nil {
 		slog.Error("GetAccounts", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -75,7 +75,7 @@ func GetAccounts(c *gin.Context) {
 // CreateAccount inserts a new account for the user, clears the default flag on
 // any other account when the new one is the default, and keeps the payee table
 // in sync by creating/updating a payee named after the account.
-func CreateAccount(c *gin.Context) {
+func (srv *Server) CreateAccount(c *gin.Context) {
 	var req models.CreateAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -93,7 +93,7 @@ func CreateAccount(c *gin.Context) {
 
 	var account models.Account
 	userID := auth.GetUserID(c)
-	err := db.WithTx(c, func(tx pgx.Tx) error {
+	err := db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		// If this account is created as the default, clear the flag on any other
 		// accounts belonging to the user so there is only one default.
 		if req.IsDefault {
@@ -155,7 +155,7 @@ func CreateAccount(c *gin.Context) {
 // returned so the UI can tell the user what was removed. Previously the
 // transactions were orphaned: invisible in listings (inner JOIN) yet still
 // counted by dashboard totals.
-func DeleteAccount(c *gin.Context) {
+func (srv *Server) DeleteAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -164,7 +164,7 @@ func DeleteAccount(c *gin.Context) {
 
 	userID := auth.GetUserID(c)
 	var transactionsDeleted int64
-	err = db.WithTx(c, func(tx pgx.Tx) error {
+	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		// Delete the account's transactions (user-scoped) so the response can
 		// report the count; the FK cascade is schema-level insurance.
 		res, err := tx.Exec(c, "DELETE FROM transactions WHERE account_id = $1 AND user_id = $2", id, userID)
@@ -202,7 +202,7 @@ func DeleteAccount(c *gin.Context) {
 // UpdateAccount edits an account's fields, preserves the current default flag
 // when the request omits it (via *bool), keeps only one default account, and
 // renames the account-linked payee to match.
-func UpdateAccount(c *gin.Context) {
+func (srv *Server) UpdateAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -227,7 +227,7 @@ func UpdateAccount(c *gin.Context) {
 
 	var account models.Account
 	userID := auth.GetUserID(c)
-	err = db.WithTx(c, func(tx pgx.Tx) error {
+	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		// If this account is being set as the default, clear the flag on any
 		// other accounts belonging to the user so there is only one default.
 		if req.IsDefault != nil && *req.IsDefault {
@@ -325,14 +325,14 @@ func UpdateAccount(c *gin.Context) {
 
 // ExportAccount streams all transactions for an account as a CSV attachment,
 // scoped to the authenticated user via an ownership EXISTS check.
-func ExportAccount(c *gin.Context) {
+func (srv *Server) ExportAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
-	rows, err := db.Pool.Query(c,
+	rows, err := srv.db.Query(c,
 		`SELECT t.date, t.description, t.amount, t.type, t.tags, t.notes
 		 FROM transactions t
 		 WHERE t.account_id = $1

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -32,7 +31,7 @@ type cycleQueryer interface {
 // balance at the cycle end date (all debits minus all credits — purchases,
 // payments, refunds, cashbacks — posted up to that date) — and its
 // transaction count.
-func GetBillingCycles(c *gin.Context) {
+func (srv *Server) GetBillingCycles(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -42,7 +41,7 @@ func GetBillingCycles(c *gin.Context) {
 
 	// The account must exist and belong to the authenticated user.
 	var billingDay *int
-	err = db.Pool.QueryRow(c,
+	err = srv.db.QueryRow(c,
 		`SELECT a.billing_day
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
 		accountID, userID).Scan(&billingDay)
@@ -61,13 +60,13 @@ func GetBillingCycles(c *gin.Context) {
 		return
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, accountID, *billingDay); err != nil {
+	if err := ensureBillingCycles(c, srv.db, userID, accountID, *billingDay); err != nil {
 		slog.Error("GetBillingCycles (ensure cycles)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
+	cycles, err := listBillingCycles(c, srv.db, userID, accountID)
 	if err != nil {
 		slog.Error("GetBillingCycles (list cycles)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -22,10 +21,10 @@ var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 // per-cycle "Total outstanding" rows (regardless of account type); accounts
 // without one get month-end "Running balance" rows instead. Both sets are
 // synthetic, never persisted, and only meaningful in a date-ordered list.
-func buildAccountSummaryRows(c *gin.Context, userID, accountID uuid.UUID, dateFrom, dateTo string) ([]models.Transaction, []models.Transaction) {
+func (srv *Server) buildAccountSummaryRows(c *gin.Context, userID, accountID uuid.UUID, dateFrom, dateTo string) ([]models.Transaction, []models.Transaction) {
 	var acctName string
 	var billingDay *int
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`SELECT a.name, a.billing_day
 		 FROM accounts a
 		 WHERE a.id = $1 AND a.user_id = $2`,
@@ -35,14 +34,14 @@ func buildAccountSummaryRows(c *gin.Context, userID, accountID uuid.UUID, dateFr
 		return nil, nil
 	}
 	if billingDay == nil {
-		return nil, computeMonthEndBalanceRows(c, userID, accountID, acctName, dateFrom, dateTo)
+		return nil, srv.computeMonthEndBalanceRows(c, userID, accountID, acctName, dateFrom, dateTo)
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, accountID, *billingDay); err != nil {
+	if err := ensureBillingCycles(c, srv.db, userID, accountID, *billingDay); err != nil {
 		slog.Error("buildAccountSummaryRows (ensure billing cycles)", slog.String("error", err.Error()))
 		return nil, nil
 	}
-	return computeSummaryRows(c, userID, accountID, acctName, dateFrom, dateTo), nil
+	return srv.computeSummaryRows(c, userID, accountID, acctName, dateFrom, dateTo), nil
 }
 
 // computeMonthEndBalanceRows builds the synthetic "Running balance" rows for an
@@ -54,7 +53,7 @@ func buildAccountSummaryRows(c *gin.Context, userID, accountID uuid.UUID, dateFr
 // every page and filter combination. The month containing the range end is
 // still in progress, so it gets its row at the range end carrying the balance
 // as of that date (mirroring the in-progress-cycle row).
-func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
+func (srv *Server) computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
 	var from, to time.Time
 	if dateFrom != "" {
 		if t, err := time.Parse("2006-01-02", dateFrom); err == nil {
@@ -72,7 +71,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 
 	// Per-month net activity over the account's full ledger, oldest month
 	// first. The running sum of these nets is the balance at each month end.
-	rows, err := db.Pool.Query(c,
+	rows, err := srv.db.Query(c,
 		`SELECT date_trunc('month', t.date)::date,
 		        COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount WHEN t.type = 'debit' THEN -t.amount ELSE 0 END), 0),
 		        COUNT(t.id)
@@ -140,7 +139,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 		if inProgress && end.Equal(currentMonthEnd) {
 			var total money.Amount
 			var count int
-			err := db.Pool.QueryRow(c,
+			err := srv.db.QueryRow(c,
 				`SELECT COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount WHEN t.type = 'debit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)
 				 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
 				accountID, userID, to).Scan(&total, &count)
@@ -168,8 +167,8 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 // (the running balance through that date), and the in-progress cycle
 // containing the end of the range gets a row at the range end. Cycles are
 // expected to already exist (callers run ensureBillingCycles first).
-func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
-	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
+func (srv *Server) computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
+	cycles, err := listBillingCycles(c, srv.db, userID, accountID)
 	if err != nil {
 		slog.Error("computeSummaryRows (list cycles)", slog.String("error", err.Error()))
 		return nil
@@ -234,7 +233,7 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 	if current != nil && dateOnly(current.EndDate).After(to) {
 		var total money.Amount
 		var count int
-		err := db.Pool.QueryRow(c,
+		err := srv.db.QueryRow(c,
 			`SELECT COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount WHEN t.type = 'credit' THEN -t.amount ELSE 0 END), 0), COUNT(t.id)
 			 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
 			accountID, userID, to).Scan(&total, &count)

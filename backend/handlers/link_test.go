@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -98,27 +97,23 @@ func TestCalculateTransferScore(t *testing.T) {
 	}
 }
 
-func newLinkTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newLinkTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	return r, mock
+	return r, srv, mock
 }
 
 func TestGetLinks(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links", GetLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links", srv.GetLinks)
 
 	userID := testUserID()
 	linkID := uuid.New()
@@ -157,8 +152,8 @@ func TestGetLinks(t *testing.T) {
 }
 
 func TestGetLinksWithFilters(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links", GetLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links", srv.GetLinks)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -184,8 +179,8 @@ func TestGetLinksWithFilters(t *testing.T) {
 }
 
 func TestCreateLinkTransfer(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -248,8 +243,8 @@ func TestCreateLinkTransfer(t *testing.T) {
 }
 
 func TestCreateLinkCashbackSkipsTransferUpdates(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -287,8 +282,8 @@ func TestCreateLinkCashbackSkipsTransferUpdates(t *testing.T) {
 }
 
 func TestCreateLinkBillPaymentSkipsTransferUpdates(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -329,8 +324,8 @@ func TestCreateLinkBillPaymentSkipsTransferUpdates(t *testing.T) {
 }
 
 func TestCreateLinkInvalidType(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	reqBody := models.CreateLinkRequest{
 		Type:      "gift",
@@ -351,8 +346,8 @@ func TestCreateLinkInvalidType(t *testing.T) {
 }
 
 func TestCreateLinkRejectsSelfLink(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	txnID := uuid.New()
 	reqBody := models.CreateLinkRequest{
@@ -375,8 +370,8 @@ func TestCreateLinkRejectsSelfLink(t *testing.T) {
 }
 
 func TestCreateLinkOwnershipNotFound(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -404,8 +399,8 @@ func TestCreateLinkOwnershipNotFound(t *testing.T) {
 }
 
 func TestCreateLinkDuplicate(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -436,8 +431,8 @@ func TestCreateLinkDuplicate(t *testing.T) {
 }
 
 func TestCreateLinkBadJSON(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links", CreateLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links", srv.CreateLink)
 
 	req, _ := http.NewRequest("POST", "/links", bytes.NewBufferString("{not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -449,8 +444,8 @@ func TestCreateLinkBadJSON(t *testing.T) {
 }
 
 func TestBulkCreateLinks(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk", BulkCreateLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk", srv.BulkCreateLinks)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -522,8 +517,8 @@ func TestBulkCreateLinks(t *testing.T) {
 }
 
 func TestBulkCreateLinksSkipsDuplicates(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk", BulkCreateLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk", srv.BulkCreateLinks)
 
 	userID := testUserID()
 	fromID := uuid.New()
@@ -556,8 +551,8 @@ func TestBulkCreateLinksSkipsDuplicates(t *testing.T) {
 }
 
 func TestBulkCreateLinksRejectsSelfLink(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk", BulkCreateLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk", srv.BulkCreateLinks)
 
 	txnID := uuid.New()
 	reqBody := models.BulkCreateLinksRequest{
@@ -580,8 +575,8 @@ func TestBulkCreateLinksRejectsSelfLink(t *testing.T) {
 }
 
 func TestDeleteLink(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.DELETE("/links/:id", DeleteLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.DELETE("/links/:id", srv.DeleteLink)
 
 	userID := testUserID()
 	linkID := uuid.New()
@@ -609,8 +604,8 @@ func TestDeleteLink(t *testing.T) {
 }
 
 func TestDeleteLinkNonTransferKeepsCategory(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.DELETE("/links/:id", DeleteLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.DELETE("/links/:id", srv.DeleteLink)
 
 	userID := testUserID()
 	linkID := uuid.New()
@@ -636,8 +631,8 @@ func TestDeleteLinkNonTransferKeepsCategory(t *testing.T) {
 }
 
 func TestDeleteLinkNotFound(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.DELETE("/links/:id", DeleteLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.DELETE("/links/:id", srv.DeleteLink)
 
 	userID := testUserID()
 	linkID := uuid.New()
@@ -656,8 +651,8 @@ func TestDeleteLinkNotFound(t *testing.T) {
 }
 
 func TestDeleteLinkInvalidID(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.DELETE("/links/:id", DeleteLink)
+	r, srv, mock := newLinkTestRouter(t)
+	r.DELETE("/links/:id", srv.DeleteLink)
 
 	req, _ := http.NewRequest("DELETE", "/links/not-a-uuid", nil)
 	w := httptest.NewRecorder()
@@ -668,8 +663,8 @@ func TestDeleteLinkInvalidID(t *testing.T) {
 }
 
 func TestBulkDeleteLinks(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk-delete", BulkDeleteLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", srv.BulkDeleteLinks)
 
 	userID := testUserID()
 	linkID1 := uuid.New()
@@ -704,8 +699,8 @@ func TestBulkDeleteLinks(t *testing.T) {
 }
 
 func TestBulkDeleteLinksNonTransferKeepsCategory(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk-delete", BulkDeleteLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", srv.BulkDeleteLinks)
 
 	userID := testUserID()
 	linkID1 := uuid.New()
@@ -738,8 +733,8 @@ func TestBulkDeleteLinksNonTransferKeepsCategory(t *testing.T) {
 }
 
 func TestBulkDeleteLinksTooManyIDs(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk-delete", BulkDeleteLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", srv.BulkDeleteLinks)
 
 	ids := make([]uuid.UUID, maxBulkBatch+1)
 	for i := range ids {
@@ -757,8 +752,8 @@ func TestBulkDeleteLinksTooManyIDs(t *testing.T) {
 }
 
 func TestBulkDeleteLinksEmpty(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.POST("/links/bulk-delete", BulkDeleteLinks)
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", srv.BulkDeleteLinks)
 
 	reqBody := models.BulkDeleteLinksRequest{IDs: []uuid.UUID{}}
 	body, _ := json.Marshal(reqBody)
@@ -773,8 +768,8 @@ func TestBulkDeleteLinksEmpty(t *testing.T) {
 }
 
 func TestGetTransferSuggestionsExcludesLinkedCredits(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
 	// The lateral must never suggest a credit transaction that is already on
 	// either side of a link — the strict matcher pins the exact clause so a
@@ -793,8 +788,8 @@ func TestGetTransferSuggestionsExcludesLinkedCredits(t *testing.T) {
 }
 
 func TestGetTransferSuggestions(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
 	userID := testUserID()
 	now := time.Now()
@@ -833,8 +828,8 @@ func TestGetTransferSuggestions(t *testing.T) {
 }
 
 func TestGetTransferSuggestionsPagination(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
 	userID := testUserID()
 
@@ -856,8 +851,8 @@ func TestGetTransferSuggestionsPagination(t *testing.T) {
 }
 
 func TestGetTransferSuggestionsClampsLimit(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
 	userID := testUserID()
 
@@ -877,8 +872,8 @@ func TestGetTransferSuggestionsClampsLimit(t *testing.T) {
 }
 
 func TestGetTransferSuggestionsHasMore(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/transfer-suggestions", GetTransferSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
 	userID := testUserID()
 	now := time.Now()
@@ -915,8 +910,8 @@ func TestGetTransferSuggestionsHasMore(t *testing.T) {
 }
 
 func TestGetCashbackSuggestions(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/cashback-suggestions", GetCashbackSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/cashback-suggestions", srv.GetCashbackSuggestions)
 
 	userID := testUserID()
 	now := time.Now()
@@ -954,8 +949,8 @@ func TestGetCashbackSuggestions(t *testing.T) {
 }
 
 func TestGetCashbackSuggestionsPagination(t *testing.T) {
-	r, mock := newLinkTestRouter(t)
-	r.GET("/links/cashback-suggestions", GetCashbackSuggestions)
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links/cashback-suggestions", srv.GetCashbackSuggestions)
 
 	userID := testUserID()
 

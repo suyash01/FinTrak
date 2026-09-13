@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-parser vet build-backend build-frontend release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-parser vet build-backend build-frontend openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -18,6 +18,7 @@ help:
 	@echo "  make vet                Run go vet on backend"
 	@echo "  make build-backend      Verify backend compiles"
 	@echo "  make build-frontend     Build frontend production bundle"
+	@echo "  make openapi-check      Verify openapi.yaml covers every registered route"
 	@echo "  make release VERSION=v1.2.3  Test, tag, and push a release"
 
 dev:
@@ -49,6 +50,9 @@ build-backend:
 
 build-frontend:
 	cd frontend && bun run build
+
+openapi-check:
+	cd backend && go test . -run 'TestOpenAPI|TestServeOpenAPISpec' -count=1
 
 release:
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v1.2.3"; exit 1; fi

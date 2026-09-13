@@ -1,6 +1,7 @@
 // Package db owns the PostgreSQL connection pool, schema migrations, and
-// idempotent seeders. Tests swap the package-level Pool for a pgxmock so
-// handlers can be exercised without a real database.
+// idempotent seeders. The pool is constructed once at startup and handed to
+// handlers explicitly via handlers.Server; the db package's own tests swap the
+// package-level Pool for a pgxmock.
 package db
 
 import (
@@ -85,11 +86,11 @@ func RunMigrations(databaseURL string) {
 	slog.Info("database migrations complete")
 }
 
-// WithTx executes the given function within a database transaction.
-// It automatically handles starting the transaction, rolling it back on error,
-// and committing it on success.
-func WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
-	tx, err := Pool.Begin(ctx)
+// WithTx executes the given function within a database transaction on the
+// provided pool. It automatically handles starting the transaction, rolling it
+// back on error, and committing it on success.
+func WithTx(ctx context.Context, pool DBPool, fn func(pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}

@@ -15,12 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newStatementTestRouter() *gin.Engine {
+func newStatementTestRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/statements/parse", ParseStatement)
-	r.GET("/statements/extractors", ListStatementExtractors)
+	r.POST("/statements/parse", srv.ParseStatement)
+	r.GET("/statements/extractors", srv.ListStatementExtractors)
 	return r
 }
 
@@ -28,7 +28,7 @@ func newStatementTestRouter() *gin.Engine {
 // statement-parser REST API and returns the provided JSON/status.
 func startFakeParser(t *testing.T, status int, body string) (*httptest.Server, func()) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	parser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// sanity: ensure we actually received a file part
 		if _, _, err := r.FormFile("file"); err != nil {
 			http.Error(w, `{"error":"no file"}`, http.StatusBadRequest)
@@ -38,14 +38,14 @@ func startFakeParser(t *testing.T, status int, body string) (*httptest.Server, f
 		w.WriteHeader(status)
 		io.WriteString(w, body)
 	}))
-	return srv, func() { srv.Close() }
+	return parser, func() { parser.Close() }
 }
 
 // startFakeExtractorParser captures the extractor query param the backend
 // forwards so we can assert it was passed through correctly.
 func startFakeExtractorParser(t *testing.T, status int, body string, gotExtractor *string) (*httptest.Server, func()) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	parser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*gotExtractor = r.URL.Query().Get("extractor")
 		if r.URL.Path == "/api/extractors" {
 			w.Header().Set("Content-Type", "application/json")
@@ -61,7 +61,7 @@ func startFakeExtractorParser(t *testing.T, status int, body string, gotExtracto
 		w.WriteHeader(status)
 		io.WriteString(w, body)
 	}))
-	return srv, func() { srv.Close() }
+	return parser, func() { parser.Close() }
 }
 
 func multipartUpload(t *testing.T, password string) (*bytes.Buffer, string) {
@@ -87,15 +87,11 @@ func multipartUploadWithExtractor(t *testing.T, password, extractor string) (*by
 }
 
 func TestParseStatementForwardsExtractor(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-
 	var gotExtractor string
-	srv, closeSrv := startFakeExtractorParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`, &gotExtractor)
-	defer closeSrv()
-	statementParserURL = srv.URL
+	parser, closeParser := startFakeExtractorParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`, &gotExtractor)
+	defer closeParser()
 
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
 	body, ct := multipartUploadWithExtractor(t, "", "hdfc_cc")
 
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
@@ -108,15 +104,11 @@ func TestParseStatementForwardsExtractor(t *testing.T) {
 }
 
 func TestParseStatementDefaultsExtractor(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-
 	var gotExtractor string
-	srv, closeSrv := startFakeExtractorParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`, &gotExtractor)
-	defer closeSrv()
-	statementParserURL = srv.URL
+	parser, closeParser := startFakeExtractorParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`, &gotExtractor)
+	defer closeParser()
 
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
 	body, ct := multipartUpload(t, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
@@ -129,15 +121,11 @@ func TestParseStatementDefaultsExtractor(t *testing.T) {
 }
 
 func TestListStatementExtractors(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-
 	var gotExtractor string
-	srv, closeSrv := startFakeExtractorParser(t, http.StatusOK, `{"extractors":[{"name":"sbi_cc","display_name":"SBI Credit Card"},{"name":"hdfc_cc","display_name":"HDFC Credit Card"}]}`, &gotExtractor)
-	defer closeSrv()
-	statementParserURL = srv.URL
+	parser, closeParser := startFakeExtractorParser(t, http.StatusOK, `{"extractors":[{"name":"sbi_cc","display_name":"SBI Credit Card"},{"name":"hdfc_cc","display_name":"HDFC Credit Card"}]}`, &gotExtractor)
+	defer closeParser()
 
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
 	req := httptest.NewRequest(http.MethodGet, "/statements/extractors", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -155,11 +143,7 @@ func TestListStatementExtractors(t *testing.T) {
 }
 
 func TestListStatementExtractorsUnavailable(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-	statementParserURL = "http://127.0.0.1:1"
-
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, "http://127.0.0.1:1", 0))
 	req := httptest.NewRequest(http.MethodGet, "/statements/extractors", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -168,10 +152,7 @@ func TestListStatementExtractorsUnavailable(t *testing.T) {
 }
 
 func TestParseStatementSuccess(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-
-	srv, closeSrv := startFakeParser(t, http.StatusOK, `{
+	parser, closeParser := startFakeParser(t, http.StatusOK, `{
 		"transactions": [
 			{"date":"18 May 26","description":"UPI-SUYASH MITTAL","amount":310.0,"type":"Credit"},
 			{"date":"04 May 26","description":"TATA AIG INSURANCE","amount":31939.99,"type":"Debit"},
@@ -181,10 +162,9 @@ func TestParseStatementSuccess(t *testing.T) {
 		"page_count":7,
 		"transaction_count":3
 	}`)
-	defer closeSrv()
-	statementParserURL = srv.URL
+	defer closeParser()
 
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
 	body, ct := multipartUpload(t, "")
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
 	req.Header.Set("Content-Type", ct)
@@ -209,14 +189,10 @@ func TestParseStatementSuccess(t *testing.T) {
 }
 
 func TestParseStatementPasswordRequired(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
+	parser, closeParser := startFakeParser(t, http.StatusUnauthorized, `{"error":"password-protected","password_required":true}`)
+	defer closeParser()
 
-	srv, closeSrv := startFakeParser(t, http.StatusUnauthorized, `{"error":"password-protected","password_required":true}`)
-	defer closeSrv()
-	statementParserURL = srv.URL
-
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
 	body, ct := multipartUpload(t, "")
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
 	req.Header.Set("Content-Type", ct)
@@ -229,7 +205,7 @@ func TestParseStatementPasswordRequired(t *testing.T) {
 }
 
 func TestParseStatementNoFile(t *testing.T) {
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, testParserURL, 0))
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -238,11 +214,7 @@ func TestParseStatementNoFile(t *testing.T) {
 }
 
 func TestParseStatementParserUnavailable(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-	statementParserURL = "http://127.0.0.1:1"
-
-	r := newStatementTestRouter()
+	r := newStatementTestRouter(NewServer(nil, "http://127.0.0.1:1", 0))
 	body, ct := multipartUpload(t, "")
 	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
 	req.Header.Set("Content-Type", ct)
@@ -257,18 +229,6 @@ func TestNormalizeParserDate(t *testing.T) {
 	assert.Equal(t, "2024-12-12", normalizeParserDate("12 Dec 2024", ""))
 	assert.Equal(t, "", normalizeParserDate("", ""))
 	assert.Equal(t, "unparseable", normalizeParserDate("unparseable", ""))
-}
-
-func TestSetStatementParserURL(t *testing.T) {
-	old := statementParserURL
-	defer func() { statementParserURL = old }()
-
-	SetStatementParserURL("http://parser:8080")
-	assert.Equal(t, "http://parser:8080", statementParserURL)
-
-	// An empty URL must not overwrite the configured value.
-	SetStatementParserURL("")
-	assert.Equal(t, "http://parser:8080", statementParserURL)
 }
 
 func TestNormalizeParserDateWithFormat(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -19,7 +18,7 @@ import (
 // GetLinks lists the user's links, optionally filtered by type and/or a
 // transaction ID, newest first. Both linked transactions are joined in with
 // their account names for display.
-func GetLinks(c *gin.Context) {
+func (srv *Server) GetLinks(c *gin.Context) {
 	linkType := c.Query("type")
 	txnID := c.Query("txnId")
 
@@ -46,7 +45,7 @@ func GetLinks(c *gin.Context) {
 	}
 	query += " ORDER BY l.created_at DESC"
 
-	rows, err := db.Pool.Query(c, query, args...)
+	rows, err := srv.db.Query(c, query, args...)
 	if err != nil {
 		slog.Error("GetLinks", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -83,14 +82,14 @@ func isValidLinkType(t string) bool {
 // missing transactions, and exact duplicates. For "transfer" links it also
 // re-categorizes both transactions as "Transfer" and swaps their payees to the
 // counterpart account's linked payee. Runs in a transaction.
-func CreateLink(c *gin.Context) {
+func (srv *Server) CreateLink(c *gin.Context) {
 	var req models.CreateLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
 		return
 	}
 
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("starting transaction in CreateLink", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -213,7 +212,7 @@ func CreateLink(c *gin.Context) {
 // BulkCreateLinks creates many links in one transaction, validating each entry,
 // skipping exact duplicates, and applying the same transfer re-categorization
 // as CreateLink. Returns the number of links actually created.
-func BulkCreateLinks(c *gin.Context) {
+func (srv *Server) BulkCreateLinks(c *gin.Context) {
 	var req models.BulkCreateLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -224,7 +223,7 @@ func BulkCreateLinks(c *gin.Context) {
 		return
 	}
 
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("starting transaction in BulkCreateLinks", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -342,14 +341,14 @@ func BulkCreateLinks(c *gin.Context) {
 // other link still references them. Non-transfer links (cashback, refund,
 // bill_payment) never touched category/payee, so deleting them leaves the
 // user's own categorization intact.
-func DeleteLink(c *gin.Context) {
+func (srv *Server) DeleteLink(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
 		return
 	}
 
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("starting transaction in DeleteLink", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -411,7 +410,7 @@ func DeleteLink(c *gin.Context) {
 // them, it resets the transfer-derived category/payee on any transaction no
 // longer referenced by a remaining link. Non-transfer links are deleted without
 // touching the user's own category/payee.
-func BulkDeleteLinks(c *gin.Context) {
+func (srv *Server) BulkDeleteLinks(c *gin.Context) {
 	var req models.BulkDeleteLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -426,7 +425,7 @@ func BulkDeleteLinks(c *gin.Context) {
 		return
 	}
 
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("starting transaction in BulkDeleteLinks", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -535,13 +534,13 @@ func parseSuggestionPaging(c *gin.Context) (page, limit, offset int) {
 // that are likely transfers: same amount within ±3 days, not already linked.
 // Each suggestion carries a confidence score. Results are paginated newest
 // first; the per-debit match expansion stays capped at five credits.
-func GetTransferSuggestions(c *gin.Context) {
+func (srv *Server) GetTransferSuggestions(c *gin.Context) {
 	page, limit, offset := parseSuggestionPaging(c)
 
 	// Find debit transactions that might match credit transactions in other accounts
 	// within ±3 days and same amounts. The outer ORDER BY ends with d.id so
 	// paging is deterministic when several debits share a date.
-	rows, err := db.Pool.Query(c, `
+	rows, err := srv.db.Query(c, `
 		SELECT d.id, d.account_id, d.date, d.description, d.amount, d.type, da.name as d_account,
 			   cr.id, cr.account_id, cr.date, cr.description, cr.amount, cr.type, ca.name as c_account
 		FROM transactions d
@@ -630,10 +629,10 @@ func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
 // cashback/reward/refund and pairs each with up to three prior debits on the
 // same account (within 90 days) as the likely originating purchase, excluding
 // already-linked cashbacks. Results are paginated newest first.
-func GetCashbackSuggestions(c *gin.Context) {
+func (srv *Server) GetCashbackSuggestions(c *gin.Context) {
 	page, limit, offset := parseSuggestionPaging(c)
 
-	rows, err := db.Pool.Query(c, `
+	rows, err := srv.db.Query(c, `
 		SELECT cb.id, cb.account_id, cb.date, cb.description, cb.amount, cb.type, ca.name,
 		       orig.id, orig.account_id, orig.date, orig.description, orig.amount, orig.type, oa.name
 		FROM transactions cb

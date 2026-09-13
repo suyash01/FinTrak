@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -27,7 +26,7 @@ const (
 // income (top 15 each), a monthly income/expense trend, and the 10 most recent
 // transactions. An optional date range and account filter apply to every
 // transaction-backed section.
-func GetDashboardSummary(c *gin.Context) {
+func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
 	dateFrom := c.Query("dateFrom")
@@ -37,7 +36,7 @@ func GetDashboardSummary(c *gin.Context) {
 	// Billing-cycle view: the whole summary is framed around the statement
 	// periods of a single account that has a billing day set.
 	if c.Query("groupBy") == billingCycleGroupBy {
-		getDashboardSummaryBillingCycle(c)
+		srv.getDashboardSummaryBillingCycle(c)
 		return
 	}
 
@@ -69,7 +68,7 @@ func GetDashboardSummary(c *gin.Context) {
 	// Run every read in a single read-only, repeatable-read transaction so the
 	// stats reflect one consistent snapshot (concurrent writes can't partially
 	// land between queries) and share a single connection.
-	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := srv.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		slog.Error("GetDashboardSummary (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -238,7 +237,7 @@ func GetDashboardSummary(c *gin.Context) {
 // last `cycles` cycles, the category breakdowns span that cycle window, and the
 // recent transactions come from the current cycle. Date-range filters are
 // ignored in this mode; the window is defined by billing cycles instead.
-func getDashboardSummaryBillingCycle(c *gin.Context) {
+func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
 
@@ -250,7 +249,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 
 	// The account must exist, belong to the user, and have a billing day set.
 	var billingDay *int
-	err = db.Pool.QueryRow(ctx,
+	err = srv.db.QueryRow(ctx,
 		`SELECT a.billing_day
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
 		accountID, userID).Scan(&billingDay)
@@ -268,7 +267,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 
-	if err := ensureBillingCycles(ctx, db.Pool, userID, accountID, *billingDay); err != nil {
+	if err := ensureBillingCycles(ctx, srv.db, userID, accountID, *billingDay); err != nil {
 		slog.Error("GetDashboardSummary (ensure billing cycles)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -276,7 +275,7 @@ func getDashboardSummaryBillingCycle(c *gin.Context) {
 
 	// Read the summary inside a single read-only snapshot once cycle generation
 	// (which writes) has finished.
-	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := srv.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		slog.Error("GetDashboardSummary (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

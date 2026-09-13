@@ -54,7 +54,6 @@ func main() {
 	// Structured logging: debug level (with request/response body capture) in
 	// development, info + JSON in production.
 	logger.New(cfg.Env, cfg.LogLevel)
-	logger.SetMaxBodyLog(cfg.LogBodyLimit)
 
 	// Connect to database
 	db.Connect(cfg.DatabaseURL)
@@ -136,11 +135,12 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// at debug level (development), captures and logs request/response bodies.
 	// Skipped under test mode to keep unit test output quiet.
 	if gin.Mode() != gin.TestMode {
-		r.Use(logger.RequestLogger(slog.Default()))
+		r.Use(logger.RequestLogger(slog.Default(), cfg.LogBodyLimit))
 	}
 
-	// Point the statement handler at the standalone parser service.
-	handlers.SetStatementParserURL(cfg.ParserURL)
+	// Construct the handler server with its explicit dependencies: the shared
+	// database pool and the statement-parser base URL.
+	srv := handlers.NewServer(db.Pool, cfg.ParserURL, cfg.LogBodyLimit)
 
 	// Install handler configuration as package-level values rather than
 	// per-request context entries, so secrets are never copied into every
@@ -163,102 +163,106 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Public API contract. openapi_test.go keeps this in lockstep with the
+	// registered routes.
+	api.GET("/openapi.yaml", serveOpenAPISpec)
+
 	// Public: authentication
-	api.POST("/auth/register", handlers.Register)
-	api.POST("/auth/login", handlers.Login)
-	api.POST("/auth/logout", handlers.Logout)
+	api.POST("/auth/register", srv.Register)
+	api.POST("/auth/login", srv.Login)
+	api.POST("/auth/logout", srv.Logout)
 
 	// Protected routes
 	api.Use(auth.RequireAuth(cfg.JWTSecret))
 	{
 		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
-		api.GET("/auth/me", handlers.Me)
+		api.GET("/auth/me", srv.Me)
 
 		// Accounts
 		accounts := api.Group("/accounts")
-		accounts.GET("", handlers.GetAccounts)
-		accounts.POST("", handlers.CreateAccount)
-		accounts.PUT("/:id", handlers.UpdateAccount)
-		accounts.DELETE("/:id", handlers.DeleteAccount)
-		accounts.GET("/:id/export", handlers.ExportAccount)
-		accounts.GET("/:id/billing-cycles", handlers.GetBillingCycles)
+		accounts.GET("", srv.GetAccounts)
+		accounts.POST("", srv.CreateAccount)
+		accounts.PUT("/:id", srv.UpdateAccount)
+		accounts.DELETE("/:id", srv.DeleteAccount)
+		accounts.GET("/:id/export", srv.ExportAccount)
+		accounts.GET("/:id/billing-cycles", srv.GetBillingCycles)
 
 		// Account Types (mutations are admin-only; the type list is shared
 		// reference data that affects balance semantics for every user)
 		accountTypes := api.Group("/account-types")
-		accountTypes.GET("", handlers.GetAccountTypes)
-		accountTypes.POST("", auth.RequireAdmin(), handlers.CreateAccountType)
-		accountTypes.PUT("/:id", auth.RequireAdmin(), handlers.UpdateAccountType)
-		accountTypes.DELETE("/:id", auth.RequireAdmin(), handlers.DeleteAccountType)
+		accountTypes.GET("", srv.GetAccountTypes)
+		accountTypes.POST("", auth.RequireAdmin(), srv.CreateAccountType)
+		accountTypes.PUT("/:id", auth.RequireAdmin(), srv.UpdateAccountType)
+		accountTypes.DELETE("/:id", auth.RequireAdmin(), srv.DeleteAccountType)
 
 		// Category groups (base groups are read-only; custom groups are user-owned)
-		api.GET("/groups", handlers.GetGroups)
-		api.POST("/groups", handlers.CreateGroup)
-		api.PUT("/groups/:id", handlers.UpdateGroup)
-		api.DELETE("/groups/:id", handlers.DeleteGroup)
+		api.GET("/groups", srv.GetGroups)
+		api.POST("/groups", srv.CreateGroup)
+		api.PUT("/groups/:id", srv.UpdateGroup)
+		api.DELETE("/groups/:id", srv.DeleteGroup)
 
 		// Categories (user-owned CRUD; global categories are admin-managed below)
-		api.GET("/categories", handlers.GetCategories)
-		api.POST("/categories", handlers.CreateCategory)
-		api.PUT("/categories/:id", handlers.UpdateCategory)
-		api.DELETE("/categories/:id", handlers.DeleteCategory)
+		api.GET("/categories", srv.GetCategories)
+		api.POST("/categories", srv.CreateCategory)
+		api.PUT("/categories/:id", srv.UpdateCategory)
+		api.DELETE("/categories/:id", srv.DeleteCategory)
 
 		// Admin: global groups and global categories shared by every user
 		admin := api.Group("/admin", auth.RequireAdmin())
-		admin.POST("/groups", handlers.CreateGlobalGroup)
-		admin.POST("/categories", handlers.CreateGlobalCategory)
-		admin.PUT("/categories/:id", handlers.UpdateGlobalCategory)
-		admin.DELETE("/categories/:id", handlers.DeleteGlobalCategory)
+		admin.POST("/groups", srv.CreateGlobalGroup)
+		admin.POST("/categories", srv.CreateGlobalCategory)
+		admin.PUT("/categories/:id", srv.UpdateGlobalCategory)
+		admin.DELETE("/categories/:id", srv.DeleteGlobalCategory)
 
 		// Transactions
 		transactions := api.Group("/transactions")
-		transactions.GET("", handlers.GetTransactions)
-		transactions.POST("", handlers.CreateTransaction)
-		transactions.PATCH("/:id", handlers.UpdateTransaction)
-		transactions.DELETE("/:id", handlers.DeleteTransaction)
-		transactions.POST("/import", handlers.ImportTransactions)
-		transactions.POST("/validate", handlers.ValidateTransactions)
-		transactions.POST("/bulk-categorize", handlers.BulkCategorize)
-		transactions.POST("/bulk-payee", handlers.BulkUpdatePayee)
-		transactions.POST("/bulk-billing-cycle", handlers.BulkUpdateBillingCycle)
-		transactions.POST("/bulk-loan", handlers.BulkLinkLoan)
-		transactions.POST("/bulk-delete", handlers.BulkDeleteTransactions)
+		transactions.GET("", srv.GetTransactions)
+		transactions.POST("", srv.CreateTransaction)
+		transactions.PATCH("/:id", srv.UpdateTransaction)
+		transactions.DELETE("/:id", srv.DeleteTransaction)
+		transactions.POST("/import", srv.ImportTransactions)
+		transactions.POST("/validate", srv.ValidateTransactions)
+		transactions.POST("/bulk-categorize", srv.BulkCategorize)
+		transactions.POST("/bulk-payee", srv.BulkUpdatePayee)
+		transactions.POST("/bulk-billing-cycle", srv.BulkUpdateBillingCycle)
+		transactions.POST("/bulk-loan", srv.BulkLinkLoan)
+		transactions.POST("/bulk-delete", srv.BulkDeleteTransactions)
 
 		// Statement parsing (forwards to the standalone parser service)
-		api.POST("/statements/parse", handlers.ParseStatement)
-		api.GET("/statements/extractors", handlers.ListStatementExtractors)
+		api.POST("/statements/parse", srv.ParseStatement)
+		api.GET("/statements/extractors", srv.ListStatementExtractors)
 
 		// Paperless-ngx integration (per-user settings + manual pull)
-		api.GET("/paperless/settings", handlers.GetPaperlessSettings)
-		api.PUT("/paperless/settings", handlers.UpdatePaperlessSettings)
-		api.GET("/paperless/documents", handlers.ListPaperlessDocuments)
-		api.GET("/paperless/documents/:id/file", handlers.GetPaperlessDocumentFile)
-		api.POST("/paperless/import", handlers.ImportPaperlessDocument)
+		api.GET("/paperless/settings", srv.GetPaperlessSettings)
+		api.PUT("/paperless/settings", srv.UpdatePaperlessSettings)
+		api.GET("/paperless/documents", srv.ListPaperlessDocuments)
+		api.GET("/paperless/documents/:id/file", srv.GetPaperlessDocumentFile)
+		api.POST("/paperless/import", srv.ImportPaperlessDocument)
 
 		// Rules
-		api.GET("/rules", handlers.GetRules)
-		api.POST("/rules", handlers.CreateRule)
-		api.PUT("/rules/:id", handlers.UpdateRule)
-		api.DELETE("/rules/:id", handlers.DeleteRule)
-		api.POST("/rules/apply", handlers.ApplyRules)
+		api.GET("/rules", srv.GetRules)
+		api.POST("/rules", srv.CreateRule)
+		api.PUT("/rules/:id", srv.UpdateRule)
+		api.DELETE("/rules/:id", srv.DeleteRule)
+		api.POST("/rules/apply", srv.ApplyRules)
 
 		// Payees
-		api.GET("/payees", handlers.GetPayees)
-		api.POST("/payees", handlers.CreatePayee)
-		api.PUT("/payees/:id", handlers.UpdatePayee)
-		api.DELETE("/payees/:id", handlers.DeletePayee)
+		api.GET("/payees", srv.GetPayees)
+		api.POST("/payees", srv.CreatePayee)
+		api.PUT("/payees/:id", srv.UpdatePayee)
+		api.DELETE("/payees/:id", srv.DeletePayee)
 
 		// Links
-		api.GET("/links", handlers.GetLinks)
-		api.POST("/links", handlers.CreateLink)
-		api.POST("/links/bulk", handlers.BulkCreateLinks)
-		api.DELETE("/links/:id", handlers.DeleteLink)
-		api.POST("/links/bulk-delete", handlers.BulkDeleteLinks)
-		api.GET("/links/transfer-suggestions", handlers.GetTransferSuggestions)
-		api.GET("/links/cashback-suggestions", handlers.GetCashbackSuggestions)
+		api.GET("/links", srv.GetLinks)
+		api.POST("/links", srv.CreateLink)
+		api.POST("/links/bulk", srv.BulkCreateLinks)
+		api.DELETE("/links/:id", srv.DeleteLink)
+		api.POST("/links/bulk-delete", srv.BulkDeleteLinks)
+		api.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
+		api.GET("/links/cashback-suggestions", srv.GetCashbackSuggestions)
 
 		// Dashboard
-		api.GET("/dashboard/summary", handlers.GetDashboardSummary)
+		api.GET("/dashboard/summary", srv.GetDashboardSummary)
 	}
 
 	return r

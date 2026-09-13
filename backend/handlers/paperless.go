@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/crypto"
 	"github.com/fintrak/backend/internal/logger"
 	"github.com/fintrak/backend/internal/validation"
@@ -57,9 +56,9 @@ const maxPaperlessPageSize = 100
 // paperlessConfig loads a user's Paperless-ngx settings from the users row. The
 // stored API token may be encrypted at rest; it is decrypted on demand by
 // paperlessToken so read-only paths never need it.
-func paperlessConfig(ctx context.Context, userID uuid.UUID) (models.UserSettings, error) {
+func (srv *Server) paperlessConfig(ctx context.Context, userID uuid.UUID) (models.UserSettings, error) {
 	var s models.UserSettings
-	err := db.Pool.QueryRow(ctx,
+	err := srv.db.QueryRow(ctx,
 		"SELECT paperless_url, paperless_token, paperless_tag, page_size FROM users WHERE id = $1",
 		userID,
 	).Scan(&s.PaperlessURL, &s.PaperlessToken, &s.PaperlessTag, &s.PageSize)
@@ -188,7 +187,7 @@ func validatePaperlessURL(raw string) error {
 // addresses vetted by isDisallowedPaperlessIP. Resolving and dialing inside the
 // custom DialContext closes the DNS-rebinding (TOCTOU) gap that would exist if
 // validation and connection happened as separate lookups.
-func paperlessClient(s models.UserSettings, appEnv string) (*http.Client, error) {
+func paperlessClient(s models.UserSettings, appEnv string, logBodyLimit int) (*http.Client, error) {
 	origin, err := paperlessOrigin(s)
 	if err != nil {
 		return nil, err
@@ -204,7 +203,7 @@ func paperlessClient(s models.UserSettings, appEnv string) (*http.Client, error)
 	}
 	return &http.Client{
 		Timeout:   paperlessClientTimeout,
-		Transport: logger.LoggingRoundTripper(transport, slog.Default()),
+		Transport: logger.LoggingRoundTripper(transport, slog.Default(), logBodyLimit),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme+"://"+req.URL.Host != origin {
 				return http.ErrUseLastResponse
@@ -352,9 +351,9 @@ func rejectPaperlessRedirect(c *gin.Context, status int) bool {
 // GetPaperlessSettings returns the current user's Paperless-ngx integration
 // settings. The API token is never returned; HasToken reports whether one is
 // configured so the Settings page can render a masked state.
-func GetPaperlessSettings(c *gin.Context) {
+func (srv *Server) GetPaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
-	settings, err := paperlessConfig(c, userID)
+	settings, err := srv.paperlessConfig(c, userID)
 	if err != nil {
 		slog.Error("GetPaperlessSettings", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -372,7 +371,7 @@ func GetPaperlessSettings(c *gin.Context) {
 // Only the fields present in the request are updated, so saving one setting
 // (e.g. the transactions page size) never clobbers the others. The API token is
 // stored encrypted at rest.
-func UpdatePaperlessSettings(c *gin.Context) {
+func (srv *Server) UpdatePaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	var req models.UpdateUserSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -430,7 +429,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 
 	args = append(args, userID)
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(updates, ", "), argIdx)
-	if _, err := db.Pool.Exec(c, query, args...); err != nil {
+	if _, err := srv.db.Exec(c, query, args...); err != nil {
 		slog.Error("UpdatePaperlessSettings", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -557,8 +556,8 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 // Paperless so it does the filtering and returns a single page — the backend
 // never pulls the full document set and filters in memory. Requires the user
 // to have configured both a URL and an API token.
-func ListPaperlessDocuments(c *gin.Context) {
-	settings, err := paperlessConfig(c, auth.GetUserID(c))
+func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
+	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("ListPaperlessDocuments (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -572,7 +571,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, appEnv)
+	client, err := paperlessClient(settings, appEnv, srv.logBodyLimit)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -738,8 +737,8 @@ func ListPaperlessDocuments(c *gin.Context) {
 // GetPaperlessDocumentFile proxies a document's original file from the user's
 // Paperless-ngx instance so it can be viewed in the browser. The bytes are
 // returned with the upstream content type; oversized files are rejected.
-func GetPaperlessDocumentFile(c *gin.Context) {
-	settings, err := paperlessConfig(c, auth.GetUserID(c))
+func (srv *Server) GetPaperlessDocumentFile(c *gin.Context) {
+	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("GetPaperlessDocumentFile (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -753,7 +752,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, appEnv)
+	client, err := paperlessClient(settings, appEnv, srv.logBodyLimit)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -829,8 +828,8 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 // user's Paperless-ngx instance and feeds it through the existing statement
 // parser, returning the same normalized result as the manual upload path so the
 // frontend can preview and import it.
-func ImportPaperlessDocument(c *gin.Context) {
-	settings, err := paperlessConfig(c, auth.GetUserID(c))
+func (srv *Server) ImportPaperlessDocument(c *gin.Context) {
+	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("ImportPaperlessDocument (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -844,7 +843,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
 	}
-	client, err := paperlessClient(settings, appEnv)
+	client, err := paperlessClient(settings, appEnv, srv.logBodyLimit)
 	if err != nil {
 		validation.RespondError(c, err.Error(), http.StatusBadRequest)
 		return
@@ -907,7 +906,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 		req.Extractor = "sbi_cc"
 	}
 
-	result, status, errMsg, _ := forwardStatementToParser(c.Request.Context(), pdf, filename, req.Extractor, req.Password, req.DateFormat)
+	result, status, errMsg, _ := srv.forwardStatementToParser(c.Request.Context(), pdf, filename, req.Extractor, req.Password, req.DateFormat)
 	if errMsg != "" {
 		validation.RespondError(c, errMsg, status)
 		return
@@ -923,11 +922,11 @@ func ImportPaperlessDocument(c *gin.Context) {
 // surfaced) and runs with bounded concurrency: a single document can cost up
 // to four upstream round-trips, so tagging serially inside the request would
 // stall the import response behind the caller's Paperless instance.
-func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []int, tokenEncryptionKey, appEnv string) {
+func (srv *Server) tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []int, tokenEncryptionKey, appEnv string) {
 	if len(documentIDs) == 0 {
 		return
 	}
-	settings, err := paperlessConfig(ctx, userID)
+	settings, err := srv.paperlessConfig(ctx, userID)
 	if err != nil {
 		slog.Error("tagPaperlessDocuments (config)", slog.String("error", err.Error()))
 		return
@@ -935,7 +934,7 @@ func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []
 	if !paperlessConfigured(settings) || strings.TrimSpace(settings.PaperlessTag) == "" {
 		return
 	}
-	client, err := paperlessClient(settings, appEnv)
+	client, err := paperlessClient(settings, appEnv, srv.logBodyLimit)
 	if err != nil {
 		slog.Error("tagPaperlessDocuments (client)", slog.String("error", err.Error()))
 		return

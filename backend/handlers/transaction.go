@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -38,7 +37,7 @@ const maxPageSize = 1000
 // validated/clamped server-side. When filtering a single account that has a
 // billing day set (any account type) and sorting by date, synthetic summary
 // rows (per-cycle outstanding totals) are merged into the response.
-func GetTransactions(c *gin.Context) {
+func (srv *Server) GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	accountID := c.Query("accountId")
 	categoryID := c.Query("categoryId")
@@ -187,7 +186,7 @@ func GetTransactions(c *gin.Context) {
 
 	// Get total count
 	var total int
-	if err := db.Pool.QueryRow(c, countQuery, f.args...).Scan(&total); err != nil {
+	if err := srv.db.QueryRow(c, countQuery, f.args...).Scan(&total); err != nil {
 		slog.Error("GetTransactions (count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -198,7 +197,7 @@ func GetTransactions(c *gin.Context) {
 	query += fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", sortCol, sortOrder, paramIdx, paramIdx+1)
 	args := append(f.args, limit, offset)
 
-	rows, err := db.Pool.Query(c, query, args...)
+	rows, err := srv.db.Query(c, query, args...)
 	if err != nil {
 		slog.Error("GetTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -228,7 +227,7 @@ func GetTransactions(c *gin.Context) {
 	// Summary rows only make sense in a date-ordered list, so other sort
 	// columns skip them entirely.
 	if accountUUID != nil && sortBy == "date" {
-		summaryTxns, balanceTxns := buildAccountSummaryRows(c, userID, *accountUUID, dateFrom, dateTo)
+		summaryTxns, balanceTxns := srv.buildAccountSummaryRows(c, userID, *accountUUID, dateFrom, dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
 		transactions = mergeMonthEndRows(transactions, balanceTxns, sortOrder)
 	}
@@ -285,7 +284,7 @@ func (f *txnFilter) where() string {
 // ownership of the account/category/payee/billing cycle, and attaches
 // credit-card transactions to a (possibly auto-generated) billing cycle. The
 // whole write runs in one transaction.
-func CreateTransaction(c *gin.Context) {
+func (srv *Server) CreateTransaction(c *gin.Context) {
 	var req models.CreateTransactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -310,7 +309,7 @@ func CreateTransaction(c *gin.Context) {
 	// Run the whole write (account check, insert, billing-cycle generation and
 	// assignment) inside one database transaction so a failure never leaves a
 	// half-persisted transaction behind.
-	tx, err := db.Pool.Begin(c)
+	tx, err := srv.db.Begin(c)
 	if err != nil {
 		slog.Error("CreateTransaction (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -354,7 +353,7 @@ func CreateTransaction(c *gin.Context) {
 	// Auto-categorize from rules when no explicit category is supplied.
 	categoryID, payeeID := req.CategoryID, req.PayeeID
 	if categoryID == nil {
-		rules, err := loadRules(c, userID)
+		rules, err := srv.loadRules(c, userID)
 		if err != nil {
 			slog.Error("CreateTransaction (getting rules)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -440,7 +439,7 @@ func CreateTransaction(c *gin.Context) {
 // present in the request are changed; OptionalUUID fields let an explicit null
 // clear a foreign key. Any account/category/payee/billing cycle referenced must
 // belong to the user, otherwise the update is rejected.
-func UpdateTransaction(c *gin.Context) {
+func (srv *Server) UpdateTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -586,7 +585,7 @@ func UpdateTransaction(c *gin.Context) {
 
 	query := fmt.Sprintf("UPDATE transactions SET %s %s", strings.Join(setClauses, ", "), where)
 
-	result, err := db.Pool.Exec(c, query, args...)
+	result, err := srv.db.Exec(c, query, args...)
 	if err != nil {
 		slog.Error("UpdateTransaction", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -602,7 +601,7 @@ func UpdateTransaction(c *gin.Context) {
 }
 
 // DeleteTransaction removes a single transaction owned by the user.
-func DeleteTransaction(c *gin.Context) {
+func (srv *Server) DeleteTransaction(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -612,7 +611,7 @@ func DeleteTransaction(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	// Transactions on closed accounts are immutable (only linking remains
 	// possible), so the delete becomes a no-op for them.
-	result, err := db.Pool.Exec(c,
+	result, err := srv.db.Exec(c,
 		`DELETE FROM transactions WHERE id = $1 AND user_id = $2
 		 AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`,
 		id, userID)

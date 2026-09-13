@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -223,15 +222,12 @@ func TestGetBillingCycles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/accounts/:id/billing-cycles", GetBillingCycles)
+	r.GET("/accounts/:id/billing-cycles", srv.GetBillingCycles)
 
 	userID := testUserID()
 	acctID := uuid.New()
@@ -300,15 +296,12 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/accounts/:id/billing-cycles", GetBillingCycles)
+	r.GET("/accounts/:id/billing-cycles", srv.GetBillingCycles)
 
 	userID := testUserID()
 	acctID := uuid.New()
@@ -383,15 +376,12 @@ func TestGetBillingCyclesNoBillingDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/accounts/:id/billing-cycles", GetBillingCycles)
+	r.GET("/accounts/:id/billing-cycles", srv.GetBillingCycles)
 
 	userID := testUserID()
 	acctID := uuid.New()
@@ -416,15 +406,12 @@ func TestGetBillingCyclesAccountNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/accounts/:id/billing-cycles", GetBillingCycles)
+	r.GET("/accounts/:id/billing-cycles", srv.GetBillingCycles)
 
 	userID := testUserID()
 	acctID := uuid.New()

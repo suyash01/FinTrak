@@ -26,7 +26,7 @@ func TestSeedDefaultCategoriesInsertsWhenEmpty(t *testing.T) {
 		WithArgs(seedArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 24))
 
-	SeedDefaultCategories(ctx, userID)
+	SeedDefaultCategories(ctx, mock, userID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -40,7 +40,7 @@ func TestSeedDefaultCategoriesSkipsWhenAlreadySeeded(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	SeedDefaultCategories(ctx, userID)
+	SeedDefaultCategories(ctx, mock, userID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -54,7 +54,7 @@ func TestSeedDefaultCategoriesLogsOnCountError(t *testing.T) {
 		WithArgs(userID).
 		WillReturnError(assert.AnError)
 
-	SeedDefaultCategories(ctx, userID)
+	SeedDefaultCategories(ctx, mock, userID)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

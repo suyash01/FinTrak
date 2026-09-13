@@ -7,7 +7,6 @@ import (
 	"regexp"
 
 	"github.com/fintrak/backend/auth"
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -17,8 +16,8 @@ import (
 
 // GetGroups lists the groups visible to the user: the immutable base/global
 // groups first (in canonical order), then the user's own custom groups.
-func GetGroups(c *gin.Context) {
-	rows, err := db.Pool.Query(c, `SELECT id, name, icon, color, is_base, user_id, sort_order
+func (srv *Server) GetGroups(c *gin.Context) {
+	rows, err := srv.db.Query(c, `SELECT id, name, icon, color, is_base, user_id, sort_order
 		 FROM category_groups
 		 WHERE user_id IS NULL OR user_id = $1
 		 ORDER BY CASE WHEN user_id IS NULL THEN 0 ELSE 1 END, sort_order, name`, auth.GetUserID(c))
@@ -58,7 +57,7 @@ func validCategoryGroupID(id string) bool {
 
 // CreateGroup adds a user-owned custom group. Base/global groups are never
 // created through this endpoint.
-func CreateGroup(c *gin.Context) {
+func (srv *Server) CreateGroup(c *gin.Context) {
 	var req models.CreateCategoryGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -72,7 +71,7 @@ func CreateGroup(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
 	var g models.CategoryGroup
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO category_groups (id, name, icon, color, is_base, user_id, sort_order)
 		 VALUES ($1, $2, $3, $4, FALSE, $5,
 		         (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category_groups WHERE user_id = $5))
@@ -97,7 +96,7 @@ func CreateGroup(c *gin.Context) {
 
 // UpdateGroup renames / restyles a user's own custom group. Base and global
 // groups are immutable.
-func UpdateGroup(c *gin.Context) {
+func (srv *Server) UpdateGroup(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -113,7 +112,7 @@ func UpdateGroup(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
 	var g models.CategoryGroup
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`UPDATE category_groups
 		 SET name = COALESCE(NULLIF($2, ''), name),
 		     icon = COALESCE(NULLIF($3, ''), icon),
@@ -127,7 +126,7 @@ func UpdateGroup(c *gin.Context) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Distinguish "you can't touch this group" from "doesn't exist".
 			var exists bool
-			checkErr := db.Pool.QueryRow(c,
+			checkErr := srv.db.QueryRow(c,
 				`SELECT EXISTS (SELECT 1 FROM category_groups WHERE id = $1 AND user_id IS NULL)`,
 				id,
 			).Scan(&exists)
@@ -149,7 +148,7 @@ func UpdateGroup(c *gin.Context) {
 
 // DeleteGroup removes a user's own custom group. A group that still has
 // categories cannot be deleted — the user must move or delete them first.
-func DeleteGroup(c *gin.Context) {
+func (srv *Server) DeleteGroup(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		validation.RespondError(c, "invalid id", http.StatusBadRequest)
@@ -159,7 +158,7 @@ func DeleteGroup(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
 	var count int
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`SELECT COUNT(*) FROM categories WHERE group_id = $1 AND user_id = $2`, id, userID,
 	).Scan(&count)
 	if err != nil {
@@ -172,7 +171,7 @@ func DeleteGroup(c *gin.Context) {
 		return
 	}
 
-	result, err := db.Pool.Exec(c,
+	result, err := srv.db.Exec(c,
 		`DELETE FROM category_groups WHERE id = $1 AND user_id = $2 AND is_base = FALSE`, id, userID)
 	if err != nil {
 		slog.Error("DeleteGroup", slog.String("error", err.Error()))
@@ -191,7 +190,7 @@ func DeleteGroup(c *gin.Context) {
 // CreateGlobalGroup creates an admin-owned, non-base global group. This lets an
 // admin add groups that are visible to every user (base groups themselves are
 // seeded and immutable).
-func CreateGlobalGroup(c *gin.Context) {
+func (srv *Server) CreateGlobalGroup(c *gin.Context) {
 	var req models.CreateCategoryGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)
@@ -203,7 +202,7 @@ func CreateGlobalGroup(c *gin.Context) {
 	}
 
 	var g models.CategoryGroup
-	err := db.Pool.QueryRow(c,
+	err := srv.db.QueryRow(c,
 		`INSERT INTO category_groups (id, name, icon, color, is_base, user_id, sort_order)
 		 VALUES ($1, $2, $3, $4, FALSE, NULL,
 		         (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category_groups))

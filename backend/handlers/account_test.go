@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -29,15 +28,13 @@ func TestGetAccounts(t *testing.T) {
 	defer mock.Close()
 
 	// Switch global pool to mock
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	// Setup Gin
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.GET("/accounts", GetAccounts)
+	r.GET("/accounts", srv.GetAccounts)
 
 	// Define expected data
 	userID := testUserID()
@@ -75,15 +72,12 @@ func TestCreateAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.POST("/accounts", CreateAccount)
+	r.POST("/accounts", srv.CreateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -139,15 +133,12 @@ func TestUpdateAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-
-	oldPool := db.Pool
-	db.Pool = mock
-	defer func() { db.Pool = oldPool }()
+	srv := newTestServer(mock)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	r.PUT("/accounts/:id", UpdateAccount)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -211,8 +202,8 @@ func TestUpdateAccount(t *testing.T) {
 // leave name/account_type_id/bank/currency/color untouched instead of blanking
 // them.
 func TestUpdateAccountEmptyFieldsPreserveExisting(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -264,27 +255,23 @@ func testAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-func newAccountTestRouter(t *testing.T) (*gin.Engine, pgxmock.PgxPoolIface) {
+func newAccountTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPool := db.Pool
-	db.Pool = mock
-	t.Cleanup(func() {
-		db.Pool = oldPool
-		mock.Close()
-	})
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAuthMiddleware())
-	return r, mock
+	return r, srv, mock
 }
 
 func TestDeleteAccount(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.DELETE("/accounts/:id", DeleteAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", srv.DeleteAccount)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -318,8 +305,8 @@ func TestDeleteAccount(t *testing.T) {
 }
 
 func TestDeleteAccountNotFound(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.DELETE("/accounts/:id", DeleteAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", srv.DeleteAccount)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -344,8 +331,8 @@ func TestDeleteAccountNotFound(t *testing.T) {
 }
 
 func TestDeleteAccountInvalidID(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.DELETE("/accounts/:id", DeleteAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", srv.DeleteAccount)
 
 	req, _ := http.NewRequest("DELETE", "/accounts/not-a-uuid", nil)
 	w := httptest.NewRecorder()
@@ -356,8 +343,8 @@ func TestDeleteAccountInvalidID(t *testing.T) {
 }
 
 func TestExportAccount(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.GET("/accounts/:id/export", ExportAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.GET("/accounts/:id/export", srv.ExportAccount)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -385,8 +372,8 @@ func TestExportAccount(t *testing.T) {
 }
 
 func TestExportAccountInvalidID(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.GET("/accounts/:id/export", ExportAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.GET("/accounts/:id/export", srv.ExportAccount)
 
 	req, _ := http.NewRequest("GET", "/accounts/not-a-uuid/export", nil)
 	w := httptest.NewRecorder()
@@ -397,8 +384,8 @@ func TestExportAccountInvalidID(t *testing.T) {
 }
 
 func TestCreateAccountPayeeNameConflict(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.POST("/accounts", CreateAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.POST("/accounts", srv.CreateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -438,8 +425,8 @@ func TestCreateAccountPayeeNameConflict(t *testing.T) {
 }
 
 func TestUpdateAccountPayeeNameConflict(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -483,8 +470,8 @@ func TestUpdateAccountPayeeNameConflict(t *testing.T) {
 }
 
 func TestUpdateAccountBillingDayExplicitSet(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -515,8 +502,8 @@ func TestUpdateAccountBillingDayExplicitSet(t *testing.T) {
 }
 
 func TestUpdateAccountBillingDayExplicitNullClears(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
@@ -546,8 +533,8 @@ func TestUpdateAccountBillingDayExplicitNullClears(t *testing.T) {
 }
 
 func TestUpdateAccountBillingDayInvalidRange(t *testing.T) {
-	r, mock := newAccountTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newAccountTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	for _, day := range []int{0, 32, -3} {
 		t.Run(fmt.Sprintf("billingDay=%d", day), func(t *testing.T) {

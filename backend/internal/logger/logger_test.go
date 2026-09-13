@@ -16,6 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testBodyLimit is the default body cap used by the logger tests.
+const testBodyLimit = 8192
+
 // collectHandler records slog records in memory so tests can assert on them.
 type collectHandler struct {
 	level   slog.Level
@@ -53,7 +56,7 @@ func TestRequestLoggerDebugCapturesBodiesAndRedacts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.POST("/echo", func(c *gin.Context) {
 		body, _ := io.ReadAll(c.Request.Body)
 		c.JSON(http.StatusOK, gin.H{"received": string(body)})
@@ -94,7 +97,7 @@ func TestRequestLoggerDebugRedactsNestedResponseTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/login", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"token": "abc123", "user": gin.H{"name": "alice"}})
 	})
@@ -114,7 +117,7 @@ func TestRequestLoggerInfoSkipsBodies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelInfo}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
 
 	w := httptest.NewRecorder()
@@ -134,7 +137,7 @@ func TestRequestLoggerSkipsBinaryPayloads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.POST("/upload", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewBufferString("%PDF-1.4 binary"))
@@ -151,9 +154,9 @@ func TestRequestLoggerDoesNotTruncateLargeResponses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/large", func(c *gin.Context) {
-		payload := strings.Repeat("x", maxBodyLog) // > 8 KB, single Write call
+		payload := strings.Repeat("x", testBodyLimit) // > 8 KB, single Write call
 		c.JSON(http.StatusOK, gin.H{"documents": strings.Split(payload, "")})
 	})
 
@@ -165,22 +168,19 @@ func TestRequestLoggerDoesNotTruncateLargeResponses(t *testing.T) {
 		Documents []string `json:"documents"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Len(t, body.Documents, maxBodyLog)
+	assert.Len(t, body.Documents, testBodyLimit)
 }
 
 func TestRequestLoggerLogsFullBodyWhenUnlimited(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	// A non-positive limit disables truncation.
+	r.Use(RequestLogger(slog.New(h), 0))
 	payload := strings.Repeat("z", 10_000)
 	r.GET("/big", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"data": payload})
 	})
-
-	original := maxBodyLog
-	SetMaxBodyLog(0)
-	t.Cleanup(func() { maxBodyLog = original })
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/big", nil))
@@ -198,7 +198,7 @@ func TestRequestLoggerLogsQueryParams(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelInfo}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/list", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	w := httptest.NewRecorder()
@@ -213,7 +213,7 @@ func TestRequestLoggerOmitsQueryWhenAbsent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelInfo}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
 
 	w := httptest.NewRecorder()
@@ -236,7 +236,7 @@ func TestLoggingRoundTripperLogsURLWithQueryAndRedactsToken(t *testing.T) {
 		}, nil
 	})
 
-	rt := LoggingRoundTripper(base, l)
+	rt := LoggingRoundTripper(base, l, testBodyLimit)
 	req := httptest.NewRequest(http.MethodGet,
 		"http://paperless.local/api/documents/?page_size=100&ordering=-created", nil)
 	req.Header.Set("Authorization", "Token supersecret-token")
@@ -277,7 +277,7 @@ func TestLoggingRoundTripperPreservesRequestBody(t *testing.T) {
 		}, nil
 	})
 
-	rt := LoggingRoundTripper(base, l)
+	rt := LoggingRoundTripper(base, l, testBodyLimit)
 	payload := `{"name":"fintrak","color":"#06b6d4"}`
 	req := httptest.NewRequest(http.MethodPost, "http://paperless.local/api/tags/",
 		bytes.NewBufferString(payload))
@@ -307,7 +307,7 @@ func TestLoggingRoundTripperSkipsBinaryRequestBody(t *testing.T) {
 		}, nil
 	})
 
-	rt := LoggingRoundTripper(base, l)
+	rt := LoggingRoundTripper(base, l, testBodyLimit)
 	req := httptest.NewRequest(http.MethodPost, "http://parser.local/api/extract",
 		bytes.NewBufferString("%PDF-1.4 binary payload"))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=xyz")
@@ -338,7 +338,7 @@ func TestRequestLoggerPreservesHandlerRequestBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.POST("/echo", func(c *gin.Context) {
 		body, _ := io.ReadAll(c.Request.Body)
 		c.JSON(http.StatusOK, gin.H{"received": string(body)})
@@ -386,7 +386,7 @@ func TestRequestLoggerRedactsComposedKeyBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.POST("/settings", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	req := httptest.NewRequest(http.MethodPost, "/settings",
@@ -407,7 +407,7 @@ func TestRequestLoggerRedactsSensitiveQueryParam(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelInfo}
 	r := gin.New()
-	r.Use(RequestLogger(slog.New(h)))
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
 	r.GET("/list", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	w := httptest.NewRecorder()

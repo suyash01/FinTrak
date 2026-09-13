@@ -34,7 +34,7 @@ func TestWithTxCommitsOnSuccess(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
-	err := WithTx(ctx, func(tx pgx.Tx) error {
+	err := WithTx(ctx, mock, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, "UPDATE transactions SET notes = $1 WHERE id = $2", "updated", int64(1))
 		return err
 	})
@@ -51,7 +51,7 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectRollback()
 
-	err := WithTx(ctx, func(tx pgx.Tx) error {
+	err := WithTx(ctx, mock, func(tx pgx.Tx) error {
 		return sentinel
 	})
 
@@ -66,7 +66,7 @@ func TestWithTxReturnsBeginError(t *testing.T) {
 	beginErr := errors.New("cannot begin transaction")
 	mock.ExpectBegin().WillReturnError(beginErr)
 
-	err := WithTx(ctx, func(tx pgx.Tx) error {
+	err := WithTx(ctx, mock, func(tx pgx.Tx) error {
 		t.Fatal("transaction function must not be called when Begin fails")
 		return nil
 	})
@@ -83,7 +83,7 @@ func TestWithTxReturnsCommitError(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectCommit().WillReturnError(commitErr)
 
-	err := WithTx(ctx, func(tx pgx.Tx) error {
+	err := WithTx(ctx, mock, func(tx pgx.Tx) error {
 		return nil
 	})
 

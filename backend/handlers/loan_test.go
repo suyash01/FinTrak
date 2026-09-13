@@ -26,8 +26,8 @@ import (
 const loanCountCols = "count"
 
 func TestBulkLinkLoanAttach(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -76,8 +76,8 @@ func TestBulkLinkLoanAttach(t *testing.T) {
 }
 
 func TestBulkLinkLoanAttachWithoutPayee(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -118,8 +118,8 @@ func TestBulkLinkLoanAttachWithoutPayee(t *testing.T) {
 }
 
 func TestBulkLinkLoanDetach(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	txn1, txn2 := uuid.New(), uuid.New()
@@ -152,8 +152,8 @@ func TestBulkLinkLoanDetach(t *testing.T) {
 }
 
 func TestBulkLinkLoanNoTransactionIDs(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	req, _ := http.NewRequest("POST", "/transactions/bulk-loan", bytes.NewBufferString(`{"transactionIds":[]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -166,8 +166,8 @@ func TestBulkLinkLoanNoTransactionIDs(t *testing.T) {
 }
 
 func TestBulkLinkLoanTooManyIDs(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	ids := make([]uuid.UUID, maxBulkBatch+1)
 	for i := range ids {
@@ -186,8 +186,8 @@ func TestBulkLinkLoanTooManyIDs(t *testing.T) {
 }
 
 func TestBulkLinkLoanTransactionNotFound(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	txn1 := uuid.New()
@@ -210,8 +210,8 @@ func TestBulkLinkLoanTransactionNotFound(t *testing.T) {
 }
 
 func TestBulkLinkLoanTransactionOnLoanAccount(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	txn1 := uuid.New()
@@ -236,8 +236,8 @@ func TestBulkLinkLoanTransactionOnLoanAccount(t *testing.T) {
 }
 
 func TestBulkLinkLoanLoanAccountNotFound(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -266,8 +266,8 @@ func TestBulkLinkLoanLoanAccountNotFound(t *testing.T) {
 }
 
 func TestBulkLinkLoanLoanAccountForbidden(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -295,8 +295,8 @@ func TestBulkLinkLoanLoanAccountForbidden(t *testing.T) {
 }
 
 func TestBulkLinkLoanTargetNotLoanType(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	bankID := uuid.New()
@@ -325,8 +325,8 @@ func TestBulkLinkLoanTargetNotLoanType(t *testing.T) {
 }
 
 func TestBulkLinkLoanAlreadyAttached(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -358,8 +358,8 @@ func TestBulkLinkLoanAlreadyAttached(t *testing.T) {
 }
 
 func TestBulkLinkLoanInsertUniqueViolationRace(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/bulk-loan", BulkLinkLoan)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
 
 	userID := testUserID()
 	loanID := uuid.New()
@@ -400,8 +400,8 @@ func TestBulkLinkLoanInsertUniqueViolationRace(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetTransactionsLoanAccountIdFilter(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -437,8 +437,8 @@ func TestGetTransactionsLoanAccountIdFilter(t *testing.T) {
 }
 
 func TestGetTransactionsExcludeAttached(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/transactions", GetTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
 	txnID := uuid.New()
@@ -469,8 +469,8 @@ func TestGetTransactionsExcludeAttached(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateTransactionClosedAccount(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -500,8 +500,8 @@ func TestCreateTransactionClosedAccount(t *testing.T) {
 }
 
 func TestCreateTransactionLoanAccountRejected(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions", CreateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -530,8 +530,8 @@ func TestCreateTransactionLoanAccountRejected(t *testing.T) {
 }
 
 func TestImportTransactionsClosedAccount(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.POST("/transactions/import", ImportTransactions)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/import", srv.ImportTransactions)
 
 	userID := testUserID()
 	accountID := uuid.New()
@@ -557,8 +557,8 @@ func TestImportTransactionsClosedAccount(t *testing.T) {
 }
 
 func TestUpdateTransactionOnClosedAccountNoop(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	catID := uuid.New()
@@ -580,8 +580,8 @@ func TestUpdateTransactionOnClosedAccountNoop(t *testing.T) {
 }
 
 func TestUpdateTransactionMoveToClosedAccountNoop(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PATCH("/transactions/:id", UpdateTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
 
 	txnID := uuid.New()
 	newAccountID := uuid.New()
@@ -603,8 +603,8 @@ func TestUpdateTransactionMoveToClosedAccountNoop(t *testing.T) {
 }
 
 func TestDeleteTransactionOnClosedAccountNoop(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.DELETE("/transactions/:id", DeleteTransaction)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.DELETE("/transactions/:id", srv.DeleteTransaction)
 
 	txnID := uuid.New()
 	userID := testUserID()
@@ -627,8 +627,8 @@ func TestDeleteTransactionOnClosedAccountNoop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetAccountsCarriesClosedAndLoanBalanceSQL(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.GET("/accounts", GetAccounts)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/accounts", srv.GetAccounts)
 
 	userID := testUserID()
 	createdAt := time.Now()
@@ -656,8 +656,8 @@ func TestGetAccountsCarriesClosedAndLoanBalanceSQL(t *testing.T) {
 }
 
 func TestUpdateAccountSetsClosed(t *testing.T) {
-	r, mock := newTransactionTestRouter(t)
-	r.PUT("/accounts/:id", UpdateAccount)
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PUT("/accounts/:id", srv.UpdateAccount)
 
 	accountID := uuid.New()
 	userID := testUserID()
