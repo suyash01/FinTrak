@@ -26,6 +26,9 @@ env:
 jobs:
   test-backend:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - name: Set up Go
@@ -53,6 +56,14 @@ jobs:
           name: backend-coverage
           path: backend/coverage.out
           if-no-files-found: ignore
+      - name: Upload backend coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./backend/coverage.out
+          flags: backend
+          fail_ci_if_error: false
 
   test-backend-integration:
     runs-on: ubuntu-latest
@@ -72,6 +83,9 @@ jobs:
 
   test-frontend:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - name: Set up Bun
@@ -97,6 +111,14 @@ jobs:
           name: frontend-coverage
           path: frontend/coverage
           if-no-files-found: ignore
+      - name: Upload frontend coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./frontend/coverage/lcov.info
+          flags: frontend
+          fail_ci_if_error: false
 
   test-parser:
     runs-on: ubuntu-latest

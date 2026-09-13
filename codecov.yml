@@ -1,0 +1,33 @@
+# Codecov configuration.
+# Backend and frontend upload separately with flags so each half of the
+# monorepo reports its own coverage. carryforward keeps the last known
+# coverage when a job uploads nothing for a commit (e.g. a backend-only PR).
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: true
+
+flags:
+  backend:
+    paths:
+      - backend/
+    carryforward: true
+  frontend:
+    paths:
+      - frontend/
+    carryforward: true
+
+# The Python parser is not instrumented by the CI coverage jobs.
+ignore:
+  - "statement_parser/**"
