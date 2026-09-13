@@ -51,7 +51,7 @@ func GetAccounts(c *gin.Context) {
 
 	rows, err := db.Pool.Query(c, query, userID, userID)
 	if err != nil {
-		slog.Error("GetAccounts", "error", err)
+		slog.Error("GetAccounts", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -61,7 +61,7 @@ func GetAccounts(c *gin.Context) {
 	for rows.Next() {
 		var a models.Account
 		if err := rows.Scan(&a.ID, &a.Name, &a.AccountTypeID, &a.AccountTypeName, &a.Bank, &a.Currency, &a.Color, &a.IsDefault, &a.BillingDay, &a.CreatedAt, &a.Closed, &a.Balance); err != nil {
-			slog.Error("GetAccounts scan", "error", err)
+			slog.Error("GetAccounts scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -138,7 +138,7 @@ func CreateAccount(c *gin.Context) {
 			validation.RespondError(c, "an account-linked payee with this name already exists. Choose a different account name or delete the existing payee.", http.StatusConflict)
 			return
 		}
-		slog.Error("CreateAccount", "error", err)
+		slog.Error("CreateAccount", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -190,7 +190,7 @@ func DeleteAccount(c *gin.Context) {
 			validation.RespondError(c, "account not found", http.StatusNotFound)
 			return
 		}
-		slog.Error("DeleteAccount", "error", err)
+		slog.Error("DeleteAccount", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -235,28 +235,34 @@ func UpdateAccount(c *gin.Context) {
 			}
 		}
 
-		// billing_day is only written when the request mentions it: an absent
-		// key must leave the current value (and its derived billing cycles)
-		// untouched, an explicit number sets it, and null clears it. The id and
-		// user_id params stay at $7/$8 so the outer SELECT references hold; an
-		// explicit billing day is appended as $9 and an explicit closed flag as
-		// $10.
-		setClauses := "name = $1, account_type_id = $2, bank = $3, currency = $4, color = $5, is_default = COALESCE($6, is_default)"
+		// Text fields are partial-update safe: an empty string means "not
+		// provided" and leaves the stored value untouched (the same
+		// COALESCE(NULLIF(...)) convention as UpdateCategory), so a request can
+		// never blank a required field such as name or account_type_id. The id
+		// and user_id params stay at $7/$8 so the outer SELECT references hold;
+		// an explicit billing day is appended as $9 and an explicit closed flag
+		// as $10.
+		setClauses := []string{
+			"name = COALESCE(NULLIF($1, ''), name)",
+			"account_type_id = COALESCE(NULLIF($2, ''), account_type_id)",
+			"bank = COALESCE(NULLIF($3, ''), bank)",
+			"currency = COALESCE(NULLIF($4, ''), currency)",
+			"color = COALESCE(NULLIF($5, ''), color)",
+			"is_default = COALESCE($6, is_default)",
+		}
 		args := []interface{}{req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID}
-		billingClause := ""
 		if req.BillingDay.Set() {
-			billingClause = ", billing_day = $9"
+			setClauses = append(setClauses, "billing_day = $9")
 			args = append(args, req.BillingDay.Value())
 		}
-		closedClause := ""
 		if req.Closed != nil {
-			closedClause = ", closed = $10"
+			setClauses = append(setClauses, "closed = $10")
 			args = append(args, *req.Closed)
 		}
 
 		err := tx.QueryRow(c,
 			fmt.Sprintf(`WITH updated AS (
-				UPDATE accounts SET %s%s%s, updated_at = NOW() 
+				UPDATE accounts SET %s, updated_at = NOW() 
 				WHERE id = $7 AND user_id = $8 RETURNING id, name, account_type_id, bank, currency, color, is_default, billing_day, created_at, closed
 			)
 			SELECT u.id, u.name, u.account_type_id, at.name as account_type_name, u.bank, u.currency, u.color, u.is_default, u.billing_day, u.created_at, u.closed,
@@ -275,7 +281,7 @@ func UpdateAccount(c *gin.Context) {
 				)
 			END, 0) as balance
 			FROM updated u
-			JOIN account_types at ON u.account_type_id = at.id`, setClauses, billingClause, closedClause),
+			JOIN account_types at ON u.account_type_id = at.id`, strings.Join(setClauses, ", ")),
 			args...,
 		).Scan(&account.ID, &account.Name, &account.AccountTypeID, &account.AccountTypeName, &account.Bank, &account.Currency, &account.Color, &account.IsDefault, &account.BillingDay, &account.CreatedAt, &account.Closed, &account.Balance)
 
@@ -308,7 +314,7 @@ func UpdateAccount(c *gin.Context) {
 			validation.RespondError(c, "an account-linked payee with this name already exists. Rename the conflicting payee first.", http.StatusConflict)
 			return
 		}
-		slog.Error("UpdateAccount", "error", err)
+		slog.Error("UpdateAccount", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -332,7 +338,7 @@ func ExportAccount(c *gin.Context) {
 		 	 AND t.user_id = $2
 		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("ExportAccount", "error", err)
+		slog.Error("ExportAccount", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -345,7 +351,7 @@ func ExportAccount(c *gin.Context) {
 
 	// Write CSV Header
 	if err := writer.Write([]string{"Date", "Description", "Amount", "Type", "Tags", "Notes"}); err != nil {
-		slog.Error("writing CSV header", "error", err)
+		slog.Error("writing CSV header", slog.String("error", err.Error()))
 		return
 	}
 
@@ -363,7 +369,7 @@ func ExportAccount(c *gin.Context) {
 			// is missing rows: the client sees a truncated file, which is
 			// detectable, instead of wrong data that isn't.
 			writer.Flush()
-			slog.Error("scanning row in ExportAccount", "error", err)
+			slog.Error("scanning row in ExportAccount", slog.String("error", err.Error()))
 			return
 		}
 
@@ -378,17 +384,17 @@ func ExportAccount(c *gin.Context) {
 
 		if err := writer.Write(record); err != nil {
 			writer.Flush()
-			slog.Error("writing CSV record", "error", err)
+			slog.Error("writing CSV record", slog.String("error", err.Error()))
 			return
 		}
 	}
 	if err := rows.Err(); err != nil {
 		writer.Flush()
-		slog.Error("iterating rows in ExportAccount", "error", err)
+		slog.Error("iterating rows in ExportAccount", slog.String("error", err.Error()))
 		return
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {
-		slog.Error("flushing CSV in ExportAccount", "error", err)
+		slog.Error("flushing CSV in ExportAccount", slog.String("error", err.Error()))
 	}
 }

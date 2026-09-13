@@ -87,7 +87,7 @@ func ParseStatement(c *gin.Context) {
 
 	src, err := file.Open()
 	if err != nil {
-		slog.Error("ParseStatement (open upload)", "error", err)
+		slog.Error("ParseStatement (open upload)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -124,11 +124,11 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 	writer := multipart.NewWriter(body)
 	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
-		slog.Error("forwarding statement (create form file)", "error", err)
+		slog.Error("forwarding statement (create form file)", slog.String("error", err.Error()))
 		return nil, http.StatusInternalServerError, "internal server error", false
 	}
 	if _, err := part.Write(pdf); err != nil {
-		slog.Error("forwarding statement (write pdf)", "error", err)
+		slog.Error("forwarding statement (write pdf)", slog.String("error", err.Error()))
 		return nil, http.StatusInternalServerError, "internal server error", false
 	}
 
@@ -145,7 +145,7 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 	parserURL := strings.TrimRight(statementParserURL, "/") + "/api/extract?format=json&extractor=" + url.QueryEscape(extractor)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parserURL, body)
 	if err != nil {
-		slog.Error("forwarding statement (build request)", "error", err)
+		slog.Error("forwarding statement (build request)", slog.String("error", err.Error()))
 		return nil, http.StatusInternalServerError, "internal server error", false
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -156,25 +156,25 @@ func forwardStatementToParser(ctx context.Context, pdf []byte, filename, extract
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("forwarding statement (calling parser)", "error", err)
+		slog.Error("forwarding statement (calling parser)", slog.String("error", err.Error()))
 		return nil, http.StatusBadGateway, "statement parser is unavailable", false
 	}
 	defer resp.Body.Close()
 
 	respBody, err := readAllLimited(resp.Body, maxParserResponse)
 	if err != nil {
-		slog.Error("forwarding statement (read parser response)", "error", err)
+		slog.Error("forwarding statement (read parser response)", slog.String("error", err.Error()))
 		return nil, http.StatusBadGateway, "statement parser returned an oversized response", false
 	}
 
 	if resp.StatusCode >= 500 {
-		slog.Error("statement parser returned an error", "status", resp.StatusCode, "response", string(respBody))
+		slog.Error("statement parser returned an error", slog.Int("status", resp.StatusCode), slog.String("response", string(respBody)))
 		return nil, http.StatusBadGateway, "statement parser failed to process the file", false
 	}
 
 	var raw rawParserResponse
 	if err := json.Unmarshal(respBody, &raw); err != nil {
-		slog.Error("forwarding statement (unmarshal parser response)", "error", err)
+		slog.Error("forwarding statement (unmarshal parser response)", slog.String("error", err.Error()))
 		return nil, http.StatusBadGateway, "statement parser returned an invalid response", false
 	}
 
@@ -276,7 +276,7 @@ func ListStatementExtractors(c *gin.Context) {
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {
-		slog.Error("ListStatementExtractors (build request)", "error", err)
+		slog.Error("ListStatementExtractors (build request)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -287,7 +287,7 @@ func ListStatementExtractors(c *gin.Context) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("ListStatementExtractors (calling parser)", "error", err)
+		slog.Error("ListStatementExtractors (calling parser)", slog.String("error", err.Error()))
 		validation.RespondError(c, "statement parser is unavailable", http.StatusBadGateway)
 		return
 	}
@@ -295,13 +295,13 @@ func ListStatementExtractors(c *gin.Context) {
 
 	respBody, err := readAllLimited(resp.Body, maxParserResponse)
 	if err != nil {
-		slog.Error("ListStatementExtractors (read parser response)", "error", err)
+		slog.Error("ListStatementExtractors (read parser response)", slog.String("error", err.Error()))
 		validation.RespondError(c, "statement parser returned an oversized response", http.StatusBadGateway)
 		return
 	}
 
 	if resp.StatusCode >= 500 {
-		slog.Error("statement parser failed to list extractors", "status", resp.StatusCode, "response", string(respBody))
+		slog.Error("statement parser failed to list extractors", slog.Int("status", resp.StatusCode), slog.String("response", string(respBody)))
 		validation.RespondError(c, "statement parser failed to list extractors", http.StatusBadGateway)
 		return
 	}
@@ -314,7 +314,7 @@ func ListStatementExtractors(c *gin.Context) {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(respBody, &raw); err != nil {
-		slog.Error("ListStatementExtractors (unmarshal parser response)", "error", err)
+		slog.Error("ListStatementExtractors (unmarshal parser response)", slog.String("error", err.Error()))
 		validation.RespondError(c, "statement parser returned an invalid response", http.StatusBadGateway)
 		return
 	}

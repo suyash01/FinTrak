@@ -63,7 +63,7 @@ func Register(c *gin.Context) {
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		slog.Error("hashing password in Register", "error", err)
+		slog.Error("hashing password in Register", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -99,7 +99,7 @@ func Register(c *gin.Context) {
 			validation.RespondError(c, "an account with this email already exists", http.StatusConflict)
 			return
 		}
-		slog.Error("Register", "error", err)
+		slog.Error("Register", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -108,7 +108,7 @@ func Register(c *gin.Context) {
 
 	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {
-		slog.Error("generating token in Register", "error", err)
+		slog.Error("generating token in Register", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -150,7 +150,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("Login (query)", "error", err)
+		slog.Error("Login (query)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -162,7 +162,7 @@ func Login(c *gin.Context) {
 
 	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {
-		slog.Error("generating token in Login", "error", err)
+		slog.Error("generating token in Login", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -187,7 +187,7 @@ func Me(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("Me", "error", err)
+		slog.Error("Me", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

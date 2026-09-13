@@ -289,10 +289,11 @@ type CreateAccountRequest struct {
 	BillingDay *int `json:"billingDay" binding:"omitempty,min=1,max=31"`
 }
 
-// UpdateAccountRequest is a partial update for an account. Pointer/bool
-// fields distinguish "not provided" from "set to empty"; BillingDay uses
-// OptionalInt so an explicit null clears the stored value while an absent key
-// leaves it untouched.
+// UpdateAccountRequest is a partial update for an account. Empty-string text
+// fields are treated as "not provided" and preserve the stored value (so name
+// and accountTypeId can never be blanked); BillingDay uses OptionalInt so an
+// explicit null clears the stored value while an absent key leaves it
+// untouched, and the *bool fields distinguish "not provided" from "set".
 type UpdateAccountRequest struct {
 	Name          string `json:"name"`
 	AccountTypeID string `json:"accountTypeId"`

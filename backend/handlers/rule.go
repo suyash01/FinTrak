@@ -28,7 +28,7 @@ func GetRules(c *gin.Context) {
 		 WHERE r.user_id = $1
 		 ORDER BY r.priority DESC`, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("GetRules", "error", err)
+		slog.Error("GetRules", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -38,7 +38,7 @@ func GetRules(c *gin.Context) {
 	for rows.Next() {
 		var r models.Rule
 		if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Payee, &r.Priority, &r.CategoryName); err != nil {
-			slog.Error("GetRules scan", "error", err)
+			slog.Error("GetRules scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -76,7 +76,7 @@ func CreateRule(c *gin.Context) {
 			validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
 			return
 		}
-		slog.Error("CreateRule", "error", err)
+		slog.Error("CreateRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -95,7 +95,7 @@ func DeleteRule(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	result, err := db.Pool.Exec(c, "DELETE FROM rules WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
-		slog.Error("DeleteRule", "error", err)
+		slog.Error("DeleteRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -138,7 +138,7 @@ func UpdateRule(c *gin.Context) {
 			validation.RespondError(c, "rule not found", http.StatusNotFound)
 			return
 		}
-		slog.Error("UpdateRule", "error", err)
+		slog.Error("UpdateRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -159,7 +159,7 @@ func ApplyRules(c *gin.Context) {
 	// Get all rules
 	rules, err := loadRules(c, userID)
 	if err != nil {
-		slog.Error("ApplyRules (getting rules)", "error", err)
+		slog.Error("ApplyRules (getting rules)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -167,7 +167,7 @@ func ApplyRules(c *gin.Context) {
 	// Use a transaction for batch updates
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		slog.Error("ApplyRules (starting transaction)", "error", err)
+		slog.Error("ApplyRules (starting transaction)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -187,9 +187,8 @@ func ApplyRules(c *gin.Context) {
 		}
 		matchExpr, matchArg, ok := ruleMatchSQL(r.MatchType, r.Pattern, paramIdx)
 		if !ok {
-			// Match types matchRule does not implement (e.g. the legacy
-			// 'regex' value) never fire there either — skip them here rather
-			// than failing the whole batch.
+			// Unrecognized match types never fire in matchRule either — skip
+			// them here rather than failing the whole batch.
 			continue
 		}
 		args = append(args, matchArg)
@@ -200,7 +199,7 @@ func ApplyRules(c *gin.Context) {
 			args...,
 		)
 		if err != nil {
-			slog.Error("applying rule", "pattern", r.Pattern, "error", err)
+			slog.Error("applying rule", slog.String("pattern", r.Pattern), slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return // deferred rollback keeps the apply all-or-nothing
 		}
@@ -208,7 +207,7 @@ func ApplyRules(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c); err != nil {
-		slog.Error("ApplyRules (committing transaction)", "error", err)
+		slog.Error("ApplyRules (committing transaction)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

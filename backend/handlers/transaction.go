@@ -68,6 +68,18 @@ func GetTransactions(c *gin.Context) {
 		limit = maxPageSize
 	}
 
+	// Parse the account filter once: the summary-row path needs the UUID and a
+	// malformed value should surface as a 400 rather than a database error.
+	var accountUUID *uuid.UUID
+	if accountID != "" {
+		parsed, err := uuid.Parse(accountID)
+		if err != nil {
+			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
+			return
+		}
+		accountUUID = &parsed
+	}
+
 	// Validate sort column
 	validSorts := map[string]string{
 		"date":      "t.date",
@@ -82,6 +94,79 @@ func GetTransactions(c *gin.Context) {
 		sortOrder = "DESC"
 	}
 
+	// Build the WHERE predicates once. Every clause references only
+	// `transactions t` (using correlated EXISTS subqueries where a join would
+	// otherwise be required), so the list and count queries share the exact same
+	// clause and args and can never drift apart.
+	f := newTxnFilter(userID)
+
+	if accountID != "" {
+		f.param("t.account_id = $%d", accountID)
+	}
+	if categoryID != "" {
+		// The "uncategorized" sentinel (from the frontend's category filter)
+		// means transactions with no category assigned.
+		if categoryID == "uncategorized" {
+			f.raw("t.category_id IS NULL")
+		} else if _, err := uuid.Parse(categoryID); err != nil {
+			// Not a UUID -> group-level filter: every category in the given
+			// group (a base group slug like "expense" or a custom group id).
+			f.param("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", categoryID)
+		} else {
+			// Filter to the selected category (scoped to the user). Categories
+			// are flat, so this is a plain equality against the category id.
+			f.param("t.category_id = $%d", categoryID)
+		}
+	}
+	if uncategorized == "true" {
+		f.raw("t.category_id IS NULL")
+	}
+	if groupId != "" {
+		// Group-level filter: every transaction whose category belongs to the
+		// given group. Works for base group slugs ("expense") and custom group
+		// ids alike, unlike the non-UUID fallback on categoryId.
+		f.param("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", groupId)
+	}
+	if search != "" {
+		// Escape % and _ so "100%" matches the literal text, not "1000" —
+		// same semantics as the rules engine's matchRule.
+		f.param("LOWER(t.description) LIKE LOWER($%d)", "%"+escapeLikePattern(search)+"%")
+	}
+	if dateFrom != "" {
+		f.param("t.date >= $%d", dateFrom)
+	}
+	if dateTo != "" {
+		f.param("t.date <= $%d", dateTo)
+	}
+	if txnType != "" {
+		f.param("t.type = $%d", txnType)
+	}
+	if payeeID != "" {
+		f.param("t.payee_id = $%d", payeeID)
+	}
+	if amountStr != "" {
+		if amount, err := strconv.ParseFloat(amountStr, 64); err == nil {
+			f.param("t.amount = $%d", amount)
+		}
+	}
+	switch c.Query("linked") {
+	case "true":
+		f.raw("EXISTS (SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)")
+	case "false":
+		f.raw("NOT EXISTS (SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)")
+	}
+
+	// Loan/EMI filters: loanAccountId narrows to transactions attached to one
+	// loan account (its EMI payments); excludeAttached=true narrows to
+	// transactions not attached to any loan account (attach candidates).
+	if loanAccountID := c.Query("loanAccountId"); loanAccountID != "" {
+		f.param("EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = $%d)", loanAccountID)
+	}
+	if c.Query("excludeAttached") == "true" {
+		f.raw("NOT EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id)")
+	}
+
+	where := f.where()
 	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
 				t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
 				COALESCE(c.name, '') as category_name, COALESCE(c.icon, '') as category_icon,
@@ -97,147 +182,26 @@ func GetTransactions(c *gin.Context) {
 			  LEFT JOIN payees p ON t.payee_id = p.id
 			  LEFT JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
 			  LEFT JOIN loan_attachments la ON la.transaction_id = t.id
-			  LEFT JOIN accounts loan_acct ON loan_acct.id = la.loan_account_id
-			  WHERE t.user_id = $1`
+			  LEFT JOIN accounts loan_acct ON loan_acct.id = la.loan_account_id` + where
 
-	countQuery := `SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1`
-	args := []any{userID}
-	countArgs := []any{userID}
-	paramIdx := 2
-
-	if accountID != "" {
-		query += fmt.Sprintf(" AND t.account_id = $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND t.account_id = $%d", paramIdx)
-		args = append(args, accountID)
-		countArgs = append(countArgs, accountID)
-		paramIdx++
-	}
-	if categoryID != "" {
-		// The "uncategorized" sentinel (from the frontend's category filter)
-		// means transactions with no category assigned.
-		if categoryID == "uncategorized" {
-			query += " AND t.category_id IS NULL"
-			countQuery += " AND t.category_id IS NULL"
-		} else if _, err := uuid.Parse(categoryID); err != nil {
-			// Not a UUID -> group-level filter: every category in the given
-			// group (a base group slug like "expense" or a custom group id).
-			query += fmt.Sprintf(" AND c.group_id = $%d", paramIdx)
-			countQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", paramIdx)
-			args = append(args, categoryID)
-			countArgs = append(countArgs, categoryID)
-			paramIdx++
-		} else {
-			// Filter to the selected category (scoped to the user). Categories
-			// are flat, so this is a plain equality against the category id.
-			query += fmt.Sprintf(" AND t.category_id = $%d", paramIdx)
-			countQuery += fmt.Sprintf(" AND t.category_id = $%d", paramIdx)
-			args = append(args, categoryID)
-			countArgs = append(countArgs, categoryID)
-			paramIdx++
-		}
-	}
-	if uncategorized == "true" {
-		query += " AND t.category_id IS NULL"
-		countQuery += " AND t.category_id IS NULL"
-	}
-	if groupId != "" {
-		// Group-level filter: every transaction whose category belongs to the
-		// given group. Works for base group slugs ("expense") and custom group
-		// ids alike, unlike the non-UUID fallback on categoryId.
-		query += fmt.Sprintf(" AND c.group_id = $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", paramIdx)
-		args = append(args, groupId)
-		countArgs = append(countArgs, groupId)
-		paramIdx++
-	}
-	if search != "" {
-		query += fmt.Sprintf(" AND LOWER(t.description) LIKE LOWER($%d)", paramIdx)
-		countQuery += fmt.Sprintf(" AND LOWER(t.description) LIKE LOWER($%d)", paramIdx)
-		// Escape % and _ so "100%" matches the literal text, not "1000" —
-		// same semantics as the rules engine's matchRule.
-		args = append(args, "%"+escapeLikePattern(search)+"%")
-		countArgs = append(countArgs, "%"+escapeLikePattern(search)+"%")
-		paramIdx++
-	}
-	if dateFrom != "" {
-		query += fmt.Sprintf(" AND t.date >= $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND t.date >= $%d", paramIdx)
-		args = append(args, dateFrom)
-		countArgs = append(countArgs, dateFrom)
-		paramIdx++
-	}
-	if dateTo != "" {
-		query += fmt.Sprintf(" AND t.date <= $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND t.date <= $%d", paramIdx)
-		args = append(args, dateTo)
-		countArgs = append(countArgs, dateTo)
-		paramIdx++
-	}
-	if txnType != "" {
-		query += fmt.Sprintf(" AND t.type = $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND t.type = $%d", paramIdx)
-		args = append(args, txnType)
-		countArgs = append(countArgs, txnType)
-		paramIdx++
-	}
-	if payeeID != "" {
-		query += fmt.Sprintf(" AND t.payee_id = $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND t.payee_id = $%d", paramIdx)
-		args = append(args, payeeID)
-		countArgs = append(countArgs, payeeID)
-		paramIdx++
-	}
-	if amountStr != "" {
-		if amount, err := strconv.ParseFloat(amountStr, 64); err == nil {
-			query += fmt.Sprintf(" AND t.amount = $%d", paramIdx)
-			countQuery += fmt.Sprintf(" AND t.amount = $%d", paramIdx)
-			args = append(args, amount)
-			countArgs = append(countArgs, amount)
-			paramIdx++
-		}
-	}
-
-	linked := c.Query("linked")
-	switch linked {
-	case "true":
-		query += " AND EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)"
-		countQuery += " AND EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)"
-	case "false":
-		query += " AND NOT EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)"
-		countQuery += " AND NOT EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)"
-	}
-
-	// Loan/EMI filters: loanAccountId narrows to transactions attached to one
-	// loan account (its EMI payments); excludeAttached=true narrows to
-	// transactions not attached to any loan account (attach candidates).
-	loanAccountID := c.Query("loanAccountId")
-	if loanAccountID != "" {
-		query += fmt.Sprintf(" AND la.loan_account_id = $%d", paramIdx)
-		countQuery += fmt.Sprintf(" AND la.loan_account_id = $%d", paramIdx)
-		args = append(args, loanAccountID)
-		countArgs = append(countArgs, loanAccountID)
-		paramIdx++
-	}
-	if c.Query("excludeAttached") == "true" {
-		query += " AND la.loan_account_id IS NULL"
-		countQuery += " AND la.loan_account_id IS NULL"
-	}
+	countQuery := `SELECT COUNT(*) FROM transactions t` + where
 
 	// Get total count
 	var total int
-	if err := db.Pool.QueryRow(c, countQuery, countArgs...).Scan(&total); err != nil {
-		slog.Error("GetTransactions (count)", "error", err)
+	if err := db.Pool.QueryRow(c, countQuery, f.args...).Scan(&total); err != nil {
+		slog.Error("GetTransactions (count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	offset := (page - 1) * limit
+	paramIdx := len(f.args) + 1
 	query += fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", sortCol, sortOrder, paramIdx, paramIdx+1)
-	args = append(args, limit, offset)
+	args := append(f.args, limit, offset)
 
 	rows, err := db.Pool.Query(c, query, args...)
 	if err != nil {
-		slog.Error("GetTransactions", "error", err)
+		slog.Error("GetTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -250,7 +214,7 @@ func GetTransactions(c *gin.Context) {
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked,
 			&t.BillingCycleID, &t.BillingCycleLabel, &t.LoanAccountID, &t.LoanAccountName); err != nil {
-			slog.Error("GetTransactions scan", "error", err)
+			slog.Error("GetTransactions scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -264,8 +228,8 @@ func GetTransactions(c *gin.Context) {
 	// them via loanAccountId). These are synthetic and are never persisted.
 	// Summary rows only make sense in a date-ordered list, so other sort
 	// columns skip them entirely.
-	if accountID != "" && sortBy == "date" {
-		summaryTxns, balanceTxns := buildAccountSummaryRows(c, userID, accountID, dateFrom, dateTo)
+	if accountUUID != nil && sortBy == "date" {
+		summaryTxns, balanceTxns := buildAccountSummaryRows(c, userID, *accountUUID, dateFrom, dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
 		transactions = mergeMonthEndRows(transactions, balanceTxns, sortOrder)
 	}
@@ -280,6 +244,41 @@ func GetTransactions(c *gin.Context) {
 		"limit": limit,
 		"pages": pages,
 	})
+}
+
+// txnFilter accumulates the WHERE predicates shared by GetTransactions' list
+// and count queries. Every clause references only the `transactions t` table
+// (using correlated EXISTS subqueries where a join would otherwise be needed),
+// so both queries run the identical predicate with the identical args — the
+// count and the page can never diverge. args[0] is always the user id.
+type txnFilter struct {
+	clauses []string
+	args    []any
+}
+
+func newTxnFilter(userID uuid.UUID) *txnFilter {
+	return &txnFilter{args: []any{userID}}
+}
+
+// param appends a predicate containing a single %d, substituted with the next
+// positional placeholder, and binds value.
+func (f *txnFilter) param(clause string, value any) {
+	f.args = append(f.args, value)
+	f.clauses = append(f.clauses, fmt.Sprintf(clause, len(f.args)))
+}
+
+// raw appends a predicate with no bound parameter.
+func (f *txnFilter) raw(clause string) {
+	f.clauses = append(f.clauses, clause)
+}
+
+// where renders the shared " WHERE t.user_id = $1 [AND ...]" fragment.
+func (f *txnFilter) where() string {
+	where := " WHERE t.user_id = $1"
+	if len(f.clauses) > 0 {
+		where += " AND " + strings.Join(f.clauses, " AND ")
+	}
+	return where
 }
 
 // CreateTransaction validates and inserts a single transaction. It auto-applies
@@ -314,7 +313,7 @@ func CreateTransaction(c *gin.Context) {
 	// half-persisted transaction behind.
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		slog.Error("CreateTransaction (begin)", "error", err)
+		slog.Error("CreateTransaction (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -336,7 +335,7 @@ func CreateTransaction(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("CreateTransaction (checking account)", "error", err)
+		slog.Error("CreateTransaction (checking account)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -358,7 +357,7 @@ func CreateTransaction(c *gin.Context) {
 	if categoryID == nil {
 		rules, err := loadRules(c, userID)
 		if err != nil {
-			slog.Error("CreateTransaction (getting rules)", "error", err)
+			slog.Error("CreateTransaction (getting rules)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -377,7 +376,7 @@ func CreateTransaction(c *gin.Context) {
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
 			*req.BillingCycleID, userID).Scan(&owned)
 		if err != nil {
-			slog.Error("CreateTransaction (checking billing cycle)", "error", err)
+			slog.Error("CreateTransaction (checking billing cycle)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -403,7 +402,7 @@ func CreateTransaction(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("CreateTransaction (insert)", "error", err)
+		slog.Error("CreateTransaction (insert)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -414,7 +413,7 @@ func CreateTransaction(c *gin.Context) {
 	// Cycles are only generated for accounts that have a billing day set.
 	if billingDay != nil {
 		if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
-			slog.Error("CreateTransaction (ensure billing cycles)", "error", err)
+			slog.Error("CreateTransaction (ensure billing cycles)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -422,7 +421,7 @@ func CreateTransaction(c *gin.Context) {
 			if _, err := tx.Exec(c,
 				"UPDATE transactions SET billing_cycle_id = $1 WHERE id = $2 AND user_id = $3",
 				*req.BillingCycleID, id, userID); err != nil {
-				slog.Error("CreateTransaction (set billing cycle)", "error", err)
+				slog.Error("CreateTransaction (set billing cycle)", slog.String("error", err.Error()))
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -430,7 +429,7 @@ func CreateTransaction(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c); err != nil {
-		slog.Error("CreateTransaction (commit)", "error", err)
+		slog.Error("CreateTransaction (commit)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -590,7 +589,7 @@ func UpdateTransaction(c *gin.Context) {
 
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
-		slog.Error("UpdateTransaction", "error", err)
+		slog.Error("UpdateTransaction", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -637,7 +636,7 @@ func BulkCategorize(c *gin.Context) {
 	}
 	result, err := db.Pool.Exec(c, query, args...)
 	if err != nil {
-		slog.Error("BulkCategorize", "error", err)
+		slog.Error("BulkCategorize", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -664,7 +663,7 @@ func BulkUpdatePayee(c *gin.Context) {
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.PayeeID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("BulkUpdatePayee", "error", err)
+		slog.Error("BulkUpdatePayee", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -691,7 +690,7 @@ func BulkUpdateBillingCycle(c *gin.Context) {
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("BulkUpdateBillingCycle", "error", err)
+		slog.Error("BulkUpdateBillingCycle", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -715,7 +714,7 @@ func BulkDeleteTransactions(c *gin.Context) {
 	          AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := db.Pool.Exec(c, query, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("BulkDeleteTransactions", "error", err)
+		slog.Error("BulkDeleteTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -739,7 +738,7 @@ func DeleteTransaction(c *gin.Context) {
 		 AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`,
 		id, userID)
 	if err != nil {
-		slog.Error("DeleteTransaction", "error", err)
+		slog.Error("DeleteTransaction", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -812,7 +811,7 @@ func ImportTransactions(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("ImportTransactions (checking account)", "error", err)
+		slog.Error("ImportTransactions (checking account)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -837,7 +836,7 @@ func ImportTransactions(c *gin.Context) {
 			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
 			*req.BillingCycleID, userID).Scan(&owned)
 		if err != nil {
-			slog.Error("ImportTransactions (checking billing cycle)", "error", err)
+			slog.Error("ImportTransactions (checking billing cycle)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -863,7 +862,7 @@ func ImportTransactions(c *gin.Context) {
 			"SELECT COUNT(*) FROM payees WHERE id = ANY($1) AND user_id = $2",
 			payeeIDs, userID).Scan(&owned)
 		if err != nil {
-			slog.Error("ImportTransactions (checking payees)", "error", err)
+			slog.Error("ImportTransactions (checking payees)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -876,7 +875,7 @@ func ImportTransactions(c *gin.Context) {
 	// Load rules once and match in memory to avoid N+1 queries.
 	rules, err := loadRules(c, userID)
 	if err != nil {
-		slog.Error("ImportTransactions (getting rules)", "error", err)
+		slog.Error("ImportTransactions (getting rules)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -884,7 +883,7 @@ func ImportTransactions(c *gin.Context) {
 	// Run the whole import in a transaction so it is all-or-nothing.
 	tx, err := db.Pool.Begin(c)
 	if err != nil {
-		slog.Error("ImportTransactions (begin)", "error", err)
+		slog.Error("ImportTransactions (begin)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -897,7 +896,7 @@ func ImportTransactions(c *gin.Context) {
 	if action == "skip" {
 		existing, err = loadExistingFingerprints(c, tx, req.AccountID, userID, req.Transactions)
 		if err != nil {
-			slog.Error("ImportTransactions (loading existing transactions)", "error", err)
+			slog.Error("ImportTransactions (loading existing transactions)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -937,7 +936,7 @@ func ImportTransactions(c *gin.Context) {
 			var id uuid.UUID
 			if err := br.QueryRow().Scan(&id); err != nil {
 				br.Close()
-				slog.Error("ImportTransactions", "error", err)
+				slog.Error("ImportTransactions", slog.String("error", err.Error()))
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -955,7 +954,7 @@ func ImportTransactions(c *gin.Context) {
 		if billingDay != nil {
 			if req.BillingCycleID != nil {
 				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
-					slog.Error("ImportTransactions (set billing cycle)", "error", err)
+					slog.Error("ImportTransactions (set billing cycle)", slog.String("error", err.Error()))
 					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 					return
 				}
@@ -963,14 +962,14 @@ func ImportTransactions(c *gin.Context) {
 			// Cycles are only generated for accounts that have a billing day
 			// set; the date-based default can't apply to accounts without one.
 			if err := ensureBillingCycles(c, tx, userID, req.AccountID, *billingDay); err != nil {
-				slog.Error("ImportTransactions (ensure billing cycles)", "error", err)
+				slog.Error("ImportTransactions (ensure billing cycles)", slog.String("error", err.Error()))
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
 
 		if err := tx.Commit(c); err != nil {
-			slog.Error("ImportTransactions (commit)", "error", err)
+			slog.Error("ImportTransactions (commit)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -992,7 +991,7 @@ func ImportTransactions(c *gin.Context) {
 		"duplicates": duplicates,
 		"total":      len(req.Transactions),
 	})
-	slog.Info("import complete", "imported", imported, "duplicates", duplicates, "total", len(req.Transactions), "account_id", req.AccountID)
+	slog.Info("import complete", slog.Int("imported", imported), slog.Int("duplicates", duplicates), slog.Int("total", len(req.Transactions)), slog.String("account_id", req.AccountID.String()))
 }
 
 // transactionFingerprint collapses a row into a stable value used for duplicate
@@ -1108,7 +1107,7 @@ func ValidateTransactions(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("ValidateTransactions (checking account)", "error", err)
+		slog.Error("ValidateTransactions (checking account)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1122,7 +1121,7 @@ func ValidateTransactions(c *gin.Context) {
 	// query stays bounded by the import window rather than the full history.
 	existing, err := loadExistingFingerprints(c, db.Pool, req.AccountID, userID, req.Transactions)
 	if err != nil {
-		slog.Error("ValidateTransactions (loading existing transactions)", "error", err)
+		slog.Error("ValidateTransactions (loading existing transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -1202,7 +1201,7 @@ var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 // per-cycle "Total outstanding" rows (regardless of account type); accounts
 // without one get month-end "Running balance" rows instead. Both sets are
 // synthetic, never persisted, and only meaningful in a date-ordered list.
-func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFrom, dateTo string) ([]models.Transaction, []models.Transaction) {
+func buildAccountSummaryRows(c *gin.Context, userID, accountID uuid.UUID, dateFrom, dateTo string) ([]models.Transaction, []models.Transaction) {
 	var acctName string
 	var billingDay *int
 	err := db.Pool.QueryRow(c,
@@ -1211,18 +1210,18 @@ func buildAccountSummaryRows(c *gin.Context, userID uuid.UUID, accountID, dateFr
 		 WHERE a.id = $1 AND a.user_id = $2`,
 		accountID, userID).Scan(&acctName, &billingDay)
 	if err != nil {
-		slog.Error("buildAccountSummaryRows (account lookup)", "error", err)
+		slog.Error("buildAccountSummaryRows (account lookup)", slog.String("error", err.Error()))
 		return nil, nil
 	}
 	if billingDay == nil {
-		return nil, computeMonthEndBalanceRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo)
+		return nil, computeMonthEndBalanceRows(c, userID, accountID, acctName, dateFrom, dateTo)
 	}
 
-	if err := ensureBillingCycles(c, db.Pool, userID, uuid.MustParse(accountID), *billingDay); err != nil {
-		slog.Error("buildAccountSummaryRows (ensure billing cycles)", "error", err)
+	if err := ensureBillingCycles(c, db.Pool, userID, accountID, *billingDay); err != nil {
+		slog.Error("buildAccountSummaryRows (ensure billing cycles)", slog.String("error", err.Error()))
 		return nil, nil
 	}
-	return computeSummaryRows(c, userID, uuid.MustParse(accountID), acctName, dateFrom, dateTo), nil
+	return computeSummaryRows(c, userID, accountID, acctName, dateFrom, dateTo), nil
 }
 
 // computeMonthEndBalanceRows builds the synthetic "Running balance" rows for an
@@ -1261,7 +1260,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 		 GROUP BY 1 ORDER BY 1`,
 		accountID, userID)
 	if err != nil {
-		slog.Error("computeMonthEndBalanceRows (monthly net)", "error", err)
+		slog.Error("computeMonthEndBalanceRows (monthly net)", slog.String("error", err.Error()))
 		return nil
 	}
 	type monthNet struct {
@@ -1276,14 +1275,14 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 		var count int
 		if err := rows.Scan(&m, &net, &count); err != nil {
 			rows.Close()
-			slog.Error("computeMonthEndBalanceRows (scan)", "error", err)
+			slog.Error("computeMonthEndBalanceRows (scan)", slog.String("error", err.Error()))
 			return nil
 		}
 		nets = append(nets, monthNet{month: m, net: net, count: count})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		slog.Error("computeMonthEndBalanceRows (iterate)", "error", err)
+		slog.Error("computeMonthEndBalanceRows (iterate)", slog.String("error", err.Error()))
 		return nil
 	}
 	if len(nets) == 0 {
@@ -1325,7 +1324,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 				 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
 				accountID, userID, to).Scan(&total, &count)
 			if err != nil {
-				slog.Error("computeMonthEndBalanceRows (in-progress month)", "error", err)
+				slog.Error("computeMonthEndBalanceRows (in-progress month)", slog.String("error", err.Error()))
 				return nil
 			}
 			if count > 0 {
@@ -1351,7 +1350,7 @@ func computeMonthEndBalanceRows(c *gin.Context, userID, accountID uuid.UUID, acc
 func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string) []models.Transaction {
 	cycles, err := listBillingCycles(c, db.Pool, userID, accountID)
 	if err != nil {
-		slog.Error("computeSummaryRows (list cycles)", "error", err)
+		slog.Error("computeSummaryRows (list cycles)", slog.String("error", err.Error()))
 		return nil
 	}
 
@@ -1419,7 +1418,7 @@ func computeSummaryRows(c *gin.Context, userID, accountID uuid.UUID, acctName, d
 			 FROM transactions t WHERE t.account_id = $1 AND t.user_id = $2 AND t.date <= $3`,
 			accountID, userID, to).Scan(&total, &count)
 		if err != nil {
-			slog.Error("computeSummaryRows (current cycle)", "error", err)
+			slog.Error("computeSummaryRows (current cycle)", slog.String("error", err.Error()))
 			return nil
 		}
 		if count > 0 {

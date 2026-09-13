@@ -81,9 +81,9 @@ func main() {
 	go authLimiter.StartJanitor(ctx.Done(), 0)
 
 	go func() {
-		slog.Info("FinTrak API starting", "version", Version, "env", cfg.Env, "addr", addr)
+		slog.Info("FinTrak API starting", slog.String("version", Version), slog.String("env", cfg.Env), slog.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server exited", "error", err)
+			slog.Error("server exited", slog.String("error", err.Error()))
 			stop()
 		}
 	}()
@@ -94,7 +94,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown", "error", err)
+		slog.Error("server shutdown", slog.String("error", err.Error()))
 	}
 }
 

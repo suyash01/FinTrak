@@ -724,6 +724,19 @@ func TestGetTransactions(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetTransactionsRejectsInvalidAccountID(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", GetTransactions)
+
+	req, _ := http.NewRequest("GET", "/transactions?accountId=not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid accountId")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestGetTransactionsWithAccountSummary(t *testing.T) {
 	r, mock := newTransactionTestRouter(t)
 	r.GET("/transactions", GetTransactions)
@@ -748,7 +761,7 @@ func TestGetTransactionsWithAccountSummary(t *testing.T) {
 	// buildAccountSummaryRows: account lookup — no billing day, so the account
 	// gets month-end "Running balance" summary rows instead of cycle rows.
 	mock.ExpectQuery("SELECT a.name, a.billing_day").
-		WithArgs(accountID.String(), userID).
+		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"name", "billing_day"}).
 			AddRow("Savings", nil))
 
@@ -814,7 +827,7 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	// buildAccountSummaryRows: a bank account WITH a billing day still gets
 	// summary rows (billing day presence, not account type, is the gate).
 	mock.ExpectQuery("SELECT a.name, a.billing_day").
-		WithArgs(accountID.String(), userID).
+		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"name", "billing_day"}).
 			AddRow("Checking", intPtr(5)))
 
@@ -1011,6 +1024,35 @@ func TestGetTransactionsGroupFilter(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	assert.Len(t, res.Data, 1)
 
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsCombinedFiltersShareArgs pins the QUAL-6 invariant: the
+// count query and the page query receive the identical filter args, so the
+// reported total always matches what the page can return.
+func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", GetTransactions)
+
+	userID := testUserID()
+	loanID := uuid.New()
+
+	filterArgs := []any{userID, "expense", "2024-01-01", "debit", loanID.String()}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
+		WithArgs(filterArgs...).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(append(append([]any{}, filterArgs...), 50, 0)...).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+
+	req, _ := http.NewRequest("GET",
+		"/transactions?categoryId=expense&dateFrom=2024-01-01&type=debit&loanAccountId="+loanID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

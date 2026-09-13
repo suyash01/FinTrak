@@ -43,12 +43,12 @@ func Connect(databaseURL string) {
 	var err error
 	Pool, err = pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
-		slog.Error("unable to connect to database", "error", err)
+		slog.Error("unable to connect to database", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	if err := Pool.Ping(context.Background()); err != nil {
-		slog.Error("unable to ping database", "error", err)
+		slog.Error("unable to ping database", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
@@ -67,18 +67,18 @@ func Close() {
 func RunMigrations(databaseURL string) {
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
-		slog.Error("failed to initialize migrations source", "error", err)
+		slog.Error("failed to initialize migrations source", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	m, err := migrate.NewWithSourceInstance("iofs", d, databaseURL)
 	if err != nil {
-		slog.Error("failed to initialize migrate instance", "error", err)
+		slog.Error("failed to initialize migrate instance", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		slog.Error("migration up failed", "error", err)
+		slog.Error("migration up failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 

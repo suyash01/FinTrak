@@ -25,7 +25,7 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 	var count int
 	err := Pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
 	if err != nil {
-		slog.Error("failed to count categories for user", "user_id", userID, "error", err)
+		slog.Error("failed to count categories for user", slog.String("user_id", userID.String()), slog.String("error", err.Error()))
 		return
 	}
 	if count > 0 {
@@ -72,7 +72,7 @@ func SeedDefaultCategories(ctx context.Context, userID uuid.UUID) {
 
 	_, err = Pool.Exec(ctx, query, values...)
 	if err != nil {
-		slog.Error("failed to seed categories", "error", err)
+		slog.Error("failed to seed categories", slog.String("error", err.Error()))
 		return
 	}
 
@@ -110,7 +110,7 @@ func SeedCategoryGroups() {
 			g.ID, g.Name, g.Icon, g.Color, g.SortOrder,
 		)
 		if err != nil {
-			slog.Error("failed to seed category group", "id", g.ID, "error", err)
+			slog.Error("failed to seed category group", slog.String("id", g.ID), slog.String("error", err.Error()))
 		}
 	}
 
@@ -145,7 +145,7 @@ func SeedAccountTypes() {
 			at.ID, at.Name, at.PositiveTxnType,
 		)
 		if err != nil {
-			slog.Error("failed to seed account type", "id", at.ID, "error", err)
+			slog.Error("failed to seed account type", slog.String("id", at.ID), slog.String("error", err.Error()))
 		}
 	}
 

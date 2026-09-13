@@ -36,7 +36,7 @@ func rejectBuiltInAccountType(c *gin.Context, id string) bool {
 func GetAccountTypes(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, positive_txn_type FROM account_types ORDER BY name")
 	if err != nil {
-		slog.Error("GetAccountTypes", "error", err)
+		slog.Error("GetAccountTypes", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -46,7 +46,7 @@ func GetAccountTypes(c *gin.Context) {
 	for rows.Next() {
 		var at models.AccountType
 		if err := rows.Scan(&at.ID, &at.Name, &at.PositiveTxnType); err != nil {
-			slog.Error("GetAccountTypes scan", "error", err)
+			slog.Error("GetAccountTypes scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -85,7 +85,7 @@ func CreateAccountType(c *gin.Context) {
 	).Scan(&at.ID, &at.Name, &at.PositiveTxnType)
 
 	if err != nil {
-		slog.Error("CreateAccountType", "error", err)
+		slog.Error("CreateAccountType", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -131,7 +131,7 @@ func UpdateAccountType(c *gin.Context) {
 			validation.RespondError(c, "account type not found", http.StatusNotFound)
 			return
 		}
-		slog.Error("UpdateAccountType", "error", err)
+		slog.Error("UpdateAccountType", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -155,7 +155,7 @@ func DeleteAccountType(c *gin.Context) {
 	// Check if any accounts are using this type
 	var count int
 	if err := db.Pool.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count); err != nil {
-		slog.Error("DeleteAccountType (usage count)", "error", err)
+		slog.Error("DeleteAccountType (usage count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -166,7 +166,7 @@ func DeleteAccountType(c *gin.Context) {
 
 	result, err := db.Pool.Exec(c, "DELETE FROM account_types WHERE id = $1", id)
 	if err != nil {
-		slog.Error("DeleteAccountType", "error", err)
+		slog.Error("DeleteAccountType", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

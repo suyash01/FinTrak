@@ -19,7 +19,7 @@ import (
 func GetPayees(c *gin.Context) {
 	rows, err := db.Pool.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees WHERE user_id = $1 ORDER BY name", auth.GetUserID(c))
 	if err != nil {
-		slog.Error("GetPayees", "error", err)
+		slog.Error("GetPayees", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -29,7 +29,7 @@ func GetPayees(c *gin.Context) {
 	for rows.Next() {
 		var p models.Payee
 		if err := rows.Scan(&p.ID, &p.Name, &p.AccountID, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			slog.Error("GetPayees scan", "error", err)
+			slog.Error("GetPayees scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -67,7 +67,7 @@ func CreatePayee(c *gin.Context) {
 			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
-		slog.Error("CreatePayee", "error", err)
+		slog.Error("CreatePayee", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -109,7 +109,7 @@ func UpdatePayee(c *gin.Context) {
 			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
 			return
 		}
-		slog.Error("UpdatePayee", "error", err)
+		slog.Error("UpdatePayee", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -128,7 +128,7 @@ func DeletePayee(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	result, err := db.Pool.Exec(c, "DELETE FROM payees WHERE id = $1 AND user_id = $2", id, userID)
 	if err != nil {
-		slog.Error("DeletePayee", "error", err)
+		slog.Error("DeletePayee", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}

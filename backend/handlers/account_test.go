@@ -205,6 +205,46 @@ func TestUpdateAccount(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUpdateAccountEmptyFieldsPreserveExisting verifies the partial-update
+// contract: empty strings are passed through COALESCE(NULLIF(...)) so they
+// leave name/account_type_id/bank/currency/color untouched instead of blanking
+// them.
+func TestUpdateAccountEmptyFieldsPreserveExisting(t *testing.T) {
+	r, mock := newTransactionTestRouter(t)
+	r.PUT("/accounts/:id", UpdateAccount)
+
+	accountID := uuid.New()
+	userID := testUserID()
+
+	// The matcher pins the guard clauses: if a field is written through
+	// directly (as it was before), this expectation fails to match.
+	mock.ExpectBegin()
+	mock.ExpectQuery("name = COALESCE\\(NULLIF\\(\\$1, ''\\), name\\), account_type_id = COALESCE\\(NULLIF\\(\\$2, ''\\), account_type_id\\), bank = COALESCE\\(NULLIF\\(\\$3, ''\\), bank\\)").
+		WithArgs("", "", "", "", "", (*bool)(nil), accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+			AddRow(accountID, "Savings", "bank", "Bank Account", "HDFC", "INR", "#06b6d4", true, intPtr(1), time.Now(), false, 1000.50))
+	// The linked payee keeps the (preserved) account name.
+	mock.ExpectExec("UPDATE payees SET name").
+		WithArgs("Savings", accountID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	body := `{"name":"","accountTypeId":"","bank":"","currency":"","color":""}`
+	req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var account models.Account
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &account))
+	assert.Equal(t, "Savings", account.Name)
+	assert.Equal(t, "HDFC", account.Bank)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func testUserID() uuid.UUID {
 	return uuid.MustParse("00000000-0000-0000-0000-000000000001")
 }

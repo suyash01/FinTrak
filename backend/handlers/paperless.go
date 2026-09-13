@@ -356,7 +356,7 @@ func GetPaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	settings, err := paperlessConfig(c, userID)
 	if err != nil {
-		slog.Error("GetPaperlessSettings", "error", err)
+		slog.Error("GetPaperlessSettings", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -404,7 +404,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 		} else {
 			enc, err := crypto.Encrypt(token, tokenEncryptionKey)
 			if err != nil {
-				slog.Error("UpdatePaperlessSettings (encrypt token)", "error", err)
+				slog.Error("UpdatePaperlessSettings (encrypt token)", slog.String("error", err.Error()))
 				validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -431,7 +431,7 @@ func UpdatePaperlessSettings(c *gin.Context) {
 	args = append(args, userID)
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(updates, ", "), argIdx)
 	if _, err := db.Pool.Exec(c, query, args...); err != nil {
-		slog.Error("UpdatePaperlessSettings", "error", err)
+		slog.Error("UpdatePaperlessSettings", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -509,7 +509,7 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 			req.Header.Set("Authorization", "Token "+token)
 			resp, err := client.Do(req)
 			if err != nil {
-				slog.Error("fetching paperless resource", "path", path, "error", err)
+				slog.Error("fetching paperless resource", slog.String("path", path), slog.String("error", err.Error()))
 				return nil
 			}
 			body, err := readAllLimited(resp.Body, maxPaperlessResponse)
@@ -560,7 +560,7 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 func ListPaperlessDocuments(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("ListPaperlessDocuments (config)", "error", err)
+		slog.Error("ListPaperlessDocuments (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -579,7 +579,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 	}
 	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
-		slog.Error("ListPaperlessDocuments (decrypt token)", "error", err)
+		slog.Error("ListPaperlessDocuments (decrypt token)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -645,7 +645,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, base+"/api/documents/?"+qs.Encode(), nil)
 	if err != nil {
-		slog.Error("ListPaperlessDocuments (build request)", "error", err)
+		slog.Error("ListPaperlessDocuments (build request)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -653,14 +653,14 @@ func ListPaperlessDocuments(c *gin.Context) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("ListPaperlessDocuments (calling paperless)", "error", err)
+		slog.Error("ListPaperlessDocuments (calling paperless)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 		return
 	}
 	body, readErr := readAllLimited(resp.Body, maxPaperlessResponse)
 	resp.Body.Close()
 	if readErr != nil {
-		slog.Error("ListPaperlessDocuments (read response)", "error", readErr)
+		slog.Error("ListPaperlessDocuments (read response)", slog.String("error", readErr.Error()))
 		validation.RespondError(c, "Paperless returned an unreadable response", http.StatusBadGateway)
 		return
 	}
@@ -673,7 +673,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		return
 	}
 	if resp.StatusCode >= 500 {
-		slog.Error("listing paperless documents", "status", resp.StatusCode, "response", string(body))
+		slog.Error("listing paperless documents", slog.Int("status", resp.StatusCode), slog.String("response", string(body)))
 		validation.RespondError(c, "Paperless failed to list documents", http.StatusBadGateway)
 		return
 	}
@@ -684,7 +684,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 		Error   string                 `json:"error"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		slog.Error("ListPaperlessDocuments (unmarshal)", "error", err)
+		slog.Error("ListPaperlessDocuments (unmarshal)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless returned an invalid response", http.StatusBadGateway)
 		return
 	}
@@ -741,7 +741,7 @@ func ListPaperlessDocuments(c *gin.Context) {
 func GetPaperlessDocumentFile(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("GetPaperlessDocumentFile (config)", "error", err)
+		slog.Error("GetPaperlessDocumentFile (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -760,7 +760,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 	}
 	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
-		slog.Error("GetPaperlessDocumentFile (decrypt token)", "error", err)
+		slog.Error("GetPaperlessDocumentFile (decrypt token)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -774,7 +774,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 	dlURL := paperlessBase(settings) + "/api/documents/" + strconv.Itoa(docID) + "/download/"
 	getReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, dlURL, nil)
 	if err != nil {
-		slog.Error("GetPaperlessDocumentFile (build request)", "error", err)
+		slog.Error("GetPaperlessDocumentFile (build request)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -782,7 +782,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 
 	resp, err := client.Do(getReq)
 	if err != nil {
-		slog.Error("GetPaperlessDocumentFile (calling paperless)", "error", err)
+		slog.Error("GetPaperlessDocumentFile (calling paperless)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 		return
 	}
@@ -810,7 +810,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 
 	data, err := readAllLimited(resp.Body, maxPaperlessDocument)
 	if err != nil {
-		slog.Error("GetPaperlessDocumentFile (read download)", "error", err)
+		slog.Error("GetPaperlessDocumentFile (read download)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless document is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -832,7 +832,7 @@ func GetPaperlessDocumentFile(c *gin.Context) {
 func ImportPaperlessDocument(c *gin.Context) {
 	settings, err := paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
-		slog.Error("ImportPaperlessDocument (config)", "error", err)
+		slog.Error("ImportPaperlessDocument (config)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -851,7 +851,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 	}
 	token, err := paperlessToken(c, settings, tokenEncryptionKey)
 	if err != nil {
-		slog.Error("ImportPaperlessDocument (decrypt token)", "error", err)
+		slog.Error("ImportPaperlessDocument (decrypt token)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -865,7 +865,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 	dlURL := paperlessBase(settings) + "/api/documents/" + strconv.Itoa(req.DocumentID) + "/download/"
 	getReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, dlURL, nil)
 	if err != nil {
-		slog.Error("ImportPaperlessDocument (build request)", "error", err)
+		slog.Error("ImportPaperlessDocument (build request)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -873,7 +873,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 
 	resp, err := client.Do(getReq)
 	if err != nil {
-		slog.Error("ImportPaperlessDocument (calling paperless)", "error", err)
+		slog.Error("ImportPaperlessDocument (calling paperless)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless is unavailable", http.StatusBadGateway)
 		return
 	}
@@ -897,7 +897,7 @@ func ImportPaperlessDocument(c *gin.Context) {
 
 	pdf, err := readAllLimited(resp.Body, maxPaperlessDocument)
 	if err != nil {
-		slog.Error("ImportPaperlessDocument (read download)", "error", err)
+		slog.Error("ImportPaperlessDocument (read download)", slog.String("error", err.Error()))
 		validation.RespondError(c, "Paperless document is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -929,7 +929,7 @@ func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []
 	}
 	settings, err := paperlessConfig(ctx, userID)
 	if err != nil {
-		slog.Error("tagPaperlessDocuments (config)", "error", err)
+		slog.Error("tagPaperlessDocuments (config)", slog.String("error", err.Error()))
 		return
 	}
 	if !paperlessConfigured(settings) || strings.TrimSpace(settings.PaperlessTag) == "" {
@@ -937,12 +937,12 @@ func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []
 	}
 	client, err := paperlessClient(settings, appEnv)
 	if err != nil {
-		slog.Error("tagPaperlessDocuments (client)", "error", err)
+		slog.Error("tagPaperlessDocuments (client)", slog.String("error", err.Error()))
 		return
 	}
 	token, err := paperlessToken(ctx, settings, tokenEncryptionKey)
 	if err != nil {
-		slog.Error("tagPaperlessDocuments (decrypt token)", "error", err)
+		slog.Error("tagPaperlessDocuments (decrypt token)", slog.String("error", err.Error()))
 		return
 	}
 
@@ -959,7 +959,7 @@ func tagPaperlessDocuments(ctx context.Context, userID uuid.UUID, documentIDs []
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := addPaperlessTag(tagCtx, client, base, token, docID, settings.PaperlessTag); err != nil {
-				slog.Error("tagging paperless document", "document_id", docID, "error", err)
+				slog.Error("tagging paperless document", slog.Int("document_id", docID), slog.String("error", err.Error()))
 			}
 		}(id)
 	}

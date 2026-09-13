@@ -54,7 +54,7 @@ func BulkLinkLoan(c *gin.Context) {
 	if err := db.Pool.QueryRow(c,
 		"SELECT COUNT(*) FROM transactions t WHERE t.id = ANY($1) AND t.user_id = $2",
 		req.TransactionIDs, userID).Scan(&owned); err != nil {
-		slog.Error("BulkLinkLoan (checking transactions)", "error", err)
+		slog.Error("BulkLinkLoan (checking transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -71,7 +71,7 @@ func BulkLinkLoan(c *gin.Context) {
 		 JOIN accounts a ON t.account_id = a.id
 		 WHERE t.id = ANY($1) AND t.user_id = $2 AND a.account_type_id = 'loan'`,
 		req.TransactionIDs, userID).Scan(&onLoan); err != nil {
-		slog.Error("BulkLinkLoan (checking loan-account transactions)", "error", err)
+		slog.Error("BulkLinkLoan (checking loan-account transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -86,7 +86,7 @@ func BulkLinkLoan(c *gin.Context) {
 			"DELETE FROM loan_attachments WHERE transaction_id = ANY($1) AND user_id = $2",
 			req.TransactionIDs, userID)
 		if err != nil {
-			slog.Error("BulkLinkLoan (detach)", "error", err)
+			slog.Error("BulkLinkLoan (detach)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -107,7 +107,7 @@ func BulkLinkLoan(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		slog.Error("BulkLinkLoan (checking loan account)", "error", err)
+		slog.Error("BulkLinkLoan (checking loan account)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -127,7 +127,7 @@ func BulkLinkLoan(c *gin.Context) {
 	if err := db.Pool.QueryRow(c,
 		"SELECT COUNT(*) FROM loan_attachments WHERE transaction_id = ANY($1) AND user_id = $2",
 		req.TransactionIDs, userID).Scan(&already); err != nil {
-		slog.Error("BulkLinkLoan (checking existing attachments)", "error", err)
+		slog.Error("BulkLinkLoan (checking existing attachments)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -177,7 +177,7 @@ func BulkLinkLoan(c *gin.Context) {
 			validation.RespondError(c, "one or more transactions are already linked to a loan account", http.StatusConflict)
 			return
 		}
-		slog.Error("BulkLinkLoan (attach)", "error", err)
+		slog.Error("BulkLinkLoan (attach)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
