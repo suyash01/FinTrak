@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import Import from "./Import";
 import { DomainDataProvider } from "../../context/DomainDataContext";
 
@@ -122,9 +123,11 @@ describe("Import exclusion", () => {
   it("drops an unchecked row from the import payload", async () => {
     const user = userEvent.setup();
     render(
-      <DomainDataProvider>
-        <Import />
-      </DomainDataProvider>,
+      <MemoryRouter>
+        <DomainDataProvider>
+          <Import />
+        </DomainDataProvider>
+      </MemoryRouter>,
     );
 
     await runToPreview(user);
@@ -166,9 +169,11 @@ describe("Import exclusion", () => {
   it("keeps all rows when nothing is unchecked", async () => {
     const user = userEvent.setup();
     render(
-      <DomainDataProvider>
-        <Import />
-      </DomainDataProvider>,
+      <MemoryRouter>
+        <DomainDataProvider>
+          <Import />
+        </DomainDataProvider>
+      </MemoryRouter>,
     );
 
     await runToPreview(user);
@@ -190,9 +195,11 @@ describe("Import exclusion", () => {
   it("excludes every identical twin when one occurrence is unchecked", async () => {
     const user = userEvent.setup();
     render(
-      <DomainDataProvider>
-        <Import />
-      </DomainDataProvider>,
+      <MemoryRouter>
+        <DomainDataProvider>
+          <Import />
+        </DomainDataProvider>
+      </MemoryRouter>,
     );
 
     // Same file but the "Skipped Row Test" line appears twice (identical
@@ -255,9 +262,11 @@ describe("Import exclusion", () => {
     });
 
     render(
-      <DomainDataProvider>
-        <Import />
-      </DomainDataProvider>,
+      <MemoryRouter>
+        <DomainDataProvider>
+          <Import />
+        </DomainDataProvider>
+      </MemoryRouter>,
     );
 
     // Step 1: select the account.

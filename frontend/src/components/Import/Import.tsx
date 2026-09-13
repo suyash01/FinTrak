@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, type ChangeEvent } from "react";
 import Papa from "papaparse";
+import { useNavigate } from "react-router-dom";
 import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import {
   ChevronRight,
@@ -462,6 +463,7 @@ const MAX_CSV_BYTES = 20 * 1024 * 1024;
 
 export default function Import() {
   const { accounts, accountTypes, payees, setAccounts } = useDomainData();
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [newAccount, setNewAccount] =
@@ -1937,14 +1939,14 @@ export default function Import() {
               <Button
                 size="lg"
                 className="px-6"
-                onClick={() => (window.location.href = "/transactions")}
+                onClick={() => navigate("/transactions")}
               >
                 View Transactions
               </Button>
               <Button
                 variant="outline"
                 className="px-6"
-                onClick={() => (window.location.href = "/linking")}
+                onClick={() => navigate("/linking")}
               >
                 Transfer Suggestions
               </Button>

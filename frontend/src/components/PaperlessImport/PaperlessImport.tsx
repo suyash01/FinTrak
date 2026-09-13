@@ -7,7 +7,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   RefreshCw,
   Loader2,
@@ -297,6 +297,7 @@ export default function PaperlessImport() {
 
   // Filters (initialized from URL search params so filters are shareable)
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const syncedUrlRef = useRef(searchParams.toString());
   const [search, setSearch] = useState(
     () => searchParams.get(SEARCH_PARAM) || "",
@@ -947,7 +948,7 @@ export default function PaperlessImport() {
             </p>
             <Button
               size="sm"
-              onClick={() => (window.location.hash = "#/settings")}
+              onClick={() => navigate("/settings")}
             >
               Go to Settings
             </Button>
