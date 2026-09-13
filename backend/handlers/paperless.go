@@ -55,14 +55,44 @@ const maxPaperlessPageSize = 100
 
 // paperlessConfig loads a user's Paperless-ngx settings from the users row. The
 // stored API token may be encrypted at rest; it is decrypted on demand by
-// paperlessToken so read-only paths never need it.
+// paperlessToken so read-only paths never need it. A legacy v1-format token is
+// transparently re-sealed under the current v2 derivation.
 func (srv *Server) paperlessConfig(ctx context.Context, userID uuid.UUID) (models.UserSettings, error) {
 	var s models.UserSettings
 	err := srv.db.QueryRow(ctx,
 		"SELECT paperless_url, paperless_token, paperless_tag, page_size FROM users WHERE id = $1",
 		userID,
 	).Scan(&s.PaperlessURL, &s.PaperlessToken, &s.PaperlessTag, &s.PageSize)
-	return s, err
+	if err != nil {
+		return s, err
+	}
+	s.PaperlessToken = srv.upgradeLegacyToken(ctx, userID, s.PaperlessToken)
+	return s, nil
+}
+
+// upgradeLegacyToken re-encrypts a v1-format token under the current HKDF (v2)
+// derivation and persists it, so legacy ciphertext converges on the stronger
+// key derivation over time. Best-effort: any failure leaves the original value
+// in place so reads still work.
+func (srv *Server) upgradeLegacyToken(ctx context.Context, userID uuid.UUID, token string) string {
+	if !crypto.IsLegacy(token) || tokenEncryptionKey == "" {
+		return token
+	}
+	plaintext, err := crypto.Decrypt(token, tokenEncryptionKey)
+	if err != nil {
+		slog.Debug("paperless token upgrade skipped (decrypt failed)", slog.String("error", err.Error()))
+		return token
+	}
+	resealed, err := crypto.Encrypt(plaintext, tokenEncryptionKey)
+	if err != nil {
+		slog.Debug("paperless token upgrade skipped (encrypt failed)", slog.String("error", err.Error()))
+		return token
+	}
+	if _, err := srv.db.Exec(ctx, "UPDATE users SET paperless_token = $1 WHERE id = $2", resealed, userID); err != nil {
+		slog.Debug("paperless token upgrade skipped (persist failed)", slog.String("error", err.Error()))
+		return token
+	}
+	return resealed
 }
 
 // paperlessToken decrypts the stored API token for outbound calls. Legacy

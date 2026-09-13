@@ -107,12 +107,12 @@ describe("EditTransactionModal — billing cycle dropdown", () => {
     });
   });
 
-  it("REPRO (root cause): keeps showing the attached cycle when the transaction's account is not the first account in the list", async () => {
-    // Effect 2 runs once with the INITIAL form state (accountId = accounts[0])
-    // before effect 1 swaps in the transaction's own account. The stale pass
-    // records prevAccountRef = accounts[0].id, so when the form settles on the
-    // real account the "account changed" check wipes billingCycleId and the
-    // dropdown shows nothing — even though the cycle IS in the fetched list.
+  it("keeps showing the attached cycle when the transaction's account is not the first account in the list", async () => {
+    // Guards the fix for the initial-render ordering bug: the form-rebuild
+    // effect and the cycle-loading effect both run on mount. Regression would
+    // be the mount pass (using the default accounts[0]) clearing the attached
+    // billingCycleId once the form settles on the transaction's real account,
+    // leaving the dropdown empty even though the cycle is in the fetched list.
     const firstAccount: Account = {
       id: "acct-savings",
       name: "Savings",

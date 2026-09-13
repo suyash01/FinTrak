@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Versioned ciphertext prefixes. Prefix is the legacy v1 format, whose key was
@@ -90,6 +91,25 @@ func Decrypt(ciphertext, key string) (string, error) {
 	default:
 		return ciphertext, nil
 	}
+}
+
+// IsLegacy reports whether ciphertext uses the pre-HKDF v1 format. New writes
+// always produce v2, so a true result means the value can be transparently
+// re-sealed under the current derivation.
+func IsLegacy(ciphertext string) bool {
+	return strings.HasPrefix(ciphertext, Prefix)
+}
+
+// Reencrypt decrypts ciphertext with oldKey and seals the plaintext with
+// newKey. It powers key rotation: values sealed under a retired key are
+// migrated to the active one. Unversioned legacy plaintext is sealed with
+// newKey as-is.
+func Reencrypt(ciphertext, oldKey, newKey string) (string, error) {
+	plaintext, err := Decrypt(ciphertext, oldKey)
+	if err != nil {
+		return "", err
+	}
+	return Encrypt(plaintext, newKey)
 }
 
 // decryptV1 opens the legacy salt-less format: base64(nonce || sealed) with a

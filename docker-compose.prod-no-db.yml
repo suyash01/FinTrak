@@ -27,13 +27,15 @@
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
 #   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
-#   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
-#                     version (e.g. v1.2.3) for reproducible deployments.
+#   IMAGE_TAG       - Released image tag to deploy (required; e.g. v1.2.3).
+#                     There is intentionally no "latest" default: pinning a
+#                     release keeps redeploys reproducible and rollbacks
+#                     deterministic.
 
 services:
   backend:
     container_name: backend
-    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-backend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-backend:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
     ports:
       - "8080:8080"
     environment:
@@ -73,7 +75,7 @@ services:
 
   frontend:
     container_name: frontend
-    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-frontend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-frontend:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
     ports:
       - "3000:8080"
     depends_on:
@@ -98,7 +100,7 @@ services:
   # so it must never be published to the host.
   statement-parser:
     container_name: statement-parser
-    image: ${IMAGE_REPO:-ghcr.io/your-org}/fintrak-statement-parser:${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-statement-parser:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
     mem_limit: 512m
     cpus: 1.0
     security_opt:

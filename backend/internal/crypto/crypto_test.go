@@ -59,6 +59,60 @@ func TestDecryptRejectsGarbage(t *testing.T) {
 // (bare SHA-256 key, no salt) remain decryptable.
 func TestDecryptReadsLegacyV1(t *testing.T) {
 	const key = "legacy-key"
+	legacy := v1Ciphertext(t, key, "legacy-secret")
+
+	dec, err := Decrypt(legacy, key)
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-secret", dec)
+}
+
+func TestIsLegacy(t *testing.T) {
+	assert.True(t, IsLegacy(Prefix+"abc"))
+	assert.False(t, IsLegacy(PrefixV2+"abc"))
+	assert.False(t, IsLegacy("plain-token"))
+	assert.False(t, IsLegacy(""))
+}
+
+func TestReencryptMigratesV1(t *testing.T) {
+	const key = "same-key"
+	out, err := Reencrypt(v1Ciphertext(t, key, "legacy-secret"), key, key)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(out, PrefixV2))
+
+	dec, err := Decrypt(out, key)
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-secret", dec)
+}
+
+func TestReencryptRotatesKey(t *testing.T) {
+	enc, err := Encrypt("token", "old-key")
+	require.NoError(t, err)
+
+	out, err := Reencrypt(enc, "old-key", "new-key")
+	require.NoError(t, err)
+
+	dec, err := Decrypt(out, "new-key")
+	require.NoError(t, err)
+	assert.Equal(t, "token", dec)
+
+	_, err = Decrypt(out, "old-key")
+	assert.Error(t, err)
+}
+
+func TestReencryptSealsPlaintext(t *testing.T) {
+	out, err := Reencrypt("plain-token", "old-key", "new-key")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(out, PrefixV2))
+
+	dec, err := Decrypt(out, "new-key")
+	require.NoError(t, err)
+	assert.Equal(t, "plain-token", dec)
+}
+
+// v1Ciphertext builds a value in the pre-HKDF format the same way the legacy
+// production code did: a bare SHA-256 key and nonce || sealed.
+func v1Ciphertext(t *testing.T, key, plaintext string) string {
+	t.Helper()
 	block, err := aes.NewCipher(legacyKeyFromString(key))
 	require.NoError(t, err)
 	gcm, err := cipher.NewGCM(block)
@@ -66,10 +120,6 @@ func TestDecryptReadsLegacyV1(t *testing.T) {
 	nonce := make([]byte, gcm.NonceSize())
 	_, err = io.ReadFull(rand.Reader, nonce)
 	require.NoError(t, err)
-	sealed := gcm.Seal(nonce, nonce, []byte("legacy-secret"), nil)
-	legacy := Prefix + base64.StdEncoding.EncodeToString(sealed)
-
-	dec, err := Decrypt(legacy, key)
-	require.NoError(t, err)
-	assert.Equal(t, "legacy-secret", dec)
+	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return Prefix + base64.StdEncoding.EncodeToString(sealed)
 }

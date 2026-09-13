@@ -63,7 +63,9 @@ export default function Transactions() {
 
   // Page size: remembered locally and persisted against the user's account.
   const savedPageSize = () => {
-    const v = Number(localStorage.getItem(PAGE_SIZE_LS_KEY));
+    const raw = localStorage.getItem(PAGE_SIZE_LS_KEY);
+    if (raw === null) return 50;
+    const v = Number(raw);
     if (Number.isNaN(v)) return 50;
     return Math.min(Math.max(v, 1), MAX_PAGE_SIZE);
   };

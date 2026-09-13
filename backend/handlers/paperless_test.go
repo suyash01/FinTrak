@@ -3,8 +3,14 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -721,4 +727,46 @@ func TestPaperlessToken(t *testing.T) {
 	plain, err := paperlessToken(context.Background(), models.UserSettings{PaperlessToken: "legacy"}, "test-key")
 	assert.NoError(t, err)
 	assert.Equal(t, "legacy", plain)
+}
+
+// TestPaperlessConfigUpgradesLegacyToken verifies a v1-format token is
+// transparently re-sealed under the current v2 derivation when read.
+func TestPaperlessConfigUpgradesLegacyToken(t *testing.T) {
+	prevKey := tokenEncryptionKey
+	tokenEncryptionKey = "upgrade-key"
+	t.Cleanup(func() { tokenEncryptionKey = prevKey })
+
+	srv, mock := setupPaperlessMock(t, "http://paperless.local", "")
+	legacy := legacyV1Token(t, "secret-token", tokenEncryptionKey)
+
+	expectPaperlessConfigQuery(mock, "http://paperless.local", legacy, "")
+	mock.ExpectExec("UPDATE users SET paperless_token = \\$1 WHERE id = \\$2").
+		WithArgs(pgxmock.AnyArg(), testUserID()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	settings, err := srv.paperlessConfig(context.Background(), testUserID())
+	require.NoError(t, err)
+	require.False(t, crypto.IsLegacy(settings.PaperlessToken))
+	require.True(t, strings.HasPrefix(settings.PaperlessToken, crypto.PrefixV2))
+	assert.NoError(t, mock.ExpectationsWereMet())
+
+	plain, err := crypto.Decrypt(settings.PaperlessToken, tokenEncryptionKey)
+	require.NoError(t, err)
+	assert.Equal(t, "secret-token", plain)
+}
+
+// legacyV1Token builds a pre-HKDF ciphertext (bare SHA-256 key, nonce||sealed),
+// matching the format old versions wrote.
+func legacyV1Token(t *testing.T, plaintext, key string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(key))
+	block, err := aes.NewCipher(sum[:])
+	require.NoError(t, err)
+	gcm, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	nonce := make([]byte, gcm.NonceSize())
+	_, err = io.ReadFull(rand.Reader, nonce)
+	require.NoError(t, err)
+	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return crypto.Prefix + base64.StdEncoding.EncodeToString(sealed)
 }

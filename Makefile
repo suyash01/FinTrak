@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-parser vet build-backend build-frontend openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-integration test-parser vet build-backend build-frontend openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -14,6 +14,8 @@ help:
 	@echo "  make prod-no-db         Deploy production stack (external DB)"
 	@echo "  make prod-down          Stop production stack"
 	@echo "  make test               Run backend tests"
+	@echo "  make test-cover         Run backend tests with a coverage profile"
+	@echo "  make test-integration   Run backend integration tests (Docker + testcontainers)"
 	@echo "  make test-parser        Run statement parser tests"
 	@echo "  make vet                Run go vet on backend"
 	@echo "  make build-backend      Verify backend compiles"
@@ -28,9 +30,13 @@ dev-down:
 	docker compose down
 
 prod:
+	@# Preflight: fail fast (and portably) if required secrets/image vars are unset.
+	docker compose -f docker-compose.prod.yml config --quiet
 	docker compose -f docker-compose.prod.yml up -d
 
 prod-no-db:
+	@# Preflight: fail fast (and portably) if required secrets/image vars are unset.
+	docker compose -f docker-compose.prod-no-db.yml config --quiet
 	docker compose -f docker-compose.prod-no-db.yml up -d
 
 prod-down:
@@ -38,6 +44,12 @@ prod-down:
 
 test:
 	cd backend && go test ./...
+
+test-cover:
+	cd backend && go test -covermode=atomic -coverprofile=coverage.out ./...
+
+test-integration:
+	cd backend && go test -tags=integration -count=1 ./...
 
 test-parser:
 	cd statement_parser && uv run python -m unittest discover -s tests -v

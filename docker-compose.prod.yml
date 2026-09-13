@@ -24,8 +24,10 @@
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
 #   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
-#   IMAGE_TAG       - Image tag to deploy (default: latest). Pin to a released
-#                     version (e.g. v1.2.3) for reproducible deployments.
+#   IMAGE_TAG       - Released image tag to deploy (required; e.g. v1.2.3).
+#                     There is intentionally no "latest" default: pinning a
+#                     release keeps redeploys reproducible and rollbacks
+#                     deterministic.
 
 services:
   # Internal only: never publish Postgres to the host in production.

@@ -83,9 +83,19 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod-no-db.yml up -d
 ```
 
-`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, and `LOG_LEVEL` are optional (log level defaults to `info` in production). See `.env.example` for the full list.
+`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, and `LOG_LEVEL` are optional (log level defaults to `info` in production). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
 
 The backend runs schema migrations on startup, and the frontend reverse-proxies `/api/v1` to the backend.
+
+#### Rotating `TOKEN_ENCRYPTION_KEY`
+
+Paperless-ngx API tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY`. Ciphertext is versioned: new writes use an HKDF-SHA256-derived key (`enc:v2:`) and legacy `enc:v1:` values (bare SHA-256) stay readable and are transparently re-sealed to v2 the next time a user's settings are read. To rotate the key:
+
+1. Generate a new key (`openssl rand -hex 32`) and set it as `TOKEN_ENCRYPTION_KEY`.
+2. Re-enter the Paperless API token in Settings for each affected user, which re-stores it under the new key.
+3. Keep a backup of the previous key until every token has been re-entered (there is intentionally no automatic re-encryption once the old key is discarded — it can no longer decrypt existing ciphertext).
+
+If a token cannot be decrypted after rotation, the Paperless integration surfaces an error and the token must be re-entered; no other data is affected.
 
 ---
 

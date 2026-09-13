@@ -45,7 +45,30 @@ jobs:
       - name: Run tests
         run: |
           cd backend
-          go test -v ./...
+          go test -v -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Upload backend coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.out
+          if-no-files-found: ignore
+
+  test-backend-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: backend/go.sum
+      - name: Run integration tests
+        # Boots a throwaway PostgreSQL via testcontainers (Docker is available on
+        # GitHub-hosted runners); catches SQL the pgxmock unit tests cannot.
+        run: |
+          cd backend
+          go test -tags=integration -count=1 ./...
 
   test-frontend:
     runs-on: ubuntu-latest
@@ -66,7 +89,14 @@ jobs:
       - name: Run tests
         run: |
           cd frontend
-          bun run test
+          bun run test:coverage
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage
+          if-no-files-found: ignore
 
   test-parser:
     runs-on: ubuntu-latest
@@ -88,8 +118,44 @@ jobs:
           cd statement_parser
           uv run --frozen python -m unittest discover -s tests -v
 
+  # Smoke-build every Dockerfile on PRs and branch pushes so the images are
+  # actually exercised before a release tag (tag pushes run the publish jobs
+  # instead, which build and push). amd64 only to keep the PR path fast.
+  build-images:
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+          - name: frontend
+            context: ./frontend
+          - name: statement-parser
+            context: ./statement_parser
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
   publish-backend:
-    needs: [test-backend, publish-parser]
+    # Runs as soon as its own tests pass; the publish jobs are independent and
+    # fan back in at create-release.
+    needs: [test-backend]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -132,11 +198,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
   publish-frontend:
-    needs: [test-frontend, publish-backend]
+    needs: [test-frontend]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -177,8 +243,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
   publish-parser:
     needs: [test-parser]
@@ -222,8 +288,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=statement-parser
+          cache-to: type=gha,mode=max,scope=statement-parser
 
   create-release:
     needs: [publish-backend, publish-frontend, publish-parser]

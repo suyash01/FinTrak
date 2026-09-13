@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -66,24 +67,31 @@ func Close() {
 // RunMigrations applies any pending SQL migrations embedded in the binary via
 // golang-migrate. No-op when the schema is already up to date; exits on error.
 func RunMigrations(databaseURL string) {
+	if err := Migrate(databaseURL); err != nil {
+		slog.Error("migration up failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	slog.Info("database migrations complete")
+}
+
+// Migrate applies the embedded migrations and returns an error instead of
+// exiting, so tests and tooling can handle failures. A fully up-to-date schema
+// is not an error.
+func Migrate(databaseURL string) error {
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
-		slog.Error("failed to initialize migrations source", slog.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("initialize migrations source: %w", err)
 	}
 
 	m, err := migrate.NewWithSourceInstance("iofs", d, databaseURL)
 	if err != nil {
-		slog.Error("failed to initialize migrate instance", slog.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("initialize migrate instance: %w", err)
 	}
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		slog.Error("migration up failed", slog.String("error", err.Error()))
-		os.Exit(1)
+		return err
 	}
-
-	slog.Info("database migrations complete")
+	return nil
 }
 
 // WithTx executes the given function within a database transaction on the
