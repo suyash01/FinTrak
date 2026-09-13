@@ -11,11 +11,9 @@ import {
   type SortingState,
   type TableFeatures,
   type ReactTable,
+  features,
   flexRender,
-  getCoreRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
-  useReactTable,
+  useTable,
 } from "@/lib/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronUp } from "lucide-react";
@@ -112,23 +110,23 @@ export function DataTable<TData extends RowData, TValue>({
   const usePagination =
     pagination !== undefined || onPaginationChange !== undefined;
 
-  const table = useReactTable({
+  const table = useTable({
+    features,
     data,
-    // v9's legacy types are invariant in TValue while the v8 API accepted any
-    // column value type, so widen the columns array to the table's default.
+    // ColumnDef is invariant in TValue while each column has its own value
+    // type, so widen the array to the table's default value type.
     columns: columns as unknown as ColumnDef<TData, unknown>[],
     getRowId,
     state: { sorting, pagination, rowSelection },
     onSortingChange,
     onPaginationChange,
     onRowSelectionChange,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel:
-      !manualSorting && useSorting ? getSortedRowModel() : undefined,
-    getPaginationRowModel:
-      !manualPagination && usePagination ? getPaginationRowModel() : undefined,
-    manualSorting,
-    manualPagination,
+    // Sorting/pagination row models are registered app-wide, so disable the
+    // client-side stages when the caller doesn't control them; otherwise a
+    // non-paginated table (e.g. Dashboard) would be truncated to the default
+    // page size.
+    manualSorting: manualSorting || !useSorting,
+    manualPagination: manualPagination || !usePagination,
     rowCount,
     pageCount,
     enableRowSelection,
@@ -338,7 +336,7 @@ export function DataTablePagination<TData extends RowData>({
 }: {
   table: ReactTable<TData>;
 }) {
-  const pageIndex = table.getState().pagination.pageIndex;
+  const pageIndex = table.state.pagination.pageIndex;
   const pageCount = table.getPageCount();
   const rowCount = table.getRowCount();
   const page = pageIndex + 1;
