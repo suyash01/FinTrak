@@ -137,7 +137,10 @@ export default function Categories() {
   const loadGroups = refreshGroups;
 
   useEffect(() => {
-    api.getRules().then(setRules).catch(console.error);
+    api
+      .getRules()
+      .then(setRules)
+      .catch((err) => toast.error((err as Error).message));
   }, []);
 
   // Keep the active tab in sync with the URL so it is shareable and
@@ -159,7 +162,8 @@ export default function Categories() {
       t === "categories" || t === "rules" ? t : "groups";
     if (next !== tab) setTab(next);
     syncedUrlRef.current = currentQs;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // React to external URL changes only; the setters/state read above are
+    // stable and including them would re-sync on state we just wrote.
   }, [searchParams]);
 
   useEffect(() => {
@@ -517,6 +521,7 @@ export default function Categories() {
                         <Button
                           variant="ghost"
                           size="icon-sm"
+                          aria-label={`Edit ${g.name}`}
                           className="text-muted-foreground hover:text-primary"
                           onClick={() => openEditGroup(g)}
                         >
@@ -527,6 +532,7 @@ export default function Categories() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              aria-label={`Delete ${g.name}`}
                               className="text-muted-foreground hover:text-destructive"
                             >
                               <Trash2 />
@@ -726,6 +732,7 @@ export default function Categories() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              aria-label={`Edit ${cat.name}`}
                               className="text-muted-foreground hover:text-primary"
                               onClick={() => openEditCategory(cat)}
                             >
@@ -736,6 +743,7 @@ export default function Categories() {
                                 <Button
                                   variant="ghost"
                                   size="icon-sm"
+                                  aria-label={`Delete ${cat.name}`}
                                   className="text-muted-foreground hover:text-destructive"
                                 >
                                   <Trash2 />
@@ -1007,6 +1015,7 @@ export default function Categories() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
+                              aria-label={`Edit rule ${r.pattern}`}
                               className="text-muted-foreground hover:text-primary"
                               onClick={() => {
                                 setEditingRule(r);
@@ -1027,6 +1036,7 @@ export default function Categories() {
                                 <Button
                                   variant="ghost"
                                   size="icon-sm"
+                                  aria-label={`Delete rule ${r.pattern}`}
                                   className="text-muted-foreground hover:text-destructive"
                                 >
                                   <Trash2 />

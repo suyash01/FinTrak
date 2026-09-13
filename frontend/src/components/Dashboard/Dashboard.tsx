@@ -40,7 +40,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import type {
   DashboardSummary,
+  BillingCycleTrendItem,
   CategorySpend,
+  MonthlyData,
   QueryParams,
   Transaction,
 } from "../../types";
@@ -95,7 +97,8 @@ export default function Dashboard() {
     if (def && !searchParams.get("accountId")) {
       setAccountId(def.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Run once the shared account list arrives; reading searchParams here is
+    // only to detect an explicit filter, so it isn't a dependency.
   }, [accounts]);
 
   useEffect(() => {
@@ -123,7 +126,8 @@ export default function Dashboard() {
     if (cyc && ["6", "12", "24"].includes(cyc)) {
       setCycles(cyc);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // React to external URL changes only; the setters above are stable and
+    // including the derived defaults would re-sync on state we just wrote.
   }, [searchParams]);
 
   // Billing-cycle view only makes sense for an account that has a billing day;
@@ -240,7 +244,8 @@ export default function Dashboard() {
         },
       }),
     ];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Only the compact layout affects the recent-transactions columns; the
+    // formatters used inside the cells are module-level and stable.
   }, [compactLayout]);
 
   if (loading)
@@ -268,13 +273,10 @@ export default function Dashboard() {
   if (!data) return null;
 
   const netSavings = data.totalIncome - data.totalExpense;
-  const trendData = (isBillingCycleMode
-    ? data.billingCycleTrend ?? []
-    : data.monthlyTrend ?? []) as unknown as Array<{
-    income: number;
-    expense: number;
-    [key: string]: unknown;
-  }>;
+  const trendData: Array<MonthlyData | BillingCycleTrendItem> =
+    isBillingCycleMode
+      ? data.billingCycleTrend ?? []
+      : data.monthlyTrend ?? [];
   const trendXKey = isBillingCycleMode ? "label" : "month";
   const hasTrend = trendData.length > 0;
 

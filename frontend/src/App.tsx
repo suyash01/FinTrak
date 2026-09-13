@@ -33,6 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Toaster } from "@/components/ui/sonner";
+import packageJson from "../package.json";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -160,7 +161,7 @@ function Settings() {
             and bill payments — all in one place.
           </p>
           <div className="mt-4 text-[13px] text-muted-foreground">
-            Version 0.1.0-alpha · Built with Go + React
+            Version {packageJson.version} · Built with Go + React
           </div>
         </div>
       </div>
@@ -262,13 +263,19 @@ function AccountTypesManager() {
                     <SelectItem value="debit">Debit is positive</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button type="submit" variant="ghost" size="icon-sm">
+                <Button
+                  type="submit"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Save account type"
+                >
                   <Plus />
                 </Button>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon-sm"
+                  aria-label="Cancel"
                   onClick={() => setEditingId(null)}
                 >
                   <X />
@@ -291,6 +298,7 @@ function AccountTypesManager() {
                   <Button
                     variant="ghost"
                     size="icon-sm"
+                    aria-label={`Edit ${t.name}`}
                     onClick={() => {
                       setEditingId(t.id);
                       setFormData(t);
@@ -303,6 +311,7 @@ function AccountTypesManager() {
                       <Button
                         variant="ghost"
                         size="icon-sm"
+                        aria-label={`Delete ${t.name}`}
                         className="text-muted-foreground hover:text-destructive"
                       >
                         <Trash2 />

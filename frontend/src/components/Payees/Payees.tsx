@@ -79,7 +79,8 @@ export default function Payees() {
     const next = searchParams.get("search") || "";
     if (next !== search) setSearch(next);
     syncedUrlRef.current = currentQs;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // React to external URL changes only; the setters/state read above are
+    // stable and including them would re-sync on state we just wrote.
   }, [searchParams]);
 
   const handleSubmit = async (e: FormEvent) => {

@@ -407,6 +407,7 @@ const api = {
     }),
   getPaperlessDocuments: (
     params?: PaperlessDocumentsParams,
+    options: RequestOptions = {},
   ): Promise<PaperlessDocumentsResponse> => {
     const qs = new URLSearchParams();
     if (params?.search) qs.set("search", params.search);
@@ -423,7 +424,10 @@ const api = {
       (params?.[key] || []).forEach((value) => qs.append(key, value));
     }
     const query = qs.toString();
-    return request(query ? `/paperless/documents?${query}` : "/paperless/documents");
+    return request(
+      query ? `/paperless/documents?${query}` : "/paperless/documents",
+      options,
+    );
   },
   importPaperlessDocument: (
     data: PaperlessImportRequest,

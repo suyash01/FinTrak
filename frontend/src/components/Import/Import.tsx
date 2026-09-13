@@ -63,6 +63,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { toastApiError } from "../../lib/errors";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 
 type CsvRow = Record<string, string>;
@@ -130,32 +131,70 @@ const DATE_PATTERNS: Record<string, RegExp> = {
     /^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})$/i,
 };
 
+// isValidYmd rejects out-of-range month/day values (e.g. month 15) and
+// impossible calendar dates (e.g. 31 Feb), so explicit and auto parsing never
+// emit a string like "2024-15-03".
+function isValidYmd(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day
+  );
+}
+
+function makeYmd(year: number, month: number, day: number): string | null {
+  if (!isValidYmd(year, month, day)) return null;
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
+
 function parseDateExplicit(str: string, format: string): string | null {
   const m = String(str).match(DATE_PATTERNS[format]);
   if (!m) return null;
-  if (format === "DD/MM/YYYY") return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
-  if (format === "MM/DD/YYYY") return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
-  if (format === "YYYY-MM-DD") return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  if (format === "DD/MM/YYYY")
+    return makeYmd(Number(m[3]), Number(m[2]), Number(m[1]));
+  if (format === "MM/DD/YYYY")
+    return makeYmd(Number(m[3]), Number(m[1]), Number(m[2]));
+  if (format === "YYYY-MM-DD")
+    return makeYmd(Number(m[1]), Number(m[2]), Number(m[3]));
   if (format === "DD Mon YYYY")
-    return `${m[3]}-${MONTHS[m[2].toLowerCase().substring(0, 3)]}-${pad2(m[1])}`;
-  const year = parseInt(m[3]) > 50 ? `19${m[3]}` : `20${m[3]}`;
-  return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
+    return makeYmd(
+      Number(m[3]),
+      Number(MONTHS[m[2].toLowerCase().substring(0, 3)]),
+      Number(m[1]),
+    );
+  const year = parseInt(m[3]) > 50 ? 1900 + parseInt(m[3]) : 2000 + parseInt(m[3]);
+  return makeYmd(year, Number(m[2]), Number(m[1]));
 }
 
 function parseDateAuto(str: string): string | null {
   const s = String(str);
   let m = s.match(DATE_PATTERNS["DD/MM/YYYY"]);
-  if (m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  if (m) {
+    const year = Number(m[3]);
+    // Prefer DD/MM when it yields a real date; otherwise interpret the same
+    // digits as MM/DD so US-style input like 03/15/2024 doesn't become an
+    // impossible 2024-15-03.
+    return makeYmd(year, Number(m[2]), Number(m[1])) ??
+      makeYmd(year, Number(m[1]), Number(m[2]));
+  }
   m = s.match(DATE_PATTERNS["YYYY-MM-DD"]);
-  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  if (m) return makeYmd(Number(m[1]), Number(m[2]), Number(m[3]));
   m = s.match(DATE_PATTERNS["DD/MM/YY"]);
   if (m) {
-    const year = parseInt(m[3]) > 50 ? `19${m[3]}` : `20${m[3]}`;
-    return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
+    const year =
+      parseInt(m[3]) > 50 ? 1900 + parseInt(m[3]) : 2000 + parseInt(m[3]);
+    return makeYmd(year, Number(m[2]), Number(m[1])) ??
+      makeYmd(year, Number(m[1]), Number(m[2]));
   }
   m = s.match(DATE_PATTERNS["DD Mon YYYY"]);
   if (m)
-    return `${m[3]}-${MONTHS[m[2].toLowerCase().substring(0, 3)]}-${pad2(m[1])}`;
+    return makeYmd(
+      Number(m[3]),
+      Number(MONTHS[m[2].toLowerCase().substring(0, 3)]),
+      Number(m[1]),
+    );
   const d = new Date(s);
   if (!isNaN(d.getTime())) return formatDateOnly(d);
   return null;
@@ -499,7 +538,7 @@ export default function Import() {
         setExtractors(list);
         if (list.length > 0) setExtractor(list[0].name);
       })
-      .catch(console.error);
+      .catch((err) => toastApiError(err));
   }, []);
 
   // Load the account's existing transactions so duplicates can be flagged
@@ -533,7 +572,7 @@ export default function Import() {
       } catch (err) {
         // Keep the previously loaded set on failure (e.g. a transient
         // network error mid-pagination) rather than wiping the counts.
-        if (!cancelled) console.error(err);
+        if (!cancelled) toastApiError(err);
       }
     })();
     return () => {
@@ -584,6 +623,12 @@ export default function Import() {
       );
       return;
     }
+
+    // Clear any previously parsed PDF so its rows can't leak into the CSV
+    // preview (parsedTransactions prefers statementTxns when non-null).
+    setStatementTxns(null);
+    setStatementSummary(null);
+    setPdfFile(null);
 
     Papa.parse<CsvRow>(file, {
       header: true,
@@ -642,6 +687,10 @@ export default function Import() {
   }) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Clear any previously parsed CSV so its rows can't leak into the PDF
+    // preview if parsing fails.
+    setCsvData(null);
+    setCsvHeaders([]);
     setPdfFile(file);
     await parsePdf(file, extractor);
   };
@@ -1066,8 +1115,18 @@ export default function Import() {
           {steps.map((s) => (
             <div
               key={s.num}
+              role={step > s.num ? "button" : undefined}
+              tabIndex={step > s.num ? 0 : undefined}
+              aria-current={step === s.num ? "step" : undefined}
+              aria-disabled={step > s.num ? undefined : true}
               className={`flex items-center gap-2 text-sm font-medium whitespace-nowrap px-3 py-1.5 rounded-lg transition-colors ${step === s.num ? "bg-primary/10 text-primary" : step > s.num ? "text-emerald-500" : "text-muted-foreground"}`}
               onClick={() => step > s.num && setStep(s.num)}
+              onKeyDown={(e) => {
+                if (step > s.num && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  setStep(s.num);
+                }
+              }}
               style={{ cursor: step > s.num ? "pointer" : "default" }}
             >
               <span
@@ -1244,8 +1303,17 @@ export default function Import() {
             {statementMode === "csv" ? (
               <>
                 <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Upload CSV file"
                   className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
                   onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.add(
@@ -1297,8 +1365,17 @@ export default function Import() {
             ) : (
               <>
                 <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Upload statement PDF"
                   className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
                   onClick={() => pdfInputRef.current?.click()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      pdfInputRef.current?.click();
+                    }
+                  }}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.currentTarget.classList.add(

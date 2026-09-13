@@ -39,6 +39,18 @@ describe("SettingsProvider", () => {
     expect(screen.getByTestId("compact").textContent).toBe("false");
   });
 
+  it("falls back to the default when the stored value is corrupt", () => {
+    localStorage.setItem("compactLayout", "{not json");
+    renderHarness();
+    expect(screen.getByTestId("compact").textContent).toBe("true");
+  });
+
+  it("falls back to the default when the stored value is not a boolean", () => {
+    localStorage.setItem("compactLayout", JSON.stringify("yes"));
+    renderHarness();
+    expect(screen.getByTestId("compact").textContent).toBe("true");
+  });
+
   it("toggleCompactLayout flips the value", async () => {
     const user = userEvent.setup();
     renderHarness();

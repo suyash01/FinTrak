@@ -102,11 +102,27 @@ describe("parseDateExplicit", () => {
     expect(parseDateExplicit("15/03/2024", "YYYY-MM-DD")).toBeNull();
     expect(parseDateExplicit("garbage", "DD/MM/YYYY")).toBeNull();
   });
+
+  it("rejects out-of-range day/month values", () => {
+    expect(parseDateExplicit("03/15/2024", "DD/MM/YYYY")).toBeNull();
+    expect(parseDateExplicit("31/04/2024", "DD/MM/YYYY")).toBeNull();
+    expect(parseDateExplicit("2024-15-03", "YYYY-MM-DD")).toBeNull();
+  });
 });
 
 describe("parseDateAuto", () => {
   it("detects DD/MM/YYYY", () => {
     expect(parseDateAuto("15/03/2024")).toBe("2024-03-15");
+  });
+
+  it("falls back to MM/DD/YYYY when DD/MM is impossible", () => {
+    expect(parseDateAuto("03/15/2024")).toBe("2024-03-15");
+    expect(parseDateAuto("03/25/2024")).toBe("2024-03-25");
+  });
+
+  it("returns null for dates that are invalid in both orientations", () => {
+    expect(parseDateAuto("31/04/2024")).toBeNull();
+    expect(parseDateAuto("13/13/2024")).toBeNull();
   });
 
   it("detects YYYY-MM-DD", () => {

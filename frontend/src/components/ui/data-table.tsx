@@ -30,7 +30,8 @@ import {
 } from "@/components/ui/table";
 
 declare module "@tanstack/table-core" {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // Augment TanStack's ColumnMeta with the per-column class hooks this table
+  // reads. The generic parameters must be repeated to merge the declaration.
   interface ColumnMeta<
     in out TFeatures extends TableFeatures,
     in out TData extends RowData,
@@ -217,6 +218,15 @@ export function DataTable<TData extends RowData, TValue>({
             {headerGroup.headers.map((header) => (
               <TableHead
                 key={header.id}
+                aria-sort={
+                  header.column.getCanSort()
+                    ? header.column.getIsSorted() === "asc"
+                      ? "ascending"
+                      : header.column.getIsSorted() === "desc"
+                        ? "descending"
+                        : "none"
+                    : undefined
+                }
                 className={cn(
                   headerClassName,
                   header.column.columnDef.meta?.headerClassName,

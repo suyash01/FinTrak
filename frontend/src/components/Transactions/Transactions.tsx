@@ -53,7 +53,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { toast } from "sonner";
+import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
@@ -233,6 +233,17 @@ export default function Transactions() {
   const categoriesRef = useRef(categories);
   const payeesRef = useRef(payees);
   const abortRef = useRef<AbortController | null>(null);
+  // Per-transaction edit sequence. Each inline save bumps the transaction's
+  // counter and only applies its optimistic update if it is still the newest
+  // request for that row, so a slow earlier response can't clobber a later edit.
+  const editSeqRef = useRef<Map<string, number>>(new Map());
+  const nextEditSeq = (txnId: string): number => {
+    const seq = (editSeqRef.current.get(txnId) ?? 0) + 1;
+    editSeqRef.current.set(txnId, seq);
+    return seq;
+  };
+  const isLatestEdit = (txnId: string, seq: number): boolean =>
+    editSeqRef.current.get(txnId) === seq;
   // URL that the current filters already correspond to. Used by the two URL
   // sync effects below to tell "URL change we caused" apart from external
   // navigation, which is what keeps them from fighting each other in a loop.
@@ -336,7 +347,8 @@ export default function Transactions() {
       setSelected(new Set());
     }
     syncedUrlRef.current = currentQs;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // React to external URL changes only; the setters/state read above are
+    // stable and including them would re-sync on state we just wrote.
   }, [searchParams]);
 
   // Sync filter limit when pageSize changes in settings
@@ -410,7 +422,7 @@ export default function Transactions() {
       });
       if (abortRef.current === controller) setData(res);
     } catch (err) {
-      if ((err as Error).name !== "AbortError") console.error(err);
+      if ((err as Error).name !== "AbortError") toastApiError(err);
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
@@ -429,7 +441,8 @@ export default function Transactions() {
       setFilters((f) => ({ ...f, accountId: def.id, page: 1 }));
       setSelected(new Set());
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Run once the shared account list arrives; reading searchParams here is
+    // only to detect an explicit filter, so it isn't a dependency.
   }, [accounts]);
 
   // Bulk billing-cycle assignment is only offered when the account filter is a
@@ -572,6 +585,7 @@ export default function Transactions() {
 
   const handleCategoryChange = useCallback(
     async (txnId: string, categoryId: string, txn: Transaction) => {
+      const seq = nextEditSeq(txnId);
       try {
         await api.updateTransaction(txnId, {
           categoryId: categoryId || null,
@@ -579,6 +593,8 @@ export default function Transactions() {
           notes: txn.notes || "",
           payeeId: txn.payeeId || null,
         });
+        // Ignore a response that a newer edit for the same row superseded.
+        if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
           ...prev,
           data: prev.data.map((t) => {
@@ -594,7 +610,23 @@ export default function Transactions() {
           }),
         }));
       } catch (err) {
-        console.error(err);
+        if (!isLatestEdit(txnId, seq)) return;
+        // Revert the optimistic cell change and tell the user.
+        setData((prev) => ({
+          ...prev,
+          data: prev.data.map((t) =>
+            t.id === txnId
+              ? {
+                  ...t,
+                  categoryId: txn.categoryId,
+                  categoryName: txn.categoryName,
+                  categoryColor: txn.categoryColor,
+                  categoryIcon: txn.categoryIcon,
+                }
+              : t,
+          ),
+        }));
+        toastApiError(err);
       }
     },
     [],
@@ -602,15 +634,16 @@ export default function Transactions() {
 
   const handlePayeeChange = useCallback(
     async (txnId: string, payeeId: string, txn: Transaction) => {
+      if (txn.payeeId === payeeId) return;
+      const seq = nextEditSeq(txnId);
       try {
-        if (txn.payeeId === payeeId) return;
-
         await api.updateTransaction(txnId, {
           categoryId: txn.categoryId,
           tags: txn.tags || [],
           notes: txn.notes || "",
           payeeId: payeeId || null,
         });
+        if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
           ...prev,
           data: prev.data.map((t) => {
@@ -620,7 +653,14 @@ export default function Transactions() {
           }),
         }));
       } catch (err) {
-        console.error(err);
+        if (!isLatestEdit(txnId, seq)) return;
+        setData((prev) => ({
+          ...prev,
+          data: prev.data.map((t) =>
+            t.id === txnId ? { ...t, payeeId: txn.payeeId, payee: txn.payee } : t,
+          ),
+        }));
+        toastApiError(err);
       }
     },
     [],
@@ -633,7 +673,7 @@ export default function Transactions() {
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     }
   };
 
@@ -644,7 +684,7 @@ export default function Transactions() {
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     }
   };
 
@@ -658,7 +698,7 @@ export default function Transactions() {
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     }
   };
 
@@ -672,7 +712,7 @@ export default function Transactions() {
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
-      toast.error((err as Error).message);
+      toastApiError(err);
     }
   };
 
@@ -687,7 +727,7 @@ export default function Transactions() {
       loadTransactions();
       setSelected(new Set());
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     }
   };
 
@@ -701,7 +741,7 @@ export default function Transactions() {
         await api.deleteTransaction(id);
         loadTransactions();
       } catch (err) {
-        console.error(err);
+        toastApiError(err);
       }
     },
     [loadTransactions],

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Search,
   Link2,
@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { toastApiError } from "../../lib/errors";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import api from "../../api/client";
 import { useDomainData } from "../../context/DomainDataContext";
@@ -77,13 +78,19 @@ export default function LinkTransactionModal({
   const [existingLinks, setExistingLinks] = useState<Link[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [unlinkTarget, setUnlinkTarget] = useState<string | null>(null);
+  // Aborts the in-flight candidate search when a newer one starts (or the modal
+  // unmounts), so a slow response can't overwrite fresher results.
+  const searchAbortRef = useRef<AbortController | null>(null);
+
+  // Abort any in-flight candidate search when the modal unmounts.
+  useEffect(() => () => searchAbortRef.current?.abort(), []);
 
   const loadLinks = async () => {
     try {
       setLinksLoading(true);
       setExistingLinks(await api.getLinks({ txnId: txn.id }));
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     } finally {
       setLinksLoading(false);
     }
@@ -110,7 +117,8 @@ export default function LinkTransactionModal({
     } else {
       handleSearch();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Re-run the initial search only when the transaction itself changes; the
+    // search inputs are seeded from txn above and edited by the user after.
   }, [txn.id, txn.date]);
 
   const handleSearch = async (
@@ -120,6 +128,10 @@ export default function LinkTransactionModal({
     exclAccount: boolean = excludeSameAccount,
     acctId: string = accountId,
   ) => {
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     setLoading(true);
     try {
       const params: QueryParams = {
@@ -134,7 +146,10 @@ export default function LinkTransactionModal({
         params.amount = txn.amount;
       }
 
-      const res = await api.getTransactions(params);
+      const res = await api.getTransactions(params, {
+        signal: controller.signal,
+      });
+      if (searchAbortRef.current !== controller) return;
 
       let filtered = res.data.filter((t) => t.id !== txn.id);
 
@@ -144,9 +159,9 @@ export default function LinkTransactionModal({
 
       setResults(filtered);
     } catch (err) {
-      console.error(err);
+      if ((err as Error).name !== "AbortError") toastApiError(err);
     } finally {
-      setLoading(false);
+      if (searchAbortRef.current === controller) setLoading(false);
     }
   };
 
@@ -188,7 +203,7 @@ export default function LinkTransactionModal({
       await loadLinks();
       onSuccess();
     } catch (err) {
-      console.error(err);
+      toastApiError(err);
     }
   };
 

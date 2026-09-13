@@ -16,14 +16,29 @@ const SettingsContext = createContext<SettingsContextValue | undefined>(
   undefined,
 );
 
+const COMPACT_LAYOUT_KEY = "compactLayout";
+
+// readStoredCompactLayout tolerates a missing or corrupt localStorage value and
+// always yields a boolean, so a bad value can't throw during render (which would
+// blank the whole app). Mirrors ThemeContext.readStored.
+function readStoredCompactLayout(): boolean {
+  try {
+    const saved = localStorage.getItem(COMPACT_LAYOUT_KEY);
+    if (saved === null) return true; // Default to true
+    const parsed = JSON.parse(saved);
+    return typeof parsed === "boolean" ? parsed : true;
+  } catch {
+    return true;
+  }
+}
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [compactLayout, setCompactLayout] = useState<boolean>(() => {
-    const saved = localStorage.getItem("compactLayout");
-    return saved !== null ? JSON.parse(saved) : true; // Default to true
-  });
+  const [compactLayout, setCompactLayout] = useState<boolean>(
+    readStoredCompactLayout,
+  );
 
   useEffect(() => {
-    localStorage.setItem("compactLayout", JSON.stringify(compactLayout));
+    localStorage.setItem(COMPACT_LAYOUT_KEY, JSON.stringify(compactLayout));
   }, [compactLayout]);
 
   const toggleCompactLayout = () => setCompactLayout((prev) => !prev);

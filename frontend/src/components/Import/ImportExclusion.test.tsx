@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   getPayees: vi.fn(),
   getPaperlessSettings: vi.fn(),
   getStatementExtractors: vi.fn(),
+  parseStatement: vi.fn(),
   getTransactions: vi.fn(),
   getBillingCycles: vi.fn(),
   validateTransactions: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("../../api/client", () => ({
     getPayees: apiMocks.getPayees,
     getPaperlessSettings: apiMocks.getPaperlessSettings,
     getStatementExtractors: apiMocks.getStatementExtractors,
+    parseStatement: apiMocks.parseStatement,
     getTransactions: apiMocks.getTransactions,
     getBillingCycles: apiMocks.getBillingCycles,
     validateTransactions: apiMocks.validateTransactions,
@@ -233,5 +235,70 @@ describe("Import exclusion", () => {
       (t: { description: string }) => t.description,
     );
     expect(descriptions).not.toContain("Skipped Row Test");
+  });
+
+  it("clears stale PDF rows when switching back to CSV", async () => {
+    const user = userEvent.setup();
+    apiMocks.getStatementExtractors.mockResolvedValue({
+      extractors: [{ name: "sbi_cc", label: "SBI Credit Card" }],
+    });
+    apiMocks.parseStatement.mockResolvedValue({
+      transactions: [
+        {
+          date: "2024-04-01",
+          description: "PDF ONLY ROW",
+          amount: 1000,
+          type: "debit",
+        },
+      ],
+      summary: {},
+    });
+
+    render(
+      <DomainDataProvider>
+        <Import />
+      </DomainDataProvider>,
+    );
+
+    // Step 1: select the account.
+    const trigger = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[role="combobox"]');
+      if (!el) throw new Error("account select trigger not found");
+      return el;
+    });
+    await user.click(trigger);
+    await user.click(await screen.findByText("Excl Test Bank"));
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    // Step 2: upload a PDF, which loads its rows into the preview.
+    await user.click(screen.getByRole("button", { name: /statement pdf/i }));
+    const pdfInput = document.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    if (!pdfInput) throw new Error("PDF file input not found");
+    await user.upload(
+      pdfInput,
+      new File(["pdf"], "statement.pdf", { type: "application/pdf" }),
+    );
+    expect(await screen.findByText("PDF ONLY ROW")).toBeTruthy();
+
+    // Go back to step 2, switch to CSV and upload a different file.
+    await user.click(screen.getByRole("button", { name: /upload csv/i }));
+    await user.click(screen.getByRole("button", { name: "CSV" }));
+    const csvInput = document.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    if (!csvInput) throw new Error("CSV file input not found");
+    await user.upload(
+      csvInput,
+      new File([CSV_CONTENT], "test.csv", { type: "text/csv" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /preview transactions/i }),
+    );
+
+    // The CSV rows win; the previously parsed PDF row must be gone.
+    expect(await screen.findByText("Coffee Shop")).toBeTruthy();
+    expect(screen.queryByText("PDF ONLY ROW")).toBeNull();
   });
 });

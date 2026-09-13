@@ -52,6 +52,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import api from "../../api/client";
+import { toastApiError } from "../../lib/errors";
 import { useDomainData } from "../../context/DomainDataContext";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
 import { filterExcluded, siblingIndices } from "../Import/Import";
@@ -107,10 +108,19 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div
+      ref={ref}
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && open) setOpen(false);
+      }}
+    >
       <Button
         type="button"
         variant="outline"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`${label} filter`}
         onClick={() => setOpen((o) => !o)}
         className={`w-full justify-between gap-2 px-3 py-2 h-auto rounded-lg text-sm ${
           entries.length > 0
@@ -126,7 +136,11 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
       </Button>
 
       {open && (
-        <div className="absolute z-20 mt-1 w-full min-w-55 bg-popover text-popover-foreground border border-border rounded-lg shadow-xl overflow-hidden">
+        <div
+          role="group"
+          aria-label={`${label} options`}
+          className="absolute z-20 mt-1 w-full min-w-55 bg-popover text-popover-foreground border border-border rounded-lg shadow-xl overflow-hidden"
+        >
           <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground">
             {label} — <span className="text-emerald-500">+ include</span> ·{" "}
             <span className="text-destructive">− exclude</span>
@@ -156,6 +170,8 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
                         type="button"
                         size="icon-xs"
                         variant="outline"
+                        aria-label={`Include ${opt}`}
+                        aria-pressed={mode === "inc"}
                         onClick={() =>
                           onSet(opt, mode === "inc" ? null : "inc")
                         }
@@ -172,6 +188,8 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
                         type="button"
                         size="icon-xs"
                         variant="outline"
+                        aria-label={`Exclude ${opt}`}
+                        aria-pressed={mode === "exc"}
                         onClick={() =>
                           onSet(opt, mode === "exc" ? null : "exc")
                         }
@@ -324,6 +342,12 @@ export default function PaperlessImport() {
   // File preview (blob URL of the original PDF)
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [loadingFileId, setLoadingFileId] = useState<number | null>(null);
+  // Aborts the previous document listing when filters/page change, so a slow
+  // response can't overwrite a newer page of results.
+  const docsAbortRef = useRef<AbortController | null>(null);
+  // Mirrors filePreview so the unmount cleanup can revoke the current blob URL
+  // without re-running when the preview changes.
+  const filePreviewRef = useRef<FilePreview | null>(null);
 
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [parsing, setParsing] = useState(false);
@@ -352,8 +376,8 @@ export default function PaperlessImport() {
         setExtractors(list);
         if (list.length > 0) setExtractor(list[0].name);
       })
-      .catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      .catch((err) => toastApiError(err));
+    // Load extractors once Paperless is configured; setters are stable.
   }, [configured]);
 
   // Debounce the server-side search so a keystroke never fires a request.
@@ -365,28 +389,36 @@ export default function PaperlessImport() {
   // Filters + pagination are forwarded to Paperless; the response also carries
   // the full lookup tables so the filter dropdowns stay complete across pages.
   const loadDocuments = useCallback(async () => {
+    docsAbortRef.current?.abort();
+    const controller = new AbortController();
+    docsAbortRef.current = controller;
+
     setLoadingDocs(true);
     setError("");
     try {
-      const res = await api.getPaperlessDocuments({
-        search: debouncedSearch,
-        page,
-        pageSize,
-        correspondentInc: Object.keys(correspondentMap).filter(
-          (k) => correspondentMap[k] === "inc",
-        ),
-        correspondentExc: Object.keys(correspondentMap).filter(
-          (k) => correspondentMap[k] === "exc",
-        ),
-        documentTypeInc: Object.keys(documentTypeMap).filter(
-          (k) => documentTypeMap[k] === "inc",
-        ),
-        documentTypeExc: Object.keys(documentTypeMap).filter(
-          (k) => documentTypeMap[k] === "exc",
-        ),
-        tagInc: Object.keys(tagMap).filter((k) => tagMap[k] === "inc"),
-        tagExc: Object.keys(tagMap).filter((k) => tagMap[k] === "exc"),
-      });
+      const res = await api.getPaperlessDocuments(
+        {
+          search: debouncedSearch,
+          page,
+          pageSize,
+          correspondentInc: Object.keys(correspondentMap).filter(
+            (k) => correspondentMap[k] === "inc",
+          ),
+          correspondentExc: Object.keys(correspondentMap).filter(
+            (k) => correspondentMap[k] === "exc",
+          ),
+          documentTypeInc: Object.keys(documentTypeMap).filter(
+            (k) => documentTypeMap[k] === "inc",
+          ),
+          documentTypeExc: Object.keys(documentTypeMap).filter(
+            (k) => documentTypeMap[k] === "exc",
+          ),
+          tagInc: Object.keys(tagMap).filter((k) => tagMap[k] === "inc"),
+          tagExc: Object.keys(tagMap).filter((k) => tagMap[k] === "exc"),
+        },
+        { signal: controller.signal },
+      );
+      if (docsAbortRef.current !== controller) return;
       setDocuments(res?.documents || []);
       setTotalCount(res?.totalCount ?? 0);
       setTotalPages(Math.max(1, res?.totalPages ?? 1));
@@ -396,9 +428,12 @@ export default function PaperlessImport() {
       // Clamp to the last page if a filter change made the current page stale.
       if (res?.totalPages && page > res.totalPages) setPage(res.totalPages);
     } catch (err) {
-      setError((err as Error).message);
+      if (docsAbortRef.current !== controller) return;
+      if ((err as Error).name !== "AbortError") {
+        setError((err as Error).message);
+      }
     } finally {
-      setLoadingDocs(false);
+      if (docsAbortRef.current === controller) setLoadingDocs(false);
     }
   }, [debouncedSearch, page, pageSize, correspondentMap, documentTypeMap, tagMap]);
 
@@ -406,6 +441,19 @@ export default function PaperlessImport() {
     if (!configured) return;
     loadDocuments();
   }, [configured, loadDocuments]);
+
+  // Abort any in-flight document listing and release the preview blob URL when
+  // the page unmounts.
+  useEffect(
+    () => () => {
+      docsAbortRef.current?.abort();
+      if (filePreviewRef.current) {
+        URL.revokeObjectURL(filePreviewRef.current.url);
+        filePreviewRef.current = null;
+      }
+    },
+    [],
+  );
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -504,7 +552,8 @@ export default function PaperlessImport() {
     if (JSON.stringify(nextTags) !== JSON.stringify(tagMap))
       setTagMap(nextTags);
     syncedUrlRef.current = currentQs;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // React to external URL changes only; the setters/state read above are
+    // stable and including them would re-sync on state we just wrote.
   }, [searchParams]);
 
   // True when any filter is active, used to distinguish "no documents" from
@@ -542,7 +591,13 @@ export default function PaperlessImport() {
     try {
       const blob = await api.getPaperlessDocumentFile(doc.id);
       const url = URL.createObjectURL(blob);
-      setFilePreview({ url, title: doc.title || `Document #${doc.id}` });
+      // Release the previous preview (if any) so its blob URL doesn't leak.
+      if (filePreviewRef.current) {
+        URL.revokeObjectURL(filePreviewRef.current.url);
+      }
+      const next = { url, title: doc.title || `Document #${doc.id}` };
+      filePreviewRef.current = next;
+      setFilePreview(next);
     } catch (err) {
       setError("Failed to load document preview: " + (err as Error).message);
     } finally {
@@ -551,8 +606,9 @@ export default function PaperlessImport() {
   };
 
   const closeFilePreview = () => {
-    if (filePreview) {
-      URL.revokeObjectURL(filePreview.url);
+    if (filePreviewRef.current) {
+      URL.revokeObjectURL(filePreviewRef.current.url);
+      filePreviewRef.current = null;
     }
     setFilePreview(null);
   };
@@ -1067,11 +1123,23 @@ export default function PaperlessImport() {
               {documents.map((d) => (
                 <div
                   key={d.id}
-                  className="flex items-start gap-3 p-3 cursor-pointer hover:bg-card transition-colors"
+                  role="checkbox"
+                  aria-checked={selected.has(d.id)}
+                  aria-label={`Select ${d.title || `Document #${d.id}`}`}
+                  tabIndex={0}
+                  className="flex items-start gap-3 p-3 cursor-pointer hover:bg-card transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => toggle(d.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === " " || e.key === "Enter") {
+                      e.preventDefault();
+                      toggle(d.id);
+                    }
+                  }}
                 >
                   <Checkbox
                     checked={selected.has(d.id)}
+                    aria-hidden
+                    tabIndex={-1}
                     className="mt-1 pointer-events-none"
                   />
                   <div className="min-w-0 flex-1">
