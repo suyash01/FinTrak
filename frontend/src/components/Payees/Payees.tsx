@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type FormEvent } from "react";
+import { useState, useEffect, useRef, useMemo, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -11,7 +11,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 import api from "../../api/client";
-import type { Payee, Account } from "../../types";
+import { useDomainData } from "../../context/DomainDataContext";
+import type { Payee } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,20 +54,13 @@ const EMPTY_FORM: PayeeForm = { name: "", accountId: "" };
 const NO_ACCOUNT = "none";
 
 export default function Payees() {
-  const [payees, setPayees] = useState<Payee[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { payees, accounts, loading, refreshPayees } = useDomainData();
   const [searchParams, setSearchParams] = useSearchParams();
   const syncedUrlRef = useRef(searchParams.toString());
   const [search, setSearch] = useState(() => searchParams.get("search") || "");
   const [showModal, setShowModal] = useState(false);
   const [editingPayee, setEditingPayee] = useState<Payee | null>(null);
-  const [accounts, setAccounts] = useState<Account[]>([]);
   const [formData, setFormData] = useState<PayeeForm>(EMPTY_FORM);
-
-  useEffect(() => {
-    fetchPayees();
-    fetchAccounts();
-  }, []);
 
   // Keep the search filter in sync with the URL so it is shareable and
   // back/forward friendly.
@@ -88,27 +82,6 @@ export default function Payees() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const fetchAccounts = async () => {
-    try {
-      const data = await api.getAccounts();
-      setAccounts(data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchPayees = async () => {
-    setLoading(true);
-    try {
-      const data = await api.getPayees();
-      setPayees(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -126,7 +99,7 @@ export default function Payees() {
       setShowModal(false);
       setEditingPayee(null);
       setFormData(EMPTY_FORM);
-      fetchPayees();
+      refreshPayees();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -136,7 +109,7 @@ export default function Payees() {
     try {
       await api.deletePayee(id);
       toast.success("Payee deleted");
-      fetchPayees();
+      refreshPayees();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -152,8 +125,12 @@ export default function Payees() {
     setShowModal(true);
   };
 
-  const filteredPayees = payees.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase()),
+  const filteredPayees = useMemo(
+    () =>
+      payees.filter((p) =>
+        p.name.toLowerCase().includes(search.toLowerCase()),
+      ),
+    [payees, search],
   );
 
   return (

@@ -14,6 +14,7 @@ import {
   PlusCircle,
 } from "lucide-react";
 import api from "../../api/client";
+import { useDomainData } from "../../context/DomainDataContext";
 import {
   formatCurrency,
   formatDate,
@@ -416,15 +417,17 @@ const EMPTY_NEW_ACCOUNT: NewAccountForm = {
   color: "#06b6d4",
 };
 
+// Cap the file size that PapaParse will read; larger files are rejected before
+// parsing to avoid exhausting memory and locking up the tab.
+const MAX_CSV_BYTES = 20 * 1024 * 1024;
+
 export default function Import() {
+  const { accounts, accountTypes, payees, setAccounts } = useDomainData();
   const [step, setStep] = useState(1);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [newAccount, setNewAccount] =
     useState<NewAccountForm>(EMPTY_NEW_ACCOUNT);
   const [showNewAccount, setShowNewAccount] = useState(false);
-  const [payees, setPayees] = useState<Payee[]>([]);
 
   // CSV state
   const [csvData, setCsvData] = useState<CsvRow[] | null>(null);
@@ -489,9 +492,6 @@ export default function Import() {
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    api.getAccounts().then(setAccounts).catch(console.error);
-    api.getAccountTypes().then(setAccountTypes).catch(console.error);
-    api.getPayees().then(setPayees).catch(console.error);
     api
       .getStatementExtractors()
       .then((res) => {
@@ -578,10 +578,20 @@ export default function Import() {
   }) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > MAX_CSV_BYTES) {
+      toast.error(
+        `CSV is too large (max ${Math.round(MAX_CSV_BYTES / (1024 * 1024))} MB).`,
+      );
+      return;
+    }
 
     Papa.parse<CsvRow>(file, {
       header: true,
       skipEmptyLines: true,
+      // Parse off the main thread where Web Workers are available so a large
+      // file doesn't freeze the UI. jsdom (tests) has no Worker, so fall back
+      // to the synchronous parser there.
+      worker: typeof Worker !== "undefined",
       complete: (results) => {
         setCsvData(results.data);
         setCsvHeaders(results.meta.fields || []);
@@ -1514,9 +1524,9 @@ export default function Import() {
 
             {mappingErrors.length > 0 && (
               <div className="mt-5 p-4 bg-destructive/10 border border-destructive/30 rounded-lg">
-                {mappingErrors.map((err, i) => (
+                {mappingErrors.map((err) => (
                   <div
-                    key={i}
+                    key={err}
                     className="flex gap-2 items-center text-destructive text-sm py-0.5"
                   >
                     <AlertCircle size={14} className="shrink-0" /> {err}

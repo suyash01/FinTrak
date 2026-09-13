@@ -57,12 +57,9 @@ import { toast } from "sonner";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import { useDomainData } from "../../context/DomainDataContext";
 import type {
   Transaction,
-  Account,
-  Category,
-  CategoryGroup,
-  Payee,
   BillingCycle,
   TransactionsResponse,
   QueryParams,
@@ -193,6 +190,14 @@ const MAX_PAGE_SIZE = 1000;
 const PAGE_SIZE_LS_KEY = "txPageSize";
 
 export default function Transactions() {
+  const {
+    accounts,
+    categories,
+    groups,
+    payees,
+    settings,
+    setSettings,
+  } = useDomainData();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<TransactionsResponse>({
     data: [],
@@ -201,10 +206,6 @@ export default function Transactions() {
     pages: 0,
   });
   const [loading, setLoading] = useState(true);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [groups, setGroups] = useState<CategoryGroup[]>([]);
-  const [payees, setPayees] = useState<Payee[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [linkingTxn, setLinkingTxn] = useState<Transaction | null>(null);
   const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
@@ -221,12 +222,12 @@ export default function Transactions() {
     if (Number.isNaN(v)) return 50;
     return Math.min(Math.max(v, 1), MAX_PAGE_SIZE);
   };
-  const [pageSize, setPageSize] = useState(savedPageSize);
-  const [preset, setPreset] = useState(() => {
-    const v = savedPageSize();
-    return PAGE_SIZE_OPTIONS.includes(v) ? String(v) : "custom";
-  });
-  const [customInput, setCustomInput] = useState(() => String(savedPageSize()));
+  const initialPageSize = useMemo(savedPageSize, []);
+  const [pageSize, setPageSize] = useState(initialPageSize);
+  const [preset, setPreset] = useState(() =>
+    PAGE_SIZE_OPTIONS.includes(initialPageSize) ? String(initialPageSize) : "custom",
+  );
+  const [customInput, setCustomInput] = useState(() => String(initialPageSize));
 
   // Refs to avoid closures in callbacks
   const categoriesRef = useRef(categories);
@@ -344,23 +345,18 @@ export default function Transactions() {
     setSelected(new Set());
   }, [pageSize]);
 
-  // Restore the persisted page size from the server.
+  // Restore the persisted page size from the shared user settings.
   useEffect(() => {
-    api
-      .getUserSettings()
-      .then((s) => {
-        if (typeof s.pageSize !== "number") return;
-        const clamped = Math.min(Math.max(s.pageSize, 1), MAX_PAGE_SIZE);
-        setPageSize(clamped);
-        if (PAGE_SIZE_OPTIONS.includes(clamped)) {
-          setPreset(String(clamped));
-        } else {
-          setPreset("custom");
-          setCustomInput(String(clamped));
-        }
-      })
-      .catch(() => {});
-  }, []);
+    if (!settings || typeof settings.pageSize !== "number") return;
+    const clamped = Math.min(Math.max(settings.pageSize, 1), MAX_PAGE_SIZE);
+    setPageSize(clamped);
+    if (PAGE_SIZE_OPTIONS.includes(clamped)) {
+      setPreset(String(clamped));
+    } else {
+      setPreset("custom");
+      setCustomInput(String(clamped));
+    }
+  }, [settings]);
 
   const applyPageSize = (size: number) => {
     const n = Number(size);
@@ -368,6 +364,7 @@ export default function Transactions() {
     const clamped = Math.min(Math.max(n, 1), MAX_PAGE_SIZE);
     setPageSize(clamped);
     localStorage.setItem(PAGE_SIZE_LS_KEY, String(clamped));
+    setSettings((prev) => ({ ...(prev ?? {}), pageSize: clamped }));
     api.updateUserSettings({ pageSize: clamped }).catch(() => {});
   };
 
@@ -423,25 +420,17 @@ export default function Transactions() {
     const timer = setTimeout(loadTransactions, 300);
     return () => clearTimeout(timer);
   }, [loadTransactions]);
+
+  // Pre-fill the account filter with the user's default account once the shared
+  // account list is available and no account filter was explicitly requested.
   useEffect(() => {
-    api
-      .getAccounts()
-      .then((list) => {
-        setAccounts(list);
-        // Pre-fill the account filter with the user's default account when no
-        // account filter was explicitly requested.
-        const def = list.find((a) => a.isDefault);
-        if (def && !searchParams.get("accountId")) {
-          setFilters((f) => ({ ...f, accountId: def.id, page: 1 }));
-          setSelected(new Set());
-        }
-      })
-      .catch(console.error);
-    api.getCategories().then(setCategories).catch(console.error);
-    api.getGroups().then(setGroups).catch(console.error);
-    api.getPayees().then(setPayees).catch(console.error);
+    const def = accounts.find((a) => a.isDefault);
+    if (def && !searchParams.get("accountId")) {
+      setFilters((f) => ({ ...f, accountId: def.id, page: 1 }));
+      setSelected(new Set());
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [accounts]);
 
   // Bulk billing-cycle assignment is only offered when the account filter is a
   // single account with a billing day (cycles are per-account, so this

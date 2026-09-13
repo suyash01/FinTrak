@@ -1,16 +1,28 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { lazy, Suspense, useState, useEffect, type FormEvent } from "react";
 import Sidebar from "./components/Layout/Sidebar";
-import Dashboard from "./components/Dashboard/Dashboard";
-import Import from "./components/Import/Import";
-import PaperlessImport from "./components/PaperlessImport/PaperlessImport";
-import Transactions from "./components/Transactions/Transactions";
-import Accounts from "./components/Accounts/Accounts";
-import Categories from "./components/Categories/Categories";
-import Payees from "./components/Payees/Payees";
-import Linking from "./components/Linking/Linking";
-import Login from "./components/Auth/Login";
+import {
+  DomainDataProvider,
+  useDomainData,
+} from "./context/DomainDataContext";
 import { SettingsProvider, useSettings } from "./context/SettingsContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+
+// Route-level code splitting: each page is loaded on demand so the login screen
+// doesn't pull in the charting, CSV and virtualization libraries.
+const Dashboard = lazy(() => import("./components/Dashboard/Dashboard"));
+const Import = lazy(() => import("./components/Import/Import"));
+const PaperlessImport = lazy(
+  () => import("./components/PaperlessImport/PaperlessImport"),
+);
+const Transactions = lazy(
+  () => import("./components/Transactions/Transactions"),
+);
+const Accounts = lazy(() => import("./components/Accounts/Accounts"));
+const Categories = lazy(() => import("./components/Categories/Categories"));
+const Payees = lazy(() => import("./components/Payees/Payees"));
+const Linking = lazy(() => import("./components/Linking/Linking"));
+const Login = lazy(() => import("./components/Auth/Login"));
 import {
   ThemeProvider,
   useTheme,
@@ -45,10 +57,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import "./index.css";
-import { useState, useEffect, type FormEvent } from "react";
 import api from "./api/client";
 import { Trash2, Edit2, Plus, X } from "lucide-react";
-import type { AccountType } from "./types";
 
 function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
@@ -171,27 +181,15 @@ const EMPTY_ACCOUNT_TYPE_FORM: AccountTypeForm = {
 };
 
 function AccountTypesManager() {
-  const [types, setTypes] = useState<AccountType[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    accountTypes: types,
+    loading,
+    refreshAccountTypes,
+  } = useDomainData();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<AccountTypeForm>(
     EMPTY_ACCOUNT_TYPE_FORM,
   );
-
-  useEffect(() => {
-    fetchTypes();
-  }, []);
-
-  const fetchTypes = async () => {
-    try {
-      const data = await api.getAccountTypes();
-      setTypes(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -206,7 +204,7 @@ function AccountTypesManager() {
       }
       setEditingId(null);
       setFormData(EMPTY_ACCOUNT_TYPE_FORM);
-      fetchTypes();
+      refreshAccountTypes();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -216,7 +214,7 @@ function AccountTypesManager() {
     try {
       await api.deleteAccountType(id);
       toast.success("Account type deleted");
-      fetchTypes();
+      refreshAccountTypes();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -424,26 +422,21 @@ function AccountTypesManager() {
 }
 
 function PaperlessSettingsManager() {
+  const { settings, refreshSettings, loading } = useDomainData();
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [tokenSet, setTokenSet] = useState(false);
   const [tag, setTag] = useState("");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    api
-      .getPaperlessSettings()
-      .then((s) => {
-        setUrl(s.paperlessUrl || "");
-        setToken("");
-        setTokenSet(Boolean(s.hasToken));
-        setTag(s.paperlessTag || "");
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    if (!settings) return;
+    setUrl(settings.paperlessUrl || "");
+    setToken("");
+    setTokenSet(Boolean(settings.hasToken));
+    setTag(settings.paperlessTag || "");
+  }, [settings]);
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -466,6 +459,7 @@ function PaperlessSettingsManager() {
       setTokenSet(Boolean(token.trim() !== "" || tokenSet));
       setSaved(true);
       toast.success("Paperless settings saved");
+      refreshSettings();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -553,44 +547,62 @@ export default function App() {
   );
 }
 
+function RouteFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary" />
+    </div>
+  );
+}
+
+function PageFallback() {
+  return (
+    <div className="flex-1 flex items-center justify-center">
+      <Spinner className="size-8 text-primary" />
+    </div>
+  );
+}
+
 function Root() {
   const { isAuthenticated, initializing } = useAuth();
 
   // Wait for the session cookie to be verified before choosing the auth screen,
   // otherwise a locked-down reload would briefly render the login page.
   if (initializing) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary" />
-      </div>
-    );
+    return <RouteFallback />;
   }
 
   if (!isAuthenticated) {
     return (
-      <Routes>
-        <Route path="*" element={<Login />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="*" element={<Login />} />
+        </Routes>
+      </Suspense>
     );
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/import" element={<Import />} />
-          <Route path="/paperless" element={<PaperlessImport />} />
-          <Route path="/transactions" element={<Transactions />} />
-          <Route path="/accounts" element={<Accounts />} />
-          <Route path="/categories" element={<Categories />} />
-          <Route path="/payees" element={<Payees />} />
-          <Route path="/linking" element={<Linking />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Dashboard />} />
-        </Routes>
-      </main>
-    </div>
+    <DomainDataProvider>
+      <div className="flex h-screen w-screen overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/import" element={<Import />} />
+              <Route path="/paperless" element={<PaperlessImport />} />
+              <Route path="/transactions" element={<Transactions />} />
+              <Route path="/accounts" element={<Accounts />} />
+              <Route path="/categories" element={<Categories />} />
+              <Route path="/payees" element={<Payees />} />
+              <Route path="/linking" element={<Linking />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<Dashboard />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
+    </DomainDataProvider>
   );
 }

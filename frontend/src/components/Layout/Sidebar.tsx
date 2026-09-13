@@ -1,4 +1,4 @@
-import { NavLink, useNavigate, useLocation } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Upload,
@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import packageJson from "../../../package.json";
 import { useAuth } from "../../context/AuthContext";
-import api from "../../api/client";
+import { useDomainData } from "../../context/DomainDataContext";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -24,9 +24,9 @@ const SMALL_SCREEN_QUERY = "(max-width: 767px)";
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
+  const { settings } = useDomainData();
   const navigate = useNavigate();
-  const location = useLocation();
-  const [paperlessEnabled, setPaperlessEnabled] = useState(false);
+  const paperlessEnabled = Boolean(settings?.paperlessUrl && settings?.hasToken);
   // Collapsed by default on small screens, expanded on larger screens.
   const [collapsed, setCollapsed] = useState(
     () => window.matchMedia(SMALL_SCREEN_QUERY).matches,
@@ -40,15 +40,6 @@ export default function Sidebar() {
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-
-  // Re-check Paperless config on mount and whenever the route changes so a
-  // newly-saved setting is picked up without a full page reload.
-  useEffect(() => {
-    api
-      .getPaperlessSettings()
-      .then((s) => setPaperlessEnabled(Boolean(s.paperlessUrl && s.hasToken)))
-      .catch(() => setPaperlessEnabled(false));
-  }, [location.pathname]);
 
   const handleLogout = () => {
     logout();

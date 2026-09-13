@@ -146,7 +146,19 @@ export function DataTable<TData extends RowData, TValue>({
   React.useLayoutEffect(() => {
     if (!virtualize) return;
     const el = scrollRef.current;
-    setViewportMeasured(Boolean(el && el.clientHeight > 0));
+    if (!el) return;
+    // Re-measure whenever the scroll viewport changes size, so a table mounted
+    // hidden (e.g. inside a closed TabsContent) virtualizes once it becomes
+    // visible instead of permanently rendering every row.
+    const measure = () => setViewportMeasured(el.clientHeight > 0);
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, [virtualize]);
   const isVirtual = virtualize && viewportMeasured !== false;
   const virtualizer = useVirtualizer({

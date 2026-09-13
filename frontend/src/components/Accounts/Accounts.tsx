@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -17,7 +17,8 @@ import {
 import api, { downloadCSV } from "../../api/client";
 import { formatDate, formatCurrency } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
-import type { Account, AccountType, UpdateAccountRequest } from "../../types";
+import { useDomainData } from "../../context/DomainDataContext";
+import type { Account, UpdateAccountRequest } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -106,8 +107,7 @@ const getTypeIcon = (accountTypeId: string, color: string, size: number) => {
 };
 
 export default function Accounts() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
+  const { accounts, accountTypes, setAccounts } = useDomainData();
   const [createOpen, setCreateOpen] = useState(false);
   const [newAcc, setNewAcc] = useState<AccountForm>(EMPTY_NEW_ACCOUNT);
   const [editing, setEditing] = useState<Account | null>(null);
@@ -117,11 +117,6 @@ export default function Accounts() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const { compactLayout } = useSettings();
-
-  useEffect(() => {
-    api.getAccounts().then(setAccounts).catch(console.error);
-    api.getAccountTypes().then(setAccountTypes).catch(console.error);
-  }, []);
 
   const resetNew = () => setNewAcc(EMPTY_NEW_ACCOUNT);
 

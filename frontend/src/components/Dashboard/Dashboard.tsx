@@ -17,6 +17,7 @@ import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
+import { useDomainData } from "../../context/DomainDataContext";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,13 +40,14 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import type {
   DashboardSummary,
-  Account,
   CategorySpend,
   QueryParams,
   Transaction,
 } from "../../types";
 
 const ALL_ACCOUNTS = "all";
+
+const recentColumnHelper = createColumnHelper<Transaction>();
 
 function toISODate(d: Date): string {
   const y = d.getFullYear();
@@ -61,11 +63,11 @@ function lastTwelveMonthsRange(): { dateFrom: string; dateTo: string } {
 }
 
 export default function Dashboard() {
+  const { accounts } = useDomainData();
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const defaultRange = lastTwelveMonthsRange();
+  const defaultRange = useMemo(() => lastTwelveMonthsRange(), []);
   const [searchParams, setSearchParams] = useSearchParams();
   const [accountId, setAccountId] = useState(
     searchParams.get("accountId") || "",
@@ -87,21 +89,14 @@ export default function Dashboard() {
   const isBillingAccount = Boolean(selectedAccount?.billingDay);
 
   useEffect(() => {
-    api
-      .getAccounts()
-      .then((res) => {
-        const list = Array.isArray(res) ? res : [];
-        setAccounts(list);
-        // Pre-fill the account filter with the user's default account when no
-        // account filter was explicitly requested.
-        const def = list.find((a) => a.isDefault);
-        if (def && !searchParams.get("accountId")) {
-          setAccountId(def.id);
-        }
-      })
-      .catch(() => setAccounts([]));
+    // Pre-fill the account filter with the user's default account once the
+    // shared account list loads and no account filter was requested.
+    const def = accounts.find((a) => a.isDefault);
+    if (def && !searchParams.get("accountId")) {
+      setAccountId(def.id);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [accounts]);
 
   useEffect(() => {
     const params: Record<string, string> = {};
@@ -170,7 +165,6 @@ export default function Dashboard() {
     loadSummary();
   }, [loadSummary]);
 
-  const recentColumnHelper = createColumnHelper<Transaction>();
   const recentColumns = useMemo<ColumnDef<Transaction, any>[]>(() => {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
     const headBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`;
@@ -573,9 +567,9 @@ function CategoryPieSection({
                     strokeWidth={2}
                     stroke="var(--card)"
                   >
-                    {categories.map((entry, i) => (
+                    {categories.map((entry) => (
                       <Cell
-                        key={i}
+                        key={entry.categoryId}
                         fill={entry.categoryColor || "var(--muted-foreground)"}
                       />
                     ))}
@@ -593,9 +587,9 @@ function CategoryPieSection({
               </ResponsiveContainer>
             </div>
             <div className="w-full md:w-1/2 text-[13px] max-h-70 overflow-y-auto pr-2">
-              {categories.map((cat, i) => (
+              {categories.map((cat) => (
                 <div
-                  key={i}
+                  key={cat.categoryId}
                   className="flex items-center gap-2 py-1.5 border-b border-border last:border-0"
                 >
                   <span

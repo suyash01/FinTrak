@@ -2,7 +2,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -73,9 +72,12 @@ function readStored(): StoredTheme {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const initial = useRef<StoredTheme>(readStored()).current;
-  const [mode, setModeState] = useState<ThemeMode>(initial.mode);
-  const [accent, setAccentState] = useState<AccentTheme>(initial.accent);
+  // Read persisted values once via lazy initializers; calling readStored() with
+  // an eager useRef argument ran it on every render.
+  const [mode, setModeState] = useState<ThemeMode>(() => readStored().mode);
+  const [accent, setAccentState] = useState<AccentTheme>(
+    () => readStored().accent,
+  );
   const [systemDark, setSystemDark] = useState<boolean>(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches,
   );

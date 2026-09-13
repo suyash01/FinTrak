@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Plus, Trash2, Play, Edit2, Globe, Lock } from "lucide-react";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
 import { useAuth } from "../../context/AuthContext";
+import { useDomainData } from "../../context/DomainDataContext";
 import { buildCategorySections } from "../../lib/categories";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -99,10 +100,14 @@ type CategoryTab = "groups" | "categories" | "rules";
 const TAB_PARAM = "tab";
 
 export default function Categories() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [groups, setGroups] = useState<CategoryGroup[]>([]);
+  const {
+    categories,
+    groups,
+    payees,
+    refreshCategories,
+    refreshGroups,
+  } = useDomainData();
   const [rules, setRules] = useState<Rule[]>([]);
-  const [payees, setPayees] = useState<Payee[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
   const syncedUrlRef = useRef(searchParams.toString());
   const [tab, setTab] = useState<CategoryTab>(() => {
@@ -128,16 +133,11 @@ export default function Categories() {
   const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadCategories = () =>
-    api.getCategories().then(setCategories).catch(console.error);
-  const loadGroups = () => api.getGroups().then(setGroups).catch(console.error);
+  const loadCategories = refreshCategories;
+  const loadGroups = refreshGroups;
 
   useEffect(() => {
-    loadCategories();
-    loadGroups();
     api.getRules().then(setRules).catch(console.error);
-    api.getPayees().then(setPayees).catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keep the active tab in sync with the URL so it is shareable and
@@ -334,7 +334,10 @@ export default function Categories() {
     }
   };
 
-  const categorySections = buildCategorySections(groups, categories);
+  const categorySections = useMemo(
+    () => buildCategorySections(groups, categories),
+    [groups, categories],
+  );
 
   return (
     <>
@@ -868,7 +871,7 @@ export default function Categories() {
                         <SelectItem value={NO_CATEGORY}>
                           Choose category...
                         </SelectItem>
-                        {buildCategorySections(groups, categories).map((s) => (
+                        {categorySections.map((s) => (
                           <SelectGroup key={s.group.id}>
                             <SelectLabel>{s.group.name}</SelectLabel>
                             {s.items.map((c) => (
@@ -941,7 +944,7 @@ export default function Categories() {
                     {["Pattern", "Match", "Category", "Payee", "Priority", ""].map(
                       (h, i) => (
                         <th
-                          key={i}
+                          key={h || "actions"}
                           className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 5 ? "w-12.5" : ""}`}
                         >
                           {h}

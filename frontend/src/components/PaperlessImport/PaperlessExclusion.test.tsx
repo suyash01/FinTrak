@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import PaperlessImport from "./PaperlessImport";
+import { DomainDataProvider } from "../../context/DomainDataContext";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -16,6 +17,10 @@ if (!Element.prototype.scrollIntoView) {
 const apiMocks = vi.hoisted(() => ({
   getPaperlessSettings: vi.fn(),
   getAccounts: vi.fn(),
+  getAccountTypes: vi.fn(),
+  getCategories: vi.fn(),
+  getGroups: vi.fn(),
+  getPayees: vi.fn(),
   getStatementExtractors: vi.fn(),
   getPaperlessDocuments: vi.fn(),
   importPaperlessDocument: vi.fn(),
@@ -27,6 +32,10 @@ vi.mock("../../api/client", () => ({
   default: {
     getPaperlessSettings: apiMocks.getPaperlessSettings,
     getAccounts: apiMocks.getAccounts,
+    getAccountTypes: apiMocks.getAccountTypes,
+    getCategories: apiMocks.getCategories,
+    getGroups: apiMocks.getGroups,
+    getPayees: apiMocks.getPayees,
     getStatementExtractors: apiMocks.getStatementExtractors,
     getPaperlessDocuments: apiMocks.getPaperlessDocuments,
     importPaperlessDocument: apiMocks.importPaperlessDocument,
@@ -65,6 +74,10 @@ describe("PaperlessImport exclusion", () => {
       paperlessTag: "fintrak",
     });
     apiMocks.getAccounts.mockResolvedValue([ACCOUNT]);
+    apiMocks.getAccountTypes.mockResolvedValue([]);
+    apiMocks.getCategories.mockResolvedValue([]);
+    apiMocks.getGroups.mockResolvedValue([]);
+    apiMocks.getPayees.mockResolvedValue([]);
     apiMocks.getStatementExtractors.mockResolvedValue({ extractors: [] });
     apiMocks.getPaperlessDocuments.mockResolvedValue({
       documents: [
@@ -98,7 +111,9 @@ describe("PaperlessImport exclusion", () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter>
-        <PaperlessImport />
+        <DomainDataProvider>
+          <PaperlessImport />
+        </DomainDataProvider>
       </MemoryRouter>,
     );
 

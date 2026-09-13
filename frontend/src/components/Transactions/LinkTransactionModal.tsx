@@ -43,13 +43,14 @@ import {
 import { toast } from "sonner";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import api from "../../api/client";
+import { useDomainData } from "../../context/DomainDataContext";
 import {
   formatCurrency,
   formatDate,
   formatDateOnly,
   parseDateOnly,
 } from "../../utils/formatters";
-import type { Transaction, Account, Link, LinkType, QueryParams } from "../../types";
+import type { Transaction, Link, LinkType, QueryParams } from "../../types";
 
 interface LinkTransactionModalProps {
   txn: Transaction;
@@ -64,7 +65,7 @@ export default function LinkTransactionModal({
 }: LinkTransactionModalProps) {
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState("");
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const { accounts } = useDomainData();
   const [results, setResults] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [linkType, setLinkType] = useState<LinkType>("transfer");
@@ -89,8 +90,6 @@ export default function LinkTransactionModal({
   };
 
   useEffect(() => {
-    // Initial fetch accounts
-    api.getAccounts().then(setAccounts).catch(console.error);
     loadLinks();
 
     // Set default date range: ±14 days from txn.date

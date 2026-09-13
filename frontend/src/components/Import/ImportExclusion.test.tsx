@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Import from "./Import";
+import { DomainDataProvider } from "../../context/DomainDataContext";
 
 // jsdom lacks the Pointer Capture API that Radix (Select etc.) calls on
 // pointer events; without these no-ops, pointer interactions crash.
@@ -18,7 +19,10 @@ if (!Element.prototype.scrollIntoView) {
 const apiMocks = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getAccountTypes: vi.fn(),
+  getCategories: vi.fn(),
+  getGroups: vi.fn(),
   getPayees: vi.fn(),
+  getPaperlessSettings: vi.fn(),
   getStatementExtractors: vi.fn(),
   getTransactions: vi.fn(),
   getBillingCycles: vi.fn(),
@@ -30,7 +34,10 @@ vi.mock("../../api/client", () => ({
   default: {
     getAccounts: apiMocks.getAccounts,
     getAccountTypes: apiMocks.getAccountTypes,
+    getCategories: apiMocks.getCategories,
+    getGroups: apiMocks.getGroups,
     getPayees: apiMocks.getPayees,
+    getPaperlessSettings: apiMocks.getPaperlessSettings,
     getStatementExtractors: apiMocks.getStatementExtractors,
     getTransactions: apiMocks.getTransactions,
     getBillingCycles: apiMocks.getBillingCycles,
@@ -98,6 +105,9 @@ describe("Import exclusion", () => {
       { id: "bank", name: "Bank Account", positiveTxnType: "credit" },
     ]);
     apiMocks.getPayees.mockResolvedValue([]);
+    apiMocks.getCategories.mockResolvedValue([]);
+    apiMocks.getGroups.mockResolvedValue([]);
+    apiMocks.getPaperlessSettings.mockResolvedValue({});
     apiMocks.getStatementExtractors.mockResolvedValue({ extractors: [] });
     apiMocks.getTransactions.mockResolvedValue({ data: [], pages: 1 });
     apiMocks.importTransactions.mockResolvedValue({
@@ -109,7 +119,11 @@ describe("Import exclusion", () => {
 
   it("drops an unchecked row from the import payload", async () => {
     const user = userEvent.setup();
-    render(<Import />);
+    render(
+      <DomainDataProvider>
+        <Import />
+      </DomainDataProvider>,
+    );
 
     await runToPreview(user);
 
@@ -149,7 +163,11 @@ describe("Import exclusion", () => {
 
   it("keeps all rows when nothing is unchecked", async () => {
     const user = userEvent.setup();
-    render(<Import />);
+    render(
+      <DomainDataProvider>
+        <Import />
+      </DomainDataProvider>,
+    );
 
     await runToPreview(user);
     await waitFor(() => {
@@ -169,7 +187,11 @@ describe("Import exclusion", () => {
 
   it("excludes every identical twin when one occurrence is unchecked", async () => {
     const user = userEvent.setup();
-    render(<Import />);
+    render(
+      <DomainDataProvider>
+        <Import />
+      </DomainDataProvider>,
+    );
 
     // Same file but the "Skipped Row Test" line appears twice (identical
     // date, amount, type, description).

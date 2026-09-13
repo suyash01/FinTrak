@@ -52,10 +52,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import api from "../../api/client";
+import { useDomainData } from "../../context/DomainDataContext";
 import { formatCurrency, formatDateOnly } from "../../utils/formatters";
 import { filterExcluded, siblingIndices } from "../Import/Import";
 import type {
-  Account,
   PaperlessDocument,
   StatementExtractor,
   ImportTransaction,
@@ -257,10 +257,14 @@ function appendMapParams(
 }
 
 export default function PaperlessImport() {
-  const [configured, setConfigured] = useState(false);
-  const [loadingConfig, setLoadingConfig] = useState(true);
+  const {
+    accounts,
+    settings,
+    loading: loadingConfig,
+  } = useDomainData();
+  const configured = Boolean(settings?.paperlessUrl && settings?.hasToken);
+  const tagLabel = settings?.paperlessTag || "";
 
-  const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState("");
 
   const [extractors, setExtractors] = useState<StatementExtractor[]>([]);
@@ -268,7 +272,6 @@ export default function PaperlessImport() {
   const [password, setPassword] = useState("");
   const [dateFormat, setDateFormat] = useState("auto");
   const [tagOnImport, setTagOnImport] = useState(false);
-  const [tagLabel, setTagLabel] = useState("");
 
   const [documents, setDocuments] = useState<PaperlessDocument[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
@@ -341,19 +344,7 @@ export default function PaperlessImport() {
   }, [preview]);
 
   useEffect(() => {
-    api
-      .getPaperlessSettings()
-      .then((s) => {
-        setConfigured(Boolean(s.paperlessUrl && s.hasToken));
-        setTagLabel(s.paperlessTag || "");
-      })
-      .catch(() => setConfigured(false))
-      .finally(() => setLoadingConfig(false));
-  }, []);
-
-  useEffect(() => {
     if (!configured) return;
-    api.getAccounts().then(setAccounts).catch(console.error);
     api
       .getStatementExtractors()
       .then((res) => {
@@ -576,27 +567,47 @@ export default function PaperlessImport() {
     setSuccess("");
     setPreview(null);
 
-    const transactions: ImportTransaction[] = [];
-    const titles: string[] = [];
+    const ids = [...selected];
     try {
-      for (const id of selected) {
-        const res = await api.importPaperlessDocument({
-          documentId: id,
-          extractor,
-          password,
-          dateFormat: dateFormat === "auto" ? "" : dateFormat,
-        });
+      // Parse every selected document concurrently instead of one at a time.
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          api.importPaperlessDocument({
+            documentId: id,
+            extractor,
+            password,
+            dateFormat: dateFormat === "auto" ? "" : dateFormat,
+          }),
+        ),
+      );
+
+      const transactions: ImportTransaction[] = [];
+      const titles: string[] = [];
+      const successIds: number[] = [];
+      const failures: string[] = [];
+      results.forEach((result, i) => {
+        const id = ids[i];
         const doc = documents.find((d) => d.id === id);
-        titles.push(doc?.title || `Document #${id}`);
-        transactions.push(...(res.transactions || []));
+        const title = doc?.title || `Document #${id}`;
+        if (result.status === "fulfilled") {
+          titles.push(title);
+          transactions.push(...(result.value.transactions || []));
+          successIds.push(id);
+        } else {
+          const reason = (result.reason as Error)?.message || "failed";
+          failures.push(`${title}: ${reason}`);
+        }
+      });
+
+      if (failures.length > 0) {
+        setError(`Some documents failed to parse — ${failures.join("; ")}`);
       }
+      if (successIds.length === 0) return;
       setPreview({
         title: titles.join(", "),
         transactions,
-        documentIds: [...selected],
+        documentIds: successIds,
       });
-    } catch (err) {
-      setError((err as Error).message);
     } finally {
       setParsing(false);
     }
