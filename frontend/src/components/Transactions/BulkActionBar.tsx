@@ -52,6 +52,7 @@ export default function BulkActionBar({
       </span>
       <select
         className={selectClass}
+        aria-label="Categorize selected transactions"
         onChange={(e) => {
           if (e.target.value) onCategorize(e.target.value);
           e.target.value = "";
@@ -80,6 +81,7 @@ export default function BulkActionBar({
       </select>
       <select
         className={selectClass}
+        aria-label="Set payee for selected transactions"
         onChange={(e) => {
           if (e.target.value) onUpdatePayee(e.target.value);
           e.target.value = "";
@@ -95,6 +97,7 @@ export default function BulkActionBar({
       {hasBillingDayFilter && (
         <select
           className={selectClass}
+          aria-label="Set billing cycle for selected transactions"
           onChange={(e) => {
             if (e.target.value) onSetBillingCycle(e.target.value);
             e.target.value = "";
@@ -113,6 +116,7 @@ export default function BulkActionBar({
       {loanAccounts.length > 0 && (
         <select
           className={selectClass}
+          aria-label="Link selected transactions to a loan"
           onChange={(e) => {
             if (e.target.value) onLinkLoan(e.target.value);
             e.target.value = "";

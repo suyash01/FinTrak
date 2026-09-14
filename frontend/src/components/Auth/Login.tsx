@@ -70,15 +70,25 @@ export default function Login() {
           </p>
 
           {error && (
-            <div className="mb-4 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive">
+            <div
+              id="login-error"
+              role="alert"
+              className="mb-4 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive"
+            >
               {error}
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Email</Label>
+              <Label
+                htmlFor="login-email"
+                className="text-xs text-muted-foreground"
+              >
+                Email
+              </Label>
               <Input
+                id="login-email"
                 type="email"
                 required
                 autoFocus
@@ -89,8 +99,14 @@ export default function Login() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Password</Label>
+              <Label
+                htmlFor="login-password"
+                className="text-xs text-muted-foreground"
+              >
+                Password
+              </Label>
               <Input
+                id="login-password"
                 type="password"
                 required
                 minLength={mode === "register" ? 12 : undefined}
@@ -102,10 +118,14 @@ export default function Login() {
             </div>
             {mode === "register" && (
               <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">
+                <Label
+                  htmlFor="login-confirm"
+                  className="text-xs text-muted-foreground"
+                >
                   Confirm Password
                 </Label>
                 <Input
+                  id="login-confirm"
                   type="password"
                   required
                   minLength={12}

@@ -101,6 +101,7 @@ export default function AccountTypesManager() {
               >
                 <Input
                   required
+                  aria-label="Account type name"
                   className="flex-1 h-8"
                   value={formData.name}
                   onChange={(e) =>
@@ -113,7 +114,11 @@ export default function AccountTypesManager() {
                     setFormData({ ...formData, positiveTxnType: v })
                   }
                 >
-                  <SelectTrigger size="sm" className="h-8">
+                  <SelectTrigger
+                    size="sm"
+                    aria-label="Positive transaction type"
+                    className="h-8"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -221,10 +226,14 @@ export default function AccountTypesManager() {
           className="p-3 border border-border rounded-lg bg-background space-y-3"
         >
           <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="account-type-id"
+              className="text-xs text-muted-foreground"
+            >
               Type ID (Code)
             </Label>
             <Input
+              id="account-type-id"
               required
               placeholder="e.g. wallet, cash"
               value={formData.id}
@@ -234,10 +243,14 @@ export default function AccountTypesManager() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="account-type-name"
+              className="text-xs text-muted-foreground"
+            >
               Display Name
             </Label>
             <Input
+              id="account-type-name"
               required
               placeholder="e.g. Mobile Wallet"
               value={formData.name}
@@ -247,7 +260,10 @@ export default function AccountTypesManager() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="account-type-sign"
+              className="text-xs text-muted-foreground"
+            >
               Sign Convention
             </Label>
             <Select
@@ -256,7 +272,7 @@ export default function AccountTypesManager() {
                 setFormData({ ...formData, positiveTxnType: v })
               }
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="account-type-sign" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

@@ -189,6 +189,7 @@ export default function Accounts() {
             {/* Account-type filter */}
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger
+                aria-label="Filter by account type"
                 className={`${compactLayout ? "h-8" : "h-10"} bg-background w-44`}
               >
                 <SelectValue placeholder="All Types" />
@@ -205,6 +206,7 @@ export default function Accounts() {
             {/* Closed-status filter */}
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger
+                aria-label="Filter by status"
                 className={`${compactLayout ? "h-8" : "h-10"} bg-background w-36`}
               >
                 <SelectValue placeholder="All Statuses" />
@@ -248,17 +250,21 @@ export default function Accounts() {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead
-                    className={`${headerBase} cursor-pointer select-none`}
-                    onClick={toggleSort}
+                    aria-sort={sortDir === "asc" ? "ascending" : "descending"}
+                    className={headerBase}
                   >
-                    <span className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={toggleSort}
+                      className="inline-flex items-center gap-1 cursor-pointer select-none hover:text-foreground"
+                    >
                       Name
                       {sortDir === "asc" ? (
                         <ArrowUp size={12} />
                       ) : (
                         <ArrowDown size={12} />
                       )}
-                    </span>
+                    </button>
                   </TableHead>
                   <TableHead className={headerBase}>Type</TableHead>
                   <TableHead className={headerBase}>Bank</TableHead>

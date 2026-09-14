@@ -45,16 +45,28 @@ export default function GroupDialog({
         </DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Name</Label>
+            <Label
+              htmlFor="group-form-name"
+              className="text-xs text-muted-foreground"
+            >
+              Name
+            </Label>
             <Input
+              id="group-form-name"
               placeholder="e.g. Vacation"
               value={form.name}
               onChange={(e) => patch({ name: e.target.value })}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Icon</Label>
+            <Label
+              htmlFor="group-form-icon"
+              className="text-xs text-muted-foreground"
+            >
+              Icon
+            </Label>
             <Input
+              id="group-form-icon"
               placeholder="e.g. plane"
               value={form.icon}
               onChange={(e) => patch({ icon: e.target.value })}
@@ -62,10 +74,14 @@ export default function GroupDialog({
           </div>
           {!editingGroup && (
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">
+              <Label
+                htmlFor="group-form-id"
+                className="text-xs text-muted-foreground"
+              >
                 ID (slug)
               </Label>
               <Input
+                id="group-form-id"
                 placeholder="e.g. vacation"
                 value={form.id}
                 onChange={(e) =>
@@ -77,8 +93,14 @@ export default function GroupDialog({
             </div>
           )}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Color</Label>
+            <Label
+              htmlFor="group-form-color"
+              className="text-xs text-muted-foreground"
+            >
+              Color
+            </Label>
             <input
+              id="group-form-color"
               type="color"
               value={form.color}
               onChange={(e) => patch({ color: e.target.value })}

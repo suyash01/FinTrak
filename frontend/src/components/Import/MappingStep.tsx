@@ -199,7 +199,10 @@ export default function MappingStep({
                       onMappingChange(f.key, v === "none" ? "" : v)
                     }
                   >
-                    <SelectTrigger className="mt-1 w-full h-10 bg-card">
+                    <SelectTrigger
+                      aria-label={`CSV column for ${f.label}`}
+                      className="mt-1 w-full h-10 bg-card"
+                    >
                       <SelectValue
                         placeholder={
                           f.required ? "— Select a column —" : "— Not mapped —"

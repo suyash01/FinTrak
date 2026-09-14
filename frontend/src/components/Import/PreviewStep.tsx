@@ -115,7 +115,10 @@ export default function PreviewStep({
       {selectedAccountHasBillingDay && (
         <div className="mb-5 p-4 bg-background border border-border rounded-lg">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <Label
+              htmlFor="import-billing-cycle"
+              className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider"
+            >
               Billing Cycle — attach all imported transactions
             </Label>
             <Select
@@ -124,7 +127,10 @@ export default function PreviewStep({
                 onImportBillingCycleChange(v === "auto" ? "" : v)
               }
             >
-              <SelectTrigger className="w-full bg-card">
+              <SelectTrigger
+                id="import-billing-cycle"
+                className="w-full bg-card"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -151,11 +157,17 @@ export default function PreviewStep({
       {statementTxns && pdfFile && (
         <div className="mb-5 p-4 bg-background border border-border rounded-lg flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5 min-w-45">
-            <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <Label
+              htmlFor="import-reparse-extractor"
+              className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider"
+            >
               Reparse with extractor
             </Label>
             <Select value={extractor} onValueChange={onExtractorChange}>
-              <SelectTrigger className="w-full bg-card">
+              <SelectTrigger
+                id="import-reparse-extractor"
+                className="w-full bg-card"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -168,14 +180,20 @@ export default function PreviewStep({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5 min-w-45">
-            <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <Label
+              htmlFor="import-reparse-date-format"
+              className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider"
+            >
               Date Format
             </Label>
             <Select
               value={pdfDateFormat}
               onValueChange={onPdfDateFormatChange}
             >
-              <SelectTrigger className="w-full bg-card">
+              <SelectTrigger
+                id="import-reparse-date-format"
+                className="w-full bg-card"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

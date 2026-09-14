@@ -17,6 +17,8 @@ interface AccountSelectProps {
   onValueChange: (value: string) => void;
   placeholder?: string;
   triggerClassName?: string;
+  id?: string;
+  ariaLabel?: string;
   // Optional leading items rendered before the grouped sections (e.g. an
   // "All Accounts" / "No linked account" sentinel SelectItem).
   extraItems?: ReactNode;
@@ -31,13 +33,19 @@ export default function AccountSelect({
   onValueChange,
   placeholder,
   triggerClassName,
+  id,
+  ariaLabel,
   extraItems,
 }: AccountSelectProps) {
   const groups = useMemo(() => groupAccountsByType(accounts), [accounts]);
 
   return (
     <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger className={triggerClassName}>
+      <SelectTrigger
+        id={id}
+        aria-label={ariaLabel}
+        className={triggerClassName}
+      >
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

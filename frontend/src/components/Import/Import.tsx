@@ -464,10 +464,14 @@ export default function Import() {
             </h3>
             {accounts.length > 0 && !showNewAccount && (
               <div className="flex flex-col gap-1.5 mb-5">
-                <Label className="text-muted-foreground">
+                <Label
+                  htmlFor="import-account"
+                  className="text-muted-foreground"
+                >
                   Existing Account
                 </Label>
                 <AccountSelect
+                  id="import-account"
                   accounts={accounts.filter((a) => !a.closed)}
                   value={selectedAccount || "none"}
                   onValueChange={(v) =>
@@ -499,8 +503,14 @@ export default function Import() {
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <div className="flex flex-col gap-1.5">
-                    <Label className="text-muted-foreground">Name</Label>
+                    <Label
+                      htmlFor="import-new-name"
+                      className="text-muted-foreground"
+                    >
+                      Name
+                    </Label>
                     <Input
+                      id="import-new-name"
                       className="h-10 bg-card"
                       placeholder="e.g. HDFC Savings"
                       value={newAccount.name}
@@ -510,7 +520,12 @@ export default function Import() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label className="text-muted-foreground">Type</Label>
+                    <Label
+                      htmlFor="import-new-type"
+                      className="text-muted-foreground"
+                    >
+                      Type
+                    </Label>
                     <Select
                       value={newAccount.accountTypeId}
                       onValueChange={(v) =>
@@ -520,7 +535,10 @@ export default function Import() {
                         })
                       }
                     >
-                      <SelectTrigger className="w-full h-10 bg-card">
+                      <SelectTrigger
+                        id="import-new-type"
+                        className="w-full h-10 bg-card"
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -535,8 +553,14 @@ export default function Import() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
                   <div className="flex flex-col gap-1.5">
-                    <Label className="text-muted-foreground">Bank Name</Label>
+                    <Label
+                      htmlFor="import-new-bank"
+                      className="text-muted-foreground"
+                    >
+                      Bank Name
+                    </Label>
                     <Input
+                      id="import-new-bank"
                       className="h-10 bg-card"
                       placeholder="e.g. HDFC, ICICI, SBI"
                       value={newAccount.bank}
@@ -546,8 +570,14 @@ export default function Import() {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label className="text-muted-foreground">Color</Label>
+                    <Label
+                      htmlFor="import-new-color"
+                      className="text-muted-foreground"
+                    >
+                      Color
+                    </Label>
                     <input
+                      id="import-new-color"
                       type="color"
                       value={newAccount.color}
                       onChange={(e) =>

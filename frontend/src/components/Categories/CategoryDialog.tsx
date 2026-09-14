@@ -57,22 +57,33 @@ export default function CategoryDialog({
         </DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Name</Label>
+            <Label
+              htmlFor="category-form-name"
+              className="text-xs text-muted-foreground"
+            >
+              Name
+            </Label>
             <Input
+              id="category-form-name"
               placeholder="e.g. Gym"
               value={form.name}
               onChange={(e) => patch({ name: e.target.value })}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Group</Label>
+            <Label
+              htmlFor="category-form-group"
+              className="text-xs text-muted-foreground"
+            >
+              Group
+            </Label>
             <Select
               value={form.groupId || NO_GROUP}
               onValueChange={(v) =>
                 patch({ groupId: v === NO_GROUP ? "" : v })
               }
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="category-form-group" className="w-full">
                 <SelectValue placeholder="Select group" />
               </SelectTrigger>
               <SelectContent>
@@ -85,8 +96,14 @@ export default function CategoryDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Color</Label>
+            <Label
+              htmlFor="category-form-color"
+              className="text-xs text-muted-foreground"
+            >
+              Color
+            </Label>
             <input
+              id="category-form-color"
               type="color"
               value={form.color}
               onChange={(e) => patch({ color: e.target.value })}
@@ -94,8 +111,14 @@ export default function CategoryDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Icon</Label>
+            <Label
+              htmlFor="category-form-icon"
+              className="text-xs text-muted-foreground"
+            >
+              Icon
+            </Label>
             <Input
+              id="category-form-icon"
               placeholder="e.g. dumbbell"
               value={form.icon}
               onChange={(e) => patch({ icon: e.target.value })}

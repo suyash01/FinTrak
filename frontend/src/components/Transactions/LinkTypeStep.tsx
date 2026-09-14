@@ -66,6 +66,7 @@ export default function LinkTypeStep({
               size="icon-sm"
               className="-ml-1.5"
               onClick={onBack}
+              aria-label="Back to results"
             >
               <ArrowLeft size={18} />
             </Button>

@@ -28,7 +28,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -104,7 +109,6 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
       <Button
         type="button"
         variant="outline"
-        aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`${label} filter`}
         onClick={() => setOpen((o) => !o)}
@@ -767,12 +771,18 @@ export default function PaperlessImport() {
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full space-y-6">
         {error && (
-          <div className="bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg px-4 py-3">
+          <div
+            role="alert"
+            className="bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg px-4 py-3"
+          >
             {error}
           </div>
         )}
         {success && (
-          <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm rounded-lg px-4 py-3">
+          <div
+            role="status"
+            className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm rounded-lg px-4 py-3"
+          >
             {success}
           </div>
         )}
@@ -784,10 +794,14 @@ export default function PaperlessImport() {
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">
+              <Label
+                htmlFor="paperless-account"
+                className="text-xs font-medium text-muted-foreground"
+              >
                 FinTrak Account
               </Label>
               <AccountSelect
+                id="paperless-account"
                 accounts={accounts}
                 value={selectedAccount}
                 onValueChange={setSelectedAccount}
@@ -796,11 +810,14 @@ export default function PaperlessImport() {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">
+              <Label
+                htmlFor="paperless-extractor"
+                className="text-xs font-medium text-muted-foreground"
+              >
                 Extractor
               </Label>
               <Select value={extractor} onValueChange={setExtractor}>
-                <SelectTrigger className="w-full">
+                <SelectTrigger id="paperless-extractor" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -813,11 +830,14 @@ export default function PaperlessImport() {
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">
+              <Label
+                htmlFor="paperless-date-format"
+                className="text-xs font-medium text-muted-foreground"
+              >
                 Date Format
               </Label>
               <Select value={dateFormat} onValueChange={setDateFormat}>
-                <SelectTrigger className="w-full">
+                <SelectTrigger id="paperless-date-format" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -830,10 +850,14 @@ export default function PaperlessImport() {
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-medium text-muted-foreground">
+              <Label
+                htmlFor="paperless-password"
+                className="text-xs font-medium text-muted-foreground"
+              >
                 Password (optional)
               </Label>
               <Input
+                id="paperless-password"
                 type="password"
                 placeholder="Statement password"
                 value={password}
@@ -880,6 +904,7 @@ export default function PaperlessImport() {
               <Input
                 type="text"
                 placeholder="Search title..."
+                aria-label="Search documents by title"
                 className="pl-9"
                 value={search}
                 onChange={(e) => {
@@ -1007,7 +1032,10 @@ export default function PaperlessImport() {
                   setPage(1);
                 }}
               >
-                <SelectTrigger className="w-auto gap-2 px-2 py-1 h-8 text-xs">
+                <SelectTrigger
+                  aria-label="Documents per page"
+                  className="w-auto gap-2 px-2 py-1 h-8 text-xs"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1191,8 +1219,13 @@ export default function PaperlessImport() {
             <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
               <div className="flex items-center gap-2 text-sm font-medium text-foreground min-w-0">
                 <FileText size={16} className="text-primary shrink-0" />
-                <span className="truncate">{filePreview.title}</span>
+                <DialogTitle className="truncate">
+                  {filePreview.title}
+                </DialogTitle>
               </div>
+              <DialogDescription className="sr-only">
+                Preview of the selected Paperless document
+              </DialogDescription>
               <div className="flex items-center gap-3 shrink-0">
                 <Button
                   variant="outline"
@@ -1213,6 +1246,7 @@ export default function PaperlessImport() {
                   variant="ghost"
                   size="icon"
                   onClick={closeFilePreview}
+                  aria-label="Close preview"
                   className="text-muted-foreground hover:text-foreground"
                 >
                   <X size={18} />

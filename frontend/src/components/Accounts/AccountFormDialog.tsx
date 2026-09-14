@@ -57,8 +57,14 @@ export default function AccountFormDialog({
         </DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Name</Label>
+            <Label
+              htmlFor="account-form-name"
+              className="text-xs text-muted-foreground"
+            >
+              Name
+            </Label>
             <Input
+              id="account-form-name"
               className="h-10"
               placeholder="e.g. HDFC Savings"
               value={form.name}
@@ -66,12 +72,17 @@ export default function AccountFormDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Type</Label>
+            <Label
+              htmlFor="account-form-type"
+              className="text-xs text-muted-foreground"
+            >
+              Type
+            </Label>
             <Select
               value={form.accountTypeId}
               onValueChange={(v) => patch({ accountTypeId: v })}
             >
-              <SelectTrigger className="w-full h-10">
+              <SelectTrigger id="account-form-type" className="w-full h-10">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -84,8 +95,14 @@ export default function AccountFormDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Bank</Label>
+            <Label
+              htmlFor="account-form-bank"
+              className="text-xs text-muted-foreground"
+            >
+              Bank
+            </Label>
             <Input
+              id="account-form-bank"
               className="h-10"
               placeholder="e.g. HDFC"
               value={form.bank}
@@ -93,8 +110,14 @@ export default function AccountFormDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Color</Label>
+            <Label
+              htmlFor="account-form-color"
+              className="text-xs text-muted-foreground"
+            >
+              Color
+            </Label>
             <input
+              id="account-form-color"
               type="color"
               value={form.color}
               onChange={(e) => patch({ color: e.target.value })}
@@ -102,8 +125,14 @@ export default function AccountFormDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Billing Day</Label>
+            <Label
+              htmlFor="account-form-billing-day"
+              className="text-xs text-muted-foreground"
+            >
+              Billing Day
+            </Label>
             <Input
+              id="account-form-billing-day"
               type="number"
               min={1}
               max={31}

@@ -53,6 +53,7 @@ export default function TransactionFilters({
         <Input
           className={`pl-9 ${compactLayout ? "h-8" : "h-10"} bg-background`}
           placeholder="Search descriptions..."
+          aria-label="Search transactions by description"
           value={filters.search}
           onChange={(e) => onFilterChange("search", e.target.value)}
         />
@@ -65,6 +66,7 @@ export default function TransactionFilters({
           value={String(filters.accountId || "all")}
           onValueChange={(v) => onFilterChange("accountId", v === "all" ? "" : v)}
           placeholder="All Accounts"
+          ariaLabel="Filter by account"
           triggerClassName={`${triggerHeight} bg-background`}
           extraItems={<SelectItem value="all">All Accounts</SelectItem>}
         />
@@ -83,7 +85,10 @@ export default function TransactionFilters({
             }
           }}
         >
-          <SelectTrigger className={`${triggerHeight} bg-background`}>
+          <SelectTrigger
+            aria-label="Filter by category"
+            className={`${triggerHeight} bg-background`}
+          >
             <SelectValue placeholder="All Categories" />
           </SelectTrigger>
           <SelectContent>
@@ -112,7 +117,10 @@ export default function TransactionFilters({
           value={String(filters.payeeId || "all")}
           onValueChange={(v) => onFilterChange("payeeId", v === "all" ? "" : v)}
         >
-          <SelectTrigger className={`${triggerHeight} bg-background`}>
+          <SelectTrigger
+            aria-label="Filter by payee"
+            className={`${triggerHeight} bg-background`}
+          >
             <SelectValue placeholder="All Payees" />
           </SelectTrigger>
           <SelectContent>
@@ -128,7 +136,10 @@ export default function TransactionFilters({
           value={String(filters.type || "all")}
           onValueChange={(v) => onFilterChange("type", v === "all" ? "" : v)}
         >
-          <SelectTrigger className={`${triggerHeight} bg-background`}>
+          <SelectTrigger
+            aria-label="Filter by type"
+            className={`${triggerHeight} bg-background`}
+          >
             <SelectValue placeholder="All Types" />
           </SelectTrigger>
           <SelectContent>
@@ -141,7 +152,10 @@ export default function TransactionFilters({
           value={String(filters.linked || "all")}
           onValueChange={(v) => onFilterChange("linked", v === "all" ? "" : v)}
         >
-          <SelectTrigger className={`${triggerHeight} bg-background`}>
+          <SelectTrigger
+            aria-label="Filter by link status"
+            className={`${triggerHeight} bg-background`}
+          >
             <SelectValue placeholder="All Link Status" />
           </SelectTrigger>
           <SelectContent>
@@ -156,6 +170,7 @@ export default function TransactionFilters({
           value={filters.dateFrom}
           onChange={(e) => onFilterChange("dateFrom", e.target.value)}
           title="From date"
+          aria-label="From date"
         />
         <Input
           type="date"
@@ -163,15 +178,20 @@ export default function TransactionFilters({
           value={filters.dateTo}
           onChange={(e) => onFilterChange("dateTo", e.target.value)}
           title="To date"
+          aria-label="To date"
         />
 
         {/* Page size control, floated right to stay visually separate */}
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-sm text-muted-foreground">
+          <label
+            htmlFor="rows-per-page"
+            className="text-sm text-muted-foreground"
+          >
             Rows per page
           </label>
           <Select value={preset} onValueChange={onPresetChange}>
             <SelectTrigger
+              id="rows-per-page"
               className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}
             >
               <SelectValue />
@@ -195,6 +215,7 @@ export default function TransactionFilters({
               onBlur={onCommitCustom}
               onKeyDown={(e) => e.key === "Enter" && onCommitCustom()}
               placeholder="Custom"
+              aria-label="Custom rows per page"
               className={`w-24 ${compactLayout ? "h-8" : "h-9"} bg-background`}
             />
           )}

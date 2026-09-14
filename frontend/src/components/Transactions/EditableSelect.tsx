@@ -18,6 +18,7 @@ interface EditableSelectProps {
   placeholder: string;
   displayText?: string;
   style?: CSSProperties;
+  ariaLabel?: string;
 }
 
 // Dense inline category/payee picker. This is a deliberate native <select>
@@ -31,6 +32,7 @@ export default function EditableSelect({
   placeholder,
   displayText,
   style,
+  ariaLabel,
 }: EditableSelectProps) {
   const isPlaceholder = !value;
   const allOptions = optionGroups?.flatMap((g) => g.options) ?? options ?? [];
@@ -42,6 +44,7 @@ export default function EditableSelect({
       style={{ ...style, backgroundImage: "none" }}
       value={value || ""}
       onChange={(e) => onChange(e.target.value)}
+      aria-label={ariaLabel}
       title="Click to edit"
     >
       <option value="" className="bg-popover text-muted-foreground not-italic">

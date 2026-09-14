@@ -46,6 +46,7 @@ export function useTransactionColumns({
         id: "select",
         header: ({ table }) => (
           <Checkbox
+            aria-label="Select all rows"
             checked={table.getIsAllPageRowsSelected()}
             onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
           />
@@ -53,6 +54,7 @@ export function useTransactionColumns({
         cell: ({ row }) =>
           row.original.isSummary ? null : (
             <Checkbox
+              aria-label={`Select ${row.original.description}`}
               checked={row.getIsSelected()}
               onCheckedChange={(v) => row.toggleSelected(!!v)}
             />
@@ -109,6 +111,7 @@ export function useTransactionColumns({
               }
               placeholder="No Payee"
               displayText={row.original.payee}
+              ariaLabel={`Payee for ${row.original.description}`}
             />
           ),
         meta: { cellClassName: "text-sm min-w-25" },
@@ -141,6 +144,7 @@ export function useTransactionColumns({
               displayText={
                 row.original.categoryId ? row.original.categoryName : ""
               }
+              ariaLabel={`Category for ${row.original.description}`}
               style={
                 row.original.categoryColor
                   ? { color: row.original.categoryColor }
@@ -193,6 +197,7 @@ export function useTransactionColumns({
                   className="text-muted-foreground hover:text-primary hover:bg-primary/10"
                   onClick={() => onEdit(t)}
                   title="Edit transaction"
+                  aria-label={`Edit ${t.description}`}
                 >
                   <Pencil size={14} />
                 </Button>
@@ -207,6 +212,11 @@ export function useTransactionColumns({
                 }`}
                 onClick={() => onLink(t)}
                 title={t.isLinked ? "Manage links" : "Find match and link"}
+                aria-label={
+                  t.isLinked
+                    ? `Manage links for ${t.description}`
+                    : `Find match and link ${t.description}`
+                }
               >
                 <Link2 size={14} />
               </Button>
@@ -217,6 +227,7 @@ export function useTransactionColumns({
                   className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                   onClick={() => onDelete(t.id)}
                   title="Delete transaction"
+                  aria-label={`Delete ${t.description}`}
                 >
                   <Trash2 size={14} />
                 </Button>

@@ -102,6 +102,11 @@ export default function AccountRow({
                 ? "Remove as default account"
                 : "Set as default account"
             }
+            aria-label={
+              acc.isDefault
+                ? `Remove ${acc.name} as default account`
+                : `Set ${acc.name} as default account`
+            }
           >
             <Star size={15} fill={acc.isDefault ? "currentColor" : "none"} />
           </Button>
@@ -111,6 +116,7 @@ export default function AccountRow({
             className="text-muted-foreground hover:text-primary hover:bg-primary/10"
             onClick={() => onExport(acc.id)}
             title="Export transactions (CSV)"
+            aria-label={`Export ${acc.name} transactions as CSV`}
           >
             <Download size={14} />
           </Button>
@@ -120,6 +126,7 @@ export default function AccountRow({
             className="text-muted-foreground hover:text-primary hover:bg-primary/10"
             onClick={() => onEdit(acc)}
             title="Edit account"
+            aria-label={`Edit ${acc.name}`}
           >
             <Pencil size={14} />
           </Button>
@@ -133,6 +140,9 @@ export default function AccountRow({
                 ? "Reopen account"
                 : "Close account (transactions become read-only)"
             }
+            aria-label={
+              acc.closed ? `Reopen ${acc.name}` : `Close ${acc.name}`
+            }
           >
             {acc.closed ? <LockOpen size={14} /> : <Lock size={14} />}
           </Button>
@@ -142,6 +152,7 @@ export default function AccountRow({
             className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             onClick={() => onDelete(acc)}
             title="Delete account"
+            aria-label={`Delete ${acc.name}`}
           >
             <Trash2 size={14} />
           </Button>

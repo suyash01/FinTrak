@@ -64,8 +64,14 @@ export default function PaperlessSettingsManager() {
   return (
     <form onSubmit={handleSave} className="space-y-3">
       <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">Paperless URL</Label>
+        <Label
+          htmlFor="paperless-settings-url"
+          className="text-xs text-muted-foreground"
+        >
+          Paperless URL
+        </Label>
         <Input
+          id="paperless-settings-url"
           type="text"
           placeholder="http://localhost:8000"
           value={url}
@@ -73,8 +79,14 @@ export default function PaperlessSettingsManager() {
         />
       </div>
       <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">API Token</Label>
+        <Label
+          htmlFor="paperless-settings-token"
+          className="text-xs text-muted-foreground"
+        >
+          API Token
+        </Label>
         <Input
+          id="paperless-settings-token"
           type="password"
           placeholder={
             tokenSet
@@ -91,10 +103,14 @@ export default function PaperlessSettingsManager() {
         </p>
       </div>
       <div className="space-y-1.5">
-        <Label className="text-xs text-muted-foreground">
+        <Label
+          htmlFor="paperless-settings-tag"
+          className="text-xs text-muted-foreground"
+        >
           Import Tag Label
         </Label>
         <Input
+          id="paperless-settings-tag"
           type="text"
           placeholder="e.g. fintrak"
           value={tag}

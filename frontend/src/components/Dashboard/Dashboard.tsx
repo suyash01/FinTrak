@@ -350,12 +350,14 @@ export default function Dashboard() {
             value={accountId || ALL_ACCOUNTS}
             onValueChange={(v) => setAccountId(v === ALL_ACCOUNTS ? "" : v)}
             placeholder="All Accounts"
+            ariaLabel="Filter by account"
             triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
             extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
           />
           {isBillingCycleMode ? (
             <Select value={cycles} onValueChange={setCycles}>
               <SelectTrigger
+                aria-label="Number of billing cycles"
                 className={`${compactLayout ? "h-8" : "h-10"} bg-background w-40`}
               >
                 <SelectValue placeholder="Cycles" />
@@ -394,6 +396,7 @@ export default function Dashboard() {
                   setPeriod(PERIOD_CUSTOM);
                 }}
                 title="From date"
+                aria-label="From date"
               />
               <Input
                 type="date"
@@ -404,6 +407,7 @@ export default function Dashboard() {
                   setPeriod(PERIOD_CUSTOM);
                 }}
                 title="To date"
+                aria-label="To date"
               />
             </>
           )}

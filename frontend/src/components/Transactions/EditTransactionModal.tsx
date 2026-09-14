@@ -266,7 +266,10 @@ export default function EditTransactionModal({
           <div className="px-6 py-5 space-y-6">
             {/* Error */}
             {error && (
-              <div className="px-4 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
+              <div
+                role="alert"
+                className="px-4 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive"
+              >
                 {error}
               </div>
             )}
@@ -280,8 +283,11 @@ export default function EditTransactionModal({
 
               {/* Description */}
               <div>
-                <Label className={labelClass}>Description</Label>
+                <Label htmlFor="edit-txn-description" className={labelClass}>
+                  Description
+                </Label>
                 <Input
+                  id="edit-txn-description"
                   type="text"
                   value={form.description}
                   onChange={(e) =>
@@ -295,11 +301,12 @@ export default function EditTransactionModal({
               {/* Date & Amount row */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className={labelClass}>
+                  <Label htmlFor="edit-txn-date" className={labelClass}>
                     <Calendar size={10} className="inline mr-1" />
                     Date
                   </Label>
                   <Input
+                    id="edit-txn-date"
                     type="date"
                     value={form.date}
                     onChange={(e) =>
@@ -309,11 +316,12 @@ export default function EditTransactionModal({
                   />
                 </div>
                 <div>
-                  <Label className={labelClass}>
+                  <Label htmlFor="edit-txn-amount" className={labelClass}>
                     <DollarSign size={10} className="inline mr-1" />
                     Amount
                   </Label>
                   <Input
+                    id="edit-txn-amount"
                     type="number"
                     step="0.01"
                     min="0"
@@ -331,7 +339,11 @@ export default function EditTransactionModal({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label className={labelClass}>Type</Label>
-                  <div className="flex rounded-lg border border-border overflow-hidden">
+                  <div
+                    role="group"
+                    aria-label="Type"
+                    className="flex rounded-lg border border-border overflow-hidden"
+                  >
                     <Button
                       type="button"
                       variant="ghost"
@@ -353,11 +365,12 @@ export default function EditTransactionModal({
                   </div>
                 </div>
                 <div>
-                  <Label className={labelClass}>
+                  <Label htmlFor="edit-txn-account" className={labelClass}>
                     <Landmark size={10} className="inline mr-1" />
                     Account
                   </Label>
                   <AccountSelect
+                    id="edit-txn-account"
                     accounts={accounts.filter((a) => !a.closed)}
                     value={form.accountId || "none"}
                     onValueChange={(v) =>
@@ -379,7 +392,7 @@ export default function EditTransactionModal({
               {/* Billing Cycle (accounts with a billing day) */}
               {selectedAccount?.billingDay && (
                 <div>
-                  <Label className={labelClass}>
+                  <Label htmlFor="edit-txn-billing-cycle" className={labelClass}>
                     <Calendar size={10} className="inline mr-1" />
                     Billing Cycle
                   </Label>
@@ -392,7 +405,7 @@ export default function EditTransactionModal({
                       }))
                     }
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="edit-txn-billing-cycle" className="w-full">
                       <SelectValue
                         placeholder={
                           isCreate ? "Auto (by date)" : "Unassigned"
@@ -446,7 +459,9 @@ export default function EditTransactionModal({
               {/* Category & Payee row */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className={labelClass}>Category</Label>
+                  <Label htmlFor="edit-txn-category" className={labelClass}>
+                    Category
+                  </Label>
                   <Select
                     value={form.categoryId || "none"}
                     onValueChange={(v) =>
@@ -456,7 +471,7 @@ export default function EditTransactionModal({
                       }))
                     }
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="edit-txn-category" className="w-full">
                       <SelectValue placeholder="Uncategorized" />
                     </SelectTrigger>
                     <SelectContent>
@@ -475,7 +490,7 @@ export default function EditTransactionModal({
                   </Select>
                 </div>
                 <div>
-                  <Label className={labelClass}>
+                  <Label htmlFor="edit-txn-payee" className={labelClass}>
                     <User size={10} className="inline mr-1" />
                     Payee
                   </Label>
@@ -488,7 +503,7 @@ export default function EditTransactionModal({
                       }))
                     }
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="edit-txn-payee" className="w-full">
                       <SelectValue placeholder="No Payee" />
                     </SelectTrigger>
                     <SelectContent>
@@ -505,8 +520,11 @@ export default function EditTransactionModal({
 
               {/* Notes */}
               <div>
-                <Label className={labelClass}>Notes</Label>
+                <Label htmlFor="edit-txn-notes" className={labelClass}>
+                  Notes
+                </Label>
                 <textarea
+                  id="edit-txn-notes"
                   className="w-full min-h-24 resize-none rounded-lg border border-border bg-background px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                   rows={3}
                   value={form.notes}
@@ -519,7 +537,9 @@ export default function EditTransactionModal({
 
               {/* Tags */}
               <div>
-                <Label className={labelClass}>Tags</Label>
+                <Label htmlFor="edit-txn-tags" className={labelClass}>
+                  Tags
+                </Label>
                 <div className="flex flex-wrap gap-2 mb-2">
                   {form.tags.map((tag) => (
                     <Badge
@@ -529,6 +549,7 @@ export default function EditTransactionModal({
                       {tag}
                       <button
                         type="button"
+                        aria-label={`Remove tag ${tag}`}
                         className="hover:text-destructive transition-colors ml-0.5"
                         onClick={() => removeTag(tag)}
                       >
@@ -539,6 +560,7 @@ export default function EditTransactionModal({
                 </div>
                 <div className="flex gap-2">
                   <Input
+                    id="edit-txn-tags"
                     type="text"
                     className="flex-1"
                     value={tagInput}

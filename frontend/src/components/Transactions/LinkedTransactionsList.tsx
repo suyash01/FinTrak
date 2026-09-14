@@ -71,6 +71,7 @@ export default function LinkedTransactionsList({
                   size="icon-sm"
                   className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                   title="Unlink"
+                  aria-label="Unlink transaction"
                   onClick={() => onRequestUnlink(l.id)}
                 >
                   <Trash2 size={14} />

@@ -165,6 +165,7 @@ export default function Linking() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => toggleSelect(l.id)}
+                        aria-label={selected.has(l.id) ? "Deselect link" : "Select link"}
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
@@ -206,6 +207,7 @@ export default function Linking() {
                         className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => setUnlinkId(l.id)}
                         title="Remove link"
+                        aria-label="Remove link"
                       >
                         <Trash2 size={16} />
                       </Button>
@@ -231,6 +233,7 @@ export default function Linking() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => toggleSelect(l.id)}
+                        aria-label={selected.has(l.id) ? "Deselect link" : "Select link"}
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
@@ -271,6 +274,7 @@ export default function Linking() {
                         className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => setUnlinkId(l.id)}
                         title="Remove link"
+                        aria-label="Remove link"
                       >
                         <Trash2 size={16} />
                       </Button>
@@ -296,6 +300,7 @@ export default function Linking() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => toggleSelect(l.id)}
+                        aria-label={selected.has(l.id) ? "Deselect link" : "Select link"}
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
@@ -336,6 +341,7 @@ export default function Linking() {
                         className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => setUnlinkId(l.id)}
                         title="Remove link"
+                        aria-label="Remove link"
                       >
                         <Trash2 size={16} />
                       </Button>
@@ -361,6 +367,7 @@ export default function Linking() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => toggleSelect(l.id)}
+                        aria-label={selected.has(l.id) ? "Deselect link" : "Select link"}
                         className={`shrink-0 transition-colors ${selected.has(l.id) ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`}
                       >
                         {selected.has(l.id) ? (
@@ -401,6 +408,7 @@ export default function Linking() {
                         className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => setUnlinkId(l.id)}
                         title="Remove link"
+                        aria-label="Remove link"
                       >
                         <Trash2 size={16} />
                       </Button>

@@ -49,7 +49,11 @@ export default function App() {
 function RouteFallback() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary" />
+      <div
+        role="status"
+        aria-label="Loading"
+        className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary"
+      />
     </div>
   );
 }

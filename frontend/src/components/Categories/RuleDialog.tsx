@@ -56,20 +56,31 @@ export default function RuleDialog({
         </DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Pattern</Label>
+            <Label
+              htmlFor="rule-form-pattern"
+              className="text-xs text-muted-foreground"
+            >
+              Pattern
+            </Label>
             <Input
+              id="rule-form-pattern"
               placeholder="e.g. SWIGGY, AMAZON, UBER"
               value={form.pattern}
               onChange={(e) => patch({ pattern: e.target.value })}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">Match Type</Label>
+            <Label
+              htmlFor="rule-form-match-type"
+              className="text-xs text-muted-foreground"
+            >
+              Match Type
+            </Label>
             <Select
               value={form.matchType}
               onValueChange={(v) => patch({ matchType: v })}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="rule-form-match-type" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -80,7 +91,10 @@ export default function RuleDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="rule-form-category"
+              className="text-xs text-muted-foreground"
+            >
               Assign Category
             </Label>
             <Select
@@ -89,7 +103,7 @@ export default function RuleDialog({
                 patch({ categoryId: v === NO_CATEGORY ? "" : v })
               }
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="rule-form-category" className="w-full">
                 <SelectValue placeholder="Choose category..." />
               </SelectTrigger>
               <SelectContent>
@@ -110,7 +124,10 @@ export default function RuleDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="rule-form-payee"
+              className="text-xs text-muted-foreground"
+            >
               Assign Payee (optional)
             </Label>
             <Select
@@ -119,7 +136,7 @@ export default function RuleDialog({
                 patch({ payeeId: v === NO_PAYEE ? null : v })
               }
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="rule-form-payee" className="w-full">
                 <SelectValue placeholder="No Payee" />
               </SelectTrigger>
               <SelectContent>
@@ -133,10 +150,14 @@ export default function RuleDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label
+              htmlFor="rule-form-priority"
+              className="text-xs text-muted-foreground"
+            >
               Priority (higher = first)
             </Label>
             <Input
+              id="rule-form-priority"
               type="number"
               value={form.priority}
               onChange={(e) =>

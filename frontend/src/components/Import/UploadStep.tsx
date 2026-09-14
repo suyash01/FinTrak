@@ -177,9 +177,14 @@ export default function UploadStep({
             onChange={onPdfUpload}
           />
           <div className="mt-4 flex flex-col gap-1.5">
-            <Label className="text-muted-foreground">Extractor</Label>
+            <Label htmlFor="import-extractor" className="text-muted-foreground">
+              Extractor
+            </Label>
             <Select value={extractor} onValueChange={onExtractorChange}>
-              <SelectTrigger className="w-full h-10 bg-background">
+              <SelectTrigger
+                id="import-extractor"
+                className="w-full h-10 bg-background"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -195,10 +200,14 @@ export default function UploadStep({
             </Select>
           </div>
           <div className="mt-4 flex flex-col gap-1.5">
-            <Label className="text-muted-foreground">
+            <Label
+              htmlFor="import-pdf-password"
+              className="text-muted-foreground"
+            >
               Password (if the PDF is protected)
             </Label>
             <Input
+              id="import-pdf-password"
               type="password"
               className="h-10 bg-background"
               placeholder="Optional"

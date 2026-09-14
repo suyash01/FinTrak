@@ -84,6 +84,7 @@ export default function Sidebar() {
             size="icon-sm"
             onClick={() => setCollapsed((c) => !c)}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="text-muted-foreground hover:text-foreground ml-auto -mr-1.5"
           >
             <PanelLeftClose />
@@ -94,6 +95,7 @@ export default function Sidebar() {
             size="icon-sm"
             onClick={() => setCollapsed((c) => !c)}
             title="Expand sidebar"
+            aria-label="Expand sidebar"
             className="text-muted-foreground hover:text-foreground"
           >
             <PanelLeftOpen />
@@ -179,6 +181,7 @@ export default function Sidebar() {
             size="icon-sm"
             onClick={handleLogout}
             title="Log out"
+            aria-label="Log out"
             className="text-muted-foreground hover:text-destructive shrink-0"
           >
             <LogOut />

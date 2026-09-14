@@ -80,6 +80,7 @@ export default function Settings() {
               </div>
             </div>
             <Switch
+              aria-label="Compact layout"
               checked={compactLayout}
               onCheckedChange={toggleCompactLayout}
             />

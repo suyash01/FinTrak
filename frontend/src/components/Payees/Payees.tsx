@@ -182,6 +182,7 @@ export default function Payees() {
             <Input
               type="text"
               placeholder="Search payees..."
+              aria-label="Search payees"
               className={`pl-9 ${compactLayout ? "h-8" : "h-10"}`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -228,17 +229,21 @@ export default function Payees() {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead
-                    className={`${headerBase} cursor-pointer select-none`}
-                    onClick={toggleSort}
+                    aria-sort={sortDir === "asc" ? "ascending" : "descending"}
+                    className={headerBase}
                   >
-                    <span className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={toggleSort}
+                      className="inline-flex items-center gap-1 cursor-pointer select-none hover:text-foreground"
+                    >
                       Name
                       {sortDir === "asc" ? (
                         <ArrowUp size={12} />
                       ) : (
                         <ArrowDown size={12} />
                       )}
-                    </span>
+                    </button>
                   </TableHead>
                   <TableHead className={headerBase}>Type</TableHead>
                   <TableHead className={headerBase}>Linked Account</TableHead>
@@ -293,6 +298,7 @@ export default function Payees() {
                           className="text-muted-foreground hover:text-primary hover:bg-primary/10"
                           onClick={() => openModal(payee)}
                           title="Edit payee"
+                          aria-label={`Edit ${payee.name}`}
                         >
                           <Edit2 size={14} />
                         </Button>
@@ -303,6 +309,7 @@ export default function Payees() {
                                 variant="ghost"
                                 size="icon-sm"
                                 title="Delete payee"
+                                aria-label={`Delete ${payee.name}`}
                                 className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                               >
                                 <Trash2 size={14} />
@@ -360,8 +367,9 @@ export default function Payees() {
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label>Payee Name</Label>
+              <Label htmlFor="payee-name">Payee Name</Label>
               <Input
+                id="payee-name"
                 type="text"
                 required
                 autoFocus
@@ -382,8 +390,9 @@ export default function Payees() {
             </div>
 
             <div className="space-y-2">
-              <Label>Link to Account (Optional)</Label>
+              <Label htmlFor="payee-account">Link to Account (Optional)</Label>
               <AccountSelect
+                id="payee-account"
                 accounts={accounts}
                 value={formData.accountId || NO_ACCOUNT}
                 onValueChange={(v) =>

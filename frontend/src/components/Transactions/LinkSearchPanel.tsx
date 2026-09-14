@@ -49,6 +49,7 @@ export default function LinkSearchPanel({
             <Input
               className="pl-9"
               placeholder="Search description..."
+              aria-label="Search transactions by description"
               value={search}
               onChange={(e) => onSearchChange(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && onSubmit()}
@@ -91,6 +92,7 @@ export default function LinkSearchPanel({
               value={accountId || "all"}
               onValueChange={onAccountChange}
               placeholder="All Accounts"
+              ariaLabel="Filter by account"
               triggerClassName="w-full"
               extraItems={<SelectItem value="all">All Accounts</SelectItem>}
             />
@@ -105,6 +107,7 @@ export default function LinkSearchPanel({
             <Input
               type="date"
               className="flex-1"
+              aria-label="From date"
               value={dateFrom}
               onChange={(e) => onDateFromChange(e.target.value)}
             />
@@ -112,6 +115,7 @@ export default function LinkSearchPanel({
             <Input
               type="date"
               className="flex-1"
+              aria-label="To date"
               value={dateTo}
               onChange={(e) => onDateToChange(e.target.value)}
             />
