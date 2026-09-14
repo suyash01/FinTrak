@@ -67,6 +67,145 @@ func TestGenerateToken(t *testing.T) {
 	assert.Equal(t, userID.String(), claims.Subject)
 	assert.NotEmpty(t, claims.ID)
 	assert.WithinDuration(t, time.Now().Add(tokenTTL), claims.ExpiresAt.Time, time.Minute)
+	require.NotNil(t, claims.SessionExpiresAt)
+	assert.WithinDuration(t, time.Now().Add(sessionTTL), claims.SessionExpiresAt.Time, time.Minute)
+}
+
+// signClaims mints an HS256 token from arbitrary claims, letting tests craft
+// near-expiry and expired-session tokens that GenerateToken cannot produce.
+func signClaims(t *testing.T, claims Claims, secret string) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := tok.SignedString([]byte(secret))
+	require.NoError(t, err)
+	return signed
+}
+
+func TestRequireAuthEnforcesSessionDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.GET("/protected", RequireAuth(testSecret), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"userID": GetUserID(c)})
+	})
+
+	now := time.Now()
+	token := signClaims(t, Claims{
+		UserID:           uuid.New(),
+		Role:             "user",
+		SessionExpiresAt: jwt.NewNumericDate(now.Add(-time.Minute)),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    tokenIssuer,
+			Subject:   uuid.NewString(),
+			Audience:  jwt.ClaimStrings{tokenAudience},
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+	}, testSecret)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "session expired")
+}
+
+func TestRenewSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newRouter := func() *gin.Engine {
+		r := gin.New()
+		r.GET("/protected", RequireAuth(testSecret), RenewSession(testSecret, false), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"userID": GetUserID(c)})
+		})
+		return r
+	}
+
+	do := func(claims Claims) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+signClaims(t, claims, testSecret))
+		newRouter().ServeHTTP(w, req)
+		return w
+	}
+
+	baseClaims := func(expiresIn, sessionIn time.Duration) Claims {
+		now := time.Now()
+		return Claims{
+			UserID:           uuid.New(),
+			Role:             "user",
+			SessionExpiresAt: jwt.NewNumericDate(now.Add(sessionIn)),
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    tokenIssuer,
+				Audience:  jwt.ClaimStrings{tokenAudience},
+				ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
+				IssuedAt:  jwt.NewNumericDate(now),
+			},
+		}
+	}
+
+	t.Run("renews a token near expiry", func(t *testing.T) {
+		userID := uuid.New()
+		claims := baseClaims(10*time.Minute, 10*24*time.Hour)
+		claims.UserID = userID
+
+		w := do(claims)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		cookies := w.Result().Cookies()
+		require.Len(t, cookies, 1)
+		assert.Equal(t, AuthCookieName, cookies[0].Name)
+
+		// The replacement must be parseable and preserve the user and the
+		// absolute session deadline.
+		parsed, err := jwt.ParseWithClaims(cookies[0].Value, &Claims{}, func(*jwt.Token) (any, error) {
+			return []byte(testSecret), nil
+		})
+		require.NoError(t, err)
+		renewed, ok := parsed.Claims.(*Claims)
+		require.True(t, ok)
+		assert.Equal(t, userID, renewed.UserID)
+		require.NotNil(t, renewed.SessionExpiresAt)
+		assert.WithinDuration(t, claims.SessionExpiresAt.Time, renewed.SessionExpiresAt.Time, time.Second)
+	})
+
+	t.Run("leaves a fresh token alone", func(t *testing.T) {
+		w := do(baseClaims(time.Hour, 10*24*time.Hour))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Empty(t, w.Result().Cookies())
+	})
+
+	t.Run("does not renew past the session deadline", func(t *testing.T) {
+		// Token expires in 10m, but the whole session has only 10m left: the
+		// absolute cap wins and no replacement is issued.
+		w := do(baseClaims(10*time.Minute, 10*time.Minute))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Empty(t, w.Result().Cookies())
+	})
+
+	t.Run("legacy token without session deadline is not renewed", func(t *testing.T) {
+		now := time.Now()
+		token := signClaims(t, Claims{
+			UserID: uuid.New(),
+			Role:   "user",
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    tokenIssuer,
+				Audience:  jwt.ClaimStrings{tokenAudience},
+				ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+				IssuedAt:  jwt.NewNumericDate(now),
+			},
+		}, testSecret)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		newRouter().ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Empty(t, w.Result().Cookies())
+	})
 }
 
 func TestRequireAuth(t *testing.T) {

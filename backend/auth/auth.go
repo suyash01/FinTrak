@@ -5,6 +5,7 @@ package auth
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,9 +20,21 @@ import (
 const (
 	ctxUserIDKey   = "userID"
 	ctxUserRoleKey = "userRole"
+	ctxClaimsKey   = "authClaims"
 	// tokenTTL is how long an issued JWT stays valid. Kept short because the
-	// role is embedded in the token and cannot be revoked before it expires.
+	// role is embedded in the token and cannot be revoked before it expires,
+	// and because sliding renewal (see RenewSession) refreshes it on activity.
 	tokenTTL = 2 * time.Hour
+	// sessionTTL is the absolute maximum lifetime of a session regardless of
+	// activity. Sliding renewal extends a session as the user works, but never
+	// past this deadline; once it passes the user must log in again. The
+	// deadline travels inside the token (Claims.SessionExpiresAt) so no
+	// server-side session store is required.
+	sessionTTL = 30 * 24 * time.Hour
+	// renewThreshold is how close an access token must be to expiry before
+	// RenewSession mints a replacement. Renewing on every request would churn
+	// tokens for no benefit.
+	renewThreshold = 30 * time.Minute
 	// tokenIssuer and tokenAudience are validated on every request so tokens
 	// minted for another service (or with the same secret but different intent)
 	// are rejected.
@@ -29,11 +42,16 @@ const (
 	tokenAudience = "fintrak-api"
 )
 
-// Claims is the JWT payload for FinTrak tokens: the user ID, role, and standard
-// registered claims.
+// Claims is the JWT payload for FinTrak tokens: the user ID, role, the absolute
+// session deadline, and standard registered claims.
 type Claims struct {
 	UserID uuid.UUID `json:"user_id"`
 	Role   string    `json:"role"`
+	// SessionExpiresAt is the absolute deadline of the whole session. Sliding
+	// renewal carries it forward unchanged, so activity can extend a session up
+	// to — but never beyond — this instant. Tokens issued before sliding renewal
+	// existed may omit it; such tokens are accepted but never renewed.
+	SessionExpiresAt *jwt.NumericDate `json:"session_exp,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -49,17 +67,31 @@ func CheckPassword(hash, password string) bool {
 }
 
 // GenerateToken signs an HS256 JWT for the given user and role using the secret.
+// It starts a brand-new session with a fresh absolute deadline (sessionTTL).
 func GenerateToken(userID uuid.UUID, role, secret string) (string, error) {
+	return generateToken(userID, role, secret, time.Now().Add(sessionTTL))
+}
+
+// generateToken signs a token whose session deadline is sessionExpiresAt. The
+// access token's own expiry is capped at that deadline so a token can never
+// outlive its session even if it is issued during the final renewal window.
+func generateToken(userID uuid.UUID, role, secret string, sessionExpiresAt time.Time) (string, error) {
 	now := time.Now()
+	expiresAt := now.Add(tokenTTL)
+	if sessionExpiresAt.Before(expiresAt) {
+		expiresAt = sessionExpiresAt
+	}
+
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:           userID,
+		Role:             role,
+		SessionExpiresAt: jwt.NewNumericDate(sessionExpiresAt),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    tokenIssuer,
 			Subject:   userID.String(),
 			Audience:  jwt.ClaimStrings{tokenAudience},
 			ID:        uuid.NewString(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(tokenTTL)),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
@@ -146,10 +178,72 @@ func RequireAuth(secret string) gin.HandlerFunc {
 			return
 		}
 
+		// Enforce the absolute session deadline. A token is normally short-lived
+		// and capped at this instant at issuance, but checking it here keeps the
+		// bound authoritative even if a token was minted with a longer expiry.
+		if claims.SessionExpiresAt != nil && !time.Now().Before(claims.SessionExpiresAt.Time) {
+			validation.RespondAuthError(c, "session expired")
+			return
+		}
+
 		c.Set(ctxUserIDKey, claims.UserID)
 		c.Set(ctxUserRoleKey, claims.Role)
+		c.Set(ctxClaimsKey, claims)
 		c.Next()
 	}
+}
+
+// RenewSession is the sliding-session middleware. When an authenticated request
+// arrives with an access token that is close to expiry, it transparently mints a
+// replacement and sets it on the response, so an active user is never logged out
+// mid-use. The session's absolute deadline (Claims.SessionExpiresAt) is carried
+// forward unchanged, so renewal can extend a session but never past the cap.
+//
+// It must run after RequireAuth, which populates the parsed claims in the
+// request context. Tokens that predate sliding renewal (no session deadline) are
+// left alone and simply expire as before.
+func RenewSession(secret string, secure bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := GetClaims(c)
+		if claims == nil || claims.ExpiresAt == nil || claims.SessionExpiresAt == nil {
+			c.Next()
+			return
+		}
+
+		now := time.Now()
+		// Once the absolute deadline is within the renewal window, stop renewing:
+		// the token is already capped there and reissuing would repeat on every
+		// request. The user will be asked to log in when it elapses.
+		if claims.SessionExpiresAt.Time.Sub(now) <= renewThreshold {
+			c.Next()
+			return
+		}
+		// Still comfortably valid — nothing to do.
+		if now.Add(renewThreshold).Before(claims.ExpiresAt.Time) {
+			c.Next()
+			return
+		}
+
+		token, err := generateToken(claims.UserID, claims.Role, secret, claims.SessionExpiresAt.Time)
+		if err != nil {
+			slog.Error("renewing session", slog.String("error", err.Error()))
+			c.Next()
+			return
+		}
+		SetAuthCookie(c, token, secure)
+		c.Next()
+	}
+}
+
+// GetClaims returns the parsed token claims populated by RequireAuth, or nil
+// when the request is unauthenticated (or the middleware has not run).
+func GetClaims(c *gin.Context) *Claims {
+	if v, ok := c.Get(ctxClaimsKey); ok {
+		if claims, ok := v.(*Claims); ok {
+			return claims
+		}
+	}
+	return nil
 }
 
 // RequireAdmin rejects the request unless the authenticated user has the

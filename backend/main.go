@@ -172,8 +172,11 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	api.POST("/auth/login", srv.Login)
 	api.POST("/auth/logout", srv.Logout)
 
-	// Protected routes
+	// Protected routes. RequireAuth validates the token; RenewSession then keeps
+	// active sessions alive by sliding the access token forward (up to the
+	// session's absolute deadline).
 	api.Use(auth.RequireAuth(cfg.JWTSecret))
+	api.Use(auth.RenewSession(cfg.JWTSecret, cfg.CookieSecure))
 	{
 		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
 		api.GET("/auth/me", srv.Me)

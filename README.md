@@ -163,6 +163,8 @@ The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI sp
 
 All endpoints except `/auth/register`, `/auth/login`, and `/auth/logout` require authentication. The login/register endpoints deliver the JWT as an httpOnly, `SameSite=Lax` session cookie (`fintrak_token`) that the browser sends automatically, so the token is never exposed to JavaScript. A bearer `Authorization: Bearer <token>` header is still accepted (used by internal tooling/tests). Set the signing secret via the `JWT_SECRET` environment variable (a dev default is used when unset).
 
+Sessions use **sliding renewal**: each access token is short-lived (2h), but any authenticated request made in the token's final 30 minutes automatically mints a replacement cookie, so an active user stays signed in without re-entering credentials. Renewal never extends a session past its absolute deadline (30 days, carried in the token's `session_exp` claim), so a session that goes idle past the token's lifetime still requires a fresh login. There is no server-side session store: revocation is bounded by the access-token lifetime, and a stolen token can be kept alive by an attacker up to the 30-day session cap (the trade-off accepted in exchange for not storing sessions).
+
 ---
 
 ## 📝 License
