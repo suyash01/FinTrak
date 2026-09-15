@@ -246,3 +246,43 @@ func TestNormalizeParserType(t *testing.T) {
 	assert.Equal(t, "debit", normalizeParserType("Debit"))
 	assert.Equal(t, "debit", normalizeParserType("weird"))
 }
+
+// TestParseStatementReturns429WhenParserBusy verifies the authoritative
+// server-side concurrency cap: once maxConcurrentParses forwards are in flight,
+// a new request fails fast with 429 instead of piling onto the parser.
+func TestParseStatementReturns429WhenParserBusy(t *testing.T) {
+	srv := NewServer(nil, "http://parser.invalid", 0)
+	for i := 0; i < maxConcurrentParses; i++ {
+		srv.parseSem <- struct{}{}
+	}
+
+	r := newStatementTestRouter(srv)
+	body, ct := multipartUpload(t, "")
+	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "busy")
+}
+
+// TestParseStatementReleasesConcurrencySlot guards against a leaked semaphore
+// slot: repeated successful parses must all be admitted.
+func TestParseStatementReleasesConcurrencySlot(t *testing.T) {
+	parser, closeParser := startFakeParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`)
+	defer closeParser()
+
+	srv := NewServer(nil, parser.URL, 0)
+	r := newStatementTestRouter(srv)
+
+	for i := 0; i < 2; i++ {
+		body, ct := multipartUpload(t, "")
+		req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
+		req.Header.Set("Content-Type", ct)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+	}
+	assert.Len(t, srv.parseSem, 0, "semaphore slots must be released")
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import PaperlessImport from "./PaperlessImport";
@@ -160,5 +160,32 @@ describe("PaperlessImport exclusion", () => {
       (t: { description: string }) => t.description,
     );
     expect(descriptions).not.toContain("Skipped Row Test");
+  });
+
+  it("renders Paperless rows as labelled list items with a sibling Preview button", async () => {
+    render(
+      <MemoryRouter>
+        <DomainDataProvider>
+          <PaperlessImport />
+        </DomainDataProvider>
+      </MemoryRouter>,
+    );
+
+    const list = await screen.findByRole("list", {
+      name: "Paperless documents",
+    });
+    const item = within(list).getByRole("listitem");
+
+    // A real checkbox with an accessible name, not a focusable row pretending
+    // to be one.
+    const checkbox = within(item).getByRole("checkbox", {
+      name: "Select Statement March",
+    });
+    expect(item.getAttribute("role")).toBe("listitem");
+    expect(item.getAttribute("tabindex")).toBeNull();
+
+    // Preview is a sibling control, never nested inside the checkbox.
+    const preview = within(item).getByRole("button", { name: /preview/i });
+    expect(checkbox.contains(preview)).toBe(false);
   });
 });

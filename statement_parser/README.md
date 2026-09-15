@@ -43,6 +43,12 @@ Uploads are capped at 20 MB, and extraction refuses PDFs with more than
 "decompression bomb" files. Override the cap with the `MAX_PAGES` environment
 variable.
 
+Concurrency is bounded in two places: the image runs gunicorn with
+`--workers 2`, and the FinTrak backend caps concurrent parser forwards
+(`maxConcurrentParses`) and returns `429` when saturated instead of queueing
+unbounded work. Do not raise gunicorn's worker count past what the host can
+safely parse.
+
 Then open http://localhost:5000 — upload a PDF, enter a password if the file
 is protected, and view/download the extracted transactions.
 

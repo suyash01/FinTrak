@@ -108,6 +108,19 @@ func (srv *Server) ParseStatement(c *gin.Context) {
 // status is 200 and errMsg is empty. Shared by both the manual upload path
 // (ParseStatement) and the Paperless import path (ImportPaperlessDocument).
 func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string, bool) {
+	// Bound concurrent parser work: fail fast with 429 when saturated rather
+	// than queueing unbounded expensive parses. Callers may retry shortly.
+	if srv.parseSem != nil {
+		select {
+		case srv.parseSem <- struct{}{}:
+			defer func() { <-srv.parseSem }()
+		case <-ctx.Done():
+			return nil, http.StatusRequestTimeout, "request cancelled", false
+		default:
+			return nil, http.StatusTooManyRequests, "statement parser is busy; try again shortly", false
+		}
+	}
+
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, err := writer.CreateFormFile("file", filename)

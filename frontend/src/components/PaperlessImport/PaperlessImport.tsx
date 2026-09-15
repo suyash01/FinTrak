@@ -986,78 +986,78 @@ export default function PaperlessImport() {
                 : "No documents found in Paperless."}
             </div>
           ) : (
-            <div className="divide-y divide-border border border-border rounded-lg overflow-y-auto max-h-96 bg-background">
-              {documents.map((d) => (
-                <div
-                  key={d.id}
-                  role="checkbox"
-                  aria-checked={selected.has(d.id)}
-                  aria-label={`Select ${d.title || `Document #${d.id}`}`}
-                  tabIndex={0}
-                  className="flex items-start gap-3 p-3 cursor-pointer hover:bg-card transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => toggle(d.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === " " || e.key === "Enter") {
-                      e.preventDefault();
-                      toggle(d.id);
-                    }
-                  }}
-                >
-                  <Checkbox
-                    checked={selected.has(d.id)}
-                    aria-hidden
-                    tabIndex={-1}
-                    className="mt-1 pointer-events-none"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                      <FileText size={14} className="text-primary shrink-0" />
-                      <span className="truncate">
-                        {d.title || `Document #${d.id}`}
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5 truncate">
-                      #{d.id}
-                      {d.correspondent ? ` · ${d.correspondent}` : ""}
-                      {d.documentType ? ` · ${d.documentType}` : ""}
-                      {d.created
-                        ? ` · Created ${formatDateOnly(new Date(d.created))}`
-                        : ""}
-                    </div>
-                    {d.tags?.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {d.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="text-[10px] uppercase bg-muted text-muted-foreground px-1.5 py-0.5 rounded"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openFilePreview(d);
-                    }}
-                    disabled={loadingFileId === d.id}
-                    className="shrink-0 gap-1.5 text-xs bg-muted text-muted-foreground hover:bg-accent hover:text-foreground"
-                    title="Preview document"
+            <div
+              role="list"
+              aria-label="Paperless documents"
+              className="divide-y divide-border border border-border rounded-lg overflow-y-auto max-h-96 bg-background"
+            >
+              {documents.map((d) => {
+                const docTitle = d.title || `Document #${d.id}`;
+                const checkboxId = `paperless-doc-${d.id}`;
+                return (
+                  <div
+                    key={d.id}
+                    role="listitem"
+                    className="flex items-start gap-3 p-3 transition-colors hover:bg-card"
                   >
-                    {loadingFileId === d.id ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <Eye size={13} />
-                    )}
-                    Preview
-                  </Button>
-                </div>
-              ))}
+                    <Checkbox
+                      id={checkboxId}
+                      checked={selected.has(d.id)}
+                      onCheckedChange={() => toggle(d.id)}
+                      aria-label={`Select ${docTitle}`}
+                      className="mt-1"
+                    />
+                    {/* A real <label> is the checkbox's click target; it holds
+                        only phrasing content so it stays valid. The Preview
+                        button is a sibling control, not nested in the label. */}
+                    <label
+                      htmlFor={checkboxId}
+                      className="min-w-0 flex-1 cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <FileText size={14} className="text-primary shrink-0" />
+                        <span className="truncate">{docTitle}</span>
+                      </span>
+                      <span className="block text-xs text-muted-foreground mt-0.5 truncate">
+                        #{d.id}
+                        {d.correspondent ? ` · ${d.correspondent}` : ""}
+                        {d.documentType ? ` · ${d.documentType}` : ""}
+                        {d.created
+                          ? ` · Created ${formatDateOnly(new Date(d.created))}`
+                          : ""}
+                      </span>
+                      {d.tags?.length > 0 && (
+                        <span className="flex flex-wrap gap-1 mt-1.5">
+                          {d.tags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="text-[10px] uppercase bg-muted text-muted-foreground px-1.5 py-0.5 rounded"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openFilePreview(d)}
+                      disabled={loadingFileId === d.id}
+                      className="shrink-0 gap-1.5 text-xs bg-muted text-muted-foreground hover:bg-accent hover:text-foreground"
+                      title="Preview document"
+                    >
+                      {loadingFileId === d.id ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Eye size={13} />
+                      )}
+                      Preview
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
