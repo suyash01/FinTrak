@@ -25,27 +25,69 @@ const RequestIDKey = "requestID"
 var sensitiveKeyRe = regexp.MustCompile(`(?i)(password|passwd|secret|token|jwt|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|cvv|cvv2|pin|otp)`)
 
 // responseWriter wraps gin.ResponseWriter to capture the response body so it
-// can be logged at debug level. Capturing stops after limit bytes.
+// can be logged at debug level. Capturing stops after limit bytes while the
+// underlying writer still receives the full payload.
 type responseWriter struct {
 	gin.ResponseWriter
-	buf   bytes.Buffer
-	limit int
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 // Write captures the written bytes (up to limit) while still streaming the
 // real response to the client. The capture buffer gets a bounded prefix of b;
 // the underlying writer always receives the full payload.
 func (w *responseWriter) Write(b []byte) (int, error) {
-	if w.limit <= 0 {
-		w.buf.Write(b)
-	} else if remaining := w.limit - w.buf.Len(); remaining > 0 {
-		if len(b) > remaining {
-			w.buf.Write(b[:remaining])
-		} else {
-			w.buf.Write(b)
+	if w.limit > 0 {
+		if remaining := w.limit - w.buf.Len(); remaining > 0 {
+			if len(b) > remaining {
+				w.buf.Write(b[:remaining])
+				w.truncated = true
+			} else {
+				w.buf.Write(b)
+			}
+		} else if len(b) > 0 {
+			w.truncated = true
 		}
 	}
 	return w.ResponseWriter.Write(b)
+}
+
+// WriteString routes through Write so responses written with WriteString
+// (e.g. gin's c.String) are captured too; embedding alone would bypass the
+// capture by calling the inner writer directly.
+func (w *responseWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+// multiReadCloser replays a body after a bounded prefix has been consumed for
+// logging while preserving the original Close.
+type multiReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// capturePrefix reads at most limit+1 bytes from body and returns a reader that
+// replays those bytes followed by the unread remainder, so the full payload is
+// still available to the caller. Reading limit+1 bytes (rather than the whole
+// body) bounds the memory used for logging and lets callers detect truncation
+// (len(prefix) == limit+1). A non-positive limit disables capture entirely and
+// returns the body untouched.
+func capturePrefix(body io.ReadCloser, limit int) ([]byte, io.ReadCloser) {
+	if body == nil || limit <= 0 {
+		return nil, body
+	}
+	prefix, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+	if err != nil {
+		return nil, body
+	}
+	if len(prefix) == 0 {
+		return nil, body
+	}
+	return prefix, multiReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(prefix), body),
+		Closer: body,
+	}
 }
 
 // RequestLogger returns a gin middleware that logs every HTTP request with its
@@ -53,7 +95,8 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 // debug level (development), it additionally captures and logs the request and
 // response bodies, redacting sensitive fields and skipping binary payloads
 // such as multipart uploads, PDFs, and images. bodyLimit caps how many bytes of
-// each body are logged; a value <= 0 disables truncation.
+// each body are logged; a value <= 0 disables body capture entirely (so the
+// default config, 0, logs no bodies).
 func RequestLogger(l *slog.Logger, bodyLimit int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -66,15 +109,15 @@ func RequestLogger(l *slog.Logger, bodyLimit int) gin.HandlerFunc {
 		c.Set(RequestIDKey, reqID)
 		c.Writer.Header().Set("X-Request-ID", reqID)
 
-		var reqBody string
-		if debug {
-			// Capture the request body before the handler consumes it and
-			// restore it unchanged so handlers are unaffected.
+		captureBodies := debug && bodyLimit > 0
+		var reqCapture []byte
+		if captureBodies {
+			// Capture a bounded request-body prefix before the handler consumes
+			// it, and replace the body with a replayable reader so handlers are
+			// unaffected. The read is capped at bodyLimit+1 bytes rather than
+			// the whole payload.
 			if isTextual(c.Request.Header.Get("Content-Type")) {
-				if body, err := io.ReadAll(c.Request.Body); err == nil {
-					c.Request.Body = io.NopCloser(bytes.NewReader(body))
-					reqBody, _ = truncate(redact(body), bodyLimit)
-				}
+				reqCapture, c.Request.Body = capturePrefix(c.Request.Body, bodyLimit)
 			}
 			c.Writer = &responseWriter{ResponseWriter: c.Writer, limit: bodyLimit}
 		}
@@ -97,16 +140,16 @@ func RequestLogger(l *slog.Logger, bodyLimit int) gin.HandlerFunc {
 		level := slog.LevelInfo
 		if debug {
 			level = slog.LevelDebug
-			if reqBody != "" {
-				attrs = append(attrs, slog.String("request_body", reqBody))
-			}
-			if rw, ok := c.Writer.(*responseWriter); ok &&
-				rw.buf.Len() > 0 &&
-				isTextual(c.Writer.Header().Get("Content-Type")) {
-				resp, truncated := truncate(redact(rw.buf.Bytes()), bodyLimit)
-				attrs = append(attrs, slog.String("response_body", resp))
-				if truncated {
-					attrs = append(attrs, slog.Bool("response_body_truncated", true))
+			if captureBodies {
+				attrs = append(attrs, logBodyAttrs("request_body", reqCapture, bodyLimit)...)
+				if rw, ok := c.Writer.(*responseWriter); ok &&
+					rw.buf.Len() > 0 &&
+					isTextual(c.Writer.Header().Get("Content-Type")) {
+					resp, truncated := truncate(redact(rw.buf.Bytes()), bodyLimit)
+					attrs = append(attrs, slog.String("response_body", resp))
+					if truncated || rw.truncated {
+						attrs = append(attrs, slog.Bool("response_body_truncated", true))
+					}
 				}
 			}
 		}

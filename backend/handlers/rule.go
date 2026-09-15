@@ -43,6 +43,11 @@ func (srv *Server) GetRules(c *gin.Context) {
 		}
 		rules = append(rules, r)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetRules rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	c.JSON(http.StatusOK, rules)
 }

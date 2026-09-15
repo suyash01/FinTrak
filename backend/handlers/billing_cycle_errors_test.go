@@ -106,7 +106,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		defer mock.Close()
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
@@ -120,7 +120,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		defer mock.Close()
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(dateOnly(time.Now())))
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -137,7 +137,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		defer mock.Close()
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(dateOnly(time.Now())))
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -154,7 +154,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		defer mock.Close()
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(dateOnly(time.Now())))
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -177,7 +177,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		earliest := time.Date(today.Year(), today.Month(), 10, 0, 0, 0, 0, time.UTC)
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -203,7 +203,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		earliest := time.Date(today.Year(), today.Month(), 10, 0, 0, 0, 0, time.UTC)
 
 		expectCleanAlignment(mock)
-		mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").

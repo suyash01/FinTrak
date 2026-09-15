@@ -42,6 +42,11 @@ func (srv *Server) GetCategories(c *gin.Context) {
 		}
 		categories = append(categories, cat)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetCategories rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	c.JSON(http.StatusOK, categories)
 }

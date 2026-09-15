@@ -115,6 +115,15 @@ func newServer(addr string, handler http.Handler) *http.Server {
 func setupRouter(cfg *config.Config) *gin.Engine {
 	r := gin.New()
 
+	// Only believe forwarded client-IP headers from explicitly configured
+	// proxies. With none configured (the default) gin ignores X-Forwarded-For
+	// and X-Real-IP, so a client cannot spoof its IP to evade the per-IP auth
+	// rate limit or pad the limiter map.
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		slog.Error("invalid TRUSTED_PROXIES configuration", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
 	// Recover panics into a structured 500 response instead of crashing the
 	// process. Registered first so it also covers the logging middleware.
 	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {

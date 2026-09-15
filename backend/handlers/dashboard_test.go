@@ -272,7 +272,7 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}).
 			AddRow(end1).AddRow(end2).AddRow(end3))
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions WHERE account_id").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(date(2026, 5, 10)))
 	covered := pgxmock.NewRows([]string{"end_date"})

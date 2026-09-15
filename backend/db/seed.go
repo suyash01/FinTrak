@@ -7,7 +7,17 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// categoryStore is the minimal query surface needed to seed default
+// categories. Both *pgxpool.Pool (via DBPool) and pgx.Tx satisfy it, so the
+// seeder can run inside the same transaction that creates the user.
+type categoryStore interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
 
 // SeedCategory describes one row in the default category set created for each
 // new user.
@@ -20,16 +30,17 @@ type SeedCategory struct {
 
 // SeedDefaultCategories inserts the stock income/expense/transfer/cashback
 // categories for a user, but only when the user has none yet (so it is safe to
-// call on every registration and boot). Errors are logged and swallowed.
-func SeedDefaultCategories(ctx context.Context, pool DBPool, userID uuid.UUID) {
+// call on every registration and boot). It returns any database error so
+// callers can run it inside the user-creation transaction and roll back rather
+// than leaving an account without its default categories.
+func SeedDefaultCategories(ctx context.Context, store categoryStore, userID uuid.UUID) error {
 	var count int
-	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
+	err := store.QueryRow(ctx, "SELECT COUNT(*) FROM categories WHERE user_id = $1", userID).Scan(&count)
 	if err != nil {
-		slog.Error("failed to count categories for user", slog.String("user_id", userID.String()), slog.String("error", err.Error()))
-		return
+		return fmt.Errorf("count categories for user %s: %w", userID, err)
 	}
 	if count > 0 {
-		return
+		return nil
 	}
 
 	categories := []SeedCategory{
@@ -70,13 +81,12 @@ func SeedDefaultCategories(ctx context.Context, pool DBPool, userID uuid.UUID) {
 	}
 	query += strings.Join(placeholders, ", ")
 
-	_, err = pool.Exec(ctx, query, values...)
-	if err != nil {
-		slog.Error("failed to seed categories", slog.String("error", err.Error()))
-		return
+	if _, err = store.Exec(ctx, query, values...); err != nil {
+		return fmt.Errorf("seed default categories for user %s: %w", userID, err)
 	}
 
-	slog.Info("seeded default categories")
+	slog.Info("seeded default categories", slog.String("user_id", userID.String()))
+	return nil
 }
 
 // SeedCategoryGroup describes one immutable base category group row.

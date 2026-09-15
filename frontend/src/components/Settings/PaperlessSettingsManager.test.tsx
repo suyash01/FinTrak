@@ -19,10 +19,12 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 function setDomain(
   settings: Record<string, unknown> | null,
   loading = false,
+  errors: Record<string, string> = {},
 ) {
   domainMock.useDomainData.mockReturnValue({
     settings,
     loading,
+    errors,
     refreshSettings,
   });
 }
@@ -46,6 +48,16 @@ describe("PaperlessSettingsManager", () => {
     setDomain(null, true);
     renderManager();
     expect(screen.getByText("Loading...")).toBeInTheDocument();
+  });
+
+  it("shows a retryable error instead of an empty form when settings fail to load", async () => {
+    const user = userEvent.setup();
+    setDomain(null, false, { settings: "network down" });
+    renderManager();
+
+    expect(screen.getByText(/network down/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refreshSettings).toHaveBeenCalled();
   });
 
   it("loads existing settings without a saved token", () => {

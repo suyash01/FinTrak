@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // GetLinks lists the user's links, optionally filtered by type and/or a
@@ -68,6 +70,11 @@ func (srv *Server) GetLinks(c *gin.Context) {
 		l.FromTxn.ID = l.FromTxnID
 		l.ToTxn.ID = l.ToTxnID
 		links = append(links, l)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetLinks rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	c.JSON(http.StatusOK, links)
@@ -127,28 +134,21 @@ func (srv *Server) CreateLink(c *gin.Context) {
 		return
 	}
 
-	// Prevent exact duplicate links; the same transaction may still appear
-	// in many links with different partners (one-to-many).
-	var dupCount int
-	if err := tx.QueryRow(c,
-		"SELECT COUNT(*) FROM links WHERE user_id = $1 AND type = $2 AND from_txn_id = $3 AND to_txn_id = $4",
-		userID, req.Type, req.FromTxnID, req.ToTxnID,
-	).Scan(&dupCount); err != nil {
-		slog.Error("checking duplicate link in CreateLink", slog.String("error", err.Error()))
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if dupCount > 0 {
-		validation.RespondError(c, "link already exists", http.StatusConflict)
-		return
-	}
-
+	// Insert atomically: the unique index on (user_id, type, from_txn_id,
+	// to_txn_id) makes concurrent duplicate requests safe (a plain
+	// check-then-insert would let two requests both pass the check). A conflict
+	// means this exact link already exists; the same transaction may still
+	// appear in many links with different partners (one-to-many).
 	err = tx.QueryRow(c,
 		`INSERT INTO links (user_id, type, from_txn_id, to_txn_id, notes) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (user_id, type, from_txn_id, to_txn_id) DO NOTHING
 		 RETURNING id, type, from_txn_id, to_txn_id, notes, created_at`,
 		userID, req.Type, req.FromTxnID, req.ToTxnID, req.Notes,
 	).Scan(&link.ID, &link.Type, &link.FromTxnID, &link.ToTxnID, &link.Notes, &link.CreatedAt)
-
+	if errors.Is(err, pgx.ErrNoRows) {
+		validation.RespondError(c, "link already exists", http.StatusConflict)
+		return
+	}
 	if err != nil {
 		slog.Error("inserting link in CreateLink", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -259,28 +259,21 @@ func (srv *Server) BulkCreateLinks(c *gin.Context) {
 			return
 		}
 
-		// Skip exact duplicates; a transaction may still be linked to many partners.
-		var dupCount int
-		if err := tx.QueryRow(c,
-			"SELECT COUNT(*) FROM links WHERE user_id = $1 AND type = $2 AND from_txn_id = $3 AND to_txn_id = $4",
-			userID, l.Type, l.FromTxnID, l.ToTxnID,
-		).Scan(&dupCount); err != nil {
-			slog.Error("checking duplicate link in BulkCreateLinks", slog.String("error", err.Error()))
-			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if dupCount > 0 {
-			continue
-		}
-
-		_, err = tx.Exec(c,
-			`INSERT INTO links (user_id, type, from_txn_id, to_txn_id, notes) VALUES ($1, $2, $3, $4, $5)`,
+		// Insert atomically, skipping exact duplicates; a transaction may still
+		// be linked to many partners. The unique index makes this safe under
+		// concurrency (and against repeats within the same request).
+		tag, err := tx.Exec(c,
+			`INSERT INTO links (user_id, type, from_txn_id, to_txn_id, notes) VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (user_id, type, from_txn_id, to_txn_id) DO NOTHING`,
 			userID, l.Type, l.FromTxnID, l.ToTxnID, l.Notes,
 		)
 		if err != nil {
 			slog.Error("inserting link in BulkCreateLinks loop", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
+		}
+		if tag.RowsAffected() == 0 {
+			continue
 		}
 
 		if l.Type == "transfer" {
@@ -517,6 +510,10 @@ func parseSuggestionPaging(c *gin.Context) (page, limit, offset int) {
 	if page < 1 {
 		page = 1
 	}
+	// Cap the page so (page-1)*limit can't overflow int into a negative offset.
+	if page > maxPage {
+		page = maxPage
+	}
 
 	limit, _ = strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultSuggestionLimit)))
 	if limit < 1 {
@@ -583,6 +580,11 @@ func (srv *Server) GetTransferSuggestions(c *gin.Context) {
 
 		s.Score = calculateTransferScore(s.DebitTxn, s.CreditTxn)
 		suggestions = append(suggestions, s)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("link suggestions rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	hasMore := len(suggestions) > limit
@@ -680,6 +682,11 @@ func (srv *Server) GetCashbackSuggestions(c *gin.Context) {
 		}
 		s.Score = 70
 		suggestions = append(suggestions, s)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("link suggestions rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	hasMore := len(suggestions) > limit

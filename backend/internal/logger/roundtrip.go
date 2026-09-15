@@ -1,8 +1,6 @@
 package logger
 
 import (
-	"bytes"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -21,9 +19,11 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 // outbound HTTP call the backend makes — Paperless-ngx, the statement parser —
 // shows up in the structured log. Info level records the method, the full URL
 // including its query string, response status, and latency. At debug level the
-// redacted request/response bodies are appended too (capped at bodyLimit
-// bytes; <= 0 disables truncation). Sensitive headers (Authorization, Cookie,
-// ...) and query values are never written; they are replaced with "[REDACTED]".
+// redacted request/response bodies are appended too, capped at bodyLimit bytes;
+// a value <= 0 disables body capture entirely. Only a bounded prefix of each
+// body is read for logging while the full payload still streams to its
+// destination. Sensitive headers (Authorization, Cookie, ...) and query values
+// are never written; they are replaced with "[REDACTED]".
 func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger, bodyLimit int) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -31,14 +31,14 @@ func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger, bodyLimit int) 
 	return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		start := time.Now()
 		debug := l.Enabled(req.Context(), slog.LevelDebug)
+		captureBodies := debug && bodyLimit > 0
 
-		// Snapshot a textual request body so it can be logged, then restore it
-		// unchanged so the actual request is unaffected. Binary/multipart
-		// payloads (PDF uploads) are skipped entirely.
+		// Snapshot a bounded textual request-body prefix so it can be logged,
+		// then restore the full body so the actual request is unaffected.
+		// Binary/multipart payloads (PDF uploads) are skipped entirely.
 		var reqBody []byte
-		if debug && req.Body != nil && isTextual(req.Header.Get("Content-Type")) {
-			reqBody, _ = io.ReadAll(req.Body)
-			req.Body = io.NopCloser(bytes.NewReader(reqBody))
+		if captureBodies && req.Body != nil && isTextual(req.Header.Get("Content-Type")) {
+			reqBody, req.Body = capturePrefix(req.Body, bodyLimit)
 		}
 
 		resp, err := base.RoundTrip(req)
@@ -55,15 +55,12 @@ func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger, bodyLimit int) 
 			attrs = append(attrs, slog.String("error", err.Error()))
 		}
 
-		// Snapshot a textual response body for logging and restore it so the
-		// caller reads the full payload.
+		// Snapshot a bounded response-body prefix and restore the full body so
+		// the caller can still stream it. Buffering the whole response would
+		// defeat caller-side size limits and can exhaust memory.
 		var respBody []byte
-		if resp != nil && debug && isTextual(resp.Header.Get("Content-Type")) {
-			if b, rerr := io.ReadAll(resp.Body); rerr == nil {
-				respBody = b
-				resp.Body.Close()
-				resp.Body = io.NopCloser(bytes.NewReader(b))
-			}
+		if resp != nil && captureBodies && resp.Body != nil && isTextual(resp.Header.Get("Content-Type")) {
+			respBody, resp.Body = capturePrefix(resp.Body, bodyLimit)
 		}
 
 		if debug {
@@ -73,8 +70,10 @@ func LoggingRoundTripper(base http.RoundTripper, l *slog.Logger, bodyLimit int) 
 					attrs = append(attrs, slog.String("redacted_header", strings.ToLower(k)))
 				}
 			}
-			attrs = append(attrs, logBodyAttrs("request_body", reqBody, bodyLimit)...)
-			attrs = append(attrs, logBodyAttrs("response_body", respBody, bodyLimit)...)
+			if captureBodies {
+				attrs = append(attrs, logBodyAttrs("request_body", reqBody, bodyLimit)...)
+				attrs = append(attrs, logBodyAttrs("response_body", respBody, bodyLimit)...)
+			}
 		}
 
 		l.LogAttrs(req.Context(), level, "outbound_request", attrs...)

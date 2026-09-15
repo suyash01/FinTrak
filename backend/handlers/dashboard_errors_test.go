@@ -20,7 +20,7 @@ func expectBillingCyclesUpToDate(mock pgxmock.PgxPoolIface, userID, acctID uuid.
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 	earliest := time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 	covered := pgxmock.NewRows([]string{"end_date"})

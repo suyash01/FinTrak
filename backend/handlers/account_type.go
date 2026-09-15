@@ -51,6 +51,11 @@ func (srv *Server) GetAccountTypes(c *gin.Context) {
 		}
 		types = append(types, at)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetAccountTypes rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	c.JSON(http.StatusOK, types)
 }

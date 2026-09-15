@@ -34,6 +34,11 @@ func (srv *Server) GetPayees(c *gin.Context) {
 		}
 		payees = append(payees, p)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetPayees rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	c.JSON(http.StatusOK, payees)
 }

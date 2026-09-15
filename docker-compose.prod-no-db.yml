@@ -9,6 +9,12 @@
 # unauthenticated statement-parser is reachable solely on the internal Docker
 # network.
 #
+# This stack serves PLAIN HTTP. It is designed to sit behind a TLS-terminating
+# reverse proxy / ingress; with COOKIE_SECURE=true (the default) browsers never
+# send the session cookie over plain HTTP, so exposing :3000 directly over HTTP
+# is unsupported. See the "Production Deployment" section of README.md for the
+# supported topology.
+#
 # Required environment variables (set in .env or export):
 #   DATABASE_URL          - Full connection string to an external database
 #   JWT_SECRET            - Secret used to sign auth tokens (set a long random value)
@@ -26,6 +32,11 @@
 #   LOG_LEVEL       - debug|info|warn|error (default: info in production)
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
+#   TRUSTED_PROXIES - Comma-separated proxy CIDRs whose X-Forwarded-For /
+#                     X-Real-IP headers are believed (e.g. the reverse proxy or
+#                     Docker network in front of the backend). Empty (default)
+#                     trusts no forwarded headers, so a direct client cannot
+#                     spoof its IP to evade the auth rate limit.
 #   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
 #   IMAGE_TAG       - Released image tag to deploy (required; e.g. v1.2.3).
 #                     There is intentionally no "latest" default: pinning a
@@ -46,7 +57,9 @@ services:
       - ADMIN_EMAILS=${ADMIN_EMAILS:-}
       - ADMIN_SETUP_TOKEN=${ADMIN_SETUP_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_BODY_LIMIT=${LOG_BODY_LIMIT:-0}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - APP_ENV=production
       - STATEMENT_PARSER_URL=http://statement-parser:5000
     depends_on:

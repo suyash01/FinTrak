@@ -18,6 +18,16 @@ import type {
   UserSettings,
 } from "../types";
 
+// DomainResource names each independently-loaded lookup resource whose load
+// state is tracked.
+export type DomainResource =
+  | "accounts"
+  | "accountTypes"
+  | "categories"
+  | "groups"
+  | "payees"
+  | "settings";
+
 interface DomainDataContextValue {
   accounts: Account[];
   accountTypes: AccountType[];
@@ -26,6 +36,10 @@ interface DomainDataContextValue {
   payees: Payee[];
   settings: UserSettings | null;
   loading: boolean;
+  // errors carries a per-resource message after a failed load. An empty array
+  // plus no error means a successful (possibly empty) response; consumers must
+  // not render an empty state when the matching error is set.
+  errors: Partial<Record<DomainResource, string>>;
   setAccounts: Dispatch<SetStateAction<Account[]>>;
   setAccountTypes: Dispatch<SetStateAction<AccountType[]>>;
   setCategories: Dispatch<SetStateAction<Category[]>>;
@@ -59,60 +73,91 @@ export function DomainDataProvider({ children }: { children: ReactNode }) {
   const [payees, setPayees] = useState<Payee[]>([]);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState<
+    Partial<Record<DomainResource, string>>
+  >({});
+
+  const failResource = useCallback((resource: DomainResource, err: unknown) => {
+    setErrors((prev) => ({
+      ...prev,
+      [resource]: (err as Error)?.message || "Failed to load data",
+    }));
+  }, []);
+
+  const clearResourceError = useCallback((resource: DomainResource) => {
+    setErrors((prev) => {
+      if (!(resource in prev)) return prev;
+      const next = { ...prev };
+      delete next[resource];
+      return next;
+    });
+  }, []);
 
   const refreshAccounts = useCallback(async () => {
     try {
       const data = await api.getAccounts();
       setAccounts(Array.isArray(data) ? data : []);
+      clearResourceError("accounts");
     } catch (err) {
       console.error(err);
+      failResource("accounts", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshAccountTypes = useCallback(async () => {
     try {
       const data = await api.getAccountTypes();
       setAccountTypes(Array.isArray(data) ? data : []);
+      clearResourceError("accountTypes");
     } catch (err) {
       console.error(err);
+      failResource("accountTypes", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshCategories = useCallback(async () => {
     try {
       const data = await api.getCategories();
       setCategories(Array.isArray(data) ? data : []);
+      clearResourceError("categories");
     } catch (err) {
       console.error(err);
+      failResource("categories", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshGroups = useCallback(async () => {
     try {
       const data = await api.getGroups();
       setGroups(Array.isArray(data) ? data : []);
+      clearResourceError("groups");
     } catch (err) {
       console.error(err);
+      failResource("groups", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshPayees = useCallback(async () => {
     try {
       const data = await api.getPayees();
       setPayees(Array.isArray(data) ? data : []);
+      clearResourceError("payees");
     } catch (err) {
       console.error(err);
+      failResource("payees", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshSettings = useCallback(async () => {
     try {
       const data = await api.getPaperlessSettings();
       setSettings(data ?? null);
+      clearResourceError("settings");
     } catch (err) {
       console.error(err);
+      failResource("settings", err);
     }
-  }, []);
+  }, [clearResourceError, failResource]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([
@@ -152,6 +197,7 @@ export function DomainDataProvider({ children }: { children: ReactNode }) {
         payees,
         settings,
         loading,
+        errors,
         setAccounts,
         setAccountTypes,
         setCategories,

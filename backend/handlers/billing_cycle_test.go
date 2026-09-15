@@ -79,7 +79,7 @@ func TestEnsureBillingCyclesUpToDate(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	// Earliest transaction.
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
@@ -122,7 +122,7 @@ func TestEnsureBillingCyclesGenerates(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 
@@ -184,7 +184,7 @@ func TestEnsureBillingCyclesRegeneratesOnBillingDayChange(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	// Earliest transaction.
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 
@@ -244,7 +244,7 @@ func TestGetBillingCycles(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	// ensureBillingCycles: earliest transaction.
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
@@ -319,7 +319,7 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	// ensureBillingCycles: earliest transaction.
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)))
 
@@ -446,7 +446,7 @@ func TestEnsureBillingCyclesBackfillScopesCycleToOwnAccount(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
 
 	// Earliest transaction.
-	mock.ExpectQuery("SELECT MIN\\(date\\) FROM transactions").
+	mock.ExpectQuery("MIN\\(date\\)").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
 

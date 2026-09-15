@@ -97,17 +97,17 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 		return err
 	}
 
-	// Earliest transaction date for the account (fall back to today).
-	var earliest time.Time
+	// Earliest transaction date for the account, falling back to today when the
+	// account has no transactions yet. COALESCE avoids a NULL scan for an empty
+	// account (MIN returns a single NULL row, not ErrNoRows).
+	var firstDate time.Time
 	err := q.QueryRow(ctx,
-		"SELECT MIN(date) FROM transactions WHERE account_id = $1 AND user_id = $2",
-		accountID, userID).Scan(&earliest)
+		"SELECT COALESCE(MIN(date), CURRENT_DATE) FROM transactions WHERE account_id = $1 AND user_id = $2",
+		accountID, userID).Scan(&firstDate)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if earliest.IsZero() {
-		earliest = dateOnly(time.Now())
-	}
+	firstDate = dateOnly(firstDate)
 
 	// Months that already have an existing cycle, keyed by the month the cycle
 	// ends in. Missing months are generated below — including months OLDER than
@@ -134,7 +134,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	}
 
 	today := dateOnly(time.Now())
-	months := billingCycleMonths(earliest, today, billingDay)
+	months := billingCycleMonths(firstDate, today, billingDay)
 
 	// If every desired month already has a cycle we can skip the per-month
 	// INSERT loop entirely — the common case on every read.

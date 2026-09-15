@@ -96,13 +96,14 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		return
 	}
 
-	// Validate that any explicitly supplied billing cycle and payees belong to
-	// this user, so a client can't import against another user's records.
+	// Validate that any explicitly supplied billing cycle belongs to this user
+	// AND to the target account (so cycle totals for another account can't be
+	// corrupted), and that any explicitly supplied payees belong to this user.
 	if req.BillingCycleID != nil {
 		var owned bool
 		err := srv.db.QueryRow(c,
-			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
-			*req.BillingCycleID, userID).Scan(&owned)
+			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2 AND bc.account_id = $3)",
+			*req.BillingCycleID, userID, req.AccountID).Scan(&owned)
 		if err != nil {
 			slog.Error("ImportTransactions (checking billing cycle)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -160,8 +161,18 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 	// When the user asks to skip duplicates, load the existing transactions for
 	// this account so we can compare against a consistent snapshot. The lookup is
 	// scoped to the batch's dates so it never scans the account's whole history.
+	//
+	// Serialize skip imports per account: fingerprint detection reads before it
+	// writes, so two concurrent skip imports could otherwise both observe an
+	// absent fingerprint and insert the same row. The xact-scoped advisory lock
+	// is released automatically on commit or rollback.
 	existing := map[string]bool{}
 	if action == "skip" {
+		if _, err := tx.Exec(c, "SELECT pg_advisory_xact_lock(hashtext($1::text))", req.AccountID.String()); err != nil {
+			slog.Error("ImportTransactions (locking account)", slog.String("error", err.Error()))
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		existing, err = loadExistingFingerprints(c, tx, req.AccountID, userID, req.Transactions)
 		if err != nil {
 			slog.Error("ImportTransactions (loading existing transactions)", slog.String("error", err.Error()))
@@ -221,7 +232,7 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		// atomically with the import.
 		if billingDay != nil {
 			if req.BillingCycleID != nil {
-				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, ids, userID); err != nil {
+				if err := attachTransactionsToCycle(c, tx, *req.BillingCycleID, req.AccountID, ids, userID); err != nil {
 					slog.Error("ImportTransactions (set billing cycle)", slog.String("error", err.Error()))
 					validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 					return
@@ -422,10 +433,10 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 // attachTransactionsToCycle attaches the given transaction IDs to a billing
 // cycle. Used by credit-card imports when the client chose an explicit cycle so
 // every imported transaction lands in it, overriding the date-based default.
-func attachTransactionsToCycle(ctx context.Context, q cycleQueryer, cycleID uuid.UUID, ids []uuid.UUID, userID uuid.UUID) error {
+func attachTransactionsToCycle(ctx context.Context, q cycleQueryer, cycleID, accountID uuid.UUID, ids []uuid.UUID, userID uuid.UUID) error {
 	_, err := q.Exec(ctx,
-		"UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3",
-		cycleID, ids, userID)
+		"UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3 AND account_id = $4",
+		cycleID, ids, userID, accountID)
 	return err
 }
 

@@ -15,6 +15,9 @@ interface DuplicateDialogProps {
   includedCount: number;
   existingDupCount: number;
   inFileDupCount: number;
+  // True when the account has more history than the import screen loads, so the
+  // existing-duplicate count below is a partial (not authoritative) check.
+  partialExisting?: boolean;
   importing: boolean;
   onSkip: () => void;
   onKeep: () => void;
@@ -28,6 +31,7 @@ export default function DuplicateDialog({
   includedCount,
   existingDupCount,
   inFileDupCount,
+  partialExisting = false,
   importing,
   onSkip,
   onKeep,
@@ -62,6 +66,12 @@ export default function DuplicateDialog({
             </li>
           )}
         </ul>
+        {partialExisting && (
+          <p className="text-xs text-amber-400">
+            This account has more history than the import screen loads, so the
+            existing-duplicate check may be incomplete.
+          </p>
+        )}
         <p className="text-sm text-muted-foreground">
           How would you like to handle them?
         </p>

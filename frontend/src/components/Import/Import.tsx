@@ -108,6 +108,9 @@ export default function Import() {
 
   // Duplicate detection
   const [existingTxns, setExistingTxns] = useState<Transaction[]>([]);
+  // True when the account has more history than MAX_EXISTING_FETCH_PAGES pages,
+  // so the loaded duplicate snapshot is incomplete and its counts are partial.
+  const [existingPartial, setExistingPartial] = useState(false);
   const [existingRefresh, setExistingRefresh] = useState(0);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
 
@@ -150,11 +153,13 @@ export default function Import() {
   useEffect(() => {
     if (!selectedAccount) {
       setExistingTxns([]);
+      setExistingPartial(false);
       return;
     }
     let cancelled = false;
     (async () => {
       const all: Transaction[] = [];
+      let partial = false;
       try {
         for (let page = 1; page <= MAX_EXISTING_FETCH_PAGES; page++) {
           const res = await api.getTransactions({
@@ -165,9 +170,19 @@ export default function Import() {
           // Synthetic billing-cycle summary rows are not real transactions
           // and must never count as duplicate candidates.
           all.push(...(res.data || []).filter((t) => !t.isSummary));
-          if (!res.pages || page >= res.pages) break;
+          const totalPages = res.pages || 1;
+          if (page >= totalPages) break;
+          if (page === MAX_EXISTING_FETCH_PAGES) {
+            // More pages remain but the safety cap is reached: the snapshot
+            // (and therefore the duplicate counts) is incomplete.
+            partial = true;
+            break;
+          }
         }
-        if (!cancelled) setExistingTxns(all);
+        if (!cancelled) {
+          setExistingTxns(all);
+          setExistingPartial(partial);
+        }
       } catch (err) {
         // Keep the previously loaded set on failure (e.g. a transient
         // network error mid-pagination) rather than wiping the counts.
@@ -727,6 +742,7 @@ export default function Import() {
           includedCount={includedCount}
           existingDupCount={existingDupCount}
           inFileDupCount={inFileDupCount}
+          partialExisting={existingPartial}
           importing={importing}
           onSkip={() => runImport("skip")}
           onKeep={() => runImport("keep")}

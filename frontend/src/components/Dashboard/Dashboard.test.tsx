@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactNode } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "./Dashboard";
@@ -173,16 +173,51 @@ describe("Dashboard", () => {
 
   it("shows an error and retries on demand", async () => {
     const user = userEvent.setup();
-    apiMock.getDashboardSummary
-      .mockRejectedValueOnce(new Error("load failed"))
-      .mockResolvedValue(summary());
+    apiMock.getDashboardSummary.mockRejectedValue(new Error("load failed"));
     renderLoaded([account()]);
 
     expect(await screen.findByText("load failed")).toBeInTheDocument();
+
+    apiMock.getDashboardSummary.mockResolvedValue(summary());
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("Total Income")).toBeInTheDocument();
     expect(apiMock.getDashboardSummary.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("ignores a stale summary response that resolves after a newer one", async () => {
+    let resolveFirst: (v: DashboardSummary) => void = () => {};
+    let resolveSecond: (v: DashboardSummary) => void = () => {};
+    const first = new Promise<DashboardSummary>((res) => {
+      resolveFirst = res;
+    });
+    const second = new Promise<DashboardSummary>((res) => {
+      resolveSecond = res;
+    });
+
+    let calls = 0;
+    apiMock.getDashboardSummary.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return first;
+      if (calls === 2) return second;
+      return Promise.resolve(summary());
+    });
+
+    renderLoaded([account()]);
+
+    // The newer (account-scoped) request resolves first.
+    await act(async () => {
+      resolveSecond(summary({ totalIncome: 9999 }));
+    });
+    expect(await screen.findByText(formatCurrency(9999))).toBeInTheDocument();
+
+    // The older request resolves last; its data must not overwrite the newer
+    // result.
+    await act(async () => {
+      resolveFirst(summary({ totalIncome: 1111 }));
+    });
+    expect(screen.queryByText(formatCurrency(1111))).not.toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(9999))).toBeInTheDocument();
   });
 
   it("switches to the billing-cycle view for an account with a billing day", async () => {

@@ -33,6 +33,27 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 5, cfg.Burst)
 	assert.Equal(t, 10*time.Minute, cfg.TTL)
 	assert.Equal(t, rate.Every(6*time.Second), cfg.Rate)
+	assert.Equal(t, defaultMaxKeys, cfg.MaxKeys)
+}
+
+func TestLimiterBoundsTrackedKeys(t *testing.T) {
+	base := time.Now()
+	l := New(Config{Rate: rate.Inf, Burst: 1, TTL: time.Minute, MaxKeys: 2})
+	l.now = func() time.Time { return base }
+
+	assert.True(t, l.Allow("a"))
+	assert.True(t, l.Allow("b"))
+	// The map is full and nothing is expired, so a new key is refused rather
+	// than growing memory without bound.
+	assert.False(t, l.Allow("c"))
+	// Existing keys are unaffected.
+	assert.True(t, l.Allow("a"))
+	assert.Len(t, l.entries, 2)
+
+	// Expired entries are swept before the cap is enforced, freeing space.
+	l.now = func() time.Time { return base.Add(2 * time.Minute) }
+	assert.True(t, l.Allow("c"))
+	assert.Len(t, l.entries, 1)
 }
 
 func TestNewAppliesMinimums(t *testing.T) {

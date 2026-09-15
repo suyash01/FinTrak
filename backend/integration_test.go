@@ -17,6 +17,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +146,34 @@ func (a *apiClient) call(method, path string, body any, wantStatus int, out any)
 	if out != nil {
 		require.NoError(a.t, json.Unmarshal(data, out), "decoding %s %s: %s", method, path, string(data))
 	}
+}
+
+// concurrentRequest issues a request without touching *testing.T, so it is
+// safe to call from multiple goroutines (require/t.FailNow must run on the
+// test goroutine).
+func (a *apiClient) concurrentRequest(method, path string, body any) (int, []byte, error) {
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequest(method, a.base+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, data, err
 }
 
 func (a *apiClient) register(email string) {
@@ -391,4 +420,135 @@ func TestIntegrationBillingCyclesGeneratedForImport(t *testing.T) {
 		}
 	}
 	require.Greater(t, counted, 0, "the imported transaction should be attached to a cycle")
+}
+
+// TestIntegrationCrossAccountBillingCycleRejected covers H-1: a transaction can
+// never be attached to another account's billing cycle, on either create or
+// PATCH. The composite FK plus the handler predicates enforce this in Postgres.
+func TestIntegrationCrossAccountBillingCycleRejected(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("frank@example.com")
+	day := 15
+	cardA := a.createAccount("Card A", "credit_card", &day)
+	cardB := a.createAccount("Card B", "credit_card", &day)
+
+	var cycles struct {
+		Data []models.BillingCycle `json:"data"`
+	}
+	a.call(http.MethodGet, "/api/v1/accounts/"+cardA.ID.String()+"/billing-cycles", nil, http.StatusOK, &cycles)
+	require.NotEmpty(t, cycles.Data, "account A should have generated cycles")
+	cycleA := cycles.Data[0].ID
+
+	// Creating a B transaction in A's cycle is rejected.
+	status, data := a.request(http.MethodPost, "/api/v1/transactions", map[string]any{
+		"accountId":      cardB.ID,
+		"date":           "2024-03-10",
+		"description":    "cross-account",
+		"amount":         10,
+		"type":           "debit",
+		"billingCycleId": cycleA,
+	})
+	require.Equal(t, http.StatusBadRequest, status, "body: %s", string(data))
+
+	// PATCHing an existing B transaction onto A's cycle is rejected too.
+	bTxn := a.createTransaction(cardB.ID, nil, "2024-03-11", "cross-account patch", 10, "debit")
+	a.call(http.MethodPatch, "/api/v1/transactions/"+bTxn.String(),
+		map[string]any{"billingCycleId": cycleA}, http.StatusNotFound, nil)
+
+	// The transaction is attached to one of B's own cycles (the date-based
+	// default), never to A's cycle.
+	txns := txnsByID(a.transactions(cardB.ID))
+	if got := txns[bTxn]; got.BillingCycleID != nil {
+		require.NotEqual(t, cycleA, *got.BillingCycleID, "transaction must not use account A's cycle")
+	}
+}
+
+// TestIntegrationPatchToLoanAccountRejected covers H-2: PATCH cannot move an
+// existing transaction onto a Loan / EMI account (the DB trigger backstops it).
+func TestIntegrationPatchToLoanAccountRejected(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("grace@example.com")
+	bank := a.createAccount("Bank", "bank", nil)
+	loan := a.createAccount("Car Loan", "loan", nil)
+
+	txn := a.createTransaction(bank.ID, nil, "2024-03-01", "EMI", 1000, "debit")
+
+	a.call(http.MethodPatch, "/api/v1/transactions/"+txn.String(),
+		map[string]any{"accountId": loan.ID}, http.StatusNotFound, nil)
+
+	// The transaction is unchanged and still on the bank account.
+	bankTxns := a.transactions(bank.ID)
+	require.Len(t, bankTxns, 1)
+	require.Equal(t, bank.ID, bankTxns[0].AccountID)
+	require.Empty(t, a.transactions(loan.ID))
+}
+
+// TestIntegrationConcurrentLinkCreationIsUnique covers M-1: two simultaneous
+// identical link requests must yield exactly one link (the unique index makes
+// the insert atomic, with the loser reporting a 409).
+func TestIntegrationConcurrentLinkCreationIsUnique(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("heidi@example.com")
+	acc := a.createAccount("Card", "credit_card", nil)
+
+	from := a.createTransaction(acc.ID, nil, "2024-03-01", "out", 100, "debit")
+	to := a.createTransaction(acc.ID, nil, "2024-03-02", "in", 100, "credit")
+
+	body := map[string]any{"type": "cashback", "fromTxnId": from, "toTxnId": to}
+	statuses := make([]int, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range statuses {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			statuses[i], _, errs[i] = a.concurrentRequest(http.MethodPost, "/api/v1/links", body)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "request %d", i)
+	}
+	require.Contains(t, statuses, http.StatusCreated)
+	require.Contains(t, statuses, http.StatusConflict)
+
+	var links []models.Link
+	a.call(http.MethodGet, "/api/v1/links", nil, http.StatusOK, &links)
+	require.Len(t, links, 1)
+}
+
+// TestIntegrationConcurrentSkipImportIsAtomic covers M-2: two simultaneous
+// skip imports of the same batch must not double-insert (serialized per account
+// by an advisory lock).
+func TestIntegrationConcurrentSkipImportIsAtomic(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("ivan@example.com")
+	acc := a.createAccount("Checking", "bank", nil)
+
+	body := map[string]any{
+		"accountId":       acc.ID,
+		"duplicateAction": "skip",
+		"transactions": []map[string]any{
+			{"date": "2024-04-01", "description": "One", "amount": 10, "type": "debit"},
+			{"date": "2024-04-02", "description": "Two", "amount": 20, "type": "debit"},
+		},
+	}
+
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, errs[i] = a.concurrentRequest(http.MethodPost, "/api/v1/transactions/import", body)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "request %d", i)
+	}
+	// Each row is stored exactly once despite the concurrent imports.
+	require.Len(t, a.transactions(acc.ID), 2)
 }

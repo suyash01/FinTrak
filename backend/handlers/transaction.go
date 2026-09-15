@@ -31,6 +31,11 @@ const maxBulkBatch = 5000
 // frontend's limit, so a crafted request can't bypass it and fetch everything.
 const maxPageSize = 1000
 
+// maxPage caps the page number so (page-1)*limit can never overflow int and
+// produce a negative SQL offset (a 500). At 1e6 and the 1000-row page cap the
+// largest offset is 1e9, which fits comfortably in a 32-bit int.
+const maxPage = 1_000_000
+
 // GetTransactions returns a paginated, filterable list of the user's
 // transactions. Filters cover account, category, payee, free-text description,
 // date range, type, exact amount, and linked state; sorting and pagination are
@@ -56,6 +61,12 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 
 	if page < 1 {
 		page = 1
+	}
+	// Reject an out-of-range page rather than letting (page-1)*limit overflow
+	// int into a negative SQL offset.
+	if page > maxPage {
+		validation.RespondError(c, "page out of range", http.StatusBadRequest)
+		return
 	}
 	// Clamp the page size so a crafted request can't bypass the frontend limit
 	// (0 or negative values fall back to the default).
@@ -218,6 +229,11 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		}
 		transactions = append(transactions, t)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetTransactions rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	// When a single account is filtered and sorted by date, inject computed
 	// summary rows: per-cycle "Total outstanding" rows for accounts with a
@@ -366,13 +382,14 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 		}
 	}
 
-	// The explicitly chosen billing cycle must belong to this user, otherwise
-	// the assignment below would silently no-op.
+	// The explicitly chosen billing cycle must belong to this user AND to the
+	// transaction's own account, otherwise cycle totals for another account
+	// would be corrupted.
 	if billingDay != nil && req.BillingCycleID != nil {
 		var owned bool
 		err := tx.QueryRow(c,
-			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2)",
-			*req.BillingCycleID, userID).Scan(&owned)
+			"SELECT EXISTS(SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $2 AND bc.account_id = $3)",
+			*req.BillingCycleID, userID, req.AccountID).Scan(&owned)
 		if err != nil {
 			slog.Error("CreateTransaction (checking billing cycle)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -571,7 +588,9 @@ func (srv *Server) UpdateTransaction(c *gin.Context) {
 	// possible): an update that touches such a row is a no-op.
 	where += " AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)"
 	if accountParam != 0 {
-		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d AND NOT a.closed)", accountParam, userIdx)
+		// The target account must be owned, open, and not a loan account
+		// (loan/EMI accounts hold no transactions of their own).
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = $%d AND a.user_id = $%d AND NOT a.closed AND a.account_type_id <> '%s')", accountParam, userIdx, loanAccountTypeID)
 	}
 	if categoryParam != 0 {
 		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM categories ct WHERE ct.id = $%d AND (ct.user_id = $%d OR ct.user_id IS NULL))", categoryParam, userIdx)
@@ -580,7 +599,14 @@ func (srv *Server) UpdateTransaction(c *gin.Context) {
 		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM payees py WHERE py.id = $%d AND py.user_id = $%d)", payeeParam, userIdx)
 	}
 	if cycleParam != 0 {
-		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $%d AND bc.user_id = $%d)", cycleParam, userIdx)
+		// The cycle must belong to the user AND to the transaction's account.
+		// When the account is being changed in the same UPDATE, the WHERE
+		// clause sees the old account_id, so compare against the new one.
+		if accountParam != 0 {
+			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $%d AND bc.user_id = $%d AND bc.account_id = $%d)", cycleParam, userIdx, accountParam)
+		} else {
+			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $%d AND bc.user_id = $%d AND bc.account_id = transactions.account_id)", cycleParam, userIdx)
+		}
 	}
 
 	query := fmt.Sprintf("UPDATE transactions SET %s %s", strings.Join(setClauses, ", "), where)

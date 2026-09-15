@@ -27,25 +27,46 @@ if ($LASTEXITCODE -ne 0) { throw "Working tree is dirty - commit or stash change
 git rev-parse -q --verify "refs/tags/$Version" 2>$null
 if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists" }
 
-# 3. Backend tests
+# 3. Backend: vet, unit tests, integration tests (mirrors the CI gate)
 Push-Location "$repoRoot\backend"
 try {
+    go vet ./...
+    if ($LASTEXITCODE -ne 0) { throw "go vet failed" }
+
     go test ./...
     if ($LASTEXITCODE -ne 0) { throw "Backend tests failed" }
+
+    go test -tags=integration -count=1 ./...
+    if ($LASTEXITCODE -ne 0) { throw "Backend integration tests failed (Docker required)" }
 } finally {
     Pop-Location
 }
 
-# 4. Frontend production build
+# 4. Frontend: typecheck, tests, production build
 Push-Location "$repoRoot\frontend"
 try {
+    bun run typecheck
+    if ($LASTEXITCODE -ne 0) { throw "Frontend typecheck failed" }
+
+    bun run test
+    if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed" }
+
     bun run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
 } finally {
     Pop-Location
 }
 
-# 5. Tag and push (triggers the publish workflow)
+# 5. Statement parser tests
+Push-Location "$repoRoot\statement_parser"
+try {
+    uv run --frozen python -m unittest discover -s tests -v
+    if ($LASTEXITCODE -ne 0) { throw "Statement parser tests failed" }
+} finally {
+    Pop-Location
+}
+
+# 6. Tag and push (triggers the publish workflow)
 git tag -a $Version -m "Release $Version"
 if ($LASTEXITCODE -ne 0) { throw "Failed to create tag $Version" }
 

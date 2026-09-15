@@ -50,6 +50,7 @@ func TestRegister(t *testing.T) {
 	userID := uuid.New()
 	reqBody := models.RegisterRequest{Email: "test@example.com", Password: "password1234"}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
@@ -64,6 +65,7 @@ func TestRegister(t *testing.T) {
 	mock.ExpectExec("INSERT INTO categories").
 		WithArgs(seedArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 24))
+	mock.ExpectCommit()
 
 	jsonBody, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
@@ -155,6 +157,43 @@ func TestLoginAllowsLegacyShortPassword(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestRegisterRollsBackWhenCategorySeedFails(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
+
+	userID := uuid.New()
+	reqBody := models.RegisterRequest{Email: "seedfail@example.com", Password: "password1234"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+			AddRow(userID, reqBody.Email, "user"))
+	// Seeding fails -> the whole registration must roll back (no half-created
+	// user without default categories).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
+		WithArgs(userID).
+		WillReturnError(assert.AnError)
+	mock.ExpectRollback()
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Empty(t, w.Result().Cookies(), "no session cookie is issued on rollback")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -176,6 +215,7 @@ func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 	run := func(name, setupToken string, wantStatus int, expectInsert bool) {
 		t.Run(name, func(t *testing.T) {
 			if expectInsert {
+				mock.ExpectBegin()
 				mock.ExpectQuery("INSERT INTO users").
 					WithArgs(adminEmail, pgxmock.AnyArg(), "admin").
 					WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
@@ -190,6 +230,7 @@ func TestRegisterAdminEmailRequiresSetupToken(t *testing.T) {
 				mock.ExpectExec("INSERT INTO categories").
 					WithArgs(seedArgs...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 24))
+				mock.ExpectCommit()
 			}
 
 			// Mixed-case admin email: normalized to lowercase before the
@@ -263,6 +304,7 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	// duplicate the same way it rejects an identical one (23505 -> 409).
 	reqBody := models.RegisterRequest{Email: "DUP@example.com", Password: "password1234"}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs("dup@example.com", pgxmock.AnyArg(), "user").
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})

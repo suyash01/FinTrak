@@ -202,12 +202,7 @@ func TestCreateLinkTransfer(t *testing.T) {
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
-	// Duplicate check.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "transfer", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
-
-	// Insert link.
+	// Insert link (atomic duplicate rejection via ON CONFLICT).
 	mock.ExpectQuery("INSERT INTO links").
 		WithArgs(userID, "transfer", fromID, toID, "self transfer").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
@@ -262,9 +257,6 @@ func TestCreateLinkCashbackSkipsTransferUpdates(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "cashback", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("INSERT INTO links").
 		WithArgs(userID, "cashback", fromID, toID, "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
@@ -301,9 +293,6 @@ func TestCreateLinkBillPaymentSkipsTransferUpdates(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "bill_payment", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("INSERT INTO links").
 		WithArgs(userID, "bill_payment", fromID, toID, "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
@@ -416,9 +405,10 @@ func TestCreateLinkDuplicate(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "transfer", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+	// The unique index makes the insert a no-op on conflict, returning no rows.
+	mock.ExpectQuery("INSERT INTO links").
+		WithArgs(userID, "transfer", fromID, toID, "").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}))
 
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", "/links", bytes.NewBuffer(body))
@@ -465,9 +455,6 @@ func TestBulkCreateLinks(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "transfer", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("INSERT INTO links").
 		WithArgs(userID, "transfer", fromID, toID, "n1").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -485,9 +472,6 @@ func TestBulkCreateLinks(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{toID, fromID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "cashback", toID, fromID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("INSERT INTO links").
 		WithArgs(userID, "cashback", toID, fromID, "n2").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -496,9 +480,6 @@ func TestBulkCreateLinks(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "bill_payment", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("INSERT INTO links").
 		WithArgs(userID, "bill_payment", fromID, toID, "n3").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -534,9 +515,10 @@ func TestBulkCreateLinksSkipsDuplicates(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 		WithArgs([]uuid.UUID{fromID, toID}, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-		WithArgs(userID, "cashback", fromID, toID).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+	// ON CONFLICT DO NOTHING affects zero rows for an existing link.
+	mock.ExpectExec("INSERT INTO links").
+		WithArgs(userID, "cashback", fromID, toID, "").
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectCommit()
 
 	body, _ := json.Marshal(reqBody)

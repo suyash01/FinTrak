@@ -45,7 +45,7 @@ func TestSeedDefaultCategoriesSkipsWhenAlreadySeeded(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSeedDefaultCategoriesLogsOnCountError(t *testing.T) {
+func TestSeedDefaultCategoriesReturnsCountError(t *testing.T) {
 	mock := setupMock(t)
 	ctx := context.Background()
 	userID := uuid.New()
@@ -54,8 +54,9 @@ func TestSeedDefaultCategoriesLogsOnCountError(t *testing.T) {
 		WithArgs(userID).
 		WillReturnError(assert.AnError)
 
-	SeedDefaultCategories(ctx, mock, userID)
+	err := SeedDefaultCategories(ctx, mock, userID)
 
+	assert.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

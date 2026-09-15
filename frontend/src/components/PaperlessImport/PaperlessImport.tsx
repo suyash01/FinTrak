@@ -55,6 +55,38 @@ import type {
   ValidateTransactionsResponse,
 } from "../../types";
 
+// Number of Paperless documents fetched and parsed in parallel. Parsing proxies
+// an expensive PDF download plus extraction to the parser service, so parsing
+// every selected document at once (up to 100 per page) can burst-load both
+// services. Keep the client-side pool small.
+const PARSE_CONCURRENCY = 3;
+
+// mapWithConcurrency runs fn over items with at most `limit` calls in flight,
+// preserving input order in the settled results (like Promise.allSettled).
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i]) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+  return results;
+}
+
 interface MultiFilterProps {
   label: string;
   options: string[];
@@ -342,6 +374,7 @@ export default function PaperlessImport() {
 
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [parsing, setParsing] = useState(false);
+  const [parseProgress, setParseProgress] = useState({ done: 0, total: 0 });
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -615,17 +648,25 @@ export default function PaperlessImport() {
     setPreview(null);
 
     const ids = [...selected];
+    setParseProgress({ done: 0, total: ids.length });
     try {
-      // Parse every selected document concurrently instead of one at a time.
-      const results = await Promise.allSettled(
-        ids.map((id) =>
-          api.importPaperlessDocument({
-            documentId: id,
-            extractor,
-            password,
-            dateFormat: dateFormat === "auto" ? "" : dateFormat,
-          }),
-        ),
+      // Parse the selected documents through a bounded pool (not all at once)
+      // so a large selection can't burst-load the backend/parser.
+      const results = await mapWithConcurrency(
+        ids,
+        PARSE_CONCURRENCY,
+        async (id) => {
+          try {
+            return await api.importPaperlessDocument({
+              documentId: id,
+              extractor,
+              password,
+              dateFormat: dateFormat === "auto" ? "" : dateFormat,
+            });
+          } finally {
+            setParseProgress((p) => ({ ...p, done: p.done + 1 }));
+          }
+        },
       );
 
       const transactions: ImportTransaction[] = [];
@@ -657,6 +698,7 @@ export default function PaperlessImport() {
       });
     } finally {
       setParsing(false);
+      setParseProgress({ done: 0, total: 0 });
     }
   };
 
@@ -1106,7 +1148,9 @@ export default function PaperlessImport() {
                 <Check size={16} />
               )}
               {parsing
-                ? "Parsing..."
+                ? parseProgress.total > 0
+                  ? `Parsing ${parseProgress.done}/${parseProgress.total}...`
+                  : "Parsing..."
                 : `Fetch & Parse Selected (${selected.size})`}
             </Button>
           </div>

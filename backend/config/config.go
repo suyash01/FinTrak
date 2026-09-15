@@ -25,6 +25,11 @@ type Config struct {
 	LogLevel           string
 	LogBodyLimit       int
 	TokenEncryptionKey string
+	// TrustedProxies is the allowlist of reverse-proxy CIDRs whose
+	// X-Forwarded-For / X-Real-IP headers are believed. Empty means no proxy is
+	// trusted, so c.ClientIP() always reports the direct peer address (and
+	// client-supplied forwarding headers cannot spoof the rate-limit key).
+	TrustedProxies []string
 	// CookieSecure marks the session cookie Secure (HTTPS-only). Defaults to
 	// true in production; set COOKIE_SECURE=false for an isolated plain-HTTP
 	// deployment (behind no TLS terminator).
@@ -79,8 +84,9 @@ func Load() *Config {
 	}
 
 	// Byte cap for request/response bodies written to the log at debug level.
-	// 0 (the default) disables truncation so full bodies are captured; a
-	// positive value caps the logged payload.
+	// 0 (the default) captures no bodies at all; a positive value enables
+	// capture and caps each logged payload at that many bytes. Non-positive
+	// values are normalized to 0 so they never mean "unlimited".
 	logBodyLimit := 0
 	if raw := os.Getenv("LOG_BODY_LIMIT"); raw != "" {
 		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && n >= 0 {
@@ -108,6 +114,16 @@ func Load() *Config {
 	var origins []string
 	for _, o := range rawOrigins {
 		origins = append(origins, strings.TrimSpace(o))
+	}
+
+	// Trusted reverse-proxy CIDRs. Empty (the default) trusts no forwarded
+	// headers, so a direct client cannot spoof X-Forwarded-For to evade the
+	// per-IP auth rate limit.
+	var trustedProxies []string
+	for _, p := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			trustedProxies = append(trustedProxies, p)
+		}
 	}
 
 	rawAdmins := strings.Split(os.Getenv("ADMIN_EMAILS"), ",")
@@ -142,6 +158,7 @@ func Load() *Config {
 		LogLevel:           logLevel,
 		LogBodyLimit:       logBodyLimit,
 		TokenEncryptionKey: tokenEncryptionKey,
+		TrustedProxies:     trustedProxies,
 		AdminSetupToken:    adminSetupToken,
 		CookieSecure:       cookieSecure,
 	}

@@ -89,9 +89,43 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod-no-db.yml up -d
 ```
 
-`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, and `LOG_LEVEL` are optional (log level defaults to `info` in production). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
+`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, `LOG_LEVEL`, `LOG_BODY_LIMIT`, and `TRUSTED_PROXIES` are optional (log level defaults to `info` in production; body logging is off unless `LOG_BODY_LIMIT` is positive). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
 
 The backend runs schema migrations on startup, and the frontend reverse-proxies `/api/v1` to the backend.
+
+#### TLS termination (required)
+
+Both Compose files serve **plain HTTP** on their published ports (`frontend` 3000, `backend` 8080) and are designed to sit behind a TLS-terminating reverse proxy or ingress. With `COOKIE_SECURE=true` (the production default) browsers only send the httpOnly session cookie over HTTPS, and `Strict-Transport-Security` is ignored over HTTP — so exposing the stack directly over HTTP is not a supported deployment. The supported topology is:
+
+```
+browser --HTTPS--> TLS terminator (nginx/Caddy/Traefik/cloud LB) --HTTP--> frontend:3000 --HTTP--> backend:8080
+```
+
+Requirements for the terminator:
+
+- Terminate TLS and forward to the frontend on port 3000 (the frontend proxies `/api/v1` to the backend itself).
+- Preserve `Host` and set `X-Forwarded-Proto: https`.
+- Emit `Strict-Transport-Security` at the terminator. The frontend nginx also sends an HSTS header, but it is only seen by the TLS terminator (over the internal HTTP hop), so the browser-facing HSTS policy must be set where TLS terminates.
+- Keep `COOKIE_SECURE=true`. Only set it to `false` for isolated local development over HTTP; never in production.
+- Set `TRUSTED_PROXIES` on the backend to the proxy network/CIDR (comma-separated) so `X-Forwarded-For` / `X-Real-IP` are believed and per-IP rate limiting sees real client addresses. Leave it empty when the backend is exposed directly: with no trusted proxies configured, forwarded headers are ignored and cannot be spoofed.
+
+If TLS is terminated by another container in the same Compose project, add its network to `TRUSTED_PROXIES` (for example `TRUSTED_PROXIES=172.18.0.0/16`). Do not set `TRUSTED_PROXIES=0.0.0.0/0` — that trusts arbitrary client-supplied forwarding headers.
+
+#### External PostgreSQL over TLS
+
+When `DATABASE_URL` points at a database outside the Compose network, require TLS:
+
+```
+DATABASE_URL=postgres://user:pass@db.example.com:5432/fintrak?sslmode=verify-full&sslrootcert=/etc/fintrak/db-ca.pem
+```
+
+Use `sslmode=verify-full` (not `require`) so the server hostname and certificate chain are both verified; mount the CA bundle into the backend container. The bundled-database Compose file uses `sslmode=disable` only because that connection never leaves the private Docker network — do not copy that URI for an external database.
+
+#### Frontend build, CSP, and authentication
+
+- Build-time `VITE_API_URL` overrides the API base URL. The image default is `/api/v1` (same-origin) and the nginx config reverse-proxies that path to the backend. A **cross-origin** `VITE_API_URL` will be blocked by the frontend's `connect-src 'self'` CSP unless you also update `frontend/nginx.conf` and the backend `ALLOWED_ORIGINS`.
+- Authentication uses an httpOnly, `SameSite=Lax` session cookie, so the API must be same-origin (or a same-site subdomain) for the browser to attach it.
+- Useful commands (run in `frontend/`): `bun install`, `bun run dev`, `bun run typecheck`, `bun run test`, `bun run build`.
 
 #### Rotating `TOKEN_ENCRYPTION_KEY`
 

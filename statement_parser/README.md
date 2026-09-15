@@ -1,5 +1,13 @@
 # Statement Transaction Extractor
 
+> [!WARNING]
+> This service is **unauthenticated** and parses attacker-controllable PDFs. It
+> must **never** be exposed to the internet. In production, run it only on a
+> private/internal network reachable by the FinTrak backend (the main Compose
+> stack already does this) and never publish its port to the host. The examples
+> below bind to loopback; only bind to `0.0.0.0` inside an isolated container
+> network.
+
 Extracts the transaction table from SBI Card style credit card statement PDFs
 (tested against the "PhonePe SBI Card SELECT BLACK" monthly statement layout).
 Supports password-protected PDFs, a small web UI, a CLI, a REST API, and an
@@ -22,10 +30,12 @@ For local development (Flask dev server):
 uv run python -m statement_parser
 ```
 
-For production, serve with gunicorn (the WSGI server used in the Docker image):
+For production, serve with gunicorn (the WSGI server used in the Docker image).
+Bind to loopback unless the process is inside a private container network that
+only the backend can reach (see the warning at the top of this file):
 
 ```bash
-uv run gunicorn -b 0.0.0.0:5000 statement_parser.app:app
+uv run gunicorn -b 127.0.0.1:5000 statement_parser.app:app
 ```
 
 Uploads are capped at 20 MB, and extraction refuses PDFs with more than

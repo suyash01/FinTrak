@@ -86,28 +86,6 @@ func TestCreateLinkQueryErrors(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("duplicate check", func(t *testing.T) {
-		r, srv, mock := newLinkTestRouter(t)
-		r.POST("/links", srv.CreateLink)
-
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
-			WithArgs([]uuid.UUID{fromID, toID}, testUserID()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(testUserID(), "transfer", fromID, toID).
-			WillReturnError(assert.AnError)
-
-		body, _ := json.Marshal(base)
-		req, _ := http.NewRequest(http.MethodPost, "/links", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
 	t.Run("insert", func(t *testing.T) {
 		r, srv, mock := newLinkTestRouter(t)
 		r.POST("/links", srv.CreateLink)
@@ -116,9 +94,6 @@ func TestCreateLinkQueryErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs([]uuid.UUID{fromID, toID}, testUserID()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(testUserID(), "transfer", fromID, toID).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectQuery("INSERT INTO links").
 			WithArgs(testUserID(), "transfer", fromID, toID, "").
 			WillReturnError(assert.AnError)
@@ -143,9 +118,6 @@ func TestCreateLinkTransferUpdateErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs([]uuid.UUID{fromID, toID}, testUserID()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(testUserID(), "transfer", fromID, toID).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectQuery("INSERT INTO links").
 			WithArgs(testUserID(), "transfer", fromID, toID, "").
 			WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
@@ -375,28 +347,6 @@ func TestBulkCreateLinksErrors(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("duplicate check error", func(t *testing.T) {
-		r, srv, mock := newLinkTestRouter(t)
-		r.POST("/links/bulk", srv.BulkCreateLinks)
-
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnError(assert.AnError)
-
-		body, _ := json.Marshal(one("transfer"))
-		req, _ := http.NewRequest(http.MethodPost, "/links/bulk", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
-		assert.NoError(t, mock.ExpectationsWereMet())
-	})
-
 	t.Run("insert error", func(t *testing.T) {
 		r, srv, mock := newLinkTestRouter(t)
 		r.POST("/links/bulk", srv.BulkCreateLinks)
@@ -405,9 +355,6 @@ func TestBulkCreateLinksErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("INSERT INTO links").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(assert.AnError)
@@ -430,9 +377,6 @@ func TestBulkCreateLinksErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("INSERT INTO links").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -458,9 +402,6 @@ func TestBulkCreateLinksErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("INSERT INTO links").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -489,9 +430,6 @@ func TestBulkCreateLinksErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions WHERE id = ANY").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM links WHERE user_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("INSERT INTO links").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))

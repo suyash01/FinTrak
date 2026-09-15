@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   BarChart,
   Bar,
@@ -196,7 +196,13 @@ export default function Dashboard() {
     }
   };
 
+  // Monotonic request id: a slow earlier summary response must never overwrite
+  // the result for the current filters. Only the newest request may commit
+  // data, error, or loading state.
+  const requestIdRef = useRef(0);
+
   const loadSummary = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     try {
@@ -210,11 +216,13 @@ export default function Dashboard() {
         if (dateTo) params.dateTo = dateTo;
       }
       const res = await api.getDashboardSummary(params);
+      if (requestId !== requestIdRef.current) return;
       setData(res);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setError((err as Error).message || "Failed to load dashboard");
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, [accountId, dateFrom, dateTo, isBillingCycleMode, cycles]);
 

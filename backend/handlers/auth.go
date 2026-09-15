@@ -87,8 +87,19 @@ func (srv *Server) Register(c *gin.Context) {
 		role = "admin"
 	}
 
+	// Create the user and seed its default categories in one transaction, so a
+	// transient seeding failure rolls the user back instead of leaving an
+	// account that cannot repair its missing defaults by registering again.
+	tx, err := srv.db.Begin(c)
+	if err != nil {
+		slog.Error("Register (begin)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(c)
+
 	var user models.User
-	err = srv.db.QueryRow(c,
+	err = tx.QueryRow(c,
 		`INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3)
 			 RETURNING id, email, role`,
 		email, hash, role,
@@ -104,7 +115,17 @@ func (srv *Server) Register(c *gin.Context) {
 		return
 	}
 
-	db.SeedDefaultCategories(c, srv.db, user.ID)
+	if err := db.SeedDefaultCategories(c, tx, user.ID); err != nil {
+		slog.Error("Register (seeding categories)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(c); err != nil {
+		slog.Error("Register (commit)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
 	if err != nil {

@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 
 export default function PaperlessSettingsManager() {
-  const { settings, refreshSettings, loading } = useDomainData();
+  const { settings, refreshSettings, loading, errors } = useDomainData();
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [tokenSet, setTokenSet] = useState(false);
@@ -60,6 +60,26 @@ export default function PaperlessSettingsManager() {
         <Spinner className="size-4" /> Loading...
       </div>
     );
+
+  // A failed settings load must not look like "Paperless is not configured":
+  // show a retryable error until a request actually succeeds.
+  if (errors.settings) {
+    return (
+      <div className="space-y-3">
+        <div className="px-4 py-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
+          Could not load Paperless settings: {errors.settings}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => refreshSettings()}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSave} className="space-y-3">

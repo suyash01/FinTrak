@@ -10,21 +10,28 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Config controls a Limiter's refill rate, burst size, and idle-key retention.
+// defaultMaxKeys caps how many distinct keys a limiter tracks, bounding memory
+// even if keys are attacker-controlled.
+const defaultMaxKeys = 10000
+
+// Config controls a Limiter's refill rate, burst size, idle-key retention, and
+// maximum tracked keys.
 type Config struct {
-	Rate  rate.Limit
-	Burst int
-	TTL   time.Duration
+	Rate    rate.Limit
+	Burst   int
+	TTL     time.Duration
+	MaxKeys int
 }
 
 // DefaultConfig returns the policy for authentication endpoints: a burst of 5
 // requests refilling at one request every 6 seconds (10/min), with idle keys
-// evicted after 10 minutes.
+// evicted after 10 minutes and at most 10,000 tracked keys.
 func DefaultConfig() Config {
 	return Config{
-		Rate:  rate.Every(6 * time.Second),
-		Burst: 5,
-		TTL:   10 * time.Minute,
+		Rate:    rate.Every(6 * time.Second),
+		Burst:   5,
+		TTL:     10 * time.Minute,
+		MaxKeys: defaultMaxKeys,
 	}
 }
 
@@ -49,6 +56,9 @@ func New(cfg Config) *Limiter {
 	if cfg.TTL <= 0 {
 		cfg.TTL = 10 * time.Minute
 	}
+	if cfg.MaxKeys < 1 {
+		cfg.MaxKeys = defaultMaxKeys
+	}
 	return &Limiter{
 		entries: make(map[string]*entry),
 		cfg:     cfg,
@@ -68,6 +78,15 @@ func (l *Limiter) Allow(key string) bool {
 	now := l.now()
 	e, ok := l.entries[key]
 	if !ok {
+		// Bound the map: if it is at capacity, sweep expired buckets first and
+		// fail closed if that frees nothing. This keeps memory bounded even
+		// when keys are attacker-controlled.
+		if len(l.entries) >= l.cfg.MaxKeys {
+			l.evictLocked(now)
+			if len(l.entries) >= l.cfg.MaxKeys {
+				return false
+			}
+		}
 		e = &entry{limiter: rate.NewLimiter(l.cfg.Rate, l.cfg.Burst)}
 		l.entries[key] = e
 	}
@@ -83,7 +102,13 @@ func (l *Limiter) Evict() {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	cutoff := l.now().Add(-l.cfg.TTL)
+	l.evictLocked(l.now())
+}
+
+// evictLocked drops buckets whose last use predates the TTL cutoff. The caller
+// must hold l.mu.
+func (l *Limiter) evictLocked(now time.Time) {
+	cutoff := now.Add(-l.cfg.TTL)
 	for key, e := range l.entries {
 		if e.lastSeen.Before(cutoff) {
 			delete(l.entries, key)

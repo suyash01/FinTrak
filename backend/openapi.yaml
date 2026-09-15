@@ -5,12 +5,16 @@ info:
     Personal finance tracker API. All API endpoints are prefixed with `/api/v1`.
 
     ## Authentication
-    Protected routes require a Bearer token in the `Authorization` header:
+    `/auth/register` and `/auth/login` authenticate the user and set the JWT as
+    an httpOnly, `SameSite=Lax` session cookie (`fintrak_token`); the token is
+    never returned in the response body. Browsers send that cookie
+    automatically, which is how the SPA authenticates.
+
+    For non-browser clients, protected routes also accept a Bearer token in the
+    `Authorization` header, using the value from the session cookie:
     ```
     Authorization: Bearer <token>
     ```
-
-    Tokens are obtained via `/auth/register` or `/auth/login`.
   version: 0.1.0-alpha.0
   contact:
     name: FinTrak
@@ -62,7 +66,7 @@ paths:
       tags:
         - Authentication
       summary: Register a new user
-      description: Create a new user account and receive a JWT token
+      description: Create a new user account. The JWT is set as an httpOnly session cookie, not returned in the body.
       operationId: register
       requestBody:
         required: true
@@ -93,7 +97,7 @@ paths:
       tags:
         - Authentication
       summary: Login a user
-      description: Authenticate a user and receive a JWT token
+      description: Authenticate a user. The JWT is set as an httpOnly session cookie, not returned in the body.
       operationId: login
       requestBody:
         required: true
@@ -147,7 +151,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthResponse"
+                $ref: "#/components/schemas/User"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -2675,10 +2679,11 @@ components:
     # ============= Responses =============
     AuthResponse:
       type: object
+      description: |
+        Returned by register/login. The JWT is delivered as an httpOnly,
+        SameSite=Lax session cookie (`fintrak_token`), never in the body, so
+        only the user is present here.
       properties:
-        token:
-          type: string
-          description: JWT bearer token
         user:
           $ref: "#/components/schemas/User"
 
@@ -3201,4 +3206,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT token obtained from /auth/register or /auth/login
+      description: |
+        Optional alternative to the httpOnly session cookie. Use the JWT value
+        delivered in the `fintrak_token` cookie by /auth/register or
+        /auth/login; the token itself is never returned in a response body.

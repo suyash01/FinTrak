@@ -172,11 +172,11 @@ func TestRequestLoggerDoesNotTruncateLargeResponses(t *testing.T) {
 	assert.Len(t, body.Documents, testBodyLimit)
 }
 
-func TestRequestLoggerLogsFullBodyWhenUnlimited(t *testing.T) {
+func TestRequestLoggerNonPositiveLimitDisablesBodyCapture(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}
 	r := gin.New()
-	// A non-positive limit disables truncation.
+	// A non-positive limit captures nothing at all.
 	r.Use(RequestLogger(slog.New(h), 0))
 	payload := strings.Repeat("z", 10_000)
 	r.GET("/big", func(c *gin.Context) {
@@ -187,12 +187,59 @@ func TestRequestLoggerLogsFullBodyWhenUnlimited(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/big", nil))
 
 	require.Equal(t, http.StatusOK, w.Code)
+	// The full response still reaches the client even though it is not logged.
+	assert.Greater(t, w.Body.Len(), 0)
 	require.Len(t, h.records, 1)
-	respBody, ok := recordAttr(t, h.records[0], "response_body")
-	require.True(t, ok)
-	assert.Contains(t, respBody, payload)
-	_, truncated := recordAttr(t, h.records[0], "response_body_truncated")
-	assert.False(t, truncated)
+	_, ok := recordAttr(t, h.records[0], "response_body")
+	assert.False(t, ok, "a non-positive limit must not capture response bodies")
+}
+
+func TestRequestLoggerCapsCapturedBodies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	const limit = 32
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h), limit))
+	payload := strings.Repeat("z", 10_000)
+	r.GET("/big", func(c *gin.Context) {
+		c.Writer.Header().Set("Content-Type", "application/json")
+		_, _ = c.Writer.WriteString(`{"data":"` + payload + `"}`)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/big", nil))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Greater(t, w.Body.Len(), limit, "client must receive the full response")
+	require.Len(t, h.records, 1)
+	respBody := mustAttr(t, h.records[0], "response_body")
+	assert.LessOrEqual(t, len(respBody), limit)
+	assert.Equal(t, "true", mustAttr(t, h.records[0], "response_body_truncated"))
+}
+
+func TestRequestLoggerCapsCapturedRequestAndPreservesBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	const limit = 16
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h), limit))
+	r.POST("/echo", func(c *gin.Context) {
+		body, _ := io.ReadAll(c.Request.Body)
+		c.String(http.StatusOK, string(body))
+	})
+
+	body := strings.Repeat("a", 100)
+	req := httptest.NewRequest(http.MethodPost, "/echo", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, body, w.Body.String(), "handler must still receive the full request body")
+	require.Len(t, h.records, 1)
+	reqBody := mustAttr(t, h.records[0], "request_body")
+	assert.LessOrEqual(t, len(reqBody), limit)
+	assert.Equal(t, "true", mustAttr(t, h.records[0], "request_body_truncated"))
 }
 
 func TestRequestLoggerLogsQueryParams(t *testing.T) {

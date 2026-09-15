@@ -95,7 +95,9 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned to the version baked into frontend/Dockerfile so CI and the
+          # published image build with the same toolchain.
+          bun-version: "1.4.2"
       - name: Install dependencies
         run: |
           cd frontend
@@ -163,6 +165,19 @@ jobs:
           flags: parser
           fail_ci_if_error: false
 
+  # Single aggregate validation gate. Every publish job depends on this so a
+  # tagged release can never push one component's image while another
+  # component's tests (or the backend integration suite) are still red.
+  validate:
+    needs: [test-backend, test-backend-integration, test-frontend, test-parser]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any validation job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "A required validation job did not succeed; refusing to publish."
+          exit 1
+
   # Smoke-build every Dockerfile on PRs and branch pushes so the images are
   # actually exercised before a release tag (tag pushes run the publish jobs
   # instead, which build and push). amd64 only to keep the PR path fast.
@@ -198,9 +213,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
   publish-backend:
-    # Runs as soon as its own tests pass; the publish jobs are independent and
-    # fan back in at create-release.
-    needs: [test-backend]
+    # Gated on the full validation aggregate, not just backend unit tests, so a
+    # failing integration/frontend/parser job blocks every image.
+    needs: [validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -247,7 +262,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
   publish-frontend:
-    needs: [test-frontend]
+    needs: [validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -292,7 +307,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
   publish-parser:
-    needs: [test-parser]
+    needs: [validate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

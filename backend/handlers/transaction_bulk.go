@@ -94,9 +94,12 @@ func (srv *Server) BulkUpdateBillingCycle(c *gin.Context) {
 		return
 	}
 
+	// The cycle must belong to the user AND to each transaction's own account,
+	// so a bulk assignment can't attach one account's transactions to another
+	// account's cycle.
 	query := `UPDATE transactions SET billing_cycle_id = $1
 	          WHERE id = ANY($2) AND user_id = $3
-	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3)
+	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3 AND bc.account_id = transactions.account_id)
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`
 	result, err := srv.db.Exec(c, query, req.BillingCycleID, req.TransactionIDs, auth.GetUserID(c))
 	if err != nil {

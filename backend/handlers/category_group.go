@@ -39,6 +39,11 @@ func (srv *Server) GetGroups(c *gin.Context) {
 		g.IsGlobal = g.UserID == nil
 		groups = append(groups, g)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("GetGroups rows", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	c.JSON(http.StatusOK, groups)
 }
