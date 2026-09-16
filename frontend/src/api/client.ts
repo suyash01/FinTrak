@@ -3,6 +3,7 @@ import type {
   AccountType,
   ApplyRulesResult,
   AuthResponse,
+  BackupImportResult,
   BillingCycle,
   BulkCategorizeRequest,
   BulkDeleteLinksRequest,
@@ -116,6 +117,9 @@ interface RequestOptions {
   body?: string;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  // timeout overrides REQUEST_TIMEOUT for long-running calls (e.g. a full
+  // backup restore of a large history).
+  timeout?: number;
 }
 
 function buildQuery(params: QueryParams): string {
@@ -146,7 +150,7 @@ async function request<T>(
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, REQUEST_TIMEOUT);
+  }, options.timeout ?? REQUEST_TIMEOUT);
 
   let res: Response;
   try {
@@ -236,7 +240,12 @@ async function requestMultipart<T>(
   return res.json() as Promise<T>;
 }
 
-export async function downloadCSV(path: string): Promise<void> {
+// downloadFile fetches a binary/text attachment and saves it using the
+// server-provided filename (falling back to fallbackName).
+export async function downloadFile(
+  path: string,
+  fallbackName = "export",
+): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
   });
@@ -247,7 +256,7 @@ export async function downloadCSV(path: string): Promise<void> {
   const blob = await res.blob();
   const disposition = res.headers.get("Content-Disposition") || "";
   const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : "export.csv";
+  const filename = match ? match[1] : fallbackName;
 
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -257,6 +266,10 @@ export async function downloadCSV(path: string): Promise<void> {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+export async function downloadCSV(path: string): Promise<void> {
+  return downloadFile(path, "export.csv");
 }
 
 const api = {
@@ -552,6 +565,16 @@ const api = {
     data: RecurringDetachRequest,
   ): Promise<{ detached: number }> =>
     request("/recurring/detach", { method: "POST", body: JSON.stringify(data) }),
+
+  // User-level backup & restore (whole account, not per-account)
+  exportUserData: (): Promise<void> =>
+    downloadFile("/export", "fintrak-backup.json"),
+  importUserData: (data: unknown): Promise<BackupImportResult> =>
+    request("/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+      timeout: 120000,
+    }),
 
   // Dashboard
   getDashboardSummary: (

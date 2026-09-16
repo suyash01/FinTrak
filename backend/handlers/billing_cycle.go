@@ -170,7 +170,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 		if _, err := q.Exec(ctx,
 			`INSERT INTO billing_cycles (account_id, user_id, start_date, end_date, label)
 			 VALUES ($1, $2, $3, $4, $5)
-			 ON CONFLICT (account_id, start_date) DO NOTHING`,
+			 ON CONFLICT (user_id, account_id, start_date) DO NOTHING`,
 			accountID, userID, start, end, end.Format("Jan 2006")); err != nil {
 			return err
 		}

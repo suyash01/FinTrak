@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import packageJson from "../../../package.json";
 import AccountTypesManager from "./AccountTypesManager";
 import PaperlessSettingsManager from "./PaperlessSettingsManager";
+import DataSettingsManager from "./DataSettingsManager";
 
 export default function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
@@ -103,6 +104,15 @@ export default function Settings() {
             UI appears once both a URL and API token are set.
           </p>
           <PaperlessSettingsManager />
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-6 max-w-125">
+          <h3 className="text-base font-semibold mb-1">Data</h3>
+          <p className="text-[13px] text-muted-foreground mb-4">
+            Back up everything in your account, or restore a backup. Unlike the
+            per-account CSV export, this is a complete user-level snapshot.
+          </p>
+          <DataSettingsManager />
         </div>
 
         <div className="bg-card border border-border rounded-xl p-6 max-w-125">

@@ -46,6 +46,9 @@ vi.mock("./AccountTypesManager", () => ({
 vi.mock("./PaperlessSettingsManager", () => ({
   default: () => <div>Paperless manager</div>,
 }));
+vi.mock("./DataSettingsManager", () => ({
+  default: () => <div>Data manager</div>,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -99,6 +102,7 @@ describe("Settings", () => {
   it("renders the Paperless manager and the app version", () => {
     render(<Settings />);
     expect(screen.getByText("Paperless manager")).toBeInTheDocument();
+    expect(screen.getByText("Data manager")).toBeInTheDocument();
     expect(screen.getByText(/Version .* Built with Go \+ React/)).toBeInTheDocument();
   });
 });

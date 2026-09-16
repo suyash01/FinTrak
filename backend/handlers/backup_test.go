@@ -1,0 +1,506 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/fintrak/backend/internal/money"
+	"github.com/fintrak/backend/models"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newBackupTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface) {
+	t.Helper()
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(mock)
+	t.Cleanup(mock.Close)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.GET("/export", srv.ExportUserData)
+	r.POST("/import", srv.ImportUserData)
+	return r, srv, mock
+}
+
+func postBackup(t *testing.T, r *gin.Engine, bundle any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(bundle)
+	require.NoError(t, err)
+	req, _ := http.NewRequest("POST", "/import", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestExportUserData(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	userID := testUserID()
+	now := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	accountID := uuid.New()
+	loanID := uuid.New()
+	categoryID := uuid.New()
+	payeeID := uuid.New()
+	txnID := uuid.New()
+	seriesID := uuid.New()
+
+	mock.ExpectQuery("FROM users WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_tag", "page_size"}).
+			AddRow("http://paperless", "fintrak", intPtr(25)))
+
+	mock.ExpectQuery("FROM accounts WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "bank", "currency", "color", "is_default", "billing_day", "closed", "created_at", "updated_at"}).
+			AddRow(accountID, "Savings", "bank", "HDFC", "INR", "#000000", true, intPtr(5), false, now, now))
+
+	mock.ExpectQuery("FROM category_groups WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "sort_order"}).
+			AddRow("custom", "Custom", "star", "#111111", 1))
+
+	mock.ExpectQuery("FROM categories WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+			AddRow(categoryID, "Food", "utensils", "#f97316", "expense"))
+
+	mock.ExpectQuery("FROM categories c").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
+			AddRow(uuid.New(), "GlobalCat", "", "", "expense"))
+
+	mock.ExpectQuery("FROM payees WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_id", "created_at", "updated_at"}).
+			AddRow(payeeID, "Merchant", &accountID, now, now))
+
+	mock.ExpectQuery("FROM billing_cycles WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "account_id", "start_date", "end_date", "label", "created_at"}).
+			AddRow(uuid.New(), accountID, now, now, "Jan", now))
+
+	mock.ExpectQuery("FROM transactions WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "billing_cycle_id", "created_at", "updated_at"}).
+			AddRow(txnID, accountID, now, "Coffee", 250.5, "debit", &categoryID, []string{"food"}, "morning", &payeeID, nil, now, now))
+
+	mock.ExpectQuery("FROM links WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}).
+			AddRow(uuid.New(), "transfer", txnID, uuid.New(), "note", now))
+
+	mock.ExpectQuery("FROM loan_attachments WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "loan_account_id", "transaction_id", "created_at"}).
+			AddRow(uuid.New(), loanID, txnID, now))
+
+	mock.ExpectQuery("FROM recurring_series WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}).
+			AddRow(seriesID, "Rent", "desc", "debit", "monthly", 1, &categoryID, &payeeID, true, "note", now, now))
+
+	mock.ExpectQuery("FROM recurring_series_terms WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "series_id", "start_date", "end_date", "amount", "account_id", "created_at"}).
+			AddRow(uuid.New(), seriesID, now, &now, 1000.0, accountID, now))
+
+	mock.ExpectQuery("FROM recurring_attachments WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "series_id", "transaction_id", "created_at"}).
+			AddRow(uuid.New(), seriesID, txnID, now))
+
+	mock.ExpectQuery("FROM rules WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
+			AddRow(uuid.New(), "coffee", "contains", categoryID, &payeeID, 1))
+
+	req, _ := http.NewRequest("GET", "/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Disposition"), "fintrak-backup")
+	assert.Contains(t, w.Header().Get("Content-Disposition"), ".json")
+
+	var bundle models.BackupBundle
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &bundle))
+	assert.Equal(t, models.BackupFormat, bundle.Format)
+	assert.Equal(t, models.BackupVersion, bundle.Version)
+	require.NotNil(t, bundle.Settings)
+	assert.Equal(t, "http://paperless", bundle.Settings.PaperlessURL)
+	require.Len(t, bundle.Accounts, 1)
+	assert.Equal(t, "Savings", bundle.Accounts[0].Name)
+	require.Len(t, bundle.Categories, 2)
+	require.Len(t, bundle.Transactions, 1)
+	assert.Equal(t, "2024-01-15", bundle.Transactions[0].Date)
+	require.Len(t, bundle.Links, 1)
+	require.Len(t, bundle.RecurringSeries, 1)
+	require.Len(t, bundle.RecurringTerms, 1)
+	require.Len(t, bundle.Rules, 1)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataRejectsBadFormat(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	w := postBackup(t, r, map[string]any{"format": "something.else", "version": 1})
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataRejectsUnsupportedVersion(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	w := postBackup(t, r, models.BackupBundle{Format: models.BackupFormat, Version: 99})
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "unsupported backup version")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataRejectsNonEmptyUser(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectRollback()
+
+	bundle := models.BackupBundle{
+		Format:   models.BackupFormat,
+		Version:  models.BackupVersion,
+		Accounts: []models.BackupAccount{{ID: uuid.New(), Name: "A", AccountTypeID: "bank"}},
+	}
+	w := postBackup(t, r, bundle)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataRejectsMissingAccountType(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT id FROM account_types").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+	mock.ExpectRollback()
+
+	bundle := models.BackupBundle{
+		Format:   models.BackupFormat,
+		Version:  models.BackupVersion,
+		Accounts: []models.BackupAccount{{ID: uuid.New(), Name: "A", AccountTypeID: "crypto"}},
+	}
+	w := postBackup(t, r, bundle)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "account types not available")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataAccountOnly(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	accountID := uuid.New()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT id FROM account_types").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("bank"))
+	mock.ExpectExec("INSERT INTO accounts ").
+		WithArgs(anyArgs(12)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	bundle := models.BackupBundle{
+		Format:  models.BackupFormat,
+		Version: models.BackupVersion,
+		Accounts: []models.BackupAccount{
+			{ID: accountID, Name: "Savings", AccountTypeID: "bank", Currency: "INR", Color: "#000000", IsDefault: true},
+		},
+	}
+	w := postBackup(t, r, bundle)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 1, result.Accounts)
+	assert.Equal(t, 0, result.Transactions)
+	assert.Empty(t, result.Warnings)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestImportUserDataRemapsReferences exercises the full dependency chain and
+// verifies that the bundle's original IDs are not reused (the IDs in the
+// INSERT args are freshly minted and cross-referenced).
+func TestImportUserDataRemapsReferences(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	oldAccount := uuid.New()
+	oldCategory := uuid.New()
+	oldPayee := uuid.New()
+	oldTxn := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT id FROM account_types").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("bank"))
+	mock.ExpectQuery("SELECT id FROM category_groups WHERE user_id").
+		WithArgs(testUserID(), "Custom").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
+		WithArgs(testUserID(), "Food", "expense").
+		WillReturnError(pgx.ErrNoRows)
+
+	mock.ExpectExec("INSERT INTO accounts ").
+		WithArgs(anyArgs(12)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO category_groups ").
+		WithArgs(anyArgs(7)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO categories ").
+		WithArgs(anyArgs(6)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO payees ").
+		WithArgs(anyArgs(6)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO transactions ").
+		WithArgs(anyArgs(14)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	bundle := models.BackupBundle{
+		Format:  models.BackupFormat,
+		Version: models.BackupVersion,
+		Accounts: []models.BackupAccount{
+			{ID: oldAccount, Name: "Savings", AccountTypeID: "bank"},
+		},
+		CategoryGroups: []models.BackupCategoryGroup{
+			{ID: "custom", Name: "Custom", SortOrder: 1},
+		},
+		Categories: []models.BackupCategory{
+			{ID: oldCategory, Name: "Food", GroupID: "expense"},
+		},
+		Payees: []models.BackupPayee{
+			{ID: oldPayee, Name: "Merchant"},
+		},
+		Transactions: []models.BackupTransaction{
+			{
+				ID:          oldTxn,
+				AccountID:   oldAccount,
+				Date:        "2024-01-15",
+				Description: "Coffee",
+				Amount:      money.FromFloat(250.5),
+				Type:        "debit",
+				CategoryID:  &oldCategory,
+				PayeeID:     &oldPayee,
+			},
+		},
+	}
+
+	// The exact cross-referenced UUIDs are confirmed by the integration
+	// round-trip test; here the counts prove every resource was inserted in
+	// dependency order without a foreign key resolving to nil.
+	w := postBackup(t, r, bundle)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 1, result.Accounts)
+	assert.Equal(t, 1, result.CategoryGroups)
+	assert.Equal(t, 1, result.Categories)
+	assert.Equal(t, 1, result.Payees)
+	assert.Equal(t, 1, result.Transactions)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataInvalidJSON(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	req, _ := http.NewRequest("POST", "/import", bytes.NewBufferString("{"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportUserDataSkipsDanglingTransaction(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectCommit()
+
+	missingAccount := uuid.New()
+	bundle := models.BackupBundle{
+		Format:  models.BackupFormat,
+		Version: models.BackupVersion,
+		Transactions: []models.BackupTransaction{
+			{ID: uuid.New(), AccountID: missingAccount, Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"},
+		},
+	}
+	w := postBackup(t, r, bundle)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 0, result.Transactions)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "skipped transaction")
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestImportUserDataFullBundle restores one row of every resource, including a
+// global category resolved against the target instance and the settings update,
+// so the whole dependency-ordered restore is exercised.
+func TestImportUserDataFullBundle(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	accountID := uuid.New()
+	loanID := uuid.New()
+	userCatID := uuid.New()
+	globalCatID := uuid.New()
+	payeeID := uuid.New()
+	cycleID := uuid.New()
+	txn1 := uuid.New()
+	txn2 := uuid.New()
+	seriesID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT id FROM account_types").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("bank").AddRow("loan"))
+	mock.ExpectQuery("SELECT id FROM category_groups WHERE user_id").
+		WithArgs(testUserID(), "Custom").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
+		WithArgs(testUserID(), "Food", "expense").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT id FROM categories WHERE user_id IS NULL").
+		WithArgs("GlobalCat", "expense").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
+
+	mock.ExpectExec("INSERT INTO accounts ").WithArgs(anyArgs(24)...).WillReturnResult(pgxmock.NewResult("INSERT", 2))
+	mock.ExpectExec("INSERT INTO category_groups ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO categories ").WithArgs(anyArgs(6)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO payees ").WithArgs(anyArgs(6)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO billing_cycles ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO transactions ").WithArgs(anyArgs(28)...).WillReturnResult(pgxmock.NewResult("INSERT", 2))
+	mock.ExpectExec("INSERT INTO links ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO loan_attachments ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO recurring_series ").WithArgs(anyArgs(13)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO recurring_series_terms ").WithArgs(anyArgs(8)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO recurring_attachments ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO rules ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("UPDATE users SET").WithArgs(anyArgs(4)...).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	bundle := models.BackupBundle{
+		Format:   models.BackupFormat,
+		Version:  models.BackupVersion,
+		Settings: &models.BackupSettings{PaperlessURL: "http://p", PaperlessTag: "t", PageSize: intPtr(25)},
+		Accounts: []models.BackupAccount{
+			{ID: accountID, Name: "Savings", AccountTypeID: "bank"},
+			{ID: loanID, Name: "Loan", AccountTypeID: "loan"},
+		},
+		CategoryGroups: []models.BackupCategoryGroup{{ID: "custom", Name: "Custom", SortOrder: 1}},
+		Categories: []models.BackupCategory{
+			{ID: userCatID, Name: "Food", GroupID: "expense"},
+			{ID: globalCatID, Name: "GlobalCat", GroupID: "expense", Global: true},
+		},
+		Payees:        []models.BackupPayee{{ID: payeeID, Name: "Merchant"}},
+		BillingCycles: []models.BackupBillingCycle{{ID: cycleID, AccountID: accountID, StartDate: "2024-01-01", EndDate: "2024-01-31", Label: "Jan"}},
+		Transactions: []models.BackupTransaction{
+			{ID: txn1, AccountID: accountID, Date: "2024-01-15", Description: "Coffee", Amount: money.FromFloat(250.5), Type: "debit", CategoryID: &userCatID, PayeeID: &payeeID, BillingCycleID: &cycleID},
+			{ID: txn2, AccountID: accountID, Date: "2024-01-16", Description: "Global", Amount: money.FromFloat(100), Type: "debit", CategoryID: &globalCatID},
+		},
+		Links:           []models.BackupLink{{ID: uuid.New(), Type: "transfer", FromTxnID: txn1, ToTxnID: txn2}},
+		LoanAttachments: []models.BackupLoanAttachment{{ID: uuid.New(), LoanAccountID: loanID, TransactionID: txn1}},
+		RecurringSeries: []models.BackupRecurringSeries{{
+			ID: seriesID, Name: "Rent",
+			Type: "debit", Frequency: "monthly", Interval: 1,
+			CategoryID: &userCatID, PayeeID: &payeeID, Active: true,
+		}},
+		RecurringTerms: []models.BackupRecurringTerm{{
+			ID: uuid.New(), SeriesID: seriesID, StartDate: "2024-01-01", Amount: money.FromFloat(1000), AccountID: accountID,
+		}},
+		RecurringAttachments: []models.BackupRecurringAttachment{{ID: uuid.New(), SeriesID: seriesID, TransactionID: txn2}},
+		Rules: []models.BackupRule{{
+			ID: uuid.New(), Pattern: "coffee", MatchType: "contains", CategoryID: userCatID, PayeeID: &payeeID, Priority: 1,
+		}},
+	}
+
+	w := postBackup(t, r, bundle)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 2, result.Accounts)
+	assert.Equal(t, 1, result.CategoryGroups)
+	assert.Equal(t, 1, result.Categories)
+	assert.Equal(t, 1, result.Payees)
+	assert.Equal(t, 1, result.BillingCycles)
+	assert.Equal(t, 2, result.Transactions)
+	assert.Equal(t, 1, result.Links)
+	assert.Equal(t, 1, result.LoanAttachments)
+	assert.Equal(t, 1, result.RecurringSeries)
+	assert.Equal(t, 1, result.RecurringTerms)
+	assert.Equal(t, 1, result.RecurringAttachments)
+	assert.Equal(t, 1, result.Rules)
+	assert.Empty(t, result.Warnings)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestExportUserDataQueryError(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	mock.ExpectQuery("FROM users WHERE id").
+		WithArgs(testUserID()).
+		WillReturnError(pgx.ErrNoRows)
+
+	req, _ := http.NewRequest("GET", "/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

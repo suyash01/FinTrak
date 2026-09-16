@@ -2745,6 +2745,83 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # ============= Backup & Restore =============
+  /export:
+    get:
+      tags:
+        - Backup
+      summary: Export all user data as a JSON backup
+      description: |
+        Download a complete, versioned JSON snapshot of everything the
+        authenticated user owns: accounts, category groups and categories,
+        payees, billing cycles, transactions, links, loan attachments,
+        recurring series/terms/attachments, rules, and non-secret settings.
+        The Paperless API token and password hash are never included. This is
+        the user-level counterpart to `GET /accounts/{id}/export`, which only
+        covers one account's transactions as CSV.
+      operationId: exportUserData
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: JSON backup bundle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupBundle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /import:
+    post:
+      tags:
+        - Backup
+      summary: Restore a JSON backup bundle
+      description: |
+        Restore a bundle produced by `GET /export`. The restore is applied in a
+        single database transaction and is all-or-nothing. It is refused with
+        409 when the authenticated user already has accounts, because merging a
+        foreign bundle into existing data is ambiguous. Every row is inserted
+        with a freshly minted ID and every reference (category, payee, account,
+        billing cycle, transaction) is remapped, so a bundle is portable across
+        users and instances.
+      operationId: importUserData
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupBundle"
+      responses:
+        "200":
+          description: Restore summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupImportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: The target user already has accounts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Backup file too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   schemas:
     # ============= Requests =============
@@ -3654,12 +3731,14 @@ components:
         accountId:
           type: string
           format: uuid
+          description: Account of the term in effect today (derived from the series' terms)
         name:
           type: string
         description:
           type: string
         amount:
           type: number
+          description: Amount of the term in effect today (derived from the series' terms)
         type:
           type: string
           enum: [debit, credit]
@@ -3671,10 +3750,12 @@ components:
         startDate:
           type: string
           format: date
+          description: Earliest term start (derived from the series' terms)
         endDate:
           type: string
           format: date
           nullable: true
+          description: Latest term end (nil while open-ended; derived from the series' terms)
         categoryId:
           type: string
           format: uuid
@@ -3848,12 +3929,6 @@ components:
         interval:
           type: integer
           minimum: 1
-        startDate:
-          type: string
-          format: date
-        endDate:
-          type: string
-          description: A date to set, or an empty string to clear
         categoryId:
           type: string
           format: uuid
@@ -3969,6 +4044,414 @@ components:
           items:
             type: string
             format: uuid
+
+    # ============= Backup & Restore =============
+    BackupBundle:
+      type: object
+      required:
+        - format
+        - version
+        - exportedAt
+      properties:
+        format:
+          type: string
+          example: fintrak.backup
+        version:
+          type: integer
+          example: 1
+        exportedAt:
+          type: string
+          format: date-time
+        settings:
+          $ref: "#/components/schemas/BackupSettings"
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupAccount"
+        categoryGroups:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupCategoryGroup"
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupCategory"
+        payees:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupPayee"
+        billingCycles:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupBillingCycle"
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupTransaction"
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupLink"
+        loanAttachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupLoanAttachment"
+        recurringSeries:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupRecurringSeries"
+        recurringTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupRecurringTerm"
+        recurringAttachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupRecurringAttachment"
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupRule"
+
+    BackupSettings:
+      type: object
+      description: Non-secret user settings. The Paperless API token is never exported.
+      properties:
+        paperlessUrl:
+          type: string
+        paperlessTag:
+          type: string
+        pageSize:
+          type: integer
+
+    BackupAccount:
+      type: object
+      required: [id, name, accountTypeId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        accountTypeId:
+          type: string
+        bank:
+          type: string
+        currency:
+          type: string
+        color:
+          type: string
+        isDefault:
+          type: boolean
+        billingDay:
+          type: integer
+          nullable: true
+        closed:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BackupCategoryGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        icon:
+          type: string
+        color:
+          type: string
+        sortOrder:
+          type: integer
+
+    BackupCategory:
+      type: object
+      required: [id, name, groupId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        icon:
+          type: string
+        color:
+          type: string
+        groupId:
+          type: string
+        global:
+          type: boolean
+          description: True for an admin-created global category the user references but does not own.
+
+    BackupPayee:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BackupBillingCycle:
+      type: object
+      required: [id, accountId, startDate, endDate]
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        label:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupTransaction:
+      type: object
+      required: [id, accountId, date, description, amount, type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        billingCycleId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BackupLink:
+      type: object
+      required: [id, type, fromTxnId, toTxnId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [transfer, cashback, refund, bill_payment]
+        fromTxnId:
+          type: string
+          format: uuid
+        toTxnId:
+          type: string
+          format: uuid
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupLoanAttachment:
+      type: object
+      required: [id, loanAccountId, transactionId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        loanAccountId:
+          type: string
+          format: uuid
+        transactionId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupRecurringSeries:
+      type: object
+      description: |
+        A recurring series/subscription template. Its amount, account and date
+        range live on its terms (BackupRecurringTerm).
+      required: [id, name, type, frequency, interval]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [debit, credit]
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        active:
+          type: boolean
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BackupRecurringTerm:
+      type: object
+      required: [id, seriesId, startDate, amount, accountId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seriesId:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          nullable: true
+        amount:
+          type: number
+        accountId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupRecurringAttachment:
+      type: object
+      required: [id, seriesId, transactionId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seriesId:
+          type: string
+          format: uuid
+        transactionId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupRule:
+      type: object
+      required: [id, pattern, matchType, categoryId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        pattern:
+          type: string
+        matchType:
+          type: string
+          enum: [contains, starts_with, exact]
+        categoryId:
+          type: string
+          format: uuid
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        priority:
+          type: integer
+
+    BackupImportResult:
+      type: object
+      properties:
+        accounts:
+          type: integer
+        categoryGroups:
+          type: integer
+        categories:
+          type: integer
+        payees:
+          type: integer
+        billingCycles:
+          type: integer
+        transactions:
+          type: integer
+        links:
+          type: integer
+        loanAttachments:
+          type: integer
+        recurringSeries:
+          type: integer
+        recurringTerms:
+          type: integer
+        recurringAttachments:
+          type: integer
+        rules:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
 
     # ============= Common =============
     ErrorResponse:

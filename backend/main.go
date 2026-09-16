@@ -292,6 +292,13 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 
 		// Dashboard
 		api.GET("/dashboard/summary", srv.GetDashboardSummary)
+
+		// User-level backup & restore. Unlike the per-account CSV export,
+		// these snapshot (or restore) the user's whole graph as one JSON
+		// bundle. Import is all-or-nothing and only into a user with no
+		// accounts.
+		api.GET("/export", srv.ExportUserData)
+		api.POST("/import", srv.ImportUserData)
 	}
 
 	return r

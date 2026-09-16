@@ -666,23 +666,27 @@ type TransferSuggestion struct {
 // matching transactions; the user confirms each link explicitly through
 // recurring_attachments.
 type RecurringSeries struct {
-	ID          uuid.UUID    `json:"id"`
-	AccountID   uuid.UUID    `json:"accountId"`
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Amount      money.Amount `json:"amount"`
-	Type        string       `json:"type"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Type        string    `json:"type"`
 	// Frequency is one of "daily", "weekly", "monthly", "yearly"; Interval is
 	// how many frequency units apart consecutive occurrences are (>= 1).
 	Frequency  string     `json:"frequency"`
 	Interval   int        `json:"interval"`
-	StartDate  time.Time  `json:"startDate"`
-	EndDate    *time.Time `json:"endDate,omitempty"`
 	CategoryID *uuid.UUID `json:"categoryId,omitempty"`
 	PayeeID    *uuid.UUID `json:"payeeId,omitempty"`
 	Active     bool       `json:"active"`
 	Notes      string     `json:"notes"`
 	CreatedAt  time.Time  `json:"createdAt"`
+	// Derived from the series' terms (recurring_series_terms), not stored on
+	// the series row. AccountID/Amount are the term in effect today; StartDate
+	// is the earliest term start and EndDate the latest term end (nil while
+	// open-ended).
+	AccountID uuid.UUID    `json:"accountId"`
+	Amount    money.Amount `json:"amount"`
+	StartDate time.Time    `json:"startDate"`
+	EndDate   *time.Time   `json:"endDate,omitempty"`
 	// Joined fields
 	AccountName   string `json:"accountName,omitempty"`
 	CategoryName  string `json:"categoryName,omitempty"`
@@ -750,11 +754,10 @@ type CreateRecurringSeriesRequest struct {
 
 // UpdateRecurringSeriesRequest is a partial update for a recurring series.
 // Pointer fields distinguish "not provided" from a zero value; CategoryID and
-// PayeeID use OptionalUUID so an explicit null clears them. EndDate is a
-// pointer to a string: absent leaves it untouched, "" clears it, and a date
-// sets it. When Ranges is non-empty the series' whole range list is replaced;
-// otherwise an Amount/AccountID change is recorded as a new range starting at
-// EffectiveDate (default: today).
+// PayeeID use OptionalUUID so an explicit null clears them. The series' amount,
+// account and period live on its terms: when Ranges is non-empty the whole
+// range list is replaced; otherwise an Amount/AccountID change is recorded as a
+// new range starting at EffectiveDate (default: today).
 type UpdateRecurringSeriesRequest struct {
 	AccountID     *uuid.UUID             `json:"accountId"`
 	Name          *string                `json:"name"`
@@ -763,8 +766,6 @@ type UpdateRecurringSeriesRequest struct {
 	Type          *string                `json:"type"`
 	Frequency     *string                `json:"frequency"`
 	Interval      *int                   `json:"interval"`
-	StartDate     *string                `json:"startDate"`
-	EndDate       *string                `json:"endDate"`
 	CategoryID    OptionalUUID           `json:"categoryId"`
 	PayeeID       OptionalUUID           `json:"payeeId"`
 	Active        *bool                  `json:"active"`
@@ -819,4 +820,203 @@ type RecurringAttachRequest struct {
 // they are attached to.
 type RecurringDetachRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+}
+
+// User-level backup bundle. Unlike the account CSV export, a user's data is a
+// graph (links join two transactions, billing cycles and recurring/loan
+// attachments reference other rows, rules/payees/categories are shared), so a
+// backup is a single versioned JSON document. The original IDs are exported as
+// opaque in-bundle references; an import mints fresh IDs and rewrites every
+// reference through an ID map, which makes a bundle portable across users and
+// across FinTrak instances.
+
+const (
+	// BackupFormat identifies a FinTrak user backup document.
+	BackupFormat = "fintrak.backup"
+	// BackupVersion is the current bundle schema version.
+	BackupVersion = 1
+)
+
+// BackupBundle is a complete snapshot of everything a single user owns.
+type BackupBundle struct {
+	Format     string    `json:"format"`
+	Version    int       `json:"version"`
+	ExportedAt time.Time `json:"exportedAt"`
+	// Settings carries non-secret preferences only. The Paperless API token and
+	// password hash are never exported.
+	Settings             *BackupSettings             `json:"settings,omitempty"`
+	Accounts             []BackupAccount             `json:"accounts"`
+	CategoryGroups       []BackupCategoryGroup       `json:"categoryGroups"`
+	Categories           []BackupCategory            `json:"categories"`
+	Payees               []BackupPayee               `json:"payees"`
+	BillingCycles        []BackupBillingCycle        `json:"billingCycles"`
+	Transactions         []BackupTransaction         `json:"transactions"`
+	Links                []BackupLink                `json:"links"`
+	LoanAttachments      []BackupLoanAttachment      `json:"loanAttachments"`
+	RecurringSeries      []BackupRecurringSeries     `json:"recurringSeries"`
+	RecurringTerms       []BackupRecurringTerm       `json:"recurringTerms"`
+	RecurringAttachments []BackupRecurringAttachment `json:"recurringAttachments"`
+	Rules                []BackupRule                `json:"rules"`
+}
+
+// BackupSettings is the non-secret subset of a user's settings.
+type BackupSettings struct {
+	PaperlessURL string `json:"paperlessUrl,omitempty"`
+	PaperlessTag string `json:"paperlessTag,omitempty"`
+	PageSize     *int   `json:"pageSize,omitempty"`
+}
+
+// BackupAccount is one account in a backup bundle.
+type BackupAccount struct {
+	ID            uuid.UUID `json:"id"`
+	Name          string    `json:"name"`
+	AccountTypeID string    `json:"accountTypeId"`
+	Bank          string    `json:"bank"`
+	Currency      string    `json:"currency"`
+	Color         string    `json:"color"`
+	IsDefault     bool      `json:"isDefault"`
+	BillingDay    *int      `json:"billingDay,omitempty"`
+	Closed        bool      `json:"closed"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+// BackupCategoryGroup is a user-owned custom category group.
+type BackupCategoryGroup struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Icon      string `json:"icon"`
+	Color     string `json:"color"`
+	SortOrder int    `json:"sortOrder"`
+}
+
+// BackupCategory is a category referenced by the user's data. Global marks an
+// admin-created category (user_id NULL) that the user references but does not
+// own; on import it is matched to the target instance's global category (or
+// recreated as a user-owned copy when absent).
+type BackupCategory struct {
+	ID      uuid.UUID `json:"id"`
+	Name    string    `json:"name"`
+	Icon    string    `json:"icon"`
+	Color   string    `json:"color"`
+	GroupID string    `json:"groupId"`
+	Global  bool      `json:"global,omitempty"`
+}
+
+// BackupPayee is one payee in a backup bundle.
+type BackupPayee struct {
+	ID        uuid.UUID  `json:"id"`
+	Name      string     `json:"name"`
+	AccountID *uuid.UUID `json:"accountId,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
+// BackupBillingCycle is one persisted billing period.
+type BackupBillingCycle struct {
+	ID        uuid.UUID `json:"id"`
+	AccountID uuid.UUID `json:"accountId"`
+	StartDate string    `json:"startDate"`
+	EndDate   string    `json:"endDate"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// BackupTransaction is one transaction. Dates are ISO "YYYY-MM-DD" strings.
+type BackupTransaction struct {
+	ID             uuid.UUID    `json:"id"`
+	AccountID      uuid.UUID    `json:"accountId"`
+	Date           string       `json:"date"`
+	Description    string       `json:"description"`
+	Amount         money.Amount `json:"amount"`
+	Type           string       `json:"type"`
+	CategoryID     *uuid.UUID   `json:"categoryId,omitempty"`
+	Tags           []string     `json:"tags"`
+	Notes          string       `json:"notes"`
+	PayeeID        *uuid.UUID   `json:"payeeId,omitempty"`
+	BillingCycleID *uuid.UUID   `json:"billingCycleId,omitempty"`
+	CreatedAt      time.Time    `json:"createdAt"`
+	UpdatedAt      time.Time    `json:"updatedAt"`
+}
+
+// BackupLink is a link between two transactions.
+type BackupLink struct {
+	ID        uuid.UUID `json:"id"`
+	Type      string    `json:"type"`
+	FromTxnID uuid.UUID `json:"fromTxnId"`
+	ToTxnID   uuid.UUID `json:"toTxnId"`
+	Notes     string    `json:"notes"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// BackupLoanAttachment attaches a transaction to a loan account.
+type BackupLoanAttachment struct {
+	ID            uuid.UUID `json:"id"`
+	LoanAccountID uuid.UUID `json:"loanAccountId"`
+	TransactionID uuid.UUID `json:"transactionId"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+// BackupRecurringSeries is one recurring series/subscription template. Its
+// amount, account and date range live on its terms (BackupRecurringTerm).
+type BackupRecurringSeries struct {
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Type        string     `json:"type"`
+	Frequency   string     `json:"frequency"`
+	Interval    int        `json:"interval"`
+	CategoryID  *uuid.UUID `json:"categoryId,omitempty"`
+	PayeeID     *uuid.UUID `json:"payeeId,omitempty"`
+	Active      bool       `json:"active"`
+	Notes       string     `json:"notes"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+// BackupRecurringTerm is one date-ranged amount/account segment of a series.
+type BackupRecurringTerm struct {
+	ID        uuid.UUID    `json:"id"`
+	SeriesID  uuid.UUID    `json:"seriesId"`
+	StartDate string       `json:"startDate"`
+	EndDate   *string      `json:"endDate,omitempty"`
+	Amount    money.Amount `json:"amount"`
+	AccountID uuid.UUID    `json:"accountId"`
+	CreatedAt time.Time    `json:"createdAt"`
+}
+
+// BackupRecurringAttachment links a transaction to a recurring series.
+type BackupRecurringAttachment struct {
+	ID            uuid.UUID `json:"id"`
+	SeriesID      uuid.UUID `json:"seriesId"`
+	TransactionID uuid.UUID `json:"transactionId"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+// BackupRule is one auto-categorization rule.
+type BackupRule struct {
+	ID         uuid.UUID  `json:"id"`
+	Pattern    string     `json:"pattern"`
+	MatchType  string     `json:"matchType"`
+	CategoryID uuid.UUID  `json:"categoryId"`
+	PayeeID    *uuid.UUID `json:"payeeId,omitempty"`
+	Priority   int        `json:"priority"`
+}
+
+// BackupImportResult reports how many rows a restore created per resource and
+// any rows it skipped. Warnings is empty when the whole bundle was applied.
+type BackupImportResult struct {
+	Accounts             int      `json:"accounts"`
+	CategoryGroups       int      `json:"categoryGroups"`
+	Categories           int      `json:"categories"`
+	Payees               int      `json:"payees"`
+	BillingCycles        int      `json:"billingCycles"`
+	Transactions         int      `json:"transactions"`
+	Links                int      `json:"links"`
+	LoanAttachments      int      `json:"loanAttachments"`
+	RecurringSeries      int      `json:"recurringSeries"`
+	RecurringTerms       int      `json:"recurringTerms"`
+	RecurringAttachments int      `json:"recurringAttachments"`
+	Rules                int      `json:"rules"`
+	Warnings             []string `json:"warnings,omitempty"`
 }

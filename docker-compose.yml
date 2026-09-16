@@ -85,18 +85,29 @@ services:
     networks:
       - backend-net
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "8082:80"
+    depends_on:
+      - db
+    networks:
+      - backend-net
+
   dozzle:
     container_name: dozzle
     image: amir20/dozzle:latest
-    profiles:
-      - debug
     volumes:
       # Read-only: dozzle only needs to read container logs, and a writable
       # Docker socket is a container-escape risk on shared hosts.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - dozzle_data:/data
     ports:
-      - 8082:8080
+      - 8083:8080
 
 networks:
   backend-net:

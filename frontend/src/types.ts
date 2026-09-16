@@ -243,6 +243,25 @@ export interface ImportResult {
   duplicates: number;
 }
 
+// BackupImportResult summarizes a user-level backup restore: how many rows were
+// created per resource, plus any rows skipped because a referenced row was
+// missing from the bundle.
+export interface BackupImportResult {
+  accounts: number;
+  categoryGroups: number;
+  categories: number;
+  payees: number;
+  billingCycles: number;
+  transactions: number;
+  links: number;
+  loanAttachments: number;
+  recurringSeries: number;
+  recurringTerms: number;
+  recurringAttachments: number;
+  rules: number;
+  warnings?: string[];
+}
+
 export interface ApplyRulesResult {
   updated: number;
 }
@@ -479,6 +498,9 @@ export type RecurringFrequency = "daily" | "weekly" | "monthly" | "yearly";
 // transactions from it and never links transactions automatically.
 export interface RecurringSeries {
   id: string;
+  // accountId/amount/startDate/endDate are derived from the series' terms
+  // (recurring_series_terms): accountId/amount are the term in effect today,
+  // startDate is the earliest term start and endDate the latest term end.
   accountId: string;
   name: string;
   description: string;
@@ -585,9 +607,6 @@ export interface UpdateRecurringSeriesRequest {
   type?: TransactionType;
   frequency?: RecurringFrequency;
   interval?: number;
-  startDate?: string;
-  // A date string to set, or "" to clear.
-  endDate?: string;
   categoryId?: string | null;
   payeeId?: string | null;
   active?: boolean;
@@ -595,7 +614,8 @@ export interface UpdateRecurringSeriesRequest {
   // When an amount/account change takes effect (default: today). Ignored
   // unless the amount or account actually changes.
   effectiveDate?: string;
-  // When provided, replaces the series' whole range list.
+  // When provided, replaces the series' whole range list. The series' dates
+  // and per-period accounts/amounts live on its range list, not the series.
   ranges?: RecurringSeriesRange[];
 }
 

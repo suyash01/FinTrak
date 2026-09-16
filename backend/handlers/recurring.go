@@ -287,15 +287,35 @@ func clampQueryInt(c *gin.Context, name string, def, minVal, maxVal int) int {
 }
 
 // recurringSeriesColumns is the SELECT/RETURNING column list for a series row
-// (without the joined names), keeping the scan order in one place.
-const recurringSeriesColumns = `id, account_id, name, description, amount, type,
-	frequency, interval, start_date, end_date, category_id, payee_id, active, notes, created_at`
+// (without the joined names), keeping the scan order in one place. The series'
+// account, amount and date range are not columns: they are derived from its
+// terms (see deriveRecurringSeries).
+const recurringSeriesColumns = `id, name, description, type,
+	frequency, interval, category_id, payee_id, active, notes, created_at`
 
-// scanRecurringSeries scans the recurringSeriesColumns into s.
+// scanRecurringSeries scans the recurringSeriesColumns into s. The derived
+// account/amount/date fields are left zero; call deriveRecurringSeries with the
+// series' terms to populate them.
 func scanRecurringSeries(row pgx.Row, s *models.RecurringSeries) error {
-	return row.Scan(&s.ID, &s.AccountID, &s.Name, &s.Description, &s.Amount, &s.Type,
-		&s.Frequency, &s.Interval, &s.StartDate, &s.EndDate, &s.CategoryID, &s.PayeeID,
+	return row.Scan(&s.ID, &s.Name, &s.Description, &s.Type,
+		&s.Frequency, &s.Interval, &s.CategoryID, &s.PayeeID,
 		&s.Active, &s.Notes, &s.CreatedAt)
+}
+
+// deriveRecurringSeries fills a series' derived fields from its terms (sorted
+// oldest first): StartDate is the earliest term start, EndDate the latest term
+// end (nil while open-ended), and AccountID/Amount the term in effect today
+// (falling back to the nearest term). A term-less series is left untouched.
+func deriveRecurringSeries(s *models.RecurringSeries, terms []models.RecurringSeriesTerm) {
+	if len(terms) == 0 {
+		return
+	}
+	s.StartDate = dateOnly(terms[0].StartDate)
+	s.EndDate = terms[len(terms)-1].EndDate
+	if cur := recurringTermAt(terms, time.Now()); cur != nil {
+		s.AccountID = cur.AccountID
+		s.Amount = cur.Amount
+	}
 }
 
 // loadRecurringSeries fetches one series owned by userID. The caller maps
@@ -405,34 +425,6 @@ func recurringTermsOverlap(terms []models.RecurringSeriesTerm, start time.Time, 
 		return true
 	}
 	return false
-}
-
-// syncRecurringSeriesCache rewrites the series' cached amount/account to the
-// term covering today (falling back to the latest term when today precedes
-// them all), preserving the invariant that the cached columns mirror the
-// current range. It is a no-op for a term-less series (COALESCE keeps the
-// existing values).
-func (srv *Server) syncRecurringSeriesCache(c *gin.Context, q cycleQueryer, seriesID, userID uuid.UUID) error {
-	_, err := q.Exec(c,
-		`UPDATE recurring_series rs SET
-		    amount = COALESCE(
-		        (SELECT t.amount FROM recurring_series_terms t
-		          WHERE t.series_id = rs.id AND t.start_date <= CURRENT_DATE
-		            AND (t.end_date IS NULL OR CURRENT_DATE < t.end_date)
-		          ORDER BY t.start_date DESC LIMIT 1),
-		        (SELECT t.amount FROM recurring_series_terms t WHERE t.series_id = rs.id ORDER BY t.start_date DESC LIMIT 1),
-		        rs.amount),
-		    account_id = COALESCE(
-		        (SELECT t.account_id FROM recurring_series_terms t
-		          WHERE t.series_id = rs.id AND t.start_date <= CURRENT_DATE
-		            AND (t.end_date IS NULL OR CURRENT_DATE < t.end_date)
-		          ORDER BY t.start_date DESC LIMIT 1),
-		        (SELECT t.account_id FROM recurring_series_terms t WHERE t.series_id = rs.id ORDER BY t.start_date DESC LIMIT 1),
-		        rs.account_id),
-		    updated_at = NOW()
-		 WHERE rs.id = $1 AND rs.user_id = $2`,
-		seriesID, userID)
-	return err
 }
 
 // errRecurringAccountNotOwned signals a term referencing an account the user
@@ -560,8 +552,8 @@ func seriesRangesOverlap(a, b parsedRecurringRange) bool {
 }
 
 // primaryRange returns the range covering today, or (falling back) the one with
-// the latest start on/before today, or the earliest. The series' cached
-// amount/account is seeded from it.
+// the latest start on/before today, or the earliest. The series' derived
+// current account/amount is seeded from it.
 func primaryRange(ranges []parsedRecurringRange, today time.Time) parsedRecurringRange {
 	today = dateOnly(today)
 	primary := ranges[0]
@@ -582,15 +574,31 @@ func primaryRange(ranges []parsedRecurringRange, today time.Time) parsedRecurrin
 // and attached transaction count.
 func (srv *Server) GetRecurringSeries(c *gin.Context) {
 	rows, err := srv.db.Query(c, `
-		SELECT rs.id, rs.account_id, rs.name, rs.description, rs.amount, rs.type,
-		       rs.frequency, rs.interval, rs.start_date, rs.end_date,
+		SELECT rs.id, rs.name, rs.description, rs.type,
+		       rs.frequency, rs.interval,
 		       rs.category_id, rs.payee_id, rs.active, rs.notes, rs.created_at,
+		       et.account_id, et.amount, agg.start_date, agg.end_date,
 		       a.name,
 		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''),
 		       COALESCE(p.name, ''),
 		       (SELECT COUNT(*) FROM recurring_attachments ra WHERE ra.series_id = rs.id)
 		FROM recurring_series rs
-		JOIN accounts a ON rs.account_id = a.id
+		JOIN LATERAL (
+		    SELECT t.account_id, t.amount
+		    FROM recurring_series_terms t
+		    WHERE t.series_id = rs.id AND t.user_id = rs.user_id
+		    ORDER BY (t.start_date <= CURRENT_DATE) DESC,
+		             CASE WHEN t.start_date <= CURRENT_DATE THEN t.start_date END DESC,
+		             CASE WHEN t.start_date > CURRENT_DATE THEN t.start_date END ASC
+		    LIMIT 1
+		) et ON TRUE
+		JOIN LATERAL (
+		    SELECT MIN(t.start_date) AS start_date,
+		           CASE WHEN bool_or(t.end_date IS NULL) THEN NULL ELSE MAX(t.end_date) END AS end_date
+		    FROM recurring_series_terms t
+		    WHERE t.series_id = rs.id AND t.user_id = rs.user_id
+		) agg ON TRUE
+		JOIN accounts a ON a.id = et.account_id
 		LEFT JOIN categories c ON rs.category_id = c.id
 		LEFT JOIN payees p ON rs.payee_id = p.id
 		WHERE rs.user_id = $1
@@ -606,9 +614,11 @@ func (srv *Server) GetRecurringSeries(c *gin.Context) {
 	series := []models.RecurringSeries{}
 	for rows.Next() {
 		var s models.RecurringSeries
-		if err := rows.Scan(&s.ID, &s.AccountID, &s.Name, &s.Description, &s.Amount, &s.Type,
-			&s.Frequency, &s.Interval, &s.StartDate, &s.EndDate, &s.CategoryID, &s.PayeeID,
-			&s.Active, &s.Notes, &s.CreatedAt, &s.AccountName, &s.CategoryName, &s.CategoryIcon,
+		if err := rows.Scan(&s.ID, &s.Name, &s.Description, &s.Type,
+			&s.Frequency, &s.Interval, &s.CategoryID, &s.PayeeID,
+			&s.Active, &s.Notes, &s.CreatedAt,
+			&s.AccountID, &s.Amount, &s.StartDate, &s.EndDate,
+			&s.AccountName, &s.CategoryName, &s.CategoryIcon,
 			&s.CategoryColor, &s.Payee, &s.AttachedCount); err != nil {
 			slog.Error("GetRecurringSeries scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -690,7 +700,8 @@ func (srv *Server) CreateRecurringSeries(c *gin.Context) {
 		ranges = []parsedRecurringRange{{start: start, end: end, amount: *req.Amount, accountID: *req.AccountID}}
 	}
 	// The subscription's period is derived: the earliest entry's start and the
-	// latest entry's end (open-ended when that entry has no end).
+	// latest entry's end (open-ended when that entry has no end). The "current"
+	// account/amount shown on the series is the range in effect today.
 	seriesStart := ranges[0].start
 	seriesEnd := ranges[len(ranges)-1].end
 	primary := primaryRange(ranges, dateOnly(time.Now()))
@@ -699,14 +710,13 @@ func (srv *Server) CreateRecurringSeries(c *gin.Context) {
 	var s models.RecurringSeries
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		if err := scanRecurringSeries(tx.QueryRow(c, `
-			INSERT INTO recurring_series (user_id, account_id, name, description, amount, type, frequency, interval, start_date, end_date, category_id, payee_id, active, notes)
-			SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-			WHERE EXISTS (SELECT 1 FROM accounts a WHERE a.id = $2 AND a.user_id = $1)
-			  AND ($11::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $11 AND (c.user_id = $1 OR c.user_id IS NULL)))
-			  AND ($12::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $12 AND p.user_id = $1))
+			INSERT INTO recurring_series (user_id, name, description, type, frequency, interval, category_id, payee_id, active, notes)
+			SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $1 OR c.user_id IS NULL)))
+			  AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $1))
 			RETURNING `+recurringSeriesColumns,
-			userID, primary.accountID, req.Name, req.Description, primary.amount, req.Type,
-			req.Frequency, interval, seriesStart, seriesEnd, req.CategoryID, req.PayeeID, active, req.Notes,
+			userID, req.Name, req.Description, req.Type, req.Frequency, interval,
+			req.CategoryID, req.PayeeID, active, req.Notes,
 		), &s); err != nil {
 			return err
 		}
@@ -739,6 +749,10 @@ func (srv *Server) CreateRecurringSeries(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	s.StartDate = seriesStart
+	s.EndDate = seriesEnd
+	s.AccountID = primary.accountID
+	s.Amount = primary.amount
 	s.NextDueDate = nextRecurringOccurrence(s, dateOnly(time.Now()))
 	s.MonthlyAmount = recurringMonthlyAmount(s)
 	c.JSON(http.StatusCreated, s)
@@ -771,6 +785,14 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	terms, err := srv.loadRecurringTerms(c, id, userID)
+	if err != nil {
+		slog.Error("UpdateRecurringSeries (load terms)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	deriveRecurringSeries(&s, terms)
 
 	origAmount, origAccount := s.Amount, s.AccountID
 
@@ -815,26 +837,6 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 		}
 		s.Interval = *req.Interval
 	}
-	if req.StartDate != nil {
-		start, err := parseRecurringDate(*req.StartDate)
-		if err != nil {
-			validation.RespondError(c, err.Error(), http.StatusBadRequest)
-			return
-		}
-		s.StartDate = start
-	}
-	if req.EndDate != nil {
-		if strings.TrimSpace(*req.EndDate) == "" {
-			s.EndDate = nil
-		} else {
-			end, err := parseRecurringDate(*req.EndDate)
-			if err != nil {
-				validation.RespondError(c, err.Error(), http.StatusBadRequest)
-				return
-			}
-			s.EndDate = &end
-		}
-	}
 	if req.CategoryID.Set() {
 		s.CategoryID = req.CategoryID.Value()
 	}
@@ -848,11 +850,6 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 		s.Notes = *req.Notes
 	}
 
-	if s.EndDate != nil && s.EndDate.Before(dateOnly(s.StartDate)) {
-		validation.RespondError(c, "end date must not be before start date", http.StatusBadRequest)
-		return
-	}
-
 	// Either replace the whole range list (form edit) or record a single
 	// amount/account change (lightweight edit).
 	var newRanges []parsedRecurringRange
@@ -863,18 +860,8 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 			return
 		}
 		newRanges = r
-		// The subscription's period is derived from the ranges.
-		s.StartDate = newRanges[0].start
-		s.EndDate = newRanges[len(newRanges)-1].end
 	}
 	valueChanged := len(newRanges) == 0 && (s.Amount != origAmount || s.AccountID != origAccount)
-
-	terms, err := srv.loadRecurringTerms(c, id, userID)
-	if err != nil {
-		slog.Error("UpdateRecurringSeries (load terms)", slog.String("error", err.Error()))
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
 
 	eff := dateOnly(time.Now())
 	explicitEff := false
@@ -921,21 +908,17 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 				return err
 			}
 		}
-		// Keep the cached amount/account mirroring the current range.
-		if err := srv.syncRecurringSeriesCache(c, tx, id, userID); err != nil {
-			return err
-		}
 		return scanRecurringSeries(tx.QueryRow(c, `
 			UPDATE recurring_series SET
 				name = $1, description = $2, type = $3,
-				frequency = $4, interval = $5, start_date = $6, end_date = $7,
-				category_id = $8, payee_id = $9, active = $10, notes = $11, updated_at = NOW()
-			WHERE id = $12 AND user_id = $13
-			  AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $8 AND (c.user_id = $13 OR c.user_id IS NULL)))
-			  AND ($9::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $9 AND p.user_id = $13))
+				frequency = $4, interval = $5,
+				category_id = $6, payee_id = $7, active = $8, notes = $9, updated_at = NOW()
+			WHERE id = $10 AND user_id = $11
+			  AND ($6::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $6 AND (c.user_id = $11 OR c.user_id IS NULL)))
+			  AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $7 AND p.user_id = $11))
 			RETURNING `+recurringSeriesColumns,
 			s.Name, s.Description, s.Type, s.Frequency, s.Interval,
-			s.StartDate, s.EndDate, s.CategoryID, s.PayeeID, s.Active, s.Notes, id, userID,
+			s.CategoryID, s.PayeeID, s.Active, s.Notes, id, userID,
 		), &s)
 	})
 	if errors.Is(err, errRecurringAccountNotOwned) {
@@ -946,11 +929,23 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 		validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
 		return
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		validation.RespondError(c, errRecurringRangeOverlap.Error(), http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		slog.Error("UpdateRecurringSeries (update)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	terms, err = srv.loadRecurringTerms(c, id, userID)
+	if err != nil {
+		slog.Error("UpdateRecurringSeries (reload terms)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	deriveRecurringSeries(&s, terms)
 	s.NextDueDate = nextRecurringOccurrence(s, dateOnly(time.Now()))
 	s.MonthlyAmount = recurringMonthlyAmount(s)
 	c.JSON(http.StatusOK, s)
@@ -1067,10 +1062,15 @@ func (srv *Server) CreateRecurringTerm(c *gin.Context) {
 		).Scan(&term.ID, &term.SeriesID, &term.StartDate, &term.EndDate, &term.Amount, &term.AccountID, &term.CreatedAt); err != nil {
 			return err
 		}
-		return srv.syncRecurringSeriesCache(c, tx, id, userID)
+		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "referenced account not found", http.StatusBadRequest)
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		validation.RespondError(c, errRecurringRangeOverlap.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -1178,10 +1178,15 @@ func (srv *Server) UpdateRecurringTerm(c *gin.Context) {
 		).Scan(&merged.ID, &merged.SeriesID, &merged.StartDate, &merged.EndDate, &merged.Amount, &merged.AccountID, &merged.CreatedAt); err != nil {
 			return err
 		}
-		return srv.syncRecurringSeriesCache(c, tx, seriesID, userID)
+		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "referenced account not found", http.StatusBadRequest)
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		validation.RespondError(c, errRecurringRangeOverlap.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -1240,7 +1245,7 @@ func (srv *Server) DeleteRecurringTerm(c *gin.Context) {
 			termID, id, userID); err != nil {
 			return err
 		}
-		return srv.syncRecurringSeriesCache(c, tx, id, userID)
+		return nil
 	})
 	if err != nil {
 		slog.Error("DeleteRecurringTerm", slog.String("error", err.Error()))
@@ -1307,6 +1312,7 @@ func (srv *Server) GetRecurringForecast(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	deriveRecurringSeries(&series, terms)
 
 	occurrences := recurringUpcoming(series, dateOnly(time.Now()), count)
 	items := make([]models.RecurringForecastItem, 0, len(occurrences))
@@ -1379,6 +1385,7 @@ func (srv *Server) GetRecurringSuggestions(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	deriveRecurringSeries(&series, terms)
 	if len(terms) == 0 {
 		// Defensive: a series always has at least its initial term.
 		terms = []models.RecurringSeriesTerm{{Amount: series.Amount, AccountID: series.AccountID}}

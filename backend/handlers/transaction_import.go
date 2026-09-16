@@ -433,9 +433,12 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 // attachTransactionsToCycle attaches the given transaction IDs to a billing
 // cycle. Used by credit-card imports when the client chose an explicit cycle so
 // every imported transaction lands in it, overriding the date-based default.
+// The cycle must belong to the user and to the target account, so the update
+// re-checks ownership rather than relying only on the caller's pre-check.
 func attachTransactionsToCycle(ctx context.Context, q cycleQueryer, cycleID, accountID uuid.UUID, ids []uuid.UUID, userID uuid.UUID) error {
 	_, err := q.Exec(ctx,
-		"UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3 AND account_id = $4",
+		"UPDATE transactions SET billing_cycle_id = $1 WHERE id = ANY($2) AND user_id = $3 AND account_id = $4"+
+			" AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3 AND bc.account_id = $4)",
 		cycleID, ids, userID, accountID)
 	return err
 }

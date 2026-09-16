@@ -552,3 +552,102 @@ func TestIntegrationConcurrentSkipImportIsAtomic(t *testing.T) {
 	// Each row is stored exactly once despite the concurrent imports.
 	require.Len(t, a.transactions(acc.ID), 2)
 }
+
+// TestIntegrationUserBackupRoundTrip exports one user's whole graph and
+// restores it into a fresh user, verifying that account/category/payee/billing
+// cycle/transaction references survive the ID remapping and that a non-empty
+// user is refused.
+func TestIntegrationUserBackupRoundTrip(t *testing.T) {
+	alice := newAPIClient(t)
+	alice.register("alice-backup@example.com")
+
+	bank := alice.createAccount("Checking", "bank", nil)
+	day := 15
+	card := alice.createAccount("Card", "credit_card", &day)
+	loan := alice.createAccount("Car Loan", "loan", nil)
+
+	cats := alice.categories()
+	groceries := categoryByName(t, cats, "Groceries")
+	salary := categoryByName(t, cats, "Salary")
+
+	t1 := alice.createTransaction(bank.ID, &groceries.ID, "2024-05-01", "Groceries", 200, "debit")
+	t2 := alice.createTransaction(bank.ID, &salary.ID, "2024-05-02", "Salary", 5000, "credit")
+	t3 := alice.createTransaction(card.ID, nil, "2024-05-03", "EMI", 1000, "debit")
+
+	alice.call(http.MethodPost, "/api/v1/links", map[string]any{
+		"type": "cashback", "fromTxnId": t1, "toTxnId": t2,
+	}, http.StatusCreated, nil)
+	alice.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{t3}, "loanAccountId": loan.ID,
+	}, http.StatusOK, nil)
+	alice.call(http.MethodPost, "/api/v1/recurring", map[string]any{
+		"name": "Rent", "type": "debit", "frequency": "monthly",
+		"startDate": "2024-05-01", "accountId": bank.ID, "amount": 1500,
+	}, http.StatusCreated, nil)
+
+	var bundle models.BackupBundle
+	alice.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+	require.Equal(t, models.BackupFormat, bundle.Format)
+	require.Len(t, bundle.Accounts, 3)
+	require.Len(t, bundle.Transactions, 3)
+	require.Len(t, bundle.Links, 1)
+	require.Len(t, bundle.LoanAttachments, 1)
+	require.Len(t, bundle.RecurringSeries, 1)
+
+	bob := newAPIClient(t)
+	bob.register("bob-backup@example.com")
+	categoriesBefore := len(bob.categories())
+
+	var result models.BackupImportResult
+	bob.call(http.MethodPost, "/api/v1/import", bundle, http.StatusOK, &result)
+	require.Equal(t, 3, result.Accounts)
+	require.Equal(t, 3, result.Transactions)
+	require.Equal(t, 1, result.Links)
+	require.Equal(t, 1, result.LoanAttachments)
+	require.Equal(t, 1, result.RecurringSeries)
+	require.Equal(t, len(bundle.BillingCycles), result.BillingCycles)
+	require.Empty(t, result.Warnings)
+
+	var bobAccounts []models.Account
+	bob.call(http.MethodGet, "/api/v1/accounts", nil, http.StatusOK, &bobAccounts)
+	require.Len(t, bobAccounts, 3)
+
+	// Matching by name+group reused every seeded default category instead of
+	// duplicating it.
+	require.Equal(t, categoriesBefore, len(bob.categories()))
+
+	var bankID, cardID uuid.UUID
+	for _, acc := range bobAccounts {
+		switch acc.Name {
+		case "Checking":
+			bankID = acc.ID
+		case "Card":
+			cardID = acc.ID
+		}
+	}
+	require.NotEqual(t, uuid.Nil, bankID)
+	require.NotEqual(t, uuid.Nil, cardID)
+	require.Len(t, bob.transactions(bankID), 2)
+
+	// The loan attachment was remapped onto bob's own loan account.
+	cardTxns := bob.transactions(cardID)
+	require.Len(t, cardTxns, 1)
+	require.NotNil(t, cardTxns[0].LoanAccountID)
+
+	var links []models.Link
+	bob.call(http.MethodGet, "/api/v1/links", nil, http.StatusOK, &links)
+	require.Len(t, links, 1)
+
+	var recurring struct {
+		Data []models.RecurringSeries `json:"data"`
+	}
+	bob.call(http.MethodGet, "/api/v1/recurring", nil, http.StatusOK, &recurring)
+	require.Len(t, recurring.Data, 1)
+
+	// A restore is refused once the user has accounts, and alice is non-empty.
+	status, _ := bob.request(http.MethodPost, "/api/v1/import", bundle)
+	require.Equal(t, http.StatusConflict, status)
+	status, _ = alice.request(http.MethodPost, "/api/v1/import", bundle)
+	require.Equal(t, http.StatusConflict, status)
+}
+

@@ -134,28 +134,13 @@ func TestUpdateRecurringSeriesTermWriteError(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUpdateRecurringSeriesCacheError(t *testing.T) {
-	r, _, mock := recurringTestRouter(t)
-	id, accountID := uuid.New(), uuid.New()
-	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnRows(recurringSeriesRows(id, accountID))
-	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).WillReturnRows(recurringTermRows(id, accountID))
-	mock.ExpectBegin()
-	expectExecAny(mock, "UPDATE recurring_series rs SET", 2).WillReturnError(assert.AnError)
-	mock.ExpectRollback()
-
-	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String(), `{"name":"x"}`)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestUpdateRecurringSeriesUpdateError(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	id, accountID := uuid.New(), uuid.New()
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnRows(recurringSeriesRows(id, accountID))
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).WillReturnRows(recurringTermRows(id, accountID))
 	mock.ExpectBegin()
-	expectExecAny(mock, "UPDATE recurring_series rs SET", 2).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	expectQueryAny(mock, "UPDATE recurring_series SET", 13).WillReturnError(assert.AnError)
+	expectQueryAny(mock, "UPDATE recurring_series SET", 11).WillReturnError(assert.AnError)
 	mock.ExpectRollback()
 
 	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String(), `{"name":"x"}`)
@@ -203,26 +188,6 @@ func TestCreateRecurringTermTermsError(t *testing.T) {
 
 	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String()+"/terms",
 		`{"startDate":"2099-06-01","amount":10,"accountId":"`+accountID.String()+`"}`)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestCreateRecurringTermSyncError(t *testing.T) {
-	r, _, mock := recurringTestRouter(t)
-	id, accountID := uuid.New(), uuid.New()
-	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnRows(recurringSeriesRows(id, accountID))
-	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
-		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
-			AddRow(recurringTermRowEnd(uuid.New(), id, mustDate("2099-01-15"), mustDate("2099-01-15"), 1000, accountID)...))
-	mock.ExpectBegin()
-	expectQueryAny(mock, "INSERT INTO recurring_series_terms", 6).
-		WillReturnRows(pgxmock.NewRows(recurringTermReturnCols).
-			AddRow(uuid.New(), id, mustDate("2099-06-01"), nil, int64(2000), accountID, time.Now()))
-	expectExecAny(mock, "UPDATE recurring_series rs SET", 2).WillReturnError(assert.AnError)
-	mock.ExpectRollback()
-
-	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String()+"/terms",
-		`{"startDate":"2099-06-01","amount":20,"accountId":"`+accountID.String()+`"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
