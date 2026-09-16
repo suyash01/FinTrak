@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Pencil, Link2, Trash2 } from "lucide-react";
+import { Pencil, Link2, Trash2, Repeat } from "lucide-react";
 import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -86,16 +86,28 @@ export function useTransactionColumns({
               {row.original.description}
             </span>
           ) : (
-            <span
-              className="block text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap"
-              title={row.original.description}
-            >
-              {row.original.description}
-            </span>
+            <div className="max-w-62.5">
+              <span
+                className="block text-sm overflow-hidden text-ellipsis whitespace-nowrap"
+                title={row.original.description}
+              >
+                {row.original.description}
+              </span>
+              {row.original.recurringSeriesName && (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] text-primary mt-0.5 max-w-full"
+                  title={`Linked to ${row.original.recurringSeriesName}`}
+                >
+                  <Repeat size={11} className="shrink-0" />
+                  <span className="truncate">
+                    {row.original.recurringSeriesName}
+                  </span>
+                </span>
+              )}
+            </div>
           ),
         meta: {
-          cellClassName:
-            "text-sm max-w-62.5 overflow-hidden text-ellipsis whitespace-nowrap",
+          cellClassName: "text-sm max-w-62.5",
         },
       }),
       columnHelper.display({

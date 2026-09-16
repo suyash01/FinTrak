@@ -5,19 +5,25 @@
 --     column and the never-used categories.parent_id), categories, payees,
 --     transactions, rules, links
 --   * loan/EMI accounts: a closed flag and the loan_attachments junction that
---     attaches a transaction to exactly one loan account
+--     attaches a transaction to exactly one loan account; a trigger rejects
+--     writes that would place a transaction on a loan account
 --   * per-owner payee name uniqueness ((user_id, name)) instead of the
 --     column-wide UNIQUE on payees.name
 --   * foreign keys with cascade/set-null semantics: transactions.account_id ->
 --     accounts, links.from_txn_id/to_txn_id -> transactions, and the
 --     category/payee references on transactions/rules/payees; links also
---     reject self-links (from_txn_id = to_txn_id)
+--     reject self-links (from_txn_id = to_txn_id) and duplicate identities
+--   * a transaction's billing cycle must belong to the transaction's own
+--     account (composite FK to billing_cycles (id, account_id))
 --   * rules.match_type without the never-implemented 'regex' value
 --   * transaction amounts stored as integer minor units (BIGINT cents)
+--   * recurring/subscription tracking: recurring_series plus the
+--     recurring_attachments junction and the recurring_series_terms
+--     effective-dated amount/account range history
 --   * the query and performance indexes added for the dominant
 --     listing/aggregate/suggestion patterns
--- The historical orphan-cleanup and billing-cycle data-repair statements are
--- no-ops on a fresh database and are intentionally not carried over.
+-- The historical orphan-cleanup, duplicate-collapse, and backfill statements
+-- are no-ops on a fresh database and are intentionally not carried over.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -70,6 +76,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 -- An explicit, persisted period (start_date..end_date) that transactions are
 -- attached to via transactions.billing_cycle_id. Cycles are auto-generated on
 -- the 1st of each month; the assignment can be changed manually.
+-- The composite UNIQUE (id, account_id) backs the transactions composite FK
+-- that keeps a transaction's cycle and account in agreement.
 CREATE TABLE IF NOT EXISTS billing_cycles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -79,7 +87,8 @@ CREATE TABLE IF NOT EXISTS billing_cycles (
     label VARCHAR(255) DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (account_id, start_date),
-    UNIQUE (id, user_id)
+    UNIQUE (id, user_id),
+    CONSTRAINT billing_cycles_id_account_uq UNIQUE (id, account_id)
 );
 
 -- Category groups: a first-class, user-manageable grouping concept.
@@ -151,6 +160,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS payees_account_id_uq
 -- Transactions. amount is stored as integer minor units (cents) so
 -- aggregation, balance, and transfer-scoring math use exact integer arithmetic.
 -- category_id/payee_id references are set to NULL when the target is removed.
+-- The composite billing-cycle FK targets billing_cycles (id, account_id): the
+-- default MATCH SIMPLE semantics leave rows with a NULL cycle untouched, while
+-- a non-NULL cycle must belong to the transaction's own account.
 CREATE TABLE IF NOT EXISTS transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -166,7 +178,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     payee_id UUID REFERENCES payees(id) ON DELETE SET NULL,
     billing_cycle_id UUID,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE (id, user_id)
+    UNIQUE (id, user_id),
+    CONSTRAINT transactions_billing_cycle_account_fk
+        FOREIGN KEY (billing_cycle_id, account_id)
+        REFERENCES billing_cycles (id, account_id)
+        ON DELETE SET NULL (billing_cycle_id)
 );
 
 -- Rules. category_id cascades with its category (NOT NULL); payee_id is set to
@@ -184,6 +200,8 @@ CREATE TABLE IF NOT EXISTS rules (
 );
 
 -- Links. A link joins two distinct transactions; self-links are rejected.
+-- The identity of a link is (user_id, type, from_txn_id, to_txn_id); the unique
+-- index below makes CreateLink atomic via ON CONFLICT DO NOTHING.
 CREATE TABLE IF NOT EXISTS links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     type VARCHAR(20) NOT NULL CHECK (type IN ('transfer', 'cashback', 'refund', 'bill_payment')),
@@ -196,6 +214,9 @@ CREATE TABLE IF NOT EXISTS links (
     CONSTRAINT links_no_self_check CHECK (from_txn_id <> to_txn_id)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS links_user_type_pair_uq
+    ON links (user_id, type, from_txn_id, to_txn_id);
+
 -- Loan/EMI attachments. The junction attaches a transaction (an EMI payment,
 -- which lives on its own account) to exactly one loan account. The UNIQUE on
 -- transaction_id enforces "one transaction -> one loan account" at the
@@ -207,6 +228,101 @@ CREATE TABLE IF NOT EXISTS loan_attachments (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (id, user_id)
+);
+
+-- Loan/EMI accounts hold no transactions of their own; EMI payments live on
+-- another account and are attached via loan_attachments. This trigger backstops
+-- every write path so the invariant cannot be bypassed by a handler omission.
+CREATE OR REPLACE FUNCTION enforce_transaction_not_loan_account() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM accounts a
+         WHERE a.id = NEW.account_id
+           AND a.account_type_id = 'loan'
+    ) THEN
+        RAISE EXCEPTION 'transactions cannot belong to a loan account'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS transactions_reject_loan_account ON transactions;
+CREATE TRIGGER transactions_reject_loan_account
+    BEFORE INSERT OR UPDATE OF account_id ON transactions
+    FOR EACH ROW EXECUTE FUNCTION enforce_transaction_not_loan_account();
+
+-- Recurring series & subscription tracking.
+--
+-- A recurring_series row is a user-defined *expectation*: a repeating charge or
+-- income the user wants to track (rent, salary, a subscription). It is a
+-- template only -- FinTrak never auto-creates transactions from it and never
+-- auto-links transactions to it. Instead the backend forecasts its schedule and
+-- suggests matching transactions; the user confirms each link explicitly via
+-- recurring_attachments.
+CREATE TABLE IF NOT EXISTS recurring_series (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- The account the series is expected to post on. Deleting the account
+    -- removes the series (its forecast/matches no longer make sense).
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT DEFAULT '',
+    -- Expected amount in integer minor units (cents), like transactions.amount.
+    amount BIGINT NOT NULL,
+    type VARCHAR(10) NOT NULL CHECK (type IN ('debit', 'credit')),
+    frequency VARCHAR(10) NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly', 'yearly')),
+    -- Every `interval` days/weeks/months/years.
+    interval INTEGER NOT NULL DEFAULT 1 CHECK (interval >= 1),
+    start_date DATE NOT NULL,
+    -- Optional final occurrence date; NULL means the series never ends.
+    end_date DATE,
+    category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+    payee_id UUID REFERENCES payees(id) ON DELETE SET NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (id, user_id)
+);
+
+-- Recurring attachments. The junction links a real transaction to the recurring
+-- series it satisfies. The UNIQUE on transaction_id enforces "one transaction
+-- belongs to at most one recurring series" at the database level (mirroring
+-- loan_attachments).
+CREATE TABLE IF NOT EXISTS recurring_attachments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    series_id UUID NOT NULL REFERENCES recurring_series(id) ON DELETE CASCADE,
+    transaction_id UUID NOT NULL UNIQUE REFERENCES transactions(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (id, user_id)
+);
+
+-- Recurring series terms (piecewise amount/account history).
+--
+-- A subscription's amount and account can change over time (a price rise, a
+-- card switch). recurring_series keeps the *current* amount/account for cheap
+-- reads, and this table records the effective-dated history as explicit ranges:
+-- a term applies over [start_date, end_date), and a NULL end_date is
+-- open-ended. Handlers reject overlapping ranges; gaps are allowed (a
+-- transaction that falls in a gap matches no term). recurring_series.amount/
+-- account_id mirror the term with the greatest start_date (the invariant
+-- handlers maintain).
+CREATE TABLE IF NOT EXISTS recurring_series_terms (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    series_id UUID NOT NULL REFERENCES recurring_series(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    end_date DATE,
+    -- Expected amount in integer minor units (cents), like transactions.amount.
+    amount BIGINT NOT NULL,
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (id, user_id),
+    -- One term per start date per series.
+    UNIQUE (series_id, start_date)
 );
 
 -- Query indexes for the dominant access patterns.
@@ -285,3 +401,26 @@ CREATE INDEX loan_attachments_loan_idx
 
 CREATE INDEX loan_attachments_txn_idx
     ON loan_attachments (transaction_id);
+
+-- Recurring query indexes:
+--   * GET /recurring -- WHERE user_id = $1
+--   * forecast/matching by account -- WHERE account_id = $1 AND user_id = $2
+--   * attachment/term counts and deletes -- WHERE series_id = $1
+--   * "is this transaction already linked" checks -- WHERE transaction_id = $1
+CREATE INDEX recurring_series_user_idx
+    ON recurring_series (user_id);
+
+CREATE INDEX recurring_series_account_user_idx
+    ON recurring_series (account_id, user_id);
+
+CREATE INDEX recurring_attachments_series_idx
+    ON recurring_attachments (series_id, user_id);
+
+CREATE INDEX recurring_attachments_txn_idx
+    ON recurring_attachments (transaction_id);
+
+CREATE INDEX recurring_series_terms_series_idx
+    ON recurring_series_terms (series_id, start_date);
+
+CREATE INDEX recurring_series_terms_account_user_idx
+    ON recurring_series_terms (account_id, user_id);

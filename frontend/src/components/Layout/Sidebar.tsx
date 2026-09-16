@@ -13,6 +13,7 @@ import {
   FileText,
   PanelLeftClose,
   PanelLeftOpen,
+  Repeat,
 } from "lucide-react";
 import packageJson from "../../../package.json";
 import { useAuth } from "../../context/AuthContext";
@@ -153,6 +154,10 @@ export default function Sidebar() {
         >
           <ArrowLeftRight className="w-4.5 h-4.5 shrink-0" />
           {!collapsed && <span>Transfers & Cashbacks</span>}
+        </NavLink>
+        <NavLink to="/recurring" className={navLinkClass} title="Recurring">
+          <Repeat className="w-4.5 h-4.5 shrink-0" />
+          {!collapsed && <span>Recurring & Subscriptions</span>}
         </NavLink>
 
         <div className={sectionClass}>System</div>

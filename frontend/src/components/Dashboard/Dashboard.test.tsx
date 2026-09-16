@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { formatCurrency } from "../../utils/formatters";
-import type { Account, DashboardSummary } from "../../types";
+import type { Account, DashboardSummary, RecurringSeries } from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -31,7 +31,7 @@ vi.mock("recharts", () => ({
 }));
 
 const { apiMock, domainMock } = vi.hoisted(() => ({
-  apiMock: { getDashboardSummary: vi.fn() },
+  apiMock: { getDashboardSummary: vi.fn(), getRecurringSeries: vi.fn() },
   domainMock: { useDomainData: vi.fn() },
 }));
 
@@ -121,6 +121,7 @@ function renderLoaded(accounts: Account[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.getDashboardSummary.mockResolvedValue(summary());
+  apiMock.getRecurringSeries.mockResolvedValue({ data: [] });
   setDomain([]);
 });
 
@@ -270,5 +271,52 @@ describe("Dashboard", () => {
     expect(
       screen.getByText("No transactions yet. Import a statement to get started."),
     ).toBeInTheDocument();
+  });
+
+  it("renders the recurring section for the selected account", async () => {
+    apiMock.getRecurringSeries.mockResolvedValue({
+      data: [
+        {
+          id: "r1",
+          accountId: "a1",
+          name: "Netflix",
+          description: "",
+          amount: 1599,
+          type: "debit",
+          frequency: "monthly",
+          interval: 1,
+          startDate: "2024-01-01",
+          endDate: null,
+          categoryId: null,
+          payeeId: null,
+          active: true,
+          notes: "",
+          accountName: "Checking",
+          categoryColor: "#06b6d4",
+          monthlyAmount: 1599,
+          attachedCount: 0,
+          nextDueDate: "2099-01-15",
+        },
+      ] as RecurringSeries[],
+    });
+    renderLoaded([account()]);
+
+    expect(
+      await screen.findByText("Recurring & Subscriptions"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Netflix")).toBeInTheDocument();
+    expect(
+      screen.getAllByText(formatCurrency(1599)).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("link", { name: "Manage" })).toHaveAttribute(
+      "href",
+      "/recurring",
+    );
+  });
+
+  it("hides the recurring section when there are no series", async () => {
+    renderLoaded([account()]);
+    await screen.findByText("Total Income");
+    expect(screen.queryByText("Recurring & Subscriptions")).toBeNull();
   });
 });

@@ -414,8 +414,7 @@ func TestGetTransactionsLoanAccountIdFilter(t *testing.T) {
 		WithArgs(userID, loanID.String()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
-		AddRow(txnID, accountID, now, "EMI", 15000.0, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", &loanID, "Home Loan")
+	rows := txnListRow(txnID, accountID, now, "EMI", 15000.0, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", &loanID, "Home Loan")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, loanID.String(), 50, 0).
 		WillReturnRows(rows)
@@ -450,8 +449,7 @@ func TestGetTransactionsExcludeAttached(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	rows := pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label", "loan_account_id", "loan_account_name"}).
-		AddRow(txnID, accountID, now, "Salary", 50000.0, "credit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
+	rows := txnListRow(txnID, accountID, now, "Salary", 50000.0, "credit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
 	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
 		WithArgs(userID, 50, 0).
 		WillReturnRows(rows)

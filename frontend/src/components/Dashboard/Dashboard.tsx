@@ -11,8 +11,8 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { TrendingUp, TrendingDown, Wallet, ArrowUpDown } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { TrendingUp, TrendingDown, Wallet, ArrowUpDown, Repeat } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
@@ -44,6 +44,7 @@ import type {
   CategorySpend,
   MonthlyData,
   QueryParams,
+  RecurringSeries,
   Transaction,
 } from "../../types";
 
@@ -122,6 +123,25 @@ export default function Dashboard() {
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const isBillingCycleMode = groupBy === "billing_cycle";
   const isBillingAccount = Boolean(selectedAccount?.billingDay);
+
+  // Recurring series power the "Recurring & Subscriptions" card. They are
+  // loaded once, independently of the (filtered) summary request.
+  const [recurring, setRecurring] = useState<RecurringSeries[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await api.getRecurringSeries();
+        if (!cancelled) setRecurring(res.data || []);
+      } catch {
+        // Non-critical: the dashboard renders fine without the section.
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Pre-fill the account filter with the user's default account once the
@@ -591,6 +611,9 @@ export default function Dashboard() {
           />
         </div>
 
+        {/* Recurring & Subscriptions */}
+        <RecurringSection series={recurring} accountId={accountId} />
+
         {/* Recent Transactions */}
         <Card size={compactLayout ? "sm" : "default"}>
           <CardHeader
@@ -617,6 +640,131 @@ export default function Dashboard() {
         </Card>
       </div>
     </>
+  );
+}
+
+function RecurringSection({
+  series,
+  accountId,
+}: {
+  series: RecurringSeries[];
+  accountId: string;
+}) {
+  const { compactLayout } = useSettings();
+
+  // Respect the dashboard's account filter so the card stays consistent with
+  // the rest of the page.
+  const relevant = accountId
+    ? series.filter((s) => s.accountId === accountId)
+    : series;
+  if (relevant.length === 0) return null;
+
+  const active = relevant.filter((s) => s.active);
+  const monthlyExpense = active
+    .filter((s) => s.type === "debit")
+    .reduce((sum, s) => sum + s.monthlyAmount, 0);
+  const monthlyIncome = active
+    .filter((s) => s.type === "credit")
+    .reduce((sum, s) => sum + s.monthlyAmount, 0);
+  const upcoming = active
+    .filter((s) => s.nextDueDate)
+    .sort((a, b) =>
+      (a.nextDueDate as string) < (b.nextDueDate as string) ? -1 : 1,
+    )
+    .slice(0, 5);
+
+  return (
+    <Card
+      size={compactLayout ? "sm" : "default"}
+      className={`flex flex-col ${compactLayout ? "mb-4" : "mb-6"}`}
+    >
+      <CardHeader
+        className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
+      >
+        <CardTitle className="flex items-center gap-2">
+          <Repeat className="text-primary" size={18} />
+          Recurring &amp; Subscriptions
+        </CardTitle>
+        <Button asChild variant="ghost" size="sm">
+          <Link to="/recurring">Manage</Link>
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">
+              Monthly recurring expenses
+            </div>
+            <div className="text-xl font-bold text-destructive">
+              {formatCurrency(monthlyExpense)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">
+              Monthly recurring income
+            </div>
+            <div className="text-xl font-bold text-emerald-500">
+              {formatCurrency(monthlyIncome)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">
+              Net per month
+            </div>
+            <div
+              className={`text-xl font-bold ${
+                monthlyIncome - monthlyExpense >= 0
+                  ? "text-emerald-500"
+                  : "text-destructive"
+              }`}
+            >
+              {formatCurrency(monthlyIncome - monthlyExpense)}
+            </div>
+          </div>
+        </div>
+        {upcoming.length > 0 && (
+          <div className="space-y-1.5">
+            {upcoming.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{
+                      background: s.categoryColor || "var(--muted-foreground)",
+                    }}
+                  />
+                  <span className="text-sm font-medium text-foreground truncate">
+                    {s.name}
+                  </span>
+                  {s.accountName && (
+                    <span className="text-xs text-muted-foreground truncate">
+                      {s.accountName}
+                    </span>
+                  )}
+                </div>
+                <span className="flex items-center gap-3 text-sm whitespace-nowrap">
+                  <span className="text-muted-foreground">
+                    {formatDate(s.nextDueDate)}
+                  </span>
+                  <span
+                    className={
+                      s.type === "debit"
+                        ? "text-destructive font-semibold"
+                        : "text-emerald-500 font-semibold"
+                    }
+                  >
+                    {formatCurrency(s.amount)}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

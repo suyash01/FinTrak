@@ -175,6 +175,19 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		f.raw("NOT EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id)")
 	}
 
+	// Recurring subscription filters: recurringId narrows to transactions
+	// attached to one series; recurring=linked|unlinked filters by whether the
+	// transaction is attached to any series.
+	if recurringID := c.Query("recurringId"); recurringID != "" {
+		f.param("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id AND ra.series_id = $%d)", recurringID)
+	}
+	switch c.Query("recurring") {
+	case "linked":
+		f.raw("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)")
+	case "unlinked":
+		f.raw("NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)")
+	}
+
 	where := f.where()
 	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
 				t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
@@ -184,14 +197,18 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 			  t.billing_cycle_id,
 			  COALESCE(bc.label, '') as billing_cycle_label,
 			  la.loan_account_id,
-			  COALESCE(loan_acct.name, '') as loan_account_name
+			  COALESCE(loan_acct.name, '') as loan_account_name,
+			  rca.series_id,
+			  COALESCE(rcs.name, '') as recurring_series_name
 			  FROM transactions t
 			  JOIN accounts a ON t.account_id = a.id
 			  LEFT JOIN categories c ON t.category_id = c.id
 			  LEFT JOIN payees p ON t.payee_id = p.id
 			  LEFT JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
 			  LEFT JOIN loan_attachments la ON la.transaction_id = t.id
-			  LEFT JOIN accounts loan_acct ON loan_acct.id = la.loan_account_id` + where
+			  LEFT JOIN accounts loan_acct ON loan_acct.id = la.loan_account_id
+			  LEFT JOIN recurring_attachments rca ON rca.transaction_id = t.id
+			  LEFT JOIN recurring_series rcs ON rcs.id = rca.series_id` + where
 
 	countQuery := `SELECT COUNT(*) FROM transactions t` + where
 
@@ -222,7 +239,8 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		if err := rows.Scan(&t.ID, &t.AccountID, &t.Date, &t.Description, &t.Amount, &t.Type,
 			&t.CategoryID, &t.Tags, &t.Notes, &t.PayeeID, &t.Payee, &t.CreatedAt,
 			&t.AccountName, &t.CategoryName, &t.CategoryIcon, &t.CategoryColor, &t.IsLinked,
-			&t.BillingCycleID, &t.BillingCycleLabel, &t.LoanAccountID, &t.LoanAccountName); err != nil {
+			&t.BillingCycleID, &t.BillingCycleLabel, &t.LoanAccountID, &t.LoanAccountName,
+			&t.RecurringSeriesID, &t.RecurringSeriesName); err != nil {
 			slog.Error("GetTransactions scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return

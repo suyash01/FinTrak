@@ -2,10 +2,13 @@ import { Tags, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "../../utils/formatters";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, BillingCycle, Payee } from "../../types";
+import type { Account, BillingCycle, Payee, RecurringSeries } from "../../types";
 
 // Sentinel value for the bulk "Link to Loan" action: detach instead of attach.
 export const UNLINK_LOAN = "__unlink__";
+
+// Sentinel value for the bulk "Link to subscription" action: detach.
+export const UNLINK_RECURRING = "__unlink_recurring__";
 
 interface BulkActionBarProps {
   selectedCount: number;
@@ -15,10 +18,12 @@ interface BulkActionBarProps {
   loadingCycles: boolean;
   billingCycles: BillingCycle[];
   loanAccounts: Account[];
+  recurringSeries: RecurringSeries[];
   onCategorize: (categoryId: string) => void;
   onUpdatePayee: (payeeId: string) => void;
   onSetBillingCycle: (billingCycleId: string) => void;
   onLinkLoan: (value: string) => void;
+  onLinkRecurring: (value: string) => void;
   onDelete: () => void;
   onClear: () => void;
 }
@@ -37,10 +42,12 @@ export default function BulkActionBar({
   loadingCycles,
   billingCycles,
   loanAccounts,
+  recurringSeries,
   onCategorize,
   onUpdatePayee,
   onSetBillingCycle,
   onLinkLoan,
+  onLinkRecurring,
   onDelete,
   onClear,
 }: BulkActionBarProps) {
@@ -127,6 +134,24 @@ export default function BulkActionBar({
           {loanAccounts.map((la) => (
             <option key={la.id} value={la.id}>
               {la.name}
+            </option>
+          ))}
+        </select>
+      )}
+      {recurringSeries.length > 0 && (
+        <select
+          className={selectClass}
+          aria-label="Link selected transactions to a subscription"
+          onChange={(e) => {
+            if (e.target.value) onLinkRecurring(e.target.value);
+            e.target.value = "";
+          }}
+        >
+          <option value="">Link to subscription...</option>
+          <option value={UNLINK_RECURRING}>Unlink from subscription</option>
+          {recurringSeries.map((rs) => (
+            <option key={rs.id} value={rs.id}>
+              {rs.name}
             </option>
           ))}
         </select>

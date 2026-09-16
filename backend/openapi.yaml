@@ -550,6 +550,18 @@ paths:
             enum: ["true", "false"]
           description: Filter by link status
         - in: query
+          name: recurringId
+          schema:
+            type: string
+            format: uuid
+          description: Only transactions linked to this recurring series
+        - in: query
+          name: recurring
+          schema:
+            type: string
+            enum: [linked, unlinked]
+          description: Filter by whether the transaction is linked to any recurring series
+        - in: query
           name: sortBy
           schema:
             type: string
@@ -1791,6 +1803,494 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # ============= Recurring Series =============
+  # A recurring series is a user-defined expectation of a repeating charge or
+  # income. FinTrak only forecasts the schedule and suggests matching
+  # transactions; it never auto-creates transactions from a series and never
+  # auto-links transactions to it. Linking is explicit via /recurring/attach.
+  /recurring:
+    get:
+      tags:
+        - Recurring
+      summary: List recurring series
+      operationId: getRecurringSeries
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Recurring series with derived next-due date and monthly amount
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecurringSeries"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Recurring
+      summary: Create a recurring series
+      operationId: createRecurringSeries
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRecurringSeriesRequest"
+      responses:
+        "201":
+          description: Recurring series created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}:
+    put:
+      tags:
+        - Recurring
+      summary: Update a recurring series
+      operationId: updateRecurringSeries
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRecurringSeriesRequest"
+      responses:
+        "200":
+          description: Recurring series updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Recurring
+      summary: Delete a recurring series
+      operationId: deleteRecurringSeries
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Recurring series deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}/forecast:
+    get:
+      tags:
+        - Recurring
+      summary: Forecast the next occurrences of a series
+      operationId: getRecurringForecast
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: count
+          in: query
+          required: false
+          description: Number of upcoming occurrences to project (max 60).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 60
+            default: 12
+      responses:
+        "200":
+          description: Projected occurrences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecurringForecastItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}/suggestions:
+    get:
+      tags:
+        - Recurring
+      summary: Suggest transactions that may satisfy a series
+      description: |
+        Returns existing transactions that may satisfy a series' occurrences,
+        highest score first. Every range is considered (not just the most recent
+        transactions): a candidate must fall inside a range and match its account
+        and amount, and be near an expected occurrence. Read-only — nothing is
+        linked.
+      operationId: getRecurringSuggestions
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Scored candidate transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecurringSuggestion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}/transactions:
+    get:
+      tags:
+        - Recurring
+      summary: List transactions attached to a series
+      operationId: getRecurringTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Attached transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}/terms:
+    get:
+      tags:
+        - Recurring
+      summary: List a series' date-ranged amount/account entries
+      operationId: getRecurringTerms
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Terms, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecurringSeriesTerm"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags:
+        - Recurring
+      summary: Record a date-ranged amount/account entry
+      description: |
+        Adds a term with an explicit [start, end) range (the end is exclusive and
+        optional). Its range must not overlap an existing entry of the same
+        series. Forecast and suggestions use the entry covering each
+        occurrence/transaction date.
+      operationId: createRecurringTerm
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRecurringSeriesTermRequest"
+      responses:
+        "201":
+          description: Term created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringSeriesTerm"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/{id}/terms/{termId}:
+    put:
+      tags:
+        - Recurring
+      summary: Edit a series term
+      description: |
+        Updates a term's date range, amount, or account. The edited range must
+        not overlap another entry of the same series.
+      operationId: updateRecurringTerm
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: termId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRecurringSeriesTermRequest"
+      responses:
+        "200":
+          description: Term updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringSeriesTerm"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Recurring
+      summary: Delete a series term
+      description: |
+        Removes a date range. Any term may be removed; deleting one leaves a gap
+        that matches no transaction until it is replaced.
+      operationId: deleteRecurringTerm
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: termId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Term deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/attach:
+    post:
+      tags:
+        - Recurring
+      summary: Link transactions to a recurring series
+      operationId: attachRecurring
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurringAttachRequest"
+      responses:
+        "200":
+          description: Transactions linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attached:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: One or more transactions are already linked to a recurring series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /recurring/detach:
+    post:
+      tags:
+        - Recurring
+      summary: Unlink transactions from their recurring series
+      operationId: detachRecurring
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurringDetachRequest"
+      responses:
+        "200":
+          description: Transactions unlinked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detached:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ============= Statement Parsing =============
   /statements/parse:
     post:
@@ -2804,6 +3304,12 @@ components:
           description: Loan / EMI account this transaction is attached to as an EMI payment
         loanAccountName:
           type: string
+        recurringSeriesId:
+          type: string
+          format: uuid
+          description: Recurring subscription this transaction is linked to
+        recurringSeriesName:
+          type: string
         createdAt:
           type: string
           format: date-time
@@ -3137,6 +3643,332 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BillingCycleTrendItem"
+
+    # ============= Recurring Series =============
+    RecurringSeries:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          nullable: true
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        active:
+          type: boolean
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        accountName:
+          type: string
+        categoryName:
+          type: string
+        categoryIcon:
+          type: string
+        categoryColor:
+          type: string
+        payee:
+          type: string
+        nextDueDate:
+          type: string
+          format: date
+          nullable: true
+          description: Next occurrence on/after today (omitted once the series has ended)
+        monthlyAmount:
+          type: number
+          description: Estimated monthly cost (normalized from the frequency and interval)
+        attachedCount:
+          type: integer
+
+    RecurringForecastItem:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        matched:
+          type: boolean
+          description: Whether an attached transaction already falls on (or near) this occurrence
+
+    RecurringSuggestion:
+      type: object
+      properties:
+        txn:
+          $ref: "#/components/schemas/Transaction"
+        score:
+          type: number
+        occurrenceDate:
+          type: string
+          format: date
+        daysOff:
+          type: number
+
+    RecurringSeriesRange:
+      type: object
+      description: |
+        One account/amount entry with its own date range. The end is exclusive:
+        the entry applies from its startDate up to (but not including) endDate.
+        Entries must not overlap, but gaps are allowed so a subscription can be
+        discontinued and resumed. An omitted endDate is open-ended. The
+        subscription's overall start/end are derived from the entries.
+      required:
+        - startDate
+        - amount
+        - accountId
+      properties:
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          description: Exclusive range end; omit to keep the entry open-ended
+        amount:
+          type: number
+        accountId:
+          type: string
+          format: uuid
+
+    CreateRecurringSeriesRequest:
+      type: object
+      description: |
+        Either supply the full `ranges` list (which also derives the
+        subscription's start and end), or a single `startDate` + `accountId` +
+        `amount`.
+      required:
+        - name
+        - type
+        - frequency
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+          minimum: 1
+          default: 1
+        startDate:
+          type: string
+          format: date
+          description: Required unless `ranges` is supplied
+        endDate:
+          type: string
+          format: date
+          description: |
+            Subscription end for the single-amount form (omit for open-ended).
+            When `ranges` is supplied, each entry carries its own end instead.
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        active:
+          type: boolean
+          default: true
+        notes:
+          type: string
+        ranges:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecurringSeriesRange"
+
+    UpdateRecurringSeriesRequest:
+      type: object
+      description: |
+        Partial update; absent fields are left unchanged. When `ranges` is
+        non-empty it replaces the series' whole range list; otherwise an
+        `amount`/`accountId` change is recorded as a new range.
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [debit, credit]
+        frequency:
+          type: string
+          enum: [daily, weekly, monthly, yearly]
+        interval:
+          type: integer
+          minimum: 1
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          description: A date to set, or an empty string to clear
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        payeeId:
+          type: string
+          format: uuid
+          nullable: true
+        active:
+          type: boolean
+        notes:
+          type: string
+        effectiveDate:
+          type: string
+          format: date
+          description: |
+            When an amount/account change starts (default: today). Ignored when
+            `ranges` is supplied, or unless the amount or account actually
+            changes; the change is recorded as a new range beginning that day.
+        ranges:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecurringSeriesRange"
+
+    RecurringSeriesTerm:
+      type: object
+      description: |
+        One date-ranged amount/account entry. A transaction matches it only when
+        its date falls within [startDate, endDate) (endDate omitted = open).
+      properties:
+        id:
+          type: string
+          format: uuid
+        seriesId:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          nullable: true
+        amount:
+          type: number
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateRecurringSeriesTermRequest:
+      type: object
+      required:
+        - startDate
+        - amount
+        - accountId
+      properties:
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          description: Exclusive range end; omit for an open-ended entry
+        amount:
+          type: number
+        accountId:
+          type: string
+          format: uuid
+
+    UpdateRecurringSeriesTermRequest:
+      type: object
+      description: Partial update; absent fields are left unchanged.
+      properties:
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          description: A date to set (exclusive), or an empty string to make it open-ended
+        amount:
+          type: number
+        accountId:
+          type: string
+          format: uuid
+
+    RecurringAttachRequest:
+      type: object
+      required:
+        - seriesId
+        - transactionIds
+      properties:
+        seriesId:
+          type: string
+          format: uuid
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    RecurringDetachRequest:
+      type: object
+      required:
+        - transactionIds
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
 
     # ============= Common =============
     ErrorResponse:

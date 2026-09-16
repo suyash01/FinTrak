@@ -273,6 +273,23 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		api.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 		api.GET("/links/cashback-suggestions", srv.GetCashbackSuggestions)
 
+		// Recurring series & subscriptions. These only forecast schedules and
+		// suggest matching transactions — no transaction is ever auto-created
+		// or auto-linked; the user confirms every link via attach.
+		api.GET("/recurring", srv.GetRecurringSeries)
+		api.POST("/recurring", srv.CreateRecurringSeries)
+		api.PUT("/recurring/:id", srv.UpdateRecurringSeries)
+		api.DELETE("/recurring/:id", srv.DeleteRecurringSeries)
+		api.GET("/recurring/:id/forecast", srv.GetRecurringForecast)
+		api.GET("/recurring/:id/suggestions", srv.GetRecurringSuggestions)
+		api.GET("/recurring/:id/transactions", srv.GetRecurringTransactions)
+		api.GET("/recurring/:id/terms", srv.GetRecurringTerms)
+		api.PUT("/recurring/:id/terms", srv.CreateRecurringTerm)
+		api.PUT("/recurring/:id/terms/:termId", srv.UpdateRecurringTerm)
+		api.DELETE("/recurring/:id/terms/:termId", srv.DeleteRecurringTerm)
+		api.POST("/recurring/attach", srv.AttachRecurring)
+		api.POST("/recurring/detach", srv.DetachRecurring)
+
 		// Dashboard
 		api.GET("/dashboard/summary", srv.GetDashboardSummary)
 	}

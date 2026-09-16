@@ -18,6 +18,8 @@ import type {
   CreateCategoryRequest,
   CreateLinkRequest,
   CreatePayeeRequest,
+  CreateRecurringSeriesRequest,
+  CreateRecurringSeriesTermRequest,
   CreateRuleRequest,
   CreateTransactionRequest,
   DashboardSummary,
@@ -33,6 +35,12 @@ import type {
   Payee,
   QueryParams,
   RegisterRequest,
+  RecurringAttachRequest,
+  RecurringDetachRequest,
+  RecurringForecastItem,
+  RecurringSeries,
+  RecurringSeriesTerm,
+  RecurringSuggestion,
   Rule,
   StatementExtractor,
   StatementParseResult,
@@ -43,6 +51,8 @@ import type {
   UpdateCategoryGroupRequest,
   UpdateCategoryRequest,
   UpdatePayeeRequest,
+  UpdateRecurringSeriesRequest,
+  UpdateRecurringSeriesTermRequest,
   UpdateRuleRequest,
   UpdateTransactionRequest,
   UpdateUserSettingsRequest,
@@ -482,6 +492,66 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  // Recurring series & subscriptions (forecast + manual linking only)
+  getRecurringSeries: (): Promise<{ data: RecurringSeries[] }> =>
+    request("/recurring"),
+  createRecurringSeries: (
+    data: CreateRecurringSeriesRequest,
+  ): Promise<RecurringSeries> =>
+    request("/recurring", { method: "POST", body: JSON.stringify(data) }),
+  updateRecurringSeries: (
+    id: string,
+    data: UpdateRecurringSeriesRequest,
+  ): Promise<RecurringSeries> =>
+    request(`/recurring/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteRecurringSeries: (id: string): Promise<null> =>
+    request(`/recurring/${id}`, { method: "DELETE" }),
+  getRecurringForecast: (
+    id: string,
+    count = 12,
+  ): Promise<{ data: RecurringForecastItem[] }> =>
+    request(`/recurring/${id}/forecast?count=${count}`),
+  getRecurringSuggestions: (
+    id: string,
+    limit = 100,
+  ): Promise<{ data: RecurringSuggestion[] }> =>
+    request(`/recurring/${id}/suggestions?limit=${limit}`),
+  getRecurringTransactions: (
+    id: string,
+  ): Promise<{ data: Transaction[] }> =>
+    request(`/recurring/${id}/transactions`),
+  getRecurringTerms: (
+    id: string,
+  ): Promise<{ data: RecurringSeriesTerm[] }> =>
+    request(`/recurring/${id}/terms`),
+  createRecurringTerm: (
+    id: string,
+    data: CreateRecurringSeriesTermRequest,
+  ): Promise<RecurringSeriesTerm> =>
+    request(`/recurring/${id}/terms`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  updateRecurringTerm: (
+    id: string,
+    termId: string,
+    data: UpdateRecurringSeriesTermRequest,
+  ): Promise<RecurringSeriesTerm> =>
+    request(`/recurring/${id}/terms/${termId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteRecurringTerm: (id: string, termId: string): Promise<null> =>
+    request(`/recurring/${id}/terms/${termId}`, { method: "DELETE" }),
+  attachRecurring: (
+    data: RecurringAttachRequest,
+  ): Promise<{ attached: number }> =>
+    request("/recurring/attach", { method: "POST", body: JSON.stringify(data) }),
+  detachRecurring: (
+    data: RecurringDetachRequest,
+  ): Promise<{ detached: number }> =>
+    request("/recurring/detach", { method: "POST", body: JSON.stringify(data) }),
 
   // Dashboard
   getDashboardSummary: (

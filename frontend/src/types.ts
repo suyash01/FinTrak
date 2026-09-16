@@ -93,6 +93,9 @@ export interface Transaction {
   // EMI payment. At most one loan account per transaction.
   loanAccountId?: string | null;
   loanAccountName?: string;
+  // Recurring subscription attachment. At most one series per transaction.
+  recurringSeriesId?: string | null;
+  recurringSeriesName?: string;
   }
 
 export interface BillingCycle {
@@ -465,4 +468,142 @@ export interface PaperlessImportRequest {
   extractor?: string;
   password?: string;
   dateFormat?: string;
+}
+
+// ---- Recurring series & subscriptions ----
+
+export type RecurringFrequency = "daily" | "weekly" | "monthly" | "yearly";
+
+// A user-defined expectation of a repeating charge/income. It is a template
+// only: FinTrak forecasts the schedule and suggests matches, but never creates
+// transactions from it and never links transactions automatically.
+export interface RecurringSeries {
+  id: string;
+  accountId: string;
+  name: string;
+  description: string;
+  amount: number;
+  type: TransactionType;
+  frequency: RecurringFrequency;
+  interval: number;
+  startDate: string;
+  endDate?: string | null;
+  categoryId?: string | null;
+  payeeId?: string | null;
+  active: boolean;
+  notes: string;
+  createdAt?: string;
+  // Joined fields
+  accountName?: string;
+  categoryName?: string;
+  categoryIcon?: string;
+  categoryColor?: string;
+  payee?: string;
+  // Derived fields
+  nextDueDate?: string | null;
+  monthlyAmount: number;
+  attachedCount: number;
+}
+
+export interface RecurringForecastItem {
+  date: string;
+  amount: number;
+  type: TransactionType;
+  matched: boolean;
+}
+
+export interface RecurringSuggestion {
+  txn: Transaction;
+  score: number;
+  occurrenceDate: string;
+  daysOff: number;
+}
+
+// One date-ranged amount/account entry of a recurring series. A transaction
+// matches it only when its date falls within [startDate, endDate] (endDate
+// omitted = open-ended).
+export interface RecurringSeriesTerm {
+  id: string;
+  seriesId: string;
+  startDate: string;
+  endDate?: string | null;
+  amount: number;
+  accountId: string;
+  accountName?: string;
+  createdAt?: string;
+}
+
+export interface CreateRecurringSeriesTermRequest {
+  startDate: string;
+  endDate?: string;
+  amount: number;
+  accountId: string;
+}
+
+export interface UpdateRecurringSeriesTermRequest {
+  startDate?: string;
+  // A date string to set, or "" to make the range open-ended.
+  endDate?: string;
+  amount?: number;
+  accountId?: string;
+}
+
+export interface CreateRecurringSeriesRequest {
+  // Either provide `ranges` (which derive the subscription's start/end) or a
+  // single startDate + accountId + amount.
+  accountId?: string;
+  name: string;
+  description?: string;
+  amount?: number;
+  type: TransactionType;
+  frequency: RecurringFrequency;
+  interval?: number;
+  startDate?: string;
+  endDate?: string;
+  categoryId?: string | null;
+  payeeId?: string | null;
+  active?: boolean;
+  notes?: string;
+  ranges?: RecurringSeriesRange[];
+}
+
+// One date-ranged amount/account entry. Ranges are auto-contiguous: each one
+// ends where the next begins (exclusive), and the last is open-ended, so only
+// startDate is supplied.
+export interface RecurringSeriesRange {
+  startDate: string;
+  endDate?: string;
+  amount: number;
+  accountId: string;
+}
+
+export interface UpdateRecurringSeriesRequest {
+  accountId?: string;
+  name?: string;
+  description?: string;
+  amount?: number;
+  type?: TransactionType;
+  frequency?: RecurringFrequency;
+  interval?: number;
+  startDate?: string;
+  // A date string to set, or "" to clear.
+  endDate?: string;
+  categoryId?: string | null;
+  payeeId?: string | null;
+  active?: boolean;
+  notes?: string;
+  // When an amount/account change takes effect (default: today). Ignored
+  // unless the amount or account actually changes.
+  effectiveDate?: string;
+  // When provided, replaces the series' whole range list.
+  ranges?: RecurringSeriesRange[];
+}
+
+export interface RecurringAttachRequest {
+  seriesId: string;
+  transactionIds: string[];
+}
+
+export interface RecurringDetachRequest {
+  transactionIds: string[];
 }

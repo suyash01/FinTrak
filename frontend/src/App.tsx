@@ -26,6 +26,7 @@ const Accounts = lazy(() => import("./components/Accounts/Accounts"));
 const Categories = lazy(() => import("./components/Categories/Categories"));
 const Payees = lazy(() => import("./components/Payees/Payees"));
 const Linking = lazy(() => import("./components/Linking/Linking"));
+const Recurring = lazy(() => import("./components/Recurring/Recurring"));
 const Settings = lazy(() => import("./components/Settings/Settings"));
 const Login = lazy(() => import("./components/Auth/Login"));
 
@@ -105,6 +106,7 @@ function Root() {
                 <Route path="/categories" element={<Categories />} />
                 <Route path="/payees" element={<Payees />} />
                 <Route path="/linking" element={<Linking />} />
+                <Route path="/recurring" element={<Recurring />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Dashboard />} />
               </Routes>

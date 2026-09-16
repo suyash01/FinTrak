@@ -32,6 +32,9 @@ const { apiMock, domainMock, setSettings, toastApiError } = vi.hoisted(() => ({
     deleteTransaction: vi.fn(),
     getBillingCycles: vi.fn(),
     updateUserSettings: vi.fn(),
+    getRecurringSeries: vi.fn(),
+    attachRecurring: vi.fn(),
+    detachRecurring: vi.fn(),
   },
   domainMock: { useDomainData: vi.fn() },
   setSettings: vi.fn(),
@@ -143,6 +146,7 @@ beforeEach(() => {
     pages: 1,
   });
   apiMock.getBillingCycles.mockResolvedValue({ data: [] });
+  apiMock.getRecurringSeries.mockResolvedValue({ data: [] });
   apiMock.updateTransaction.mockResolvedValue({});
   apiMock.bulkCategorize.mockResolvedValue({});
   apiMock.updateUserSettings.mockResolvedValue({});
@@ -295,5 +299,39 @@ describe("Transactions", () => {
     resolvers[0]();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(categorySelect.value).toBe("c2");
+  });
+});
+
+describe("Transactions recurring badge", () => {
+  it("marks transactions linked to a subscription", async () => {
+    apiMock.getTransactions.mockResolvedValue({
+      data: [
+        {
+          id: "t1",
+          accountId: "a1",
+          date: "2024-03-15",
+          description: "Netflix",
+          amount: 15.99,
+          type: "debit",
+          categoryId: null,
+          tags: [],
+          notes: "",
+          payeeId: null,
+          accountName: "Checking",
+          isSummary: false,
+          isLinked: false,
+          recurringSeriesId: "s1",
+          recurringSeriesName: "Netflix subscription",
+        },
+      ],
+      total: 1,
+      page: 1,
+      pages: 1,
+    });
+    renderPage();
+
+    expect(
+      await screen.findByTitle("Linked to Netflix subscription"),
+    ).toBeInTheDocument();
   });
 });

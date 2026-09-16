@@ -18,12 +18,16 @@ import { useDomainData } from "../../context/DomainDataContext";
 import type {
   Transaction,
   BillingCycle,
+  RecurringSeries,
   TransactionsResponse,
   QueryParams,
 } from "../../types";
 import { buildCategorySections } from "../../lib/categories";
 import { useTransactionColumns } from "./useTransactionColumns";
-import BulkActionBar, { UNLINK_LOAN } from "./BulkActionBar";
+import BulkActionBar, {
+  UNLINK_LOAN,
+  UNLINK_RECURRING,
+} from "./BulkActionBar";
 import TransactionFilters from "./TransactionFilters";
 import DeleteTransactionDialogs from "./DeleteTransactionDialogs";
 import {
@@ -303,6 +307,8 @@ export default function Transactions() {
     () => accounts.filter((a) => a.accountTypeId === "loan"),
     [accounts],
   );
+  // Recurring subscriptions for the bulk "Link to subscription" action.
+  const [recurringSeries, setRecurringSeries] = useState<RecurringSeries[]>([]);
   // Account id -> closed flag, so row actions can hide editing/deleting on
   // closed accounts (only linking stays possible).
   const closedById = useMemo(() => {
@@ -310,6 +316,22 @@ export default function Transactions() {
     for (const a of accounts) m.set(a.id, a.closed);
     return m;
   }, [accounts]);
+
+  // Load subscriptions once for the bulk link action; non-critical if it fails.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getRecurringSeries()
+      .then((res) => {
+        if (!cancelled) setRecurringSeries(res.data || []);
+      })
+      .catch(() => {
+        /* the bulk action is simply not offered */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // True when any filter deviates from the defaults, so the header can tell a
   // filtered count apart from the unfiltered "all accounts" total.
@@ -563,6 +585,24 @@ export default function Transactions() {
     }
   };
 
+  const handleBulkLinkRecurring = async (value: string) => {
+    if (selected.size === 0) return;
+    try {
+      if (value === UNLINK_RECURRING) {
+        await api.detachRecurring({ transactionIds: [...selected] });
+      } else {
+        await api.attachRecurring({
+          seriesId: value,
+          transactionIds: [...selected],
+        });
+      }
+      loadTransactions();
+      setSelected(new Set());
+    } catch (err) {
+      toastApiError(err);
+    }
+  };
+
   const handleBulkDelete = () => {
     if (selected.size === 0) return;
     setBulkDeleteOpen(true);
@@ -654,10 +694,12 @@ export default function Transactions() {
             loadingCycles={loadingCycles}
             billingCycles={billingCycles}
             loanAccounts={loanAccounts}
+            recurringSeries={recurringSeries}
             onCategorize={handleBulkCategorize}
             onUpdatePayee={handleBulkUpdatePayee}
             onSetBillingCycle={handleBulkSetBillingCycle}
             onLinkLoan={handleBulkLinkLoan}
+            onLinkRecurring={handleBulkLinkRecurring}
             onDelete={handleBulkDelete}
             onClear={() => setSelected(new Set())}
           />

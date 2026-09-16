@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import BulkActionBar, { UNLINK_LOAN } from "./BulkActionBar";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, BillingCycle, Payee } from "../../types";
+import type { Account, BillingCycle, Payee, RecurringSeries } from "../../types";
 
 const categorySections = [
   {
@@ -16,6 +16,9 @@ const billingCycles = [
   { id: "bc1", label: "March", startDate: "2024-03-01", endDate: "2024-03-31" },
 ] as unknown as BillingCycle[];
 const loanAccounts = [{ id: "l1", name: "Car Loan" }] as unknown as Account[];
+const recurringSeries = [
+  { id: "rs1", name: "Netflix" },
+] as unknown as RecurringSeries[];
 
 function renderBar(overrides: Partial<Parameters<typeof BulkActionBar>[0]> = {}) {
   const props = {
@@ -26,10 +29,12 @@ function renderBar(overrides: Partial<Parameters<typeof BulkActionBar>[0]> = {})
     loadingCycles: false,
     billingCycles,
     loanAccounts: [],
+    recurringSeries: [],
     onCategorize: vi.fn(),
     onUpdatePayee: vi.fn(),
     onSetBillingCycle: vi.fn(),
     onLinkLoan: vi.fn(),
+    onLinkRecurring: vi.fn(),
     onDelete: vi.fn(),
     onClear: vi.fn(),
     ...overrides,
@@ -83,5 +88,18 @@ describe("BulkActionBar", () => {
     expect(props.onDelete).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: /clear/i }));
     expect(props.onClear).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the subscription select and fires the link action", () => {
+    const { container, props } = renderBar({ recurringSeries });
+    const selects = Array.from(
+      container.querySelectorAll<HTMLSelectElement>("select"),
+    );
+    // categorize, payee, subscription
+    expect(selects).toHaveLength(3);
+    expect(container.textContent).toContain("Link to subscription...");
+
+    fireEvent.change(selects[2], { target: { value: "rs1" } });
+    expect(props.onLinkRecurring).toHaveBeenCalledWith("rs1");
   });
 });

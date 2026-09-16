@@ -127,6 +127,10 @@ type Transaction struct {
 	// at most one loan account.
 	LoanAccountID   *uuid.UUID `json:"loanAccountId,omitempty"`
 	LoanAccountName string     `json:"loanAccountName,omitempty"`
+	// Recurring subscription attachment: the recurring series this transaction
+	// is linked to (via recurring_attachments). At most one series.
+	RecurringSeriesID   *uuid.UUID `json:"recurringSeriesId,omitempty"`
+	RecurringSeriesName string     `json:"recurringSeriesName,omitempty"`
 }
 
 // BillingCycle is a persisted billing period for an account with a billing day
@@ -653,4 +657,166 @@ type TransferSuggestion struct {
 	DebitTxn  Transaction `json:"debitTxn"`
 	CreditTxn Transaction `json:"creditTxn"`
 	Score     float64     `json:"score"`
+}
+
+// RecurringSeries is a user-defined expectation of a repeating charge or income
+// (rent, salary, a subscription). It is a template only: FinTrak never
+// auto-creates transactions from it and never auto-links transactions to it.
+// The forecast projects its schedule and GetRecurringSuggestions proposes
+// matching transactions; the user confirms each link explicitly through
+// recurring_attachments.
+type RecurringSeries struct {
+	ID          uuid.UUID    `json:"id"`
+	AccountID   uuid.UUID    `json:"accountId"`
+	Name        string       `json:"name"`
+	Description string       `json:"description"`
+	Amount      money.Amount `json:"amount"`
+	Type        string       `json:"type"`
+	// Frequency is one of "daily", "weekly", "monthly", "yearly"; Interval is
+	// how many frequency units apart consecutive occurrences are (>= 1).
+	Frequency  string     `json:"frequency"`
+	Interval   int        `json:"interval"`
+	StartDate  time.Time  `json:"startDate"`
+	EndDate    *time.Time `json:"endDate,omitempty"`
+	CategoryID *uuid.UUID `json:"categoryId,omitempty"`
+	PayeeID    *uuid.UUID `json:"payeeId,omitempty"`
+	Active     bool       `json:"active"`
+	Notes      string     `json:"notes"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	// Joined fields
+	AccountName   string `json:"accountName,omitempty"`
+	CategoryName  string `json:"categoryName,omitempty"`
+	CategoryIcon  string `json:"categoryIcon,omitempty"`
+	CategoryColor string `json:"categoryColor,omitempty"`
+	Payee         string `json:"payee,omitempty"`
+	// Derived fields (computed in the handler, not stored)
+	// NextDueDate is the next occurrence on/after today (nil once the series
+	// has ended); MonthlyAmount normalizes the series to an estimated monthly
+	// cost in minor units; AttachedCount is how many transactions are linked.
+	NextDueDate   *time.Time   `json:"nextDueDate,omitempty"`
+	MonthlyAmount money.Amount `json:"monthlyAmount"`
+	AttachedCount int          `json:"attachedCount"`
+}
+
+// RecurringForecastItem is a single projected occurrence of a recurring series.
+// Matched reports whether an attached transaction already falls on (or near)
+// that occurrence.
+type RecurringForecastItem struct {
+	Date    time.Time    `json:"date"`
+	Amount  money.Amount `json:"amount"`
+	Type    string       `json:"type"`
+	Matched bool         `json:"matched"`
+}
+
+// RecurringSuggestion proposes that a transaction satisfies one occurrence of a
+// recurring series. Score (0-100) estimates confidence; OccurrenceDate is the
+// nearest expected occurrence and DaysOff its distance in days.
+type RecurringSuggestion struct {
+	Txn            Transaction `json:"txn"`
+	Score          float64     `json:"score"`
+	OccurrenceDate time.Time   `json:"occurrenceDate"`
+	DaysOff        float64     `json:"daysOff"`
+}
+
+// RecurringSeriesRange is one date-ranged amount/account entry supplied when
+// creating or editing a series. The end date is exclusive: an entry "from x to
+// y" applies from x up to (but not including) y.
+type RecurringSeriesRange struct {
+	StartDate string       `json:"startDate" binding:"required"`
+	EndDate   string       `json:"endDate"`
+	Amount    money.Amount `json:"amount" binding:"required"`
+	AccountID uuid.UUID    `json:"accountId" binding:"required"`
+}
+
+// CreateRecurringSeriesRequest is the body for POST /api/v1/recurring. Either
+// supply the full Ranges list (which also derives the subscription's start and
+// end), or a single StartDate + AccountID + Amount.
+type CreateRecurringSeriesRequest struct {
+	AccountID   *uuid.UUID             `json:"accountId"`
+	Name        string                 `json:"name" binding:"required"`
+	Description string                 `json:"description"`
+	Amount      *money.Amount          `json:"amount"`
+	Type        string                 `json:"type" binding:"required"`
+	Frequency   string                 `json:"frequency" binding:"required"`
+	Interval    int                    `json:"interval"`
+	StartDate   string                 `json:"startDate"`
+	EndDate     string                 `json:"endDate"`
+	CategoryID  *uuid.UUID             `json:"categoryId"`
+	PayeeID     *uuid.UUID             `json:"payeeId"`
+	Active      *bool                  `json:"active"`
+	Notes       string                 `json:"notes"`
+	Ranges      []RecurringSeriesRange `json:"ranges"`
+}
+
+// UpdateRecurringSeriesRequest is a partial update for a recurring series.
+// Pointer fields distinguish "not provided" from a zero value; CategoryID and
+// PayeeID use OptionalUUID so an explicit null clears them. EndDate is a
+// pointer to a string: absent leaves it untouched, "" clears it, and a date
+// sets it. When Ranges is non-empty the series' whole range list is replaced;
+// otherwise an Amount/AccountID change is recorded as a new range starting at
+// EffectiveDate (default: today).
+type UpdateRecurringSeriesRequest struct {
+	AccountID     *uuid.UUID             `json:"accountId"`
+	Name          *string                `json:"name"`
+	Description   *string                `json:"description"`
+	Amount        *money.Amount          `json:"amount"`
+	Type          *string                `json:"type"`
+	Frequency     *string                `json:"frequency"`
+	Interval      *int                   `json:"interval"`
+	StartDate     *string                `json:"startDate"`
+	EndDate       *string                `json:"endDate"`
+	CategoryID    OptionalUUID           `json:"categoryId"`
+	PayeeID       OptionalUUID           `json:"payeeId"`
+	Active        *bool                  `json:"active"`
+	Notes         *string                `json:"notes"`
+	EffectiveDate *string                `json:"effectiveDate"`
+	Ranges        []RecurringSeriesRange `json:"ranges"`
+}
+
+// RecurringSeriesTerm is one date-ranged amount/account segment of a recurring
+// series. A transaction matches a term only when its date falls within
+// [StartDate, EndDate) (EndDate nil = open-ended), and an occurrence uses the
+// amount/account of the term covering it.
+type RecurringSeriesTerm struct {
+	ID          uuid.UUID    `json:"id"`
+	SeriesID    uuid.UUID    `json:"seriesId"`
+	StartDate   time.Time    `json:"startDate"`
+	EndDate     *time.Time   `json:"endDate,omitempty"`
+	Amount      money.Amount `json:"amount"`
+	AccountID   uuid.UUID    `json:"accountId"`
+	AccountName string       `json:"accountName,omitempty"`
+	CreatedAt   time.Time    `json:"createdAt"`
+}
+
+// CreateRecurringSeriesTermRequest is the body for PUT
+// /api/v1/recurring/:id/terms. It records a date-ranged amount/account entry.
+type CreateRecurringSeriesTermRequest struct {
+	StartDate string       `json:"startDate" binding:"required"`
+	EndDate   string       `json:"endDate"`
+	Amount    money.Amount `json:"amount" binding:"required"`
+	AccountID uuid.UUID    `json:"accountId" binding:"required"`
+}
+
+// UpdateRecurringSeriesTermRequest is the body for PUT
+// /api/v1/recurring/:id/terms/:termId. Pointer fields distinguish "not
+// provided" from a zero value; EndDate "" clears the range end.
+type UpdateRecurringSeriesTermRequest struct {
+	StartDate *string       `json:"startDate"`
+	EndDate   *string       `json:"endDate"`
+	Amount    *money.Amount `json:"amount"`
+	AccountID *uuid.UUID    `json:"accountId"`
+}
+
+// RecurringAttachRequest links a batch of transactions to one recurring series.
+// A transaction may be attached to at most one series (UNIQUE on
+// recurring_attachments.transaction_id).
+type RecurringAttachRequest struct {
+	SeriesID       uuid.UUID   `json:"seriesId" binding:"required"`
+	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+}
+
+// RecurringDetachRequest unlinks a batch of transactions from whatever series
+// they are attached to.
+type RecurringDetachRequest struct {
+	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 }
