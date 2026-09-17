@@ -230,6 +230,43 @@ export interface DashboardSummary {
   billingCycleTrend?: BillingCycleTrendItem[];
 }
 
+// ---- Money-flow Sankey ----
+
+export type MoneyFlowNodeKind = "income" | "account" | "category" | "payee";
+
+// One node of the money-flow graph. `id` is stable and stage-prefixed, e.g.
+// "account:<uuid>", "category:uncategorized", "income:other".
+export interface MoneyFlowNode {
+  id: string;
+  name: string;
+  kind: MoneyFlowNodeKind;
+  color?: string;
+  group?: string;
+  total: number;
+}
+
+export interface MoneyFlowEdge {
+  source: string;
+  target: string;
+  value: number;
+}
+
+// Per-type rollup of the user's transaction links in the same window. Shown
+// beside the graph rather than drawn as account-to-account edges.
+export interface MoneyFlowLinkSummary {
+  type: LinkType;
+  count: number;
+  total: number;
+}
+
+export interface MoneyFlowGraph {
+  nodes: MoneyFlowNode[];
+  links: MoneyFlowEdge[];
+  totalIncome: number;
+  totalExpense: number;
+  linkSummary: MoneyFlowLinkSummary[];
+}
+
 export interface TransactionsResponse {
   data: Transaction[];
   total: number;

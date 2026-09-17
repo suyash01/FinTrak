@@ -29,6 +29,7 @@ import type {
   ImportTransactionsRequest,
   Link,
   LoginRequest,
+  MoneyFlowGraph,
   PaperlessDocumentsResponse,
   PaperlessDocumentsParams,
   PaperlessImportRequest,
@@ -582,6 +583,11 @@ const api = {
   ): Promise<DashboardSummary> => {
     const qs = buildQuery(params);
     return request(`/dashboard/summary?${qs}`);
+  },
+  // Money-flow Sankey (sources -> accounts -> categories -> payees)
+  getMoneyFlow: (params: QueryParams = {}): Promise<MoneyFlowGraph> => {
+    const qs = buildQuery(params);
+    return request(`/dashboard/money-flow${qs ? `?${qs}` : ""}`);
   },
 };
 

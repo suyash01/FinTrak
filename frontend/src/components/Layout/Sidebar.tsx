@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Repeat,
+  Waypoints,
 } from "lucide-react";
 import packageJson from "../../../package.json";
 import { useAuth } from "../../context/AuthContext";
@@ -108,6 +109,10 @@ export default function Sidebar() {
         <NavLink to="/" end className={navLinkClass} title="Dashboard">
           <LayoutDashboard className="w-4.5 h-4.5 shrink-0" />
           {!collapsed && <span>Dashboard</span>}
+        </NavLink>
+        <NavLink to="/money-flow" className={navLinkClass} title="Money Flow">
+          <Waypoints className="w-4.5 h-4.5 shrink-0" />
+          {!collapsed && <span>Money Flow</span>}
         </NavLink>
 
         <div className={sectionClass}>Manage</div>

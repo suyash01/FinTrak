@@ -292,6 +292,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 
 		// Dashboard
 		api.GET("/dashboard/summary", srv.GetDashboardSummary)
+		// Money-flow Sankey: money sources -> accounts -> categories -> payees,
+		// with typed transaction links summarized alongside.
+		api.GET("/dashboard/money-flow", srv.GetMoneyFlow)
 
 		// User-level backup & restore. Unlike the per-account CSV export,
 		// these snapshot (or restore) the user's whole graph as one JSON

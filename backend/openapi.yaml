@@ -2745,6 +2745,70 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /dashboard/money-flow:
+    get:
+      tags:
+        - Dashboard
+      summary: Get money-flow graph
+      description: >-
+        Aggregate the user's transactions into a left-to-right Sankey graph:
+        money sources (income categories) flow into accounts, out into spending
+        categories, and on to payees. The graph is acyclic; account-to-account
+        transfers, refunds, cashbacks, and bill payments are returned as a
+        per-type `linkSummary` instead of account-to-account edges. The income,
+        category, and payee stages are each capped at `limit` nodes, with the
+        remainder collapsed into an "Other" node.
+      operationId: getMoneyFlow
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter from date (YYYY-MM-DD)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter to date (YYYY-MM-DD)
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by account ID
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 12
+            minimum: 1
+            maximum: 30
+          description: >-
+            Maximum number of nodes kept in the income, category, and payee
+            stages (1-30); the remainder collapse into an "Other" node. Account
+            nodes are never capped.
+      responses:
+        "200":
+          description: Money-flow graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoneyFlowGraph"
+        "400":
+          description: Invalid accountId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ============= Backup & Restore =============
   /export:
     get:
@@ -3720,6 +3784,71 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BillingCycleTrendItem"
+
+    MoneyFlowNode:
+      type: object
+      properties:
+        id:
+          type: string
+          description: >-
+            Stable stage-prefixed node id, e.g. `account:<uuid>`,
+            `category:uncategorized`, `income:other`.
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [income, account, category, payee]
+        color:
+          type: string
+          description: Display color (base-group color for categories, account color for accounts)
+        group:
+          type: string
+          description: Category group id for category and income nodes
+        total:
+          type: number
+
+    MoneyFlowEdge:
+      type: object
+      properties:
+        source:
+          type: string
+          description: Source node id
+        target:
+          type: string
+          description: Target node id
+        value:
+          type: number
+
+    MoneyFlowLinkSummary:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [transfer, cashback, refund, bill_payment]
+        count:
+          type: integer
+        total:
+          type: number
+
+    MoneyFlowGraph:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowNode"
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowEdge"
+        totalIncome:
+          type: number
+        totalExpense:
+          type: number
+        linkSummary:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowLinkSummary"
 
     # ============= Recurring Series =============
     RecurringSeries:

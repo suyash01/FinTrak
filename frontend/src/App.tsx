@@ -15,6 +15,7 @@ import "./index.css";
 // Route-level code splitting: each page is loaded on demand so the login screen
 // doesn't pull in the charting, CSV and virtualization libraries.
 const Dashboard = lazy(() => import("./components/Dashboard/Dashboard"));
+const MoneyFlow = lazy(() => import("./components/MoneyFlow/MoneyFlow"));
 const Import = lazy(() => import("./components/Import/Import"));
 const PaperlessImport = lazy(
   () => import("./components/PaperlessImport/PaperlessImport"),
@@ -99,6 +100,7 @@ function Root() {
             <Suspense fallback={<PageFallback />}>
               <Routes>
                 <Route path="/" element={<Dashboard />} />
+                <Route path="/money-flow" element={<MoneyFlow />} />
                 <Route path="/import" element={<Import />} />
                 <Route path="/paperless" element={<PaperlessImport />} />
                 <Route path="/transactions" element={<Transactions />} />

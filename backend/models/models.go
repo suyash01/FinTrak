@@ -650,6 +650,53 @@ type MonthlyData struct {
 	Expense money.Amount `json:"expense"`
 }
 
+// Money-flow Sankey types. GetMoneyFlow aggregates every transaction in a
+// window into a left-to-right graph: money sources (income categories) flow
+// into accounts, out into spending categories, and on to payees. The graph is
+// a DAG (a Sankey cannot render cycles); account-to-account transfers, refunds,
+// cashbacks and bill payments are summarized separately in LinkSummary rather
+// than drawn as account-to-account edges.
+
+// MoneyFlowNode is one node of the money-flow graph. Kind is "income",
+// "account", "category", or "payee"; ID is stable and stage-prefixed (e.g.
+// "account:<uuid>", "category:uncategorized", "income:other"). Color is the
+// display color (the category's base-group color for category nodes, the
+// account color for account nodes) and Group carries the category group id for
+// category and income nodes.
+type MoneyFlowNode struct {
+	ID    string       `json:"id"`
+	Name  string       `json:"name"`
+	Kind  string       `json:"kind"`
+	Color string       `json:"color,omitempty"`
+	Group string       `json:"group,omitempty"`
+	Total money.Amount `json:"total"`
+}
+
+// MoneyFlowEdge is one aggregated flow between two MoneyFlowNode IDs.
+type MoneyFlowEdge struct {
+	Source string       `json:"source"`
+	Target string       `json:"target"`
+	Value  money.Amount `json:"value"`
+}
+
+// MoneyFlowLinkSummary is a per-type rollup of the user's transaction links in
+// the same window (transfers, refunds, cashbacks, bill payments), shown beside
+// the graph rather than drawn as account-to-account edges.
+type MoneyFlowLinkSummary struct {
+	Type  string       `json:"type"`
+	Count int          `json:"count"`
+	Total money.Amount `json:"total"`
+}
+
+// MoneyFlowGraph is the response of GET /api/v1/dashboard/money-flow.
+type MoneyFlowGraph struct {
+	Nodes        []MoneyFlowNode        `json:"nodes"`
+	Links        []MoneyFlowEdge        `json:"links"`
+	TotalIncome  money.Amount           `json:"totalIncome"`
+	TotalExpense money.Amount           `json:"totalExpense"`
+	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
+}
+
 // TransferSuggestion proposes that two transactions be linked, e.g. a debit and
 // a matching credit in different accounts. Score (0-100) estimates how
 // confident the suggestion is.

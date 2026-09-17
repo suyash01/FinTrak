@@ -23,6 +23,7 @@ import (
 
 	"github.com/fintrak/backend/config"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -650,4 +651,37 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 	status, _ = alice.request(http.MethodPost, "/api/v1/import", bundle)
 	require.Equal(t, http.StatusConflict, status)
 }
+
+// TestIntegrationMoneyFlowGraph exercises the money-flow aggregation against
+// real PostgreSQL: the grouped queries, their GROUP BY clauses, and the
+// link-summary join are all validated by the database, which pgxmock cannot do.
+func TestIntegrationMoneyFlowGraph(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("moneyflow@example.com")
+
+	bank := a.createAccount("Main Bank", "bank", nil)
+	cats := a.categories()
+	salary := categoryByName(t, cats, "Salary")
+	groceries := categoryByName(t, cats, "Groceries")
+
+	a.createTransaction(bank.ID, &salary.ID, "2024-06-01", "June salary", 5000, "credit")
+	a.createTransaction(bank.ID, &groceries.ID, "2024-06-02", "Big Bazaar", 1500, "debit")
+
+	var graph models.MoneyFlowGraph
+	a.call(http.MethodGet, "/api/v1/dashboard/money-flow?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &graph)
+
+	require.Equal(t, money.FromFloat(5000), graph.TotalIncome)
+	require.Equal(t, money.FromFloat(1500), graph.TotalExpense)
+
+	kinds := map[string]int{}
+	for _, n := range graph.Nodes {
+		kinds[n.Kind]++
+	}
+	require.GreaterOrEqual(t, kinds["income"], 1)
+	require.GreaterOrEqual(t, kinds["account"], 1)
+	require.GreaterOrEqual(t, kinds["category"], 1)
+	require.GreaterOrEqual(t, kinds["payee"], 1)
+	require.NotEmpty(t, graph.Links)
+}
+
 
