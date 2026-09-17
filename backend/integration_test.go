@@ -684,4 +684,44 @@ func TestIntegrationMoneyFlowGraph(t *testing.T) {
 	require.NotEmpty(t, graph.Links)
 }
 
+// TestIntegrationCashFlowCalendar exercises the daily cash-flow aggregation
+// against real PostgreSQL, including the DATE grouping and the billing-cycle /
+// synthetic-summary overlays that pgxmock cannot validate.
+func TestIntegrationCashFlowCalendar(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("cashflow@example.com")
 
+	billingDay := 5
+	bank := a.createAccount("Main Bank", "bank", &billingDay)
+	cats := a.categories()
+	salary := categoryByName(t, cats, "Salary")
+	groceries := categoryByName(t, cats, "Groceries")
+
+	a.createTransaction(bank.ID, &salary.ID, "2024-06-03", "June salary", 5000, "credit")
+	a.createTransaction(bank.ID, &groceries.ID, "2024-06-04", "Big Bazaar", 1500, "debit")
+
+	// All accounts: just the daily aggregates, no overlays.
+	var all models.CashFlowCalendar
+	a.call(http.MethodGet, "/api/v1/dashboard/cash-flow-calendar?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &all)
+	require.Len(t, all.Days, 2)
+	require.Equal(t, "2024-06-03", all.Days[0].Date)
+	require.Equal(t, money.FromFloat(5000), all.Days[0].Net)
+	require.Equal(t, "2024-06-04", all.Days[1].Date)
+	require.Equal(t, money.FromFloat(-1500), all.Days[1].Net)
+	require.Equal(t, money.FromFloat(3500), all.Net)
+	require.Equal(t, money.FromFloat(5000), all.MaxAbsNet)
+	require.Empty(t, all.Cycles)
+	require.Empty(t, all.Markers)
+
+	// Single billing-day account: cycle boundaries and summary markers overlay.
+	var one models.CashFlowCalendar
+	a.call(http.MethodGet,
+		"/api/v1/dashboard/cash-flow-calendar?dateFrom=2024-06-01&dateTo=2024-06-30&accountId="+bank.ID.String(),
+		nil, http.StatusOK, &one)
+	require.Len(t, one.Days, 2)
+	require.NotEmpty(t, one.Cycles)
+	require.NotEmpty(t, one.Markers)
+	for _, marker := range one.Markers {
+		require.Contains(t, []string{"balance", "outstanding"}, marker.Kind)
+	}
+}

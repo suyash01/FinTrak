@@ -15,6 +15,7 @@ import {
   PanelLeftOpen,
   Repeat,
   Waypoints,
+  CalendarDays,
 } from "lucide-react";
 import packageJson from "../../../package.json";
 import { useAuth } from "../../context/AuthContext";
@@ -113,6 +114,14 @@ export default function Sidebar() {
         <NavLink to="/money-flow" className={navLinkClass} title="Money Flow">
           <Waypoints className="w-4.5 h-4.5 shrink-0" />
           {!collapsed && <span>Money Flow</span>}
+        </NavLink>
+        <NavLink
+          to="/cash-flow-calendar"
+          className={navLinkClass}
+          title="Cash Flow Calendar"
+        >
+          <CalendarDays className="w-4.5 h-4.5 shrink-0" />
+          {!collapsed && <span>Cash Flow Calendar</span>}
         </NavLink>
 
         <div className={sectionClass}>Manage</div>

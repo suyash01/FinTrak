@@ -296,6 +296,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		// Money-flow Sankey: money sources -> accounts -> categories -> payees,
 		// with typed transaction links summarized alongside.
 		api.GET("/dashboard/money-flow", srv.GetMoneyFlow)
+		// Cash-flow calendar heatmap: per-day net flow with billing-cycle
+		// boundaries and the synthetic summary rows overlaid.
+		api.GET("/dashboard/cash-flow-calendar", srv.GetCashFlowCalendar)
 
 		// User-level backup & restore. Unlike the per-account CSV export,
 		// these snapshot (or restore) the user's whole graph as one JSON

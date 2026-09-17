@@ -91,6 +91,7 @@ describe("api method surface", () => {
     { name: "createPayee", call: () => api.createPayee({} as any), url: "/payees", method: "POST" },
     { name: "updatePayee", call: () => api.updatePayee("p1", {} as any), url: "/payees/p1", method: "PUT" },
     { name: "deletePayee", call: () => api.deletePayee("p1"), url: "/payees/p1", method: "DELETE" },
+    { name: "getCashFlowCalendar", call: () => api.getCashFlowCalendar(), url: "/dashboard/cash-flow-calendar", method: "GET" },
     { name: "createLink", call: () => api.createLink({} as any), url: "/links", method: "POST" },
     { name: "deleteLink", call: () => api.deleteLink("l1"), url: "/links/l1", method: "DELETE" },
     { name: "bulkDeleteLinks", call: () => api.bulkDeleteLinks({} as any), url: "/links/bulk-delete", method: "POST" },
@@ -119,6 +120,16 @@ describe("api method surface", () => {
   it("builds the dashboard query string", async () => {
     await api.getDashboardSummary({ groupBy: "billing_cycle" });
     expect(fetchMock.mock.calls[0][0]).toBe(`${API_BASE}/dashboard/summary?groupBy=billing_cycle`);
+  });
+
+  it("builds the cash-flow calendar query string only when params exist", async () => {
+    await api.getCashFlowCalendar();
+    expect(fetchMock.mock.calls[0][0]).toBe(`${API_BASE}/dashboard/cash-flow-calendar`);
+
+    await api.getCashFlowCalendar({ accountId: "a1", dateFrom: "2024-06-01" });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      `${API_BASE}/dashboard/cash-flow-calendar?accountId=a1&dateFrom=2024-06-01`,
+    );
   });
 
   it("serializes every paperless documents filter", async () => {

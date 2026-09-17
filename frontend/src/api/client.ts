@@ -11,6 +11,7 @@ import type {
   BulkBillingCycleRequest,
   BulkLoanRequest,
   BulkUpdatePayeeRequest,
+  CashFlowCalendar,
   Category,
   CategoryGroup,
   CreateAccountRequest,
@@ -644,6 +645,13 @@ const api = {
   getMoneyFlow: (params: QueryParams = {}): Promise<MoneyFlowGraph> => {
     const qs = buildQuery(params);
     return request(`/dashboard/money-flow${qs ? `?${qs}` : ""}`);
+  },
+  // Cash-flow calendar heatmap (daily net flow + billing-cycle/summary overlays)
+  getCashFlowCalendar: (
+    params: QueryParams = {},
+  ): Promise<CashFlowCalendar> => {
+    const qs = buildQuery(params);
+    return request(`/dashboard/cash-flow-calendar${qs ? `?${qs}` : ""}`);
   },
 };
 

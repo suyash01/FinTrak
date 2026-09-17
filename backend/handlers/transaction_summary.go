@@ -173,7 +173,13 @@ func (srv *Server) computeSummaryRows(c *gin.Context, userID, accountID uuid.UUI
 		slog.Error("computeSummaryRows (list cycles)", slog.String("error", err.Error()))
 		return nil
 	}
+	return srv.summaryRowsFromCycles(c, userID, accountID, acctName, dateFrom, dateTo, cycles)
+}
 
+// summaryRowsFromCycles builds the synthetic "Total outstanding" rows from an
+// already-loaded cycle list, so callers that need the cycles themselves
+// (e.g. the cash-flow calendar overlay) can avoid a second query.
+func (srv *Server) summaryRowsFromCycles(c *gin.Context, userID, accountID uuid.UUID, acctName, dateFrom, dateTo string, cycles []models.BillingCycle) []models.Transaction {
 	// Resolve the date range (defaults: first cycle start to today).
 	var from, to time.Time
 	if dateFrom != "" {

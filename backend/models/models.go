@@ -697,6 +697,57 @@ type MoneyFlowGraph struct {
 	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
 }
 
+// Cash-flow calendar types. GetCashFlowCalendar returns one CashFlowCalendarDay
+// per day that has transactions in the window, plus optional overlays when a
+// single account is selected: its billing-cycle boundaries (CashFlowCalendarCycle)
+// and the synthetic summary rows already shown in the transactions list
+// (CashFlowCalendarMarker). Days with no transactions are omitted; the client
+// fills the gaps to render a continuous GitHub-style heatmap.
+
+// CashFlowCalendarDay is one day of daily net flow. Net is income minus
+// expense; Count is the number of transactions posted that day.
+type CashFlowCalendarDay struct {
+	Date    string       `json:"date"`
+	Income  money.Amount `json:"income"`
+	Expense money.Amount `json:"expense"`
+	Net     money.Amount `json:"net"`
+	Count   int          `json:"count"`
+}
+
+// CashFlowCalendarMarker is a synthetic summary point overlaid on the calendar:
+// a month-end "Running balance" for accounts without a billing day (kind
+// "balance") or a per-cycle "Total outstanding" for accounts with one (kind
+// "outstanding"). Amount matches the corresponding row in the transactions list.
+type CashFlowCalendarMarker struct {
+	Date   string       `json:"date"`
+	Label  string       `json:"label"`
+	Kind   string       `json:"kind"`
+	Amount money.Amount `json:"amount"`
+}
+
+// CashFlowCalendarCycle is a billing-cycle boundary so the heatmap can mark
+// statement periods. Outstanding is the running balance through the cycle end.
+type CashFlowCalendarCycle struct {
+	ID          uuid.UUID    `json:"id"`
+	Label       string       `json:"label"`
+	StartDate   time.Time    `json:"startDate"`
+	EndDate     time.Time    `json:"endDate"`
+	Outstanding money.Amount `json:"outstanding"`
+}
+
+// CashFlowCalendar is the response of GET /api/v1/dashboard/cash-flow-calendar.
+type CashFlowCalendar struct {
+	Days         []CashFlowCalendarDay    `json:"days"`
+	Markers      []CashFlowCalendarMarker `json:"markers"`
+	Cycles       []CashFlowCalendarCycle  `json:"cycles"`
+	TotalIncome  money.Amount             `json:"totalIncome"`
+	TotalExpense money.Amount             `json:"totalExpense"`
+	Net          money.Amount             `json:"net"`
+	// MaxAbsNet is the largest |net| among the returned days, used by the client
+	// to scale the heatmap intensity without a second pass.
+	MaxAbsNet money.Amount `json:"maxAbsNet"`
+}
+
 // TransferSuggestion proposes that two transactions be linked, e.g. a debit and
 // a matching credit in different accounts. Score (0-100) estimates how
 // confident the suggestion is.

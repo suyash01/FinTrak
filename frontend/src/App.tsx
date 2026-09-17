@@ -16,6 +16,9 @@ import "./index.css";
 // doesn't pull in the charting, CSV and virtualization libraries.
 const Dashboard = lazy(() => import("./components/Dashboard/Dashboard"));
 const MoneyFlow = lazy(() => import("./components/MoneyFlow/MoneyFlow"));
+const CashFlowCalendar = lazy(
+  () => import("./components/CashFlowCalendar/CashFlowCalendar"),
+);
 const Import = lazy(() => import("./components/Import/Import"));
 const PaperlessImport = lazy(
   () => import("./components/PaperlessImport/PaperlessImport"),
@@ -101,6 +104,10 @@ function Root() {
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/money-flow" element={<MoneyFlow />} />
+                <Route
+                  path="/cash-flow-calendar"
+                  element={<CashFlowCalendar />}
+                />
                 <Route path="/import" element={<Import />} />
                 <Route path="/paperless" element={<PaperlessImport />} />
                 <Route path="/transactions" element={<Transactions />} />

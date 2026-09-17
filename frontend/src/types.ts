@@ -267,6 +267,47 @@ export interface MoneyFlowGraph {
   linkSummary: MoneyFlowLinkSummary[];
 }
 
+// ---- Cash-flow calendar heatmap ----
+
+// One day of daily net flow. Days with no transactions are omitted by the API;
+// the page fills the gaps to render a continuous calendar.
+export interface CashFlowCalendarDay {
+  date: string;
+  income: number;
+  expense: number;
+  net: number;
+  count: number;
+}
+
+// A synthetic summary point overlaid on the calendar: a month-end running
+// balance ("balance") or a per-cycle total outstanding ("outstanding").
+export interface CashFlowCalendarMarker {
+  date: string;
+  label: string;
+  kind: "balance" | "outstanding";
+  amount: number;
+}
+
+// A billing-cycle boundary, used to mark statement periods on the heatmap.
+export interface CashFlowCalendarCycle {
+  id: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  outstanding: number;
+}
+
+export interface CashFlowCalendar {
+  days: CashFlowCalendarDay[];
+  markers: CashFlowCalendarMarker[];
+  cycles: CashFlowCalendarCycle[];
+  totalIncome: number;
+  totalExpense: number;
+  net: number;
+  // Largest absolute daily net in the window, for heatmap scaling.
+  maxAbsNet: number;
+}
+
 export interface TransactionsResponse {
   data: Transaction[];
   total: number;

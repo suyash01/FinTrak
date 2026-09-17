@@ -2841,6 +2841,62 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /dashboard/cash-flow-calendar:
+    get:
+      tags:
+        - Dashboard
+      summary: Get cash-flow calendar heatmap
+      description: >-
+        Aggregate the user's transactions by day for a GitHub-style cash-flow
+        heatmap: per-day income, expense, and net over an optional date range
+        and account filter. Days with no transactions are omitted. When a
+        single account is supplied, the response also carries its
+        billing-cycle boundaries (`cycles`) and the synthetic summary rows
+        already shown in the transactions list (`markers`: month-end running
+        balances, or per-cycle total outstanding when the account has a
+        billing day) so they can be overlaid on the calendar.
+      operationId: getCashFlowCalendar
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter from date (YYYY-MM-DD)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter to date (YYYY-MM-DD)
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: >-
+            Filter by account ID. When provided, billing-cycle boundaries and
+            synthetic summary markers for that account are included.
+      responses:
+        "200":
+          description: Cash-flow calendar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashFlowCalendar"
+        "400":
+          description: Invalid accountId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ============= Backup & Restore =============
   /export:
     get:
@@ -3882,6 +3938,78 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowLinkSummary"
+
+    CashFlowCalendarDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        income:
+          type: number
+        expense:
+          type: number
+        net:
+          type: number
+        count:
+          type: integer
+
+    CashFlowCalendarMarker:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        label:
+          type: string
+          description: e.g. "Total outstanding" or "Running balance"
+        kind:
+          type: string
+          enum: [balance, outstanding]
+        amount:
+          type: number
+
+    CashFlowCalendarCycle:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        outstanding:
+          type: number
+
+    CashFlowCalendar:
+      type: object
+      properties:
+        days:
+          type: array
+          items:
+            $ref: "#/components/schemas/CashFlowCalendarDay"
+        markers:
+          type: array
+          items:
+            $ref: "#/components/schemas/CashFlowCalendarMarker"
+        cycles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CashFlowCalendarCycle"
+        totalIncome:
+          type: number
+        totalExpense:
+          type: number
+        net:
+          type: number
+        maxAbsNet:
+          type: number
+          description: Largest absolute daily net in the window, for heatmap scaling.
 
     # ============= Recurring Series =============
     RecurringSeries:
