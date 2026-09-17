@@ -207,6 +207,75 @@ describe("api request", () => {
     await expect(api.me()).rejects.toThrow("Unauthorized");
     expect(window.location.href).not.toBe("/login");
   });
+
+  it("refreshes the session and retries the request once on 401", async () => {
+    let protectedCalls = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/auth/refresh")) {
+        return Promise.resolve(jsonResponse({ message: "token refreshed" }));
+      }
+      protectedCalls += 1;
+      return Promise.resolve(
+        protectedCalls === 1
+          ? jsonResponse({ error: "Unauthorized" }, 401)
+          : jsonResponse([]),
+      );
+    });
+
+    await expect(api.getAccounts()).resolves.toEqual([]);
+    expect(window.location.href).not.toBe("/login");
+    const refreshCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/auth/refresh"),
+    );
+    expect(refreshCalls).toHaveLength(1);
+  });
+
+  it("gives up after one retry when the refreshed request still returns 401", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url.endsWith("/auth/refresh")
+          ? jsonResponse({ message: "token refreshed" })
+          : jsonResponse({ error: "Unauthorized" }, 401),
+      ),
+    );
+
+    await expect(api.getAccounts()).rejects.toThrow("Unauthorized");
+    expect(window.location.href).toBe("/login");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("dedupes concurrent refreshes into a single call", async () => {
+    let protectedCalls = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith("/auth/refresh")) {
+        return Promise.resolve(jsonResponse({ message: "token refreshed" }));
+      }
+      protectedCalls += 1;
+      return Promise.resolve(
+        protectedCalls <= 2
+          ? jsonResponse({ error: "Unauthorized" }, 401)
+          : jsonResponse([]),
+      );
+    });
+
+    await Promise.all([api.getAccounts(), api.getPayees()]);
+
+    const refreshCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/auth/refresh"),
+    );
+    expect(refreshCalls).toHaveLength(1);
+  });
+
+  it("does not attempt a refresh when the refresh endpoint itself 401s", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
+
+    await expect(api.getAccounts()).rejects.toThrow("Unauthorized");
+
+    const refreshCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith("/auth/refresh"),
+    );
+    expect(refreshCalls).toHaveLength(1);
+  });
 });
 
 describe("downloadCSV", () => {

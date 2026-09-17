@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 )
 
@@ -82,12 +83,15 @@ func TestRegister(t *testing.T) {
 	assert.Equal(t, reqBody.Email, res.User.Email)
 	assert.Equal(t, "user", res.User.Role)
 
-	// The JWT is delivered as an httpOnly session cookie, not in the body.
+	// The tokens are delivered as httpOnly cookies, not in the body.
 	cookies := w.Result().Cookies()
-	assert.Len(t, cookies, 1)
-	assert.Equal(t, auth.AuthCookieName, cookies[0].Name)
+	assert.Len(t, cookies, 2)
+	assert.Equal(t, auth.AccessCookieName, cookies[0].Name)
+	assert.Equal(t, auth.RefreshCookieName, cookies[1].Name)
 	assert.True(t, cookies[0].HttpOnly)
+	assert.True(t, cookies[1].HttpOnly)
 	assert.NotEmpty(t, cookies[0].Value)
+	assert.NotEmpty(t, cookies[1].Value)
 	assert.NotContains(t, w.Body.String(), "token")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -359,8 +363,10 @@ func TestLogin(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, userID, res.User.ID)
 	assert.Equal(t, "user", res.User.Role)
-	assert.Len(t, w.Result().Cookies(), 1)
-	assert.Equal(t, auth.AuthCookieName, w.Result().Cookies()[0].Name)
+	cookies := w.Result().Cookies()
+	assert.Len(t, cookies, 2)
+	assert.Equal(t, auth.AccessCookieName, cookies[0].Name)
+	assert.Equal(t, auth.RefreshCookieName, cookies[1].Name)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -519,10 +525,90 @@ func TestLogout(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	cookies := w.Result().Cookies()
-	assert.Len(t, cookies, 1)
-	assert.Equal(t, auth.AuthCookieName, cookies[0].Name)
-	assert.Equal(t, "", cookies[0].Value)
-	assert.Less(t, cookies[0].MaxAge, 0)
+	assert.Len(t, cookies, 2)
+	assert.Equal(t, auth.AccessCookieName, cookies[0].Name)
+	assert.Equal(t, auth.RefreshCookieName, cookies[1].Name)
+	for _, ck := range cookies {
+		assert.Equal(t, "", ck.Value)
+		assert.Less(t, ck.MaxAge, 0)
+	}
+}
+
+func TestRefresh(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	srv := newTestServer(nil)
+	r.POST("/auth/refresh", srv.Refresh)
+
+	findCookie := func(cookies []*http.Cookie, name string) *http.Cookie {
+		for _, ck := range cookies {
+			if ck.Name == name {
+				return ck
+			}
+		}
+		return nil
+	}
+
+	t.Run("exchanges a refresh token for a new access token", func(t *testing.T) {
+		userID := uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refresh})
+		r.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		access := findCookie(w.Result().Cookies(), auth.AccessCookieName)
+		require.NotNil(t, access)
+		assert.NotEmpty(t, access.Value)
+		// The refresh cookie must be left untouched so the session's absolute
+		// deadline is preserved.
+		assert.Nil(t, findCookie(w.Result().Cookies(), auth.RefreshCookieName))
+
+		claims, err := auth.ParseToken(access.Value, testJWTSecret, auth.TokenTypeAccess)
+		require.NoError(t, err)
+		assert.Equal(t, userID, claims.UserID)
+		assert.Equal(t, "user", claims.Role)
+	})
+
+	t.Run("missing refresh cookie", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Contains(t, w.Body.String(), "missing refresh token")
+	})
+
+	t.Run("invalid refresh token clears the session", func(t *testing.T) {
+		refresh, err := auth.GenerateRefreshToken(uuid.New(), "user", "wrong-secret")
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refresh})
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		access := findCookie(w.Result().Cookies(), auth.AccessCookieName)
+		require.NotNil(t, access)
+		assert.Less(t, access.MaxAge, 0)
+		assert.NotNil(t, findCookie(w.Result().Cookies(), auth.RefreshCookieName))
+	})
+
+	t.Run("access token cannot be used as a refresh token", func(t *testing.T) {
+		access, err := auth.GenerateAccessToken(uuid.New(), "user", testJWTSecret)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: access})
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
 }
 
 func TestMe(t *testing.T) {

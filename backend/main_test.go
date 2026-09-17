@@ -62,7 +62,7 @@ func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
 	r := testRouter()
 
 	userID := uuid.New()
-	userToken, err := auth.GenerateToken(userID, "user", "test-secret")
+	userToken, err := auth.GenerateAccessToken(userID, "user", "test-secret")
 	require.NoError(t, err)
 
 	// No auth -> 401.
@@ -80,7 +80,7 @@ func TestAccountTypeMutationsRequireAdmin(t *testing.T) {
 
 	// Admin token passes the middleware and reaches the handler (missing body
 	// fields -> binding error 400, no DB touched).
-	adminToken, err := auth.GenerateToken(userID, "admin", "test-secret")
+	adminToken, err := auth.GenerateAccessToken(userID, "admin", "test-secret")
 	require.NoError(t, err)
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/account-types", bytes.NewBufferString(`{}`))
@@ -185,7 +185,6 @@ func TestNewServerTimeouts(t *testing.T) {
 	assert.Equal(t, idleTimeout, srv.IdleTimeout)
 }
 
-
 func TestRouterRegistersExpectedRoutes(t *testing.T) {
 	r := testRouter()
 
@@ -198,6 +197,8 @@ func TestRouterRegistersExpectedRoutes(t *testing.T) {
 		"GET /api/v1/health",
 		"POST /api/v1/auth/register",
 		"POST /api/v1/auth/login",
+		"POST /api/v1/auth/refresh",
+		"POST /api/v1/auth/logout",
 		"GET /api/v1/accounts",
 		"GET /api/v1/account-types",
 		"GET /api/v1/categories",

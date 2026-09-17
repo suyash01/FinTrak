@@ -5,7 +5,6 @@ package auth
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,20 +20,17 @@ const (
 	ctxUserIDKey   = "userID"
 	ctxUserRoleKey = "userRole"
 	ctxClaimsKey   = "authClaims"
-	// tokenTTL is how long an issued JWT stays valid. Kept short because the
-	// role is embedded in the token and cannot be revoked before it expires,
-	// and because sliding renewal (see RenewSession) refreshes it on activity.
-	tokenTTL = 2 * time.Hour
-	// sessionTTL is the absolute maximum lifetime of a session regardless of
-	// activity. Sliding renewal extends a session as the user works, but never
-	// past this deadline; once it passes the user must log in again. The
-	// deadline travels inside the token (Claims.SessionExpiresAt) so no
-	// server-side session store is required.
-	sessionTTL = 30 * 24 * time.Hour
-	// renewThreshold is how close an access token must be to expiry before
-	// RenewSession mints a replacement. Renewing on every request would churn
-	// tokens for no benefit.
-	renewThreshold = 30 * time.Minute
+
+	// accessTokenTTL is how long an issued access token stays valid. It is
+	// deliberately short: the refresh token is what keeps a session alive, and
+	// the frontend transparently trades a 401 for a new access token via
+	// POST /auth/refresh.
+	accessTokenTTL = 15 * time.Minute
+	// refreshTokenTTL is the absolute lifetime of a session, measured from the
+	// initial login. Refreshing mints a new access token but never extends a
+	// session past this deadline, so a user logs in again every 30 days.
+	refreshTokenTTL = 30 * 24 * time.Hour
+
 	// tokenIssuer and tokenAudience are validated on every request so tokens
 	// minted for another service (or with the same secret but different intent)
 	// are rejected.
@@ -42,16 +38,21 @@ const (
 	tokenAudience = "fintrak-api"
 )
 
-// Claims is the JWT payload for FinTrak tokens: the user ID, role, the absolute
-// session deadline, and standard registered claims.
+// Token type values embedded in Claims.TokenType. They stop an access token
+// from being replayed against the refresh endpoint (or a refresh token against
+// a protected route).
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
+// Claims is the JWT payload for FinTrak tokens: the user ID, role, the token
+// type, and standard registered claims. Access and refresh tokens share this
+// shape; TokenType distinguishes them.
 type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
-	Role   string    `json:"role"`
-	// SessionExpiresAt is the absolute deadline of the whole session. Sliding
-	// renewal carries it forward unchanged, so activity can extend a session up
-	// to — but never beyond — this instant. Tokens issued before sliding renewal
-	// existed may omit it; such tokens are accepted but never renewed.
-	SessionExpiresAt *jwt.NumericDate `json:"session_exp,omitempty"`
+	UserID    uuid.UUID `json:"user_id"`
+	Role      string    `json:"role"`
+	TokenType string    `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
@@ -66,26 +67,57 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-// GenerateToken signs an HS256 JWT for the given user and role using the secret.
-// It starts a brand-new session with a fresh absolute deadline (sessionTTL).
-func GenerateToken(userID uuid.UUID, role, secret string) (string, error) {
-	return generateToken(userID, role, secret, time.Now().Add(sessionTTL))
+// NewSession mints a fresh access/refresh token pair for a new login. The
+// refresh token's expiry is the session's absolute deadline.
+func NewSession(userID uuid.UUID, role, secret string) (accessToken, refreshToken string, err error) {
+	if accessToken, err = GenerateAccessToken(userID, role, secret); err != nil {
+		return "", "", err
+	}
+	if refreshToken, err = GenerateRefreshToken(userID, role, secret); err != nil {
+		return "", "", err
+	}
+	return accessToken, refreshToken, nil
 }
 
-// generateToken signs a token whose session deadline is sessionExpiresAt. The
-// access token's own expiry is capped at that deadline so a token can never
-// outlive its session even if it is issued during the final renewal window.
-func generateToken(userID uuid.UUID, role, secret string, sessionExpiresAt time.Time) (string, error) {
+// GenerateAccessToken signs a short-lived HS256 access token. It is sent with
+// every API request and is the only token RequireAuth accepts.
+func GenerateAccessToken(userID uuid.UUID, role, secret string) (string, error) {
+	return generateToken(userID, role, secret, TokenTypeAccess, accessTokenTTL, time.Time{})
+}
+
+// GenerateRefreshToken signs a long-lived HS256 refresh token, starting a new
+// session that ends refreshTokenTTL from now. It is only ever sent to
+// POST /auth/refresh, which trades it for a fresh access token.
+func GenerateRefreshToken(userID uuid.UUID, role, secret string) (string, error) {
+	return generateToken(userID, role, secret, TokenTypeRefresh, refreshTokenTTL, time.Time{})
+}
+
+// RenewAccess mints a new access token bounded by the refresh token's expiry,
+// so refreshing near the end of a session can never produce an access token
+// that outlives the session's absolute deadline.
+func RenewAccess(claims *Claims, secret string) (string, error) {
+	if claims == nil || claims.ExpiresAt == nil {
+		return "", errors.New("refresh token has no expiry")
+	}
+	return generateToken(claims.UserID, claims.Role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time)
+}
+
+// generateToken signs a token of the given type. Its expiry is now+ttl, capped
+// at notAfter when that is non-zero.
+func generateToken(userID uuid.UUID, role, secret, tokenType string, ttl time.Duration, notAfter time.Time) (string, error) {
 	now := time.Now()
-	expiresAt := now.Add(tokenTTL)
-	if sessionExpiresAt.Before(expiresAt) {
-		expiresAt = sessionExpiresAt
+	expiresAt := now.Add(ttl)
+	if !notAfter.IsZero() && notAfter.Before(expiresAt) {
+		expiresAt = notAfter
+	}
+	if !expiresAt.After(now) {
+		return "", errors.New("token expiry is in the past")
 	}
 
 	claims := Claims{
-		UserID:           userID,
-		Role:             role,
-		SessionExpiresAt: jwt.NewNumericDate(sessionExpiresAt),
+		UserID:    userID,
+		Role:      role,
+		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    tokenIssuer,
 			Subject:   userID.String(),
@@ -99,32 +131,74 @@ func generateToken(userID uuid.UUID, role, secret string, sessionExpiresAt time.
 	return token.SignedString([]byte(secret))
 }
 
-// AuthCookieName is the httpOnly session cookie that carries the JWT.
-const AuthCookieName = "fintrak_token"
+// ParseToken validates a signed token's signature, issuer, audience, and
+// expiry, and requires its type claim to equal wantType. It is used both by
+// RequireAuth (wantType=access) and the refresh endpoint (wantType=refresh).
+func ParseToken(tokenString, secret, wantType string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(secret), nil
+	},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(tokenIssuer),
+		jwt.WithAudience(tokenAudience),
+	)
+	if err != nil || !token.Valid {
+		return nil, errors.New("invalid or expired token")
+	}
 
-// SetAuthCookie writes the session JWT as an httpOnly, SameSite=Lax cookie so
-// it is unreadable from JavaScript. Pass secure=true in production (HTTPS).
-// SameSite=Lax is the CSRF defense: browsers do not attach the cookie to
-// cross-site POST/PUT/PATCH/DELETE requests.
-func SetAuthCookie(c *gin.Context, token string, secure bool) {
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     AuthCookieName,
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(tokenTTL.Seconds()),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-	})
+	claims, ok := token.Claims.(*Claims)
+	if !ok {
+		return nil, errors.New("invalid token claims")
+	}
+	if claims.TokenType != wantType {
+		return nil, errors.New("unexpected token type")
+	}
+	return claims, nil
 }
 
-// ClearAuthCookie expires the session cookie.
-func ClearAuthCookie(c *gin.Context, secure bool) {
+const (
+	// AccessCookieName is the httpOnly cookie that carries the short-lived
+	// access token. It is sent with every API request.
+	AccessCookieName = "fintrak_token"
+	// RefreshCookieName is the httpOnly cookie that carries the long-lived
+	// refresh token. It is scoped to the auth endpoints so it is only ever
+	// transmitted to /auth/refresh and /auth/logout.
+	RefreshCookieName = "fintrak_refresh"
+	// RefreshCookiePath scopes the refresh cookie to the auth endpoints.
+	RefreshCookiePath = "/api/v1/auth"
+)
+
+// SetAuthCookies writes the access and refresh tokens as httpOnly, SameSite=Lax
+// cookies so neither is readable from JavaScript. Pass secure=true in
+// production (HTTPS). SameSite=Lax is the CSRF defense: browsers do not attach
+// the cookies to cross-site POST/PUT/PATCH/DELETE requests.
+func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, secure bool) {
+	setCookie(c, AccessCookieName, accessToken, "/", int(accessTokenTTL.Seconds()), secure)
+	setCookie(c, RefreshCookieName, refreshToken, RefreshCookiePath, int(refreshTokenTTL.Seconds()), secure)
+}
+
+// SetAccessCookie refreshes just the access-token cookie. Used by the refresh
+// endpoint so the long-lived refresh cookie keeps its original expiry and the
+// session's absolute deadline is preserved.
+func SetAccessCookie(c *gin.Context, token string, secure bool) {
+	setCookie(c, AccessCookieName, token, "/", int(accessTokenTTL.Seconds()), secure)
+}
+
+// ClearAuthCookies expires both session cookies.
+func ClearAuthCookies(c *gin.Context, secure bool) {
+	setCookie(c, AccessCookieName, "", "/", -1, secure)
+	setCookie(c, RefreshCookieName, "", RefreshCookiePath, -1, secure)
+}
+
+func setCookie(c *gin.Context, name, value, path string, maxAge int, secure bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     AuthCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
@@ -141,96 +215,32 @@ func bearerToken(c *gin.Context) string {
 	return strings.TrimSpace(parts[1])
 }
 
-// RequireAuth validates the session token and injects the user ID into the
-// context. The token is read from the httpOnly session cookie; a Bearer header
-// is still accepted for programmatic/API clients and tests.
+// RequireAuth validates the access token and injects the user ID into the
+// context. The token is read from the httpOnly access cookie; a Bearer header
+// is still accepted for programmatic/API clients and tests. Refresh tokens are
+// rejected here: they are only valid at POST /auth/refresh.
 func RequireAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := bearerToken(c)
 		if tokenString == "" {
 			// Ignore the cookie read error: an absent cookie simply means the
 			// request is unauthenticated.
-			tokenString, _ = c.Cookie(AuthCookieName)
+			tokenString, _ = c.Cookie(AccessCookieName)
 		}
 		if tokenString == "" {
 			validation.RespondAuthError(c, "missing authentication")
 			return
 		}
 
-		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, errors.New("unexpected signing method")
-			}
-			return []byte(secret), nil
-		},
-			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-			jwt.WithIssuer(tokenIssuer),
-			jwt.WithAudience(tokenAudience),
-		)
-		if err != nil || !token.Valid {
+		claims, err := ParseToken(tokenString, secret, TokenTypeAccess)
+		if err != nil {
 			validation.RespondAuthError(c, "invalid or expired token")
-			return
-		}
-
-		claims, ok := token.Claims.(*Claims)
-		if !ok {
-			validation.RespondAuthError(c, "invalid token claims")
-			return
-		}
-
-		// Enforce the absolute session deadline. A token is normally short-lived
-		// and capped at this instant at issuance, but checking it here keeps the
-		// bound authoritative even if a token was minted with a longer expiry.
-		if claims.SessionExpiresAt != nil && !time.Now().Before(claims.SessionExpiresAt.Time) {
-			validation.RespondAuthError(c, "session expired")
 			return
 		}
 
 		c.Set(ctxUserIDKey, claims.UserID)
 		c.Set(ctxUserRoleKey, claims.Role)
 		c.Set(ctxClaimsKey, claims)
-		c.Next()
-	}
-}
-
-// RenewSession is the sliding-session middleware. When an authenticated request
-// arrives with an access token that is close to expiry, it transparently mints a
-// replacement and sets it on the response, so an active user is never logged out
-// mid-use. The session's absolute deadline (Claims.SessionExpiresAt) is carried
-// forward unchanged, so renewal can extend a session but never past the cap.
-//
-// It must run after RequireAuth, which populates the parsed claims in the
-// request context. Tokens that predate sliding renewal (no session deadline) are
-// left alone and simply expire as before.
-func RenewSession(secret string, secure bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims := GetClaims(c)
-		if claims == nil || claims.ExpiresAt == nil || claims.SessionExpiresAt == nil {
-			c.Next()
-			return
-		}
-
-		now := time.Now()
-		// Once the absolute deadline is within the renewal window, stop renewing:
-		// the token is already capped there and reissuing would repeat on every
-		// request. The user will be asked to log in when it elapses.
-		if claims.SessionExpiresAt.Time.Sub(now) <= renewThreshold {
-			c.Next()
-			return
-		}
-		// Still comfortably valid — nothing to do.
-		if now.Add(renewThreshold).Before(claims.ExpiresAt.Time) {
-			c.Next()
-			return
-		}
-
-		token, err := generateToken(claims.UserID, claims.Role, secret, claims.SessionExpiresAt.Time)
-		if err != nil {
-			slog.Error("renewing session", slog.String("error", err.Error()))
-			c.Next()
-			return
-		}
-		SetAuthCookie(c, token, secure)
 		c.Next()
 	}
 }

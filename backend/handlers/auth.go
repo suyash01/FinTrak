@@ -47,7 +47,8 @@ func setupTokenMatches(got, want string) bool {
 // when the request carries the operator-owned ADMIN_SETUP_TOKEN (admin-listed
 // addresses are otherwise refused so they can't be squatted by a registrant
 // who merely knows the address). The password is bcrypt-hashed and the stock
-// default categories are seeded before returning a fresh JWT.
+// default categories are seeded before starting a session (access + refresh
+// token cookies).
 func (srv *Server) Register(c *gin.Context) {
 	var req models.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -127,21 +128,21 @@ func (srv *Server) Register(c *gin.Context) {
 		return
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
+	accessToken, refreshToken, err := auth.NewSession(user.ID, user.Role, jwtSecret)
 	if err != nil {
-		slog.Error("generating token in Register", slog.String("error", err.Error()))
+		slog.Error("generating tokens in Register", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	auth.SetAuthCookie(c, token, cookieSecure)
+	auth.SetAuthCookies(c, accessToken, refreshToken, cookieSecure)
 
 	c.JSON(http.StatusCreated, models.AuthResponse{User: user})
 }
 
-// Login verifies the email/password against the users table and returns a fresh
-// JWT on success. Failed lookups and mismatched passwords both return a generic
-// 401 so the response doesn't reveal which accounts exist.
+// Login verifies the email/password against the users table and starts a
+// session on success. Failed lookups and mismatched passwords both return a
+// generic 401 so the response doesn't reveal which accounts exist.
 func (srv *Server) Login(c *gin.Context) {
 	var req models.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -181,16 +182,51 @@ func (srv *Server) Login(c *gin.Context) {
 		return
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Role, jwtSecret)
+	accessToken, refreshToken, err := auth.NewSession(user.ID, user.Role, jwtSecret)
 	if err != nil {
-		slog.Error("generating token in Login", slog.String("error", err.Error()))
+		slog.Error("generating tokens in Login", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	auth.SetAuthCookie(c, token, cookieSecure)
+	auth.SetAuthCookies(c, accessToken, refreshToken, cookieSecure)
 
 	c.JSON(http.StatusOK, models.AuthResponse{User: user})
+}
+
+// Refresh exchanges a valid refresh-token cookie for a fresh access token. It is
+// public (the access token is expected to have expired) but requires the
+// long-lived refresh cookie, which the browser only sends to the auth
+// endpoints. The refresh token's expiry is the session's absolute deadline, so
+// refreshing never extends a session; it only re-arms the short-lived access
+// token. A missing or invalid refresh token clears both cookies so the browser
+// stops sending a dead session.
+func (srv *Server) Refresh(c *gin.Context) {
+	tokenString, err := c.Cookie(auth.RefreshCookieName)
+	if err != nil || tokenString == "" {
+		validation.RespondAuthError(c, "missing refresh token")
+		return
+	}
+
+	claims, err := auth.ParseToken(tokenString, jwtSecret, auth.TokenTypeRefresh)
+	if err != nil {
+		auth.ClearAuthCookies(c, cookieSecure)
+		validation.RespondAuthError(c, "session expired; please log in again")
+		return
+	}
+
+	accessToken, err := auth.RenewAccess(claims, jwtSecret)
+	if err != nil {
+		// The refresh token is structurally valid but the session has reached
+		// its absolute deadline (RenewAccess refuses to mint a token whose
+		// expiry is already in the past).
+		auth.ClearAuthCookies(c, cookieSecure)
+		validation.RespondAuthError(c, "session expired; please log in again")
+		return
+	}
+
+	auth.SetAccessCookie(c, accessToken, cookieSecure)
+	c.JSON(http.StatusOK, gin.H{"message": "token refreshed"})
 }
 
 // Me returns the authenticated user for the session cookie. The frontend calls
@@ -215,9 +251,9 @@ func (srv *Server) Me(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// Logout clears the session cookie. It is unauthenticated on purpose so an
+// Logout clears both session cookies. It is unauthenticated on purpose so an
 // expired or invalid cookie can still be removed.
 func (srv *Server) Logout(c *gin.Context) {
-	auth.ClearAuthCookie(c, cookieSecure)
+	auth.ClearAuthCookies(c, cookieSecure)
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }

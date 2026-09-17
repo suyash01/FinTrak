@@ -176,16 +176,17 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// registered routes.
 	api.GET("/openapi.yaml", serveOpenAPISpec)
 
-	// Public: authentication
+	// Public: authentication. /auth/refresh is public because it is what a
+	// client calls once its short-lived access token has expired; it
+	// authenticates with the separate, long-lived refresh cookie instead.
 	api.POST("/auth/register", srv.Register)
 	api.POST("/auth/login", srv.Login)
+	api.POST("/auth/refresh", srv.Refresh)
 	api.POST("/auth/logout", srv.Logout)
 
-	// Protected routes. RequireAuth validates the token; RenewSession then keeps
-	// active sessions alive by sliding the access token forward (up to the
-	// session's absolute deadline).
+	// Protected routes. RequireAuth validates the access token; an expired
+	// access token is exchanged for a fresh one at POST /auth/refresh.
 	api.Use(auth.RequireAuth(cfg.JWTSecret))
-	api.Use(auth.RenewSession(cfg.JWTSecret, cfg.CookieSecure))
 	{
 		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
 		api.GET("/auth/me", srv.Me)

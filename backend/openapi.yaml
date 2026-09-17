@@ -5,13 +5,20 @@ info:
     Personal finance tracker API. All API endpoints are prefixed with `/api/v1`.
 
     ## Authentication
-    `/auth/register` and `/auth/login` authenticate the user and set the JWT as
-    an httpOnly, `SameSite=Lax` session cookie (`fintrak_token`); the token is
-    never returned in the response body. Browsers send that cookie
-    automatically, which is how the SPA authenticates.
+    `/auth/register` and `/auth/login` authenticate the user and set two
+    httpOnly, `SameSite=Lax` cookies: a short-lived access token
+    (`fintrak_token`, 15 minutes) sent with every API request, and a long-lived
+    refresh token (`fintrak_refresh`, 30 days) scoped to the auth endpoints.
+    Neither token is ever returned in a response body. Browsers send the
+    cookies automatically, which is how the SPA authenticates.
+
+    When the access token expires the client calls `POST /auth/refresh`, which
+    trades the refresh cookie for a fresh access token. Refreshing never
+    extends a session past its original 30-day deadline; after that the user
+    must log in again.
 
     For non-browser clients, protected routes also accept a Bearer token in the
-    `Authorization` header, using the value from the session cookie:
+    `Authorization` header, using the value of the access-token cookie:
     ```
     Authorization: Bearer <token>
     ```
@@ -66,7 +73,7 @@ paths:
       tags:
         - Authentication
       summary: Register a new user
-      description: Create a new user account. The JWT is set as an httpOnly session cookie, not returned in the body.
+      description: Create a new user account. Access and refresh tokens are set as httpOnly cookies, not returned in the body.
       operationId: register
       requestBody:
         required: true
@@ -97,7 +104,7 @@ paths:
       tags:
         - Authentication
       summary: Login a user
-      description: Authenticate a user. The JWT is set as an httpOnly session cookie, not returned in the body.
+      description: Authenticate a user. Access and refresh tokens are set as httpOnly cookies, not returned in the body.
       operationId: login
       requestBody:
         required: true
@@ -116,6 +123,31 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh the access token
+      description: |
+        Exchange the long-lived refresh cookie (`fintrak_refresh`) for a fresh
+        short-lived access token (`fintrak_token`). This endpoint is public
+        because the access token is expected to have expired; it authenticates
+        with the refresh cookie instead. Refreshing does not extend the
+        session's original 30-day deadline. On failure both cookies are
+        cleared.
+      operationId: refresh
+      responses:
+        "200":
+          description: Access token refreshed
+        "401":
+          description: Missing, invalid, or expired refresh token
           content:
             application/json:
               schema:
@@ -3321,9 +3353,10 @@ components:
     AuthResponse:
       type: object
       description: |
-        Returned by register/login. The JWT is delivered as an httpOnly,
-        SameSite=Lax session cookie (`fintrak_token`), never in the body, so
-        only the user is present here.
+        Returned by register/login. The access token (`fintrak_token`) and
+        refresh token (`fintrak_refresh`) are delivered as httpOnly,
+        SameSite=Lax cookies, never in the body, so only the user is present
+        here.
       properties:
         user:
           $ref: "#/components/schemas/User"
@@ -4651,6 +4684,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Optional alternative to the httpOnly session cookie. Use the JWT value
-        delivered in the `fintrak_token` cookie by /auth/register or
-        /auth/login; the token itself is never returned in a response body.
+        Optional alternative to the httpOnly access-token cookie. Use the
+        access token delivered in the `fintrak_token` cookie by
+        /auth/register, /auth/login, or /auth/refresh; the token itself is
+        never returned in a response body.

@@ -129,18 +129,58 @@ function buildQuery(params: QueryParams): string {
   ).toString();
 }
 
-async function request<T>(
-  url: string,
-  options: RequestOptions = {},
-): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...options.headers,
-  };
+// isAuthEndpoint reports whether a 401 should be surfaced rather than being
+// treated as an expired access token. /auth/refresh must never trigger a
+// refresh attempt, or an invalid refresh token would loop forever.
+function isAuthEndpoint(url: string): boolean {
+  return (
+    url === "/auth/login" || url === "/auth/register" || url === "/auth/refresh"
+  );
+}
 
-  // Combine a caller-provided abort signal with a request timeout
+// isSessionCheck reports whether the request is the on-mount /auth/me probe.
+// A 401 there means the whole session is gone; AuthContext shows the login
+// screen, so we avoid a hard redirect (which would fight React Router).
+function isSessionCheck(url: string): boolean {
+  return url === "/auth/me";
+}
+
+function redirectToLogin(): void {
+  storeUser(null);
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.href = "/login";
+  }
+}
+
+// refreshSession trades the long-lived refresh cookie for a fresh access token.
+// Concurrent 401s share one in-flight call so a burst of failing requests only
+// hits /auth/refresh once.
+let refreshPromise: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((res) => res.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
+// fetchWithTimeout runs a single fetch attempt with the caller's abort signal
+// combined with a request timeout.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeout: number,
+): Promise<Response> {
   const controller = new AbortController();
-  const externalSignal = options.signal;
+  const externalSignal = init.signal ?? undefined;
   let timedOut = false;
 
   const abort = () => controller.abort();
@@ -151,14 +191,12 @@ async function request<T>(
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, options.timeout ?? REQUEST_TIMEOUT);
+  }, timeout);
 
-  let res: Response;
   try {
-    res = await fetch(`${API_BASE}${url}`, {
-      ...options,
+    return await fetch(`${API_BASE}${url}`, {
+      ...init,
       signal: controller.signal,
-      headers,
       credentials: "include",
     });
   } catch (err) {
@@ -171,17 +209,44 @@ async function request<T>(
     clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener("abort", abort);
   }
+}
 
-  if (
-    res.status === 401 &&
-    url !== "/auth/login" &&
-    url !== "/auth/register" &&
-    url !== "/auth/me"
-  ) {
-    storeUser(null);
-    if (!window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
+// sendWithAuthRetry sends a request and, if it comes back 401 because the
+// short-lived access token expired, refreshes the session and retries once.
+async function sendWithAuthRetry(
+  url: string,
+  init: RequestInit,
+  timeout: number,
+): Promise<Response> {
+  let res = await fetchWithTimeout(url, init, timeout);
+  if (res.status === 401 && !isAuthEndpoint(url) && (await refreshSession())) {
+    res = await fetchWithTimeout(url, init, timeout);
+  }
+  return res;
+}
+
+async function request<T>(
+  url: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
+
+  const res = await sendWithAuthRetry(
+    url,
+    {
+      method: options.method,
+      body: options.body,
+      signal: options.signal,
+      headers,
+    },
+    options.timeout ?? REQUEST_TIMEOUT,
+  );
+
+  if (res.status === 401 && !isAuthEndpoint(url) && !isSessionCheck(url)) {
+    redirectToLogin();
   }
 
   if (!res.ok) {
@@ -204,29 +269,14 @@ async function requestMultipart<T>(
   url: string,
   formData: FormData,
 ): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}${url}`, {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-      credentials: "include",
-    });
-  } catch (err) {
-    if ((err as Error).name === "AbortError")
-      throw new Error("Request timed out");
-    throw new Error("Network error: could not reach the API server");
-  } finally {
-    clearTimeout(timer);
-  }
+  const res = await sendWithAuthRetry(
+    url,
+    { method: "POST", body: formData },
+    REQUEST_TIMEOUT,
+  );
 
-  if (res.status === 401 && url !== "/auth/login" && url !== "/auth/register") {
-    storeUser(null);
-    if (!window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
+  if (res.status === 401 && !isAuthEndpoint(url)) {
+    redirectToLogin();
   }
 
   if (!res.ok) {
@@ -247,9 +297,10 @@ export async function downloadFile(
   path: string,
   fallbackName = "export",
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-  });
+  const res = await sendWithAuthRetry(path, { method: "GET" }, REQUEST_TIMEOUT);
+  if (res.status === 401) {
+    redirectToLogin();
+  }
   if (!res.ok) {
     throw new Error("Export failed");
   }
@@ -461,9 +512,14 @@ const api = {
       body: JSON.stringify(data),
     }),
   getPaperlessDocumentFile: async (id: number): Promise<Blob> => {
-    const res = await fetch(`${API_BASE}/paperless/documents/${id}/file`, {
-      credentials: "include",
-    });
+    const res = await sendWithAuthRetry(
+      `/paperless/documents/${id}/file`,
+      { method: "GET" },
+      REQUEST_TIMEOUT,
+    );
+    if (res.status === 401) {
+      redirectToLogin();
+    }
     if (!res.ok) {
       const err = new Error("Failed to load document file") as ApiError;
       err.status = res.status;
