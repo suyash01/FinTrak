@@ -3,14 +3,18 @@ indusind_bank_extractor.py
 --------------------------
 Extractor for IndusInd Bank savings-account e-statement PDFs — the
 "STATEMENT OF CUSTOMER" format used for retail savings / 3-in-1 (UPSTOX)
-accounts, e.g. "2023-07-04 Indusind Bank Jun2023_....pdf".
+accounts, e.g. "2023-07-04 Indusind Bank Jun2023_....pdf" (Jun-2023 vintage)
+    and "Statement_MAR2020_....pdf" (FY2019-20 vintage, 3 pages — the third
+    page is an Interest Certificate with no transaction rows).
 
 Template fingerprints (verified against the Jun-2023 statement, account
-157044793121, 2 pages):
+157044793121, 2 pages; FY2019-20 differences noted inline):
   - Page 1 is a cover page: the customer block ("SUYASH MITTAL Date :
     01-Jul-2023", period line), the "Relationship Summary for Customer ID
     - 43800785" section, and the Current / Savings Account summary table
-        "<acct> <type> INR <lien> <balance>"   e.g. "157044793121 UPSTOX 3 IN 1 INR 0.00 5,892.32"
+        "<acct> <type> INR [<lien>] <balance>"   e.g. "157044793121 UPSTOX 3 IN 1 INR 0.00 5,892.32"
+        The Lien Amount column (and its header) is ABSENT from the
+        FY2019-20 template — "157044793121 UPSTOX 3 IN 1 INR 3,966.86".
     It carries NO transaction rows.
   - Page 2 (and any further transaction pages) starts with the
     account-details block ("Transaction History for Savings Account,
@@ -188,9 +192,19 @@ def _open_pdf(path: str, password: Optional[str]):
 # Column layout constants (derived from the real statement geometry)
 # ---------------------------------------------------------------------
 # Column dividers on the transaction table: x = 31.4 | 77.7 | 250.4 |
-# 328.9 | 407.4 | 485.9 | 564.4. Dates are short left-aligned tokens whose
-# right edge stays below 77.7; particulars start at ~80.9.
-_DATE_MAX_X1 = 78.0
+# 328.9 | 407.4 | 485.9 | 564.4. Dates are left-aligned tokens; particulars
+# start at ~80.9.
+#
+# The date CELL is identified by its LEFT edge, never by its right edge: a
+# 12-char "DD-Mon-YYYY" token is wider than its cell and overflows the 77.7
+# divider. On the FY2019-20 vintage the date tokens span x0 = 37.3-38.8 to
+# x1 = 81.5-83.0 (the Arial-Bold Carried Forward date reaches 83.0), so an
+# "x1 <= 78" test drops EVERY row of such a statement — silently, with an
+# empty validation_errors list. Jun-2023 renders narrower (x1 = 75.3-75.9),
+# which is why the x1 test appeared to work. Date-cell x0 is 31.4-38.8 while
+# the nearest non-date token is the account block's "157044793121" at 55.8
+# (not date-shaped), so 60.0 cleanly separates the two.
+_DATE_COL_MAX_X0 = 60.0
 _PARTICULARS_MIN_X0 = 77.0
 
 # Amount right edges when the column header line is not present on a page
@@ -202,9 +216,17 @@ _FALLBACK_BAL_RIGHT = 562.7
 # x1 matching tolerance around a column's right edge.
 _COL_TOL = 2.0
 
-# Words within this many PDF points of each other share a visual line
-# (rows are 8+pt apart at 7pt font, so 1.0pt never merges rows).
-_ROW_TOLERANCE = 1.0
+# Words within this many PDF points of each other share a visual line.
+# The date cell and the FIRST particulars line of the same record are not
+# always on the same baseline: on the FY2019-20 vintage two records print
+# their particulars 1.4-1.5pt ABOVE the date line (12-Mar-2020: date top
+# 280.2 vs particulars top 278.7; 20-Mar-2020: 339.6 vs 338.2). With a 1.0pt
+# tolerance those records split into two lines, the particulars line is
+# emitted first and gets stitched onto the PREVIOUS record while its own
+# description comes out empty — silent description corruption. The smallest
+# gap between two distinct lines inside the table is 8.0pt (Jun-2023 fixture
+# and Mar-2020 alike), so 3.0 never merges rows.
+_ROW_TOLERANCE = 3.0
 
 # Post-table footer lines (end the table region; never stitched).
 _TABLE_END_PREFIXES = (
@@ -337,7 +359,7 @@ def _parse_page(
 
         date_word: Optional[Word] = None
         for word in line:
-            if _DATE_RE.match(word["text"]) and word["x1"] <= _DATE_MAX_X1:
+            if _DATE_RE.match(word["text"]) and word["x0"] <= _DATE_COL_MAX_X0:
                 date_word = word
                 break
 
@@ -394,7 +416,7 @@ def _parse_page(
         ]
         if not part_words:
             continue  # account-block / misc text outside the particulars column
-        if any(w["x1"] <= _DATE_MAX_X1 for w in line):
+        if any(w["x0"] <= _DATE_COL_MAX_X0 for w in line):
             continue  # date-column token without a date shape — not ours
         fragment: str = re.sub(r"\s+", " ", _line_text(part_words)).strip()
         if not fragment:
@@ -418,10 +440,18 @@ _ACCOUNT_TABLE_RE = re.compile(
 )
 
 # Page 1 relationship summary row:
-#   "157044793121 UPSTOX 3 IN 1 INR 0.00 5,892.32"
-# (account | type | lien amount | balance) — balance is the closing figure.
+#   "157044793121 UPSTOX 3 IN 1 INR 0.00 5,892.32"   (Jun-2023)
+#   "157044793121 UPSTOX 3 IN 1 INR 3,966.86"        (FY2019-20, no Lien Amount column)
+# (account | type | [lien amount] | balance) — the lien column is OPTIONAL
+# because the FY2019-20 template prints a 4-column summary (header "Account
+# No Account Type Currency Balance") and drops it entirely; requiring it
+# costs the account TYPE and the closing-balance cross-check. balance is the
+# closing figure. The trailing anchor keeps the 3-amount Interest
+# Certificate row ("157044793121 SAVING-DOMESTIC INR 10.00 0.00 10.00")
+# from matching.
 _ACCOUNT_SUMMARY_RE = re.compile(
-    r"(?m)^(\d{12})\s+([A-Z0-9 .'’-]+?)\s+INR\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})$"
+    r"(?m)^(?P<number>\d{12})\s+(?P<type>[A-Z0-9 .'’-]+?)\s+INR\s+"
+    r"(?:(?P<lien>[\d,]+\.\d{2})\s+)?(?P<balance>[\d,]+\.\d{2})$"
 )
 
 # Page 1: "Relationship Summary for Customer ID - 43800785" (fallback; the
@@ -458,9 +488,9 @@ def _extract_metadata(full_text: str) -> Dict[str, Any]:
 
     summary = _ACCOUNT_SUMMARY_RE.search(full_text)
     if summary:
-        metadata["account_number"] = metadata["account_number"] or summary.group(1)
-        metadata["account_type"] = summary.group(2).strip()
-        metadata["summary_balance"] = _parse_amount(summary.group(4))
+        metadata["account_number"] = metadata["account_number"] or summary.group("number")
+        metadata["account_type"] = summary.group("type").strip()
+        metadata["summary_balance"] = _parse_amount(summary.group("balance"))
 
     cust = _CUSTOMER_ID_RE.search(full_text)
     if cust:

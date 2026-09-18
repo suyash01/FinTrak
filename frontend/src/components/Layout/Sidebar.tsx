@@ -16,6 +16,7 @@ import {
   Repeat,
   Waypoints,
   CalendarDays,
+  Search,
 } from "lucide-react";
 import packageJson from "../../../package.json";
 import { useAuth } from "../../context/AuthContext";
@@ -25,11 +26,20 @@ import { Button } from "@/components/ui/button";
 
 const SMALL_SCREEN_QUERY = "(max-width: 767px)";
 
-export default function Sidebar() {
+interface SidebarProps {
+  onOpenCommandPalette?: () => void;
+}
+
+export default function Sidebar({ onOpenCommandPalette }: SidebarProps) {
   const { user, logout } = useAuth();
   const { settings } = useDomainData();
   const navigate = useNavigate();
   const paperlessEnabled = Boolean(settings?.paperlessUrl && settings?.hasToken);
+  const shortcutLabel = /Mac|iPhone|iPad/.test(
+    navigator.platform || navigator.userAgent,
+  )
+    ? "⌘K"
+    : "Ctrl K";
   // Collapsed by default on small screens, expanded on larger screens.
   const [collapsed, setCollapsed] = useState(
     () => window.matchMedia(SMALL_SCREEN_QUERY).matches,
@@ -105,6 +115,29 @@ export default function Sidebar() {
           </Button>
         )}
       </div>
+      {onOpenCommandPalette && (
+        <div className={`pt-3 ${collapsed ? "px-2" : "px-3"}`}>
+          <Button
+            variant="outline"
+            onClick={onOpenCommandPalette}
+            title="Search and run commands"
+            aria-label="Open command palette"
+            className={`w-full text-muted-foreground ${
+              collapsed ? "justify-center px-0" : "justify-start gap-2"
+            }`}
+          >
+            <Search className="size-4 shrink-0" />
+            {!collapsed && (
+              <>
+                <span className="truncate">Search…</span>
+                <kbd className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium">
+                  {shortcutLabel}
+                </kbd>
+              </>
+            )}
+          </Button>
+        </div>
+      )}
       <nav className="flex-1 p-3 overflow-y-auto flex flex-col gap-0.5">
         <div className={sectionClass}>Overview</div>
         <NavLink to="/" end className={navLinkClass} title="Dashboard">

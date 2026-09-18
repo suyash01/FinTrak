@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import GroupsTab from "./GroupsTab";
 import type { CategoryGroup } from "../../types";
 
@@ -94,7 +95,7 @@ describe("GroupsTab", () => {
   });
 
   it("renders the group count and metadata labels", () => {
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
     expect(screen.getByText("3 groups")).toBeInTheDocument();
     expect(screen.getAllByText("Custom")).toHaveLength(2);
     expect(screen.getAllByText("Base")).toHaveLength(2);
@@ -102,7 +103,7 @@ describe("GroupsTab", () => {
   });
 
   it("only exposes edit/delete for editable groups", () => {
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
     expect(
       screen.getByRole("button", { name: "Edit Custom" }),
     ).toBeInTheDocument();
@@ -115,7 +116,7 @@ describe("GroupsTab", () => {
 
   it("creates a group", async () => {
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Add Group" }));
     expect(screen.getByText("New Group")).toBeInTheDocument();
@@ -134,7 +135,7 @@ describe("GroupsTab", () => {
 
   it("keeps create disabled until name and id are present", async () => {
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Add Group" }));
     const submit = screen.getByRole("button", { name: "Create Group" });
@@ -149,7 +150,7 @@ describe("GroupsTab", () => {
 
   it("updates a custom group", async () => {
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Edit Custom" }));
     expect(screen.getByText("Edit Group")).toBeInTheDocument();
@@ -166,7 +167,7 @@ describe("GroupsTab", () => {
 
   it("deletes a custom group after confirmation", async () => {
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Custom" }));
     expect(await screen.findByText("Delete group?")).toBeInTheDocument();
@@ -180,7 +181,7 @@ describe("GroupsTab", () => {
 
   it("cancels the deletion", async () => {
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Custom" }));
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
@@ -192,7 +193,7 @@ describe("GroupsTab", () => {
   });
 
   it("hides the global controls from non-admins", () => {
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
     expect(
       screen.queryByRole("button", { name: "Add Global Group" }),
     ).toBeNull();
@@ -201,7 +202,7 @@ describe("GroupsTab", () => {
   it("creates a global group as an admin", async () => {
     authState.user = { id: "a1", email: "admin@example.com", role: "admin" };
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Add Global Group" }));
     expect(screen.getByText("New Global Group")).toBeInTheDocument();
@@ -220,7 +221,7 @@ describe("GroupsTab", () => {
   it("surfaces a toast error when saving fails", async () => {
     apiMock.createGroup.mockRejectedValue(new Error("nope"));
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Add Group" }));
     await user.type(screen.getByPlaceholderText("e.g. Vacation"), "Vacation");
@@ -233,7 +234,7 @@ describe("GroupsTab", () => {
   it("surfaces a toast error when deletion fails", async () => {
     apiMock.deleteGroup.mockRejectedValue(new Error("conflict"));
     const user = userEvent.setup();
-    render(<GroupsTab />);
+    render(<MemoryRouter><GroupsTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Custom" }));
     await user.click(await screen.findByRole("button", { name: "Delete" }));

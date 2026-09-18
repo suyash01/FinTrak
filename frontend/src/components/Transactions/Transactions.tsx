@@ -24,6 +24,7 @@ import type {
   QueryParams,
 } from "../../types";
 import { buildCategorySections } from "../../lib/categories";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import { useTransactionColumns } from "./useTransactionColumns";
 import BulkActionBar, {
   UNLINK_LOAN,
@@ -66,6 +67,8 @@ export default function Transactions() {
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
+
+  useCommandIntent("new-transaction", () => setCreating(true));
 
   // Page size: remembered locally and persisted against the user's account.
   const savedPageSize = () => {

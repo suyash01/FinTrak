@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import RecurringFormDialog from "./RecurringFormDialog";
 import RecurringDetail from "./RecurringDetail";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { toast } from "sonner";
 
@@ -110,6 +111,8 @@ export default function Recurring() {
     setEditing(s);
     setFormOpen(true);
   };
+
+  useCommandIntent("new-recurring", openCreate);
 
   const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
   const headerBase = `${cellPad} text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;

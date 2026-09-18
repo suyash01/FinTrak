@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import RulesTab from "./RulesTab";
 import type { Category, CategoryGroup, Payee, Rule } from "../../types";
 
@@ -99,7 +100,7 @@ describe("RulesTab", () => {
   });
 
   it("loads and renders the rule table", async () => {
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
 
     expect(await screen.findByText('"SWIGGY"')).toBeInTheDocument();
     expect(screen.getByText("2 rules")).toBeInTheDocument();
@@ -112,7 +113,7 @@ describe("RulesTab", () => {
 
   it("shows the empty state when there are no rules", async () => {
     apiMock.getRules.mockResolvedValue([]);
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
 
     expect(
       await screen.findByText(
@@ -123,7 +124,7 @@ describe("RulesTab", () => {
 
   it("surfaces a toast error when loading rules fails", async () => {
     apiMock.getRules.mockRejectedValue(new Error("load failed"));
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
 
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith("load failed"),
@@ -132,7 +133,7 @@ describe("RulesTab", () => {
 
   it("creates a rule with the selected category", async () => {
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(screen.getByRole("button", { name: "Add Rule" }));
@@ -160,7 +161,7 @@ describe("RulesTab", () => {
 
   it("assigns a payee when creating a rule", async () => {
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(screen.getByRole("button", { name: "Add Rule" }));
@@ -183,7 +184,7 @@ describe("RulesTab", () => {
 
   it("edits an existing rule", async () => {
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(
@@ -203,7 +204,7 @@ describe("RulesTab", () => {
 
   it("deletes a rule after confirmation", async () => {
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"UBER"');
 
     await user.click(screen.getByRole("button", { name: "Delete rule UBER" }));
@@ -217,7 +218,7 @@ describe("RulesTab", () => {
   it("applies rules and reports the updated count", async () => {
     apiMock.applyRules.mockResolvedValue({ updated: 7 });
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(
@@ -232,7 +233,7 @@ describe("RulesTab", () => {
   it("surfaces a toast error when applying rules fails", async () => {
     apiMock.applyRules.mockRejectedValue(new Error("apply failed"));
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(
@@ -247,7 +248,7 @@ describe("RulesTab", () => {
   it("surfaces a toast error when saving a rule fails", async () => {
     apiMock.createRule.mockRejectedValue(new Error("save failed"));
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"SWIGGY"');
 
     await user.click(screen.getByRole("button", { name: "Add Rule" }));
@@ -267,7 +268,7 @@ describe("RulesTab", () => {
   it("surfaces a toast error when deleting a rule fails", async () => {
     apiMock.deleteRule.mockRejectedValue(new Error("delete failed"));
     const user = userEvent.setup();
-    render(<RulesTab />);
+    render(<MemoryRouter><RulesTab /></MemoryRouter>);
     await screen.findByText('"UBER"');
 
     await user.click(screen.getByRole("button", { name: "Delete rule UBER" }));

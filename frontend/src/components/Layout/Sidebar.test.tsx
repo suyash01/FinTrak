@@ -97,4 +97,25 @@ describe("Sidebar", () => {
     expect(logout).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Login route")).toBeInTheDocument();
   });
+
+  it("opens the command palette from the search trigger", async () => {
+    const user = userEvent.setup();
+    const onOpenCommandPalette = vi.fn();
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route
+            path="/"
+            element={<Sidebar onOpenCommandPalette={onOpenCommandPalette} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Open command palette" }),
+    );
+
+    expect(onOpenCommandPalette).toHaveBeenCalledTimes(1);
+  });
 });

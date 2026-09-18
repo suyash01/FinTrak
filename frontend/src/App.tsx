@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import Sidebar from "./components/Layout/Sidebar";
+import CommandPalette from "./components/CommandPalette/CommandPalette";
 import ErrorBoundary, {
   PageErrorFallback,
 } from "./components/ErrorBoundary/ErrorBoundary";
@@ -74,6 +75,7 @@ function PageFallback() {
 function Root() {
   const { isAuthenticated, initializing } = useAuth();
   const location = useLocation();
+  const [commandOpen, setCommandOpen] = useState(false);
 
   // Wait for the session cookie to be verified before choosing the auth screen,
   // otherwise a locked-down reload would briefly render the login page.
@@ -94,7 +96,7 @@ function Root() {
   return (
     <DomainDataProvider>
       <div className="flex h-screen w-screen overflow-hidden">
-        <Sidebar />
+        <Sidebar onOpenCommandPalette={() => setCommandOpen(true)} />
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           <ErrorBoundary
             key={location.pathname}
@@ -123,6 +125,7 @@ function Root() {
           </ErrorBoundary>
         </main>
       </div>
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
     </DomainDataProvider>
   );
 }

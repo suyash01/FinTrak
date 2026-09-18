@@ -54,6 +54,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 
 interface PayeeForm {
@@ -138,6 +139,8 @@ export default function Payees() {
     );
     setShowModal(true);
   };
+
+  useCommandIntent("new-payee", () => openModal(null));
 
   const accountNameById = useMemo(
     () => new Map(accounts.map((a) => [a.id, a.name])),

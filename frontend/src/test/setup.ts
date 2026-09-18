@@ -24,3 +24,14 @@ class ResizeObserverMock {
 globalThis.ResizeObserver =
   ResizeObserverMock as unknown as typeof ResizeObserver;
 
+// jsdom implements neither scrollIntoView nor pointer capture, both of which
+// cmdk/Radix list navigation touches while a command palette auto-selects.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+

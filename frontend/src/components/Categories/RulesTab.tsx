@@ -18,6 +18,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import type { ApplyRulesResult, CreateRuleRequest, Rule } from "../../types";
 import RuleDialog from "./RuleDialog";
 import { EMPTY_NEW_RULE, type NewRuleForm } from "./categoryForms";
@@ -89,6 +90,12 @@ export default function RulesTab() {
       toast.error((err as Error).message);
     }
   };
+
+  useCommandIntent("new-rule", () => {
+    setEditingRule(null);
+    setNewRule(EMPTY_NEW_RULE);
+    setShowNewRule(true);
+  });
 
   return (
     <>

@@ -17,6 +17,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import type { CategoryGroup } from "../../types";
 import GroupDialog from "./GroupDialog";
 import { EMPTY_GROUP_FORM, type GroupForm } from "./categoryForms";
@@ -50,6 +51,8 @@ export default function GroupsTab() {
     });
     setShowGroupForm(true);
   };
+
+  useCommandIntent("new-group", () => openNewGroup(false));
 
   const handleSaveGroup = async () => {
     try {

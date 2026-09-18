@@ -30,6 +30,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import AccountFormDialog from "./AccountFormDialog";
 import AccountRow from "./AccountRow";
 import {
@@ -49,6 +50,8 @@ export default function Accounts() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const { compactLayout } = useSettings();
+
+  useCommandIntent("new-account", () => setCreateOpen(true));
 
   const resetNew = () => setNewAcc(EMPTY_NEW_ACCOUNT);
 

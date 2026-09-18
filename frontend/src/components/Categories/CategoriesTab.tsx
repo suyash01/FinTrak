@@ -18,6 +18,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useCommandIntent } from "../../lib/useCommandIntent";
 import type { Category } from "../../types";
 import CategoryDialog from "./CategoryDialog";
 import { EMPTY_CATEGORY_FORM, type CategoryForm } from "./categoryForms";
@@ -67,6 +68,8 @@ export default function CategoriesTab() {
     });
     setShowNewCategory(true);
   };
+
+  useCommandIntent("new-category", openNewCategory);
 
   const handleSaveCategory = async () => {
     try {

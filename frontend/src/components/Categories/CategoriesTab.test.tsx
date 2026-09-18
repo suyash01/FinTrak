@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import CategoriesTab from "./CategoriesTab";
 import type { Category, CategoryGroup } from "../../types";
 
@@ -118,7 +119,7 @@ describe("CategoriesTab", () => {
   });
 
   it("shows the category count and rendered sections", () => {
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
     expect(screen.getByText("2 categories")).toBeInTheDocument();
     expect(screen.getByText("Groceries")).toBeInTheDocument();
     expect(screen.getByText("Flights")).toBeInTheDocument();
@@ -127,7 +128,7 @@ describe("CategoriesTab", () => {
 
   it("shows the empty state when there are no categories", () => {
     setDomain([], []);
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
     expect(screen.getByText("0 categories")).toBeInTheDocument();
     expect(
       screen.getByText("No categories yet. Add one above."),
@@ -136,7 +137,7 @@ describe("CategoriesTab", () => {
 
   it("creates a category from the dialog", async () => {
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await openNewCategory(user);
     expect(screen.getByText("New Category")).toBeInTheDocument();
@@ -154,7 +155,7 @@ describe("CategoriesTab", () => {
 
   it("edits a user category", async () => {
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Edit Groceries" }));
     expect(screen.getByText("Edit Category")).toBeInTheDocument();
@@ -170,7 +171,7 @@ describe("CategoriesTab", () => {
   });
 
   it("hides the global category controls from non-admins", () => {
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
     expect(
       screen.queryByRole("button", { name: "Add Global Category" }),
     ).toBeNull();
@@ -184,7 +185,7 @@ describe("CategoriesTab", () => {
 
   it("shows the global controls for admins", () => {
     authState.user = { id: "a1", email: "admin@example.com", role: "admin" };
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
     expect(
       screen.getByRole("button", { name: "Add Global Category" }),
     ).toBeInTheDocument();
@@ -196,7 +197,7 @@ describe("CategoriesTab", () => {
   it("creates a global category as an admin", async () => {
     authState.user = { id: "a1", email: "admin@example.com", role: "admin" };
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(
       screen.getByRole("button", { name: "Add Global Category" }),
@@ -216,7 +217,7 @@ describe("CategoriesTab", () => {
   it("edits a global category as an admin", async () => {
     authState.user = { id: "a1", email: "admin@example.com", role: "admin" };
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Edit Flights" }));
     expect(screen.getByText("Edit Global Category")).toBeInTheDocument();
@@ -233,7 +234,7 @@ describe("CategoriesTab", () => {
 
   it("deletes a category and flashes the plain message", async () => {
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Groceries" }));
     await user.click(await screen.findByRole("button", { name: "Delete" }));
@@ -252,7 +253,7 @@ describe("CategoriesTab", () => {
       deletedRules: 2,
     });
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Groceries" }));
     await user.click(await screen.findByRole("button", { name: "Delete" }));
@@ -267,7 +268,7 @@ describe("CategoriesTab", () => {
   it("deletes a global category as an admin", async () => {
     authState.user = { id: "a1", email: "admin@example.com", role: "admin" };
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "Delete Flights" }));
     await user.click(await screen.findByRole("button", { name: "Delete" }));
@@ -283,7 +284,7 @@ describe("CategoriesTab", () => {
   it("surfaces a toast error when the save fails", async () => {
     apiMock.createCategory.mockRejectedValue(new Error("boom"));
     const user = userEvent.setup();
-    render(<CategoriesTab />);
+    render(<MemoryRouter><CategoriesTab /></MemoryRouter>);
 
     await openNewCategory(user);
     await user.type(screen.getByPlaceholderText("e.g. Gym"), "Gym");

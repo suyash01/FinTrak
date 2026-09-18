@@ -21,6 +21,7 @@ vi.mock("./components/Layout/Sidebar", () => ({
 
 vi.mock("./context/DomainDataContext", () => ({
   DomainDataProvider: ({ children }: { children: React.ReactNode }) => children,
+  useDomainData: () => ({ settings: null }),
 }));
 
 vi.mock("./components/Auth/Login", () => ({
@@ -102,5 +103,19 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
+  });
+
+  it("opens the command palette on Ctrl+K", async () => {
+    auth.isAuthenticated = true;
+    render(<App />);
+    await screen.findByText("Dashboard page");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "k", ctrlKey: true }),
+    );
+
+    expect(
+      await screen.findByPlaceholderText("Search pages and commands..."),
+    ).toBeInTheDocument();
   });
 });

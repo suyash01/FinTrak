@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import Accounts from "./Accounts";
 import type { Account, AccountType } from "../../types";
 
@@ -95,13 +96,13 @@ beforeEach(() => {
 describe("Accounts", () => {
   it("shows the empty state when there are no accounts", () => {
     setDomain([]);
-    render(<Accounts />);
+    render(<MemoryRouter><Accounts /></MemoryRouter>);
     expect(screen.getByText("No Accounts Yet")).toBeInTheDocument();
   });
 
   it("sorts by name and puts closed accounts last, then reverses", async () => {
     const user = userEvent.setup();
-    render(<Accounts />);
+    render(<MemoryRouter><Accounts /></MemoryRouter>);
 
     expect(renderedNames()).toEqual(["Alpha", "Beta", "Zeta"]);
 
@@ -111,7 +112,7 @@ describe("Accounts", () => {
 
   it("filters to closed accounts only", async () => {
     const user = userEvent.setup();
-    render(<Accounts />);
+    render(<MemoryRouter><Accounts /></MemoryRouter>);
 
     const statusTrigger = Array.from(
       document.querySelectorAll<HTMLElement>('[role="combobox"]'),
@@ -125,7 +126,7 @@ describe("Accounts", () => {
 
   it("marks an account as the default", async () => {
     const user = userEvent.setup();
-    render(<Accounts />);
+    render(<MemoryRouter><Accounts /></MemoryRouter>);
 
     const betaRow = screen.getByText("Beta").closest("tr")!;
     await user.click(
@@ -142,7 +143,7 @@ describe("Accounts", () => {
 
   it("deletes an account after confirmation", async () => {
     const user = userEvent.setup();
-    render(<Accounts />);
+    render(<MemoryRouter><Accounts /></MemoryRouter>);
 
     const betaRow = screen.getByText("Beta").closest("tr")!;
     await user.click(within(betaRow).getByTitle("Delete account"));
