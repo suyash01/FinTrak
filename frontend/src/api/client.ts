@@ -31,6 +31,7 @@ import type {
   Link,
   LoginRequest,
   MoneyFlowGraph,
+  MoneyFlowTimeline,
   PaperlessDocumentsResponse,
   PaperlessDocumentsParams,
   PaperlessImportRequest,
@@ -645,6 +646,13 @@ const api = {
   getMoneyFlow: (params: QueryParams = {}): Promise<MoneyFlowGraph> => {
     const qs = buildQuery(params);
     return request(`/dashboard/money-flow${qs ? `?${qs}` : ""}`);
+  },
+  // Per-period flow totals for the Money Flow timeline strip
+  getMoneyFlowTimeline: (
+    params: QueryParams = {},
+  ): Promise<MoneyFlowTimeline> => {
+    const qs = buildQuery(params);
+    return request(`/dashboard/money-flow/timeline${qs ? `?${qs}` : ""}`);
   },
   // Cash-flow calendar heatmap (daily net flow + billing-cycle/summary overlays)
   getCashFlowCalendar: (

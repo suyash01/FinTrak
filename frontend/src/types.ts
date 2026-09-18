@@ -267,6 +267,27 @@ export interface MoneyFlowGraph {
   linkSummary: MoneyFlowLinkSummary[];
 }
 
+// ---- Money-flow timeline ----
+
+// One period of the Money Flow timeline strip. startDate/endDate are inclusive
+// YYYY-MM-DD bounds that can be passed straight back to getMoneyFlow.
+export interface MoneyFlowTimelinePeriod {
+  key: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  income: number;
+  expense: number;
+  net: number;
+}
+
+export type MoneyFlowTimelineGroupBy = "month" | "billing_cycle";
+
+export interface MoneyFlowTimeline {
+  groupBy: MoneyFlowTimelineGroupBy;
+  periods: MoneyFlowTimelinePeriod[];
+}
+
 // ---- Cash-flow calendar heatmap ----
 
 // One day of daily net flow. Days with no transactions are omitted by the API;

@@ -653,9 +653,10 @@ type MonthlyData struct {
 // Money-flow Sankey types. GetMoneyFlow aggregates every transaction in a
 // window into a left-to-right graph: money sources (income categories) flow
 // into accounts, out into spending categories, and on to payees. The graph is
-// a DAG (a Sankey cannot render cycles); account-to-account transfers, refunds,
-// cashbacks and bill payments are summarized separately in LinkSummary rather
-// than drawn as account-to-account edges.
+// a DAG (a Sankey cannot render cycles): cross-account transfers, refunds,
+// cashbacks and bill payments are drawn as account-to-account edges after
+// reciprocal pairs are netted and remaining cycles broken, and are also
+// summarized per type in LinkSummary.
 
 // MoneyFlowNode is one node of the money-flow graph. Kind is "income",
 // "account", "category", or "payee"; ID is stable and stage-prefixed (e.g.
@@ -746,6 +747,28 @@ type CashFlowCalendar struct {
 	// MaxAbsNet is the largest |net| among the returned days, used by the client
 	// to scale the heatmap intensity without a second pass.
 	MaxAbsNet money.Amount `json:"maxAbsNet"`
+}
+
+// Money-flow timeline types. GetMoneyFlowTimeline returns one entry per calendar
+// month (or billing cycle) so the Money Flow page can show a timeline strip and
+// scrub the Sankey's window to a period.
+
+// MoneyFlowTimelinePeriod is one period of the flow timeline. StartDate and
+// EndDate are inclusive YYYY-MM-DD bounds suitable for re-querying the flow.
+type MoneyFlowTimelinePeriod struct {
+	Key       string       `json:"key"`
+	Label     string       `json:"label"`
+	StartDate string       `json:"startDate"`
+	EndDate   string       `json:"endDate"`
+	Income    money.Amount `json:"income"`
+	Expense   money.Amount `json:"expense"`
+	Net       money.Amount `json:"net"`
+}
+
+// MoneyFlowTimeline is the response of GET /api/v1/dashboard/money-flow/timeline.
+type MoneyFlowTimeline struct {
+	GroupBy string                    `json:"groupBy"`
+	Periods []MoneyFlowTimelinePeriod `json:"periods"`
 }
 
 // TransferSuggestion proposes that two transactions be linked, e.g. a debit and

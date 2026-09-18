@@ -9,6 +9,7 @@ import {
 import { Plus } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
+import TraceChainModal from "./TraceChainModal";
 import { DataTable, DataTablePagination } from "@/components/ui/data-table";
 import { Button } from "@/components/ui/button";
 import { toastApiError } from "../../lib/errors";
@@ -58,6 +59,7 @@ export default function Transactions() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [linkingTxn, setLinkingTxn] = useState<Transaction | null>(null);
   const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
+  const [tracingTxn, setTracingTxn] = useState<Transaction | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleteTxnId, setDeleteTxnId] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -646,6 +648,7 @@ export default function Transactions() {
     onDelete: handleDelete,
     onLink: setLinkingTxn,
     onEdit: setEditingTxn,
+    onTrace: setTracingTxn,
   });
 
   return (
@@ -752,6 +755,12 @@ export default function Transactions() {
             setLinkingTxn(null);
             loadTransactions();
           }}
+        />
+      )}
+      {tracingTxn && (
+        <TraceChainModal
+          txn={tracingTxn}
+          onClose={() => setTracingTxn(null)}
         />
       )}
       {creating && (

@@ -3,9 +3,13 @@ import type { ReactNode } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import MoneyFlow from "./MoneyFlow";
+import MoneyFlow, { nodeDrilldownPath } from "./MoneyFlow";
 import { formatCurrency } from "../../utils/formatters";
-import type { MoneyFlowGraph } from "../../types";
+import type {
+  MoneyFlowGraph,
+  MoneyFlowNode,
+  MoneyFlowTimeline,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -24,7 +28,7 @@ vi.mock("recharts", () => ({
 }));
 
 const { apiMock, domainMock } = vi.hoisted(() => ({
-  apiMock: { getMoneyFlow: vi.fn() },
+  apiMock: { getMoneyFlow: vi.fn(), getMoneyFlowTimeline: vi.fn() },
   domainMock: { useDomainData: vi.fn() },
 }));
 
@@ -76,6 +80,32 @@ function graph(overrides: Partial<MoneyFlowGraph> = {}): MoneyFlowGraph {
   };
 }
 
+function timeline(): MoneyFlowTimeline {
+  return {
+    groupBy: "month",
+    periods: [
+      {
+        key: "2024-05",
+        label: "May 2024",
+        startDate: "2024-05-01",
+        endDate: "2024-05-31",
+        income: 5000,
+        expense: 1000,
+        net: 4000,
+      },
+      {
+        key: "2024-06",
+        label: "Jun 2024",
+        startDate: "2024-06-01",
+        endDate: "2024-06-30",
+        income: 0,
+        expense: 2000,
+        net: -2000,
+      },
+    ],
+  };
+}
+
 function page(entry = "/money-flow") {
   return (
     <MemoryRouter initialEntries={[entry]}>
@@ -87,6 +117,7 @@ function page(entry = "/money-flow") {
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.getMoneyFlow.mockResolvedValue(graph());
+  apiMock.getMoneyFlowTimeline.mockResolvedValue(timeline());
   domainMock.useDomainData.mockReturnValue({
     accounts: [],
     groups: [{ id: "expense", name: "Expense" }],
@@ -163,5 +194,66 @@ describe("MoneyFlow", () => {
     expect(
       screen.getByText("No linked transactions in this range."),
     ).toBeInTheDocument();
+  });
+
+  it("renders the timeline and scrubs the graph window to a period", async () => {
+    const user = userEvent.setup();
+    render(page());
+    await screen.findByText("Money Flow");
+
+    const period = await screen.findByRole("button", { name: /May 2024/ });
+    await user.click(period);
+
+    await waitFor(() =>
+      expect(apiMock.getMoneyFlow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dateFrom: "2024-05-01",
+          dateTo: "2024-05-31",
+        }),
+      ),
+    );
+  });
+});
+
+describe("nodeDrilldownPath", () => {
+  const node = (id: string, kind: MoneyFlowNode["kind"]): MoneyFlowNode => ({
+    id,
+    name: id,
+    kind,
+    total: 1,
+  });
+
+  it("maps each node kind to Transactions filters", () => {
+    expect(
+      nodeDrilldownPath(node("account:a1", "account"), "2024-01-01", "2024-01-31"),
+    ).toBe(
+      "/transactions?dateFrom=2024-01-01&dateTo=2024-01-31&accountId=a1",
+    );
+    expect(
+      nodeDrilldownPath(node("category:c1", "category"), "2024-01-01", "2024-01-31"),
+    ).toBe(
+      "/transactions?dateFrom=2024-01-01&dateTo=2024-01-31&categoryId=c1&type=debit",
+    );
+    expect(
+      nodeDrilldownPath(node("income:i1", "income"), "2024-01-01", "2024-01-31"),
+    ).toBe(
+      "/transactions?dateFrom=2024-01-01&dateTo=2024-01-31&categoryId=i1&type=credit",
+    );
+    expect(
+      nodeDrilldownPath(node("payee:p1", "payee"), "2024-01-01", "2024-01-31"),
+    ).toBe(
+      "/transactions?dateFrom=2024-01-01&dateTo=2024-01-31&payeeId=p1&type=debit",
+    );
+  });
+
+  it("handles the none/uncategorized sentinels and rejects rollups", () => {
+    expect(nodeDrilldownPath(node("payee:none", "payee"), "", "")).toBe(
+      "/transactions?payeeId=none&type=debit",
+    );
+    expect(
+      nodeDrilldownPath(node("category:uncategorized", "category"), "", ""),
+    ).toBe("/transactions?categoryId=uncategorized&type=debit");
+    expect(nodeDrilldownPath(node("payee:other", "payee"), "", "")).toBeNull();
+    expect(nodeDrilldownPath(node("category:other", "category"), "", "")).toBeNull();
   });
 });

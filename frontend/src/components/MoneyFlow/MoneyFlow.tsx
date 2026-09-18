@@ -13,9 +13,17 @@ import {
   type SankeyNodeProps,
   type SankeyLinkProps,
 } from "recharts";
-import { useSearchParams } from "react-router-dom";
-import { ArrowRightLeft, TrendingDown, TrendingUp, Waypoints } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  ArrowRightLeft,
+  CalendarDays,
+  RefreshCw,
+  TrendingDown,
+  TrendingUp,
+  Waypoints,
+} from "lucide-react";
 import api from "../../api/client";
+import { useRefetchOnFocus } from "../../lib/useRefetchOnFocus";
 import { formatCurrency } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
@@ -35,6 +43,9 @@ import type {
   MoneyFlowGraph,
   MoneyFlowLinkSummary,
   MoneyFlowNode,
+  MoneyFlowTimeline,
+  MoneyFlowTimelineGroupBy,
+  MoneyFlowTimelinePeriod,
   QueryParams,
 } from "../../types";
 
@@ -87,17 +98,57 @@ function periodRange(period: string): { dateFrom: string; dateTo: string } {
     : lastTwelveMonthsRange();
 }
 
+// nodeDrilldownPath maps a money-flow node to the Transactions page filters
+// that reproduce it. Aggregate "Other" nodes have no single underlying id, so
+// they return null and are not clickable. Exported for unit testing.
+export function nodeDrilldownPath(
+  node: MoneyFlowNode,
+  dateFrom: string,
+  dateTo: string,
+): string | null {
+  // ":other" is an aggregate of many nodes; there is no single filter for it.
+  if (node.id.endsWith(":other")) return null;
+
+  const params = new URLSearchParams();
+  if (dateFrom) params.set("dateFrom", dateFrom);
+  if (dateTo) params.set("dateTo", dateTo);
+
+  if (node.id.startsWith("account:")) {
+    params.set("accountId", node.id.slice("account:".length));
+  } else if (node.id.startsWith("category:")) {
+    params.set("categoryId", node.id.slice("category:".length));
+    params.set("type", "debit");
+  } else if (node.id.startsWith("income:")) {
+    params.set("categoryId", node.id.slice("income:".length));
+    params.set("type", "credit");
+  } else if (node.id.startsWith("payee:")) {
+    params.set("payeeId", node.id.slice("payee:".length));
+    params.set("type", "debit");
+  } else {
+    return null;
+  }
+  return `/transactions?${params.toString()}`;
+}
+
 // SankeyNodeShape paints one graph node with its stage color and a side label:
 // nodes in the first two columns label to the right, the spending/payee columns
-// to the left, so labels stay outside the flow.
-function SankeyNodeShape(props: SankeyNodeProps) {
+// to the left, so labels stay outside the flow. Drillable nodes get a pointer
+// cursor and an onClick that navigates to their transactions.
+function SankeyNodeShape({
+  onNodeClick,
+  ...props
+}: SankeyNodeProps & { onNodeClick?: (node: MoneyFlowNode) => void }) {
   const { x, y, width, height } = props;
   const node = props.payload as unknown as MoneyFlowNode;
   const color = node.color || "var(--muted-foreground)";
   const labelRight = node.kind === "income" || node.kind === "account";
+  const clickable = Boolean(onNodeClick);
 
   return (
-    <g>
+    <g
+      onClick={clickable ? () => onNodeClick?.(node) : undefined}
+      className={clickable ? "cursor-pointer" : undefined}
+    >
       <rect x={x} y={y} width={width} height={height} fill={color} rx={2} />
       {height >= 12 && (
         <text
@@ -143,6 +194,7 @@ function SankeyLinkShape(props: SankeyLinkProps) {
 export default function MoneyFlow() {
   const { accounts, groups } = useDomainData();
   const { compactLayout } = useSettings();
+  const navigate = useNavigate();
   const defaultRange = useMemo(() => lastTwelveMonthsRange(), []);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -170,10 +222,17 @@ export default function MoneyFlow() {
     }
     return PERIOD_LAST_12_MONTHS;
   });
+  const [groupBy, setGroupBy] = useState<MoneyFlowTimelineGroupBy>(() =>
+    searchParams.get("groupBy") === "billing_cycle"
+      ? "billing_cycle"
+      : "month",
+  );
 
   const [data, setData] = useState<MoneyFlowGraph | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [timeline, setTimeline] = useState<MoneyFlowTimeline | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(true);
 
   useEffect(() => {
     const params: Record<string, string> = {};
@@ -182,11 +241,21 @@ export default function MoneyFlow() {
     if (dateFrom) params.dateFrom = dateFrom;
     if (dateTo) params.dateTo = dateTo;
     params.limit = limit;
+    if (groupBy === "billing_cycle") params.groupBy = groupBy;
     const urlParams = Object.fromEntries(searchParams.entries());
     if (JSON.stringify(params) !== JSON.stringify(urlParams)) {
       setSearchParams(params, { replace: true });
     }
-  }, [accountId, dateFrom, dateTo, limit, period, searchParams, setSearchParams]);
+  }, [
+    accountId,
+    dateFrom,
+    dateTo,
+    limit,
+    period,
+    groupBy,
+    searchParams,
+    setSearchParams,
+  ]);
 
   useEffect(() => {
     setAccountId(searchParams.get("accountId") || "");
@@ -204,6 +273,11 @@ export default function MoneyFlow() {
           : PERIOD_LAST_12_MONTHS,
       );
     }
+    setGroupBy(
+      searchParams.get("groupBy") === "billing_cycle"
+        ? "billing_cycle"
+        : "month",
+    );
   }, [searchParams, defaultRange.dateFrom, defaultRange.dateTo]);
 
   const applyPeriod = (value: string) => {
@@ -213,6 +287,35 @@ export default function MoneyFlow() {
       setDateFrom(range.dateFrom);
       setDateTo(range.dateTo);
     }
+  };
+
+  // Billing-cycle grouping is only meaningful for a single account that has a
+  // billing day; fall back to months otherwise.
+  const selectedAccount = accounts.find((a) => a.id === accountId);
+  const isBillingAccount = Boolean(selectedAccount?.billingDay);
+  useEffect(() => {
+    if (groupBy === "billing_cycle" && !isBillingAccount) setGroupBy("month");
+  }, [groupBy, isBillingAccount]);
+
+  const handleNodeClick = useCallback(
+    (node: MoneyFlowNode) => {
+      const path = nodeDrilldownPath(node, dateFrom, dateTo);
+      if (path) navigate(path);
+    },
+    [navigate, dateFrom, dateTo],
+  );
+
+  const renderNode = useCallback(
+    (props: SankeyNodeProps) => (
+      <SankeyNodeShape {...props} onNodeClick={handleNodeClick} />
+    ),
+    [handleNodeClick],
+  );
+
+  const selectPeriod = (p: MoneyFlowTimelinePeriod) => {
+    setDateFrom(p.startDate);
+    setDateTo(p.endDate);
+    setPeriod(PERIOD_CUSTOM);
   };
 
   // Monotonic request id so a slow earlier response can never overwrite the
@@ -242,6 +345,49 @@ export default function MoneyFlow() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Timeline strip is best-effort: a failure hides the strip rather than
+  // failing the whole page. A monotonic id drops stale responses.
+  const timelineReqRef = useRef(0);
+  const loadTimeline = useCallback(async () => {
+    const requestId = ++timelineReqRef.current;
+    setTimelineLoading(true);
+    try {
+      const params: QueryParams = {};
+      if (accountId) params.accountId = accountId;
+      if (dateFrom) params.dateFrom = dateFrom;
+      if (dateTo) params.dateTo = dateTo;
+      if (groupBy === "billing_cycle") params.groupBy = groupBy;
+      const res = await api.getMoneyFlowTimeline(params);
+      if (requestId !== timelineReqRef.current) return;
+      setTimeline(res);
+    } catch {
+      if (requestId === timelineReqRef.current) setTimeline(null);
+    } finally {
+      if (requestId === timelineReqRef.current) setTimelineLoading(false);
+    }
+  }, [accountId, dateFrom, dateTo, groupBy]);
+
+  useEffect(() => {
+    void loadTimeline();
+  }, [loadTimeline]);
+
+  // Refresh both the graph and the timeline when the tab regains focus, and on
+  // demand from the header button, so edits made elsewhere show up.
+  const reloadAll = useCallback(() => {
+    void load();
+    void loadTimeline();
+  }, [load, loadTimeline]);
+  useRefetchOnFocus(reloadAll);
+
+  const activeTimelineKey = useMemo(() => {
+    if (!timeline) return null;
+    return (
+      timeline.periods.find(
+        (p) => p.startDate === dateFrom && p.endDate === dateTo,
+      )?.key ?? null
+    );
+  }, [timeline, dateFrom, dateTo]);
 
   // Recharts Sankey wants links referencing nodes by array index.
   const sankeyData = useMemo(() => {
@@ -308,12 +454,25 @@ export default function MoneyFlow() {
 
   return (
     <>
-      <div className="shrink-0 px-8 pt-6">
-        <h1 className="text-2xl font-bold mb-1">Money Flow</h1>
-        <p className="text-muted-foreground text-sm">
-          Where your money comes from, which accounts it passes through, and
-          where it goes
-        </p>
+      <div className="shrink-0 px-8 pt-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold mb-1">Money Flow</h1>
+          <p className="text-muted-foreground text-sm">
+            Where your money comes from, which accounts it passes through, and
+            where it goes
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size={compactLayout ? "sm" : "default"}
+          onClick={reloadAll}
+          disabled={loading}
+          title="Refresh"
+          aria-label="Refresh money flow"
+        >
+          <RefreshCw size={16} className={loading ? "animate-spin" : undefined} />
+          {!compactLayout && "Refresh"}
+        </Button>
       </div>
       <div className="shrink-0 px-8 pt-4">
         <div
@@ -419,6 +578,52 @@ export default function MoneyFlow() {
           />
         </div>
 
+        <Card
+          size={compactLayout ? "sm" : "default"}
+          className={`flex flex-col ${compactLayout ? "mb-4" : "mb-6"}`}
+        >
+          <CardHeader
+            className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
+          >
+            <CardTitle className="flex items-center gap-2">
+              <CalendarDays className="text-primary" size={18} />
+              Timeline
+            </CardTitle>
+            {isBillingAccount && (
+              <Select
+                value={groupBy}
+                onValueChange={(v) =>
+                  setGroupBy(v as MoneyFlowTimelineGroupBy)
+                }
+              >
+                <SelectTrigger
+                  aria-label="Timeline grouping"
+                  className={`${compactLayout ? "h-8" : "h-10"} w-40 bg-background`}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="month">By month</SelectItem>
+                  <SelectItem value="billing_cycle">By billing cycle</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </CardHeader>
+          <CardContent>
+            {timelineLoading && !timeline ? (
+              <div className="flex justify-center py-6">
+                <Spinner className="size-6 text-primary" />
+              </div>
+            ) : (
+              <TimelineStrip
+                periods={timeline?.periods ?? []}
+                activeKey={activeTimelineKey}
+                onSelect={selectPeriod}
+              />
+            )}
+          </CardContent>
+        </Card>
+
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           <Card
             size={compactLayout ? "sm" : "default"}
@@ -442,7 +647,7 @@ export default function MoneyFlow() {
                       nodeWidth={12}
                       linkCurvature={0.5}
                       iterations={40}
-                      node={SankeyNodeShape}
+                      node={renderNode}
                       link={SankeyLinkShape}
                       margin={{ top: 12, right: 90, bottom: 12, left: 90 }}
                     >
@@ -493,16 +698,95 @@ export default function MoneyFlow() {
             </CardHeader>
             <CardContent>
               <p className="text-xs text-muted-foreground mb-4">
-                Transfers, refunds, cashbacks, and bill payments are summarized
-                here instead of drawn as account-to-account arrows, which the
-                flow chart cannot show without creating loops.
+                Cross-account transfers, refunds, cashbacks, and bill payments
+                are drawn as account-to-account flows. Select a node to view its
+                transactions, or a type below to list every linked transaction.
               </p>
-              <LinkSummaryPanel summary={data.linkSummary} />
+              <LinkSummaryPanel
+                summary={data.linkSummary}
+                onSelect={() =>
+                  navigate(
+                    `/transactions?linked=true${
+                      dateFrom ? `&dateFrom=${dateFrom}` : ""
+                    }${dateTo ? `&dateTo=${dateTo}` : ""}`,
+                  )
+                }
+              />
             </CardContent>
           </Card>
         </div>
       </div>
     </>
+  );
+}
+
+// TimelineStrip is the "small multiples" scrubber: one compact column per
+// period (month or billing cycle) showing income vs expense, with the current
+// window highlighted. Clicking a period re-queries the Sankey for it.
+function TimelineStrip({
+  periods,
+  activeKey,
+  onSelect,
+}: {
+  periods: MoneyFlowTimelinePeriod[];
+  activeKey: string | null;
+  onSelect: (period: MoneyFlowTimelinePeriod) => void;
+}) {
+  if (periods.length === 0) {
+    return (
+      <div className="py-8 text-center text-sm text-muted-foreground">
+        No periods in this range.
+      </div>
+    );
+  }
+
+  const max = periods.reduce(
+    (m, p) => Math.max(m, p.income, p.expense),
+    0,
+  );
+
+  return (
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {periods.map((p) => {
+        const active = p.key === activeKey;
+        const incomePct = max > 0 ? Math.max(2, (p.income / max) * 100) : 0;
+        const expensePct = max > 0 ? Math.max(2, (p.expense / max) * 100) : 0;
+        return (
+          <button
+            key={p.key}
+            type="button"
+            onClick={() => onSelect(p)}
+            title={`${p.label}: in ${formatCurrency(p.income)}, out ${formatCurrency(p.expense)}`}
+            className={`w-24 shrink-0 rounded-lg border px-2 py-2 text-left transition-colors ${
+              active
+                ? "border-primary bg-primary/10"
+                : "border-border hover:border-primary/50 hover:bg-accent"
+            }`}
+          >
+            <div className="truncate text-[11px] text-muted-foreground">
+              {p.label}
+            </div>
+            <div className="mt-1 flex h-16 items-end justify-center gap-1">
+              <span
+                className="w-2.5 rounded-t bg-emerald-500/70"
+                style={{ height: `${incomePct}%` }}
+              />
+              <span
+                className="w-2.5 rounded-t bg-destructive/70"
+                style={{ height: `${expensePct}%` }}
+              />
+            </div>
+            <div
+              className={`mt-1 truncate text-[11px] font-medium ${
+                p.net >= 0 ? "text-emerald-500" : "text-destructive"
+              }`}
+            >
+              {formatCurrency(p.net)}
+            </div>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -541,7 +825,13 @@ function StatCard({
   );
 }
 
-function LinkSummaryPanel({ summary }: { summary: MoneyFlowLinkSummary[] }) {
+function LinkSummaryPanel({
+  summary,
+  onSelect,
+}: {
+  summary: MoneyFlowLinkSummary[];
+  onSelect?: (type: string) => void;
+}) {
   if (summary.length === 0) {
     return (
       <div className="text-sm text-muted-foreground py-6 text-center">
@@ -553,9 +843,14 @@ function LinkSummaryPanel({ summary }: { summary: MoneyFlowLinkSummary[] }) {
   return (
     <div className="space-y-2">
       {summary.map((s) => (
-        <div
+        <button
           key={s.type}
-          className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2"
+          type="button"
+          onClick={onSelect ? () => onSelect(s.type) : undefined}
+          title={onSelect ? "View these transactions" : undefined}
+          className={`flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-left transition-colors ${
+            onSelect ? "hover:border-primary/50 hover:bg-accent" : ""
+          }`}
         >
           <div className="min-w-0">
             <div className="text-sm font-medium text-foreground truncate">
@@ -568,7 +863,7 @@ function LinkSummaryPanel({ summary }: { summary: MoneyFlowLinkSummary[] }) {
           <div className="text-sm font-semibold text-foreground whitespace-nowrap">
             {formatCurrency(s.total)}
           </div>
-        </div>
+        </button>
       ))}
     </div>
   );

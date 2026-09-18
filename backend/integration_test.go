@@ -725,3 +725,87 @@ func TestIntegrationCashFlowCalendar(t *testing.T) {
 		require.Contains(t, []string{"balance", "outstanding"}, marker.Kind)
 	}
 }
+
+// TestIntegrationMoneyFlowAccountEdgesAndTimeline verifies the real-SQL
+// behavior of the cross-account Sankey edges and the money-flow timeline, both
+// of which rely on link/date joins that pgxmock cannot validate.
+func TestIntegrationMoneyFlowAccountEdgesAndTimeline(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("flowedges@example.com")
+
+	src := a.createAccount("Checking", "bank", nil)
+	dst := a.createAccount("Savings", "bank", nil)
+	cats := a.categories()
+	groceries := categoryByName(t, cats, "Groceries")
+	salary := categoryByName(t, cats, "Salary")
+
+	from := a.createTransaction(src.ID, &groceries.ID, "2024-06-01", "Transfer out", 500, "debit")
+	to := a.createTransaction(dst.ID, &salary.ID, "2024-06-01", "Transfer in", 500, "credit")
+	a.call(http.MethodPost, "/api/v1/links", map[string]any{
+		"type":      "transfer",
+		"fromTxnId": from,
+		"toTxnId":   to,
+	}, http.StatusCreated, nil)
+
+	var graph models.MoneyFlowGraph
+	a.call(http.MethodGet, "/api/v1/dashboard/money-flow?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &graph)
+	require.NotNil(t, findNode(graph.Nodes, "account:"+src.ID.String()))
+	require.NotNil(t, findNode(graph.Nodes, "account:"+dst.ID.String()))
+	found := false
+	for _, l := range graph.Links {
+		if l.Source == "account:"+src.ID.String() && l.Target == "account:"+dst.ID.String() {
+			found = true
+			require.Equal(t, money.FromFloat(500), l.Value)
+		}
+	}
+	require.True(t, found, "expected a checking -> savings account edge")
+
+	var timeline models.MoneyFlowTimeline
+	a.call(http.MethodGet, "/api/v1/dashboard/money-flow/timeline?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &timeline)
+	require.Len(t, timeline.Periods, 1)
+	require.Equal(t, "2024-06", timeline.Periods[0].Key)
+	require.Equal(t, money.FromFloat(500), timeline.Periods[0].Income)
+	require.Equal(t, money.FromFloat(500), timeline.Periods[0].Expense)
+}
+
+// TestIntegrationMoneyFlowShowsCategorizedPayeeTransactions guards the
+// user-facing scenario: after categorizing a transaction and assigning a payee,
+// the money-flow graph reflects both the category and the payee node.
+func TestIntegrationMoneyFlowShowsCategorizedPayeeTransactions(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("categorized@example.com")
+	acc := a.createAccount("Main Bank", "bank", nil)
+	cats := a.categories()
+	groceries := categoryByName(t, cats, "Groceries")
+
+	var payee models.Payee
+	a.call(http.MethodPost, "/api/v1/payees", map[string]any{"name": "Big Bazaar"}, http.StatusCreated, &payee)
+
+	var created struct {
+		ID uuid.UUID `json:"id"`
+	}
+	a.call(http.MethodPost, "/api/v1/transactions", map[string]any{
+		"accountId":   acc.ID,
+		"date":        "2024-06-10",
+		"description": "Big Bazaar",
+		"amount":      1200,
+		"type":        "debit",
+		"categoryId":  groceries.ID,
+		"payeeId":     payee.ID,
+	}, http.StatusCreated, &created)
+
+	var graph models.MoneyFlowGraph
+	a.call(http.MethodGet, "/api/v1/dashboard/money-flow?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &graph)
+
+	require.NotNil(t, findNode(graph.Nodes, "category:"+groceries.ID.String()), "category node missing")
+	require.NotNil(t, findNode(graph.Nodes, "payee:"+payee.ID.String()), "payee node missing")
+}
+
+func findNode(nodes []models.MoneyFlowNode, id string) *models.MoneyFlowNode {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return &nodes[i]
+		}
+	}
+	return nil
+}

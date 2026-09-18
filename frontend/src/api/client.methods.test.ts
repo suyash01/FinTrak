@@ -92,6 +92,7 @@ describe("api method surface", () => {
     { name: "updatePayee", call: () => api.updatePayee("p1", {} as any), url: "/payees/p1", method: "PUT" },
     { name: "deletePayee", call: () => api.deletePayee("p1"), url: "/payees/p1", method: "DELETE" },
     { name: "getCashFlowCalendar", call: () => api.getCashFlowCalendar(), url: "/dashboard/cash-flow-calendar", method: "GET" },
+    { name: "getMoneyFlowTimeline", call: () => api.getMoneyFlowTimeline(), url: "/dashboard/money-flow/timeline", method: "GET" },
     { name: "createLink", call: () => api.createLink({} as any), url: "/links", method: "POST" },
     { name: "deleteLink", call: () => api.deleteLink("l1"), url: "/links/l1", method: "DELETE" },
     { name: "bulkDeleteLinks", call: () => api.bulkDeleteLinks({} as any), url: "/links/bulk-delete", method: "POST" },

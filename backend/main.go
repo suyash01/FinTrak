@@ -296,6 +296,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		// Money-flow Sankey: money sources -> accounts -> categories -> payees,
 		// with typed transaction links summarized alongside.
 		api.GET("/dashboard/money-flow", srv.GetMoneyFlow)
+		// Flow timeline: per-month (or per-billing-cycle) flow totals used to
+		// scrub the Sankey's window.
+		api.GET("/dashboard/money-flow/timeline", srv.GetMoneyFlowTimeline)
 		// Cash-flow calendar heatmap: per-day net flow with billing-cycle
 		// boundaries and the synthetic summary rows overlaid.
 		api.GET("/dashboard/cash-flow-calendar", srv.GetCashFlowCalendar)

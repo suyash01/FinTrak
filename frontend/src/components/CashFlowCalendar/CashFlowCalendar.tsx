@@ -12,11 +12,13 @@ import {
 import { useSearchParams } from "react-router-dom";
 import {
   CalendarDays,
+  RefreshCw,
   TrendingDown,
   TrendingUp,
   Waypoints,
 } from "lucide-react";
 import api from "../../api/client";
+import { useRefetchOnFocus } from "../../lib/useRefetchOnFocus";
 import {
   formatCurrency,
   formatDate,
@@ -363,6 +365,10 @@ export default function CashFlowCalendar() {
     });
   };
 
+  useRefetchOnFocus(() => {
+    void load();
+  });
+
   if (loading && !data) {
     return (
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
@@ -392,12 +398,25 @@ export default function CashFlowCalendar() {
 
   return (
     <>
-      <div className="shrink-0 px-8 pt-6">
-        <h1 className="text-2xl font-bold mb-1">Cash Flow Calendar</h1>
-        <p className="text-muted-foreground text-sm">
-          Daily net flow across the year, with billing cycles and summary rows
-          overlaid
-        </p>
+      <div className="shrink-0 px-8 pt-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold mb-1">Cash Flow Calendar</h1>
+          <p className="text-muted-foreground text-sm">
+            Daily net flow across the year, with billing cycles and summary rows
+            overlaid
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size={compactLayout ? "sm" : "default"}
+          onClick={load}
+          disabled={loading}
+          title="Refresh"
+          aria-label="Refresh cash flow calendar"
+        >
+          <RefreshCw size={16} className={loading ? "animate-spin" : undefined} />
+          {!compactLayout && "Refresh"}
+        </Button>
       </div>
       <div className="shrink-0 px-8 pt-4">
         <div

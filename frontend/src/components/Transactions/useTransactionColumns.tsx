@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Pencil, Link2, Trash2, Repeat } from "lucide-react";
+import { Pencil, Link2, Trash2, Repeat, GitBranch } from "lucide-react";
 import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ interface UseTransactionColumnsArgs {
   onDelete: (id: string) => void;
   onLink: (txn: Transaction) => void;
   onEdit: (txn: Transaction) => void;
+  onTrace: (txn: Transaction) => void;
 }
 
 // Column definitions for the transactions table. Kept in a hook so the page
@@ -39,6 +40,7 @@ export function useTransactionColumns({
   onDelete,
   onLink,
   onEdit,
+  onTrace,
 }: UseTransactionColumnsArgs): ColumnDef<Transaction, any>[] {
   return useMemo<ColumnDef<Transaction, any>[]>(
     () => [
@@ -232,6 +234,18 @@ export function useTransactionColumns({
               >
                 <Link2 size={14} />
               </Button>
+              {t.isLinked && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+                  onClick={() => onTrace(t)}
+                  title="Trace link chain"
+                  aria-label={`Trace link chain for ${t.description}`}
+                >
+                  <GitBranch size={14} />
+                </Button>
+              )}
               {!accountClosed && (
                 <Button
                   variant="ghost"
@@ -258,6 +272,7 @@ export function useTransactionColumns({
       onDelete,
       onLink,
       onEdit,
+      onTrace,
       closedById,
     ],
   );

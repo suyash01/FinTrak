@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 
 	"github.com/fintrak/backend/internal/money"
@@ -24,13 +25,14 @@ func newMoneyFlowTestRouter(srv *Server) *gin.Engine {
 	return r
 }
 
-// moneyFlowRows wires the four expected queries for a money-flow request.
-func expectMoneyFlowQueries(mock pgxmock.PgxPoolIface, args []any, income, acctCat, catPayee, links *pgxmock.Rows) {
+// moneyFlowRows wires the five expected queries for a money-flow request.
+func expectMoneyFlowQueries(mock pgxmock.PgxPoolIface, args []any, income, acctCat, catPayee, links, acctLinks *pgxmock.Rows) {
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	mock.ExpectQuery("t.type = 'credit'").WithArgs(args...).WillReturnRows(income)
 	mock.ExpectQuery("SELECT a.id::text, a.name, a.color").WithArgs(args...).WillReturnRows(acctCat)
 	mock.ExpectQuery("payees p ON t.payee_id").WithArgs(args...).WillReturnRows(catPayee)
-	mock.ExpectQuery("FROM links l").WithArgs(args...).WillReturnRows(links)
+	mock.ExpectQuery("SELECT l.type, COUNT").WithArgs(args...).WillReturnRows(links)
+	mock.ExpectQuery("fa.id <> ta.id").WithArgs(args...).WillReturnRows(acctLinks)
 	mock.ExpectCommit()
 }
 
@@ -53,6 +55,7 @@ func TestGetMoneyFlow(t *testing.T) {
 
 	catID := uuid.New()
 	acctID := uuid.New()
+	acct2ID := uuid.New()
 	payeeID := uuid.New()
 
 	income := pgxmock.NewRows([]string{"cat_id", "cat_name", "cat_color", "group_id", "group_color", "acct_id", "acct_name", "acct_color", "total"}).
@@ -63,8 +66,11 @@ func TestGetMoneyFlow(t *testing.T) {
 		AddRow(catID.String(), "Food", "#f97316", "expense", "#f97316", payeeID.String(), "Zomato", 12000.00)
 	links := pgxmock.NewRows([]string{"type", "count", "total"}).
 		AddRow("transfer", 2, 30000.00)
+	// A cross-account transfer: Checking (debit) -> Savings (credit).
+	acctLinks := pgxmock.NewRows([]string{"from_type", "to_type", "fa_id", "fa_name", "fa_color", "ta_id", "ta_name", "ta_color", "amount"}).
+		AddRow("debit", "credit", acctID.String(), "Checking", "#3b82f6", acct2ID.String(), "Savings", "#22c55e", 30000.00)
 
-	expectMoneyFlowQueries(mock, []any{userID}, income, acctCat, catPayee, links)
+	expectMoneyFlowQueries(mock, []any{userID}, income, acctCat, catPayee, links, acctLinks)
 
 	req, _ := http.NewRequest(http.MethodGet, "/dashboard/money-flow", nil)
 	w := httptest.NewRecorder()
@@ -99,7 +105,22 @@ func TestGetMoneyFlow(t *testing.T) {
 	require.NotNil(t, payeeNode)
 	assert.Equal(t, "Zomato", payeeNode.Name)
 
-	assert.Len(t, graph.Links, 3)
+	// The cross-account transfer is drawn as a real account-to-account edge,
+	// and the destination account (which has no other activity) gets a node.
+	savings := findFlowNode(graph.Nodes, "account:"+acct2ID.String())
+	require.NotNil(t, savings)
+	assert.Equal(t, "Savings", savings.Name)
+	assert.Equal(t, money.FromFloat(30000.00), savings.Total)
+	require.Len(t, graph.Links, 4)
+	var acctEdge *models.MoneyFlowEdge
+	for i := range graph.Links {
+		if graph.Links[i].Source == "account:"+acctID.String() && graph.Links[i].Target == "account:"+acct2ID.String() {
+			acctEdge = &graph.Links[i]
+		}
+	}
+	require.NotNil(t, acctEdge)
+	assert.Equal(t, money.FromFloat(30000.00), acctEdge.Value)
+
 	assert.Len(t, graph.LinkSummary, 1)
 	assert.Equal(t, "transfer", graph.LinkSummary[0].Type)
 	assert.Equal(t, 2, graph.LinkSummary[0].Count)
@@ -127,6 +148,7 @@ func TestGetMoneyFlowWithFilters(t *testing.T) {
 	acctCat := empty("acct_id", "acct_name", "acct_color", "cat_id", "cat_name", "cat_color", "group_id", "group_color", "total")
 	catPayee := empty("cat_id", "cat_name", "cat_color", "group_id", "group_color", "payee_id", "payee_name", "total")
 	links := empty("type", "count", "total")
+	acctLinks := empty("from_type", "to_type", "fa_id", "fa_name", "fa_color", "ta_id", "ta_name", "ta_color", "amount")
 
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	// The regexes deliberately include the "AND" that joins the base predicate
@@ -135,7 +157,8 @@ func TestGetMoneyFlowWithFilters(t *testing.T) {
 	mock.ExpectQuery("t.type = 'credit' AND t.date >=").WithArgs(simpleArgs...).WillReturnRows(income)
 	mock.ExpectQuery(`(?s)SELECT a\.id::text.*t.type = 'debit' AND t.date >=`).WithArgs(simpleArgs...).WillReturnRows(acctCat)
 	mock.ExpectQuery(`(?s)payees p ON t.payee_id.*t.type = 'debit' AND t.date >=`).WithArgs(simpleArgs...).WillReturnRows(catPayee)
-	mock.ExpectQuery("FROM links l").WithArgs(linkArgs...).WillReturnRows(links)
+	mock.ExpectQuery("SELECT l.type, COUNT").WithArgs(linkArgs...).WillReturnRows(links)
+	mock.ExpectQuery("fa.id <> ta.id").WithArgs(linkArgs...).WillReturnRows(acctLinks)
 	mock.ExpectCommit()
 
 	req, _ := http.NewRequest(http.MethodGet,
@@ -193,7 +216,7 @@ func TestBuildMoneyFlowGraphRollup(t *testing.T) {
 		{acctID: acctID, acctName: "Checking", catID: catA, groupID: "expense", total: money.FromFloat(100)},
 		{acctID: acctID, acctName: "Checking", catID: catB, groupID: "expense", total: money.FromFloat(50)},
 		{acctID: acctID, acctName: "Checking", catID: catC, groupID: "expense", total: money.FromFloat(25)},
-	}, rows, nil, 1)
+	}, rows, nil, nil, 1)
 
 	other := findFlowNode(graph.Nodes, "category:other")
 	require.NotNil(t, other)
@@ -215,4 +238,58 @@ func TestBuildMoneyFlowGraphRollup(t *testing.T) {
 	require.NotNil(t, otherEdge)
 	assert.Equal(t, money.FromFloat(75), otherEdge.Value)
 	assert.Equal(t, "payee:"+payeeID, otherEdge.Target)
+}
+
+func TestAccountFlowEdgesDerivesDirectionAndSkipsSameAccount(t *testing.T) {
+	a, b := uuid.NewString(), uuid.NewString()
+
+	edges := accountFlowEdges([]flowAcctLinkRow{
+		// Stored credit -> debit: money still flows debit (B) -> credit (A).
+		{fromType: "credit", toType: "debit",
+			fromAcctID: a, fromAcctName: "A", fromAcctColor: "#111",
+			toAcctID: b, toAcctName: "B", toAcctColor: "#222", amount: money.FromFloat(50)},
+		// Same account on both ends: not an account-to-account flow.
+		{fromType: "debit", toType: "credit",
+			fromAcctID: a, fromAcctName: "A", toAcctID: a, toAcctName: "A", amount: money.FromFloat(10)},
+	})
+
+	require.Len(t, edges, 1)
+	assert.Equal(t, b, edges[0].srcID)
+	assert.Equal(t, a, edges[0].dstID)
+	assert.Equal(t, money.FromFloat(50), edges[0].value)
+}
+
+func TestAccountFlowEdgesNetsReciprocalPairs(t *testing.T) {
+	a, b := uuid.NewString(), uuid.NewString()
+
+	edges := accountFlowEdges([]flowAcctLinkRow{
+		{fromType: "debit", toType: "credit", fromAcctID: a, fromAcctName: "A", toAcctID: b, toAcctName: "B", amount: money.FromFloat(100)},
+		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: a, toAcctName: "A", amount: money.FromFloat(40)},
+	})
+
+	require.Len(t, edges, 1)
+	assert.Equal(t, a, edges[0].srcID)
+	assert.Equal(t, b, edges[0].dstID)
+	assert.Equal(t, money.FromFloat(60), edges[0].value)
+}
+
+func TestAccountFlowEdgesBreaksCyclesDeterministically(t *testing.T) {
+	a, b, c := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	// Force a < b < c ordering so the expected kept edges are stable.
+	ids := []string{a, b, c}
+	sort.Strings(ids)
+	a, b, c = ids[0], ids[1], ids[2]
+
+	edges := accountFlowEdges([]flowAcctLinkRow{
+		{fromType: "debit", toType: "credit", fromAcctID: a, fromAcctName: "A", toAcctID: b, toAcctName: "B", amount: money.FromFloat(100)},
+		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: c, toAcctName: "C", amount: money.FromFloat(100)},
+		{fromType: "debit", toType: "credit", fromAcctID: c, fromAcctName: "C", toAcctID: a, toAcctName: "A", amount: money.FromFloat(100)},
+	})
+
+	// The 3-cycle loses exactly one (back) edge, leaving a 2-edge DAG.
+	require.Len(t, edges, 2)
+	assert.Equal(t, a, edges[0].srcID)
+	assert.Equal(t, b, edges[0].dstID)
+	assert.Equal(t, b, edges[1].srcID)
+	assert.Equal(t, c, edges[1].dstID)
 }

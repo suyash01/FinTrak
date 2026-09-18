@@ -2785,11 +2785,12 @@ paths:
       description: >-
         Aggregate the user's transactions into a left-to-right Sankey graph:
         money sources (income categories) flow into accounts, out into spending
-        categories, and on to payees. The graph is acyclic; account-to-account
-        transfers, refunds, cashbacks, and bill payments are returned as a
-        per-type `linkSummary` instead of account-to-account edges. The income,
-        category, and payee stages are each capped at `limit` nodes, with the
-        remainder collapsed into an "Other" node.
+        categories, and on to payees. Cross-account links (transfers, refunds,
+        cashbacks, bill payments) are drawn as account-to-account edges after
+        netting reciprocal pairs and breaking remaining cycles, so the graph
+        stays acyclic; the per-type `linkSummary` is still returned alongside.
+        The income, category, and payee stages are each capped at `limit`
+        nodes, with the remainder collapsed into an "Other" node.
       operationId: getMoneyFlow
       security:
         - BearerAuth: []
@@ -2838,6 +2839,75 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /dashboard/money-flow/timeline:
+    get:
+      tags:
+        - Dashboard
+      summary: Get money-flow timeline
+      description: >-
+        Per-period income/expense/net totals for the Money Flow page's timeline
+        strip. Periods are calendar months by default; with
+        `groupBy=billing_cycle` (which requires an account with a `billingDay`)
+        they are the account's statement periods for the last `cycles` cycles.
+      operationId: getMoneyFlowTimeline
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter from date (YYYY-MM-DD, month grouping)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter to date (YYYY-MM-DD, month grouping)
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by account ID
+        - in: query
+          name: groupBy
+          schema:
+            type: string
+            enum: [month, billing_cycle]
+            default: month
+          description: Group periods by calendar month or the account's billing cycles
+        - in: query
+          name: cycles
+          schema:
+            type: integer
+            default: 12
+          description: Number of billing cycles in the window (1-60, with groupBy=billing_cycle)
+      responses:
+        "200":
+          description: Money-flow timeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoneyFlowTimeline"
+        "400":
+          description: Invalid accountId, or billing-cycle view without a billing-day account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4010,6 +4080,38 @@ components:
         maxAbsNet:
           type: number
           description: Largest absolute daily net in the window, for heatmap scaling.
+
+    MoneyFlowTimelinePeriod:
+      type: object
+      properties:
+        key:
+          type: string
+          description: Stable period key ("YYYY-MM" for months, the cycle id otherwise)
+        label:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        income:
+          type: number
+        expense:
+          type: number
+        net:
+          type: number
+
+    MoneyFlowTimeline:
+      type: object
+      properties:
+        groupBy:
+          type: string
+          enum: [month, billing_cycle]
+        periods:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowTimelinePeriod"
 
     # ============= Recurring Series =============
     RecurringSeries:

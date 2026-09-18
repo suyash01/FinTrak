@@ -151,7 +151,13 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		f.param("t.type = $%d", txnType)
 	}
 	if payeeID != "" {
-		f.param("t.payee_id = $%d", payeeID)
+		// The "none" sentinel (from the money-flow payee:none node) means
+		// transactions with no payee assigned.
+		if payeeID == "none" {
+			f.raw("t.payee_id IS NULL")
+		} else {
+			f.param("t.payee_id = $%d", payeeID)
+		}
 	}
 	if amountStr != "" {
 		if amount, err := money.Parse(amountStr); err == nil {

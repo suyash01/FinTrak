@@ -901,6 +901,40 @@ func TestGetTransactionsCategoryFilter(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetTransactionsPayeeNoneFilter(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	txnID := uuid.New()
+	accountID := uuid.New()
+	now := time.Now()
+
+	// Count query with the payee:none sentinel -> payee_id IS NULL (no arg).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+
+	rows := txnListRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, 50, 0).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET", "/transactions?payeeId=none", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var res struct {
+		Data []models.Transaction `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 1)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestGetTransactionsCategoryFilterUncategorized(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.GET("/transactions", srv.GetTransactions)

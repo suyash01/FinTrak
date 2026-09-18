@@ -60,6 +60,25 @@ type flowLinkRow struct {
 	total money.Amount
 }
 
+// flowAcctLinkRow is one raw link whose endpoints are in different accounts. It
+// captures both endpoints' transaction types so the money direction (debit
+// account -> credit account) can be derived regardless of how the link was
+// stored.
+type flowAcctLinkRow struct {
+	fromType, toType                        string
+	fromAcctID, fromAcctName, fromAcctColor string
+	toAcctID, toAcctName, toAcctColor       string
+	amount                                  money.Amount
+}
+
+// flowAccountEdge is one directed account-to-account flow after netting and
+// cycle-breaking, carrying the endpoint display metadata for the graph.
+type flowAccountEdge struct {
+	srcID, srcName, srcColor string
+	dstID, dstName, dstColor string
+	value                    money.Amount
+}
+
 // flowQueryer is the transactional read surface the flow queries use. *pgx.Tx
 // satisfies it; keeping it narrow lets the query helpers stay testable.
 type flowQueryer interface {
@@ -68,12 +87,12 @@ type flowQueryer interface {
 
 // GetMoneyFlow aggregates the user's transactions into a left-to-right Sankey
 // graph (money sources → accounts → spending categories → payees) over an
-// optional date range and account filter. The graph is acyclic by construction;
-// transaction links (transfers, refunds, cashbacks, bill payments) are returned
-// as a separate per-type summary so they can be surfaced beside the graph
-// rather than as account-to-account edges, which would introduce cycles.
+// optional date range and account filter. Cross-account links (transfers,
+// refunds, cashbacks, bill payments) are drawn as account-to-account edges
+// after netting reciprocal pairs and dropping DFS back edges, so the graph
+// stays acyclic; the same links are still rolled up per type in LinkSummary.
 //
-// All reads run in a single read-only, repeatable-read transaction so the four
+// All reads run in a single read-only, repeatable-read transaction so the
 // stages reflect one consistent snapshot.
 func (srv *Server) GetMoneyFlow(c *gin.Context) {
 	ctx := c
@@ -137,7 +156,14 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 		return
 	}
 
-	graph := buildMoneyFlowGraph(incomeRows, acctCatRows, catPayeeRows, linkRows, limit)
+	acctLinkRows, err := queryAccountLinkFlows(ctx, tx, userID, dateFrom, dateTo, accountID)
+	if err != nil {
+		slog.Error("GetMoneyFlow (account links)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	graph := buildMoneyFlowGraph(incomeRows, acctCatRows, catPayeeRows, linkRows, acctLinkRows, limit)
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("GetMoneyFlow (commit)", slog.String("error", err.Error()))
@@ -268,20 +294,7 @@ func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UU
 func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowLinkRow, error) {
 	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID)
 	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID)
-
-	// A link is in scope when either endpoint matches; combine the two
-	// predicate groups (each referencing its own bound parameters).
-	either := ""
-	switch {
-	case fromCond == "" && toCond == "":
-		either = ""
-	case fromCond == "":
-		either = " AND (" + toCond + ")"
-	case toCond == "":
-		either = " AND (" + fromCond + ")"
-	default:
-		either = " AND ((" + fromCond + ") OR (" + toCond + "))"
-	}
+	either := combineFlowConds(fromCond, toCond)
 
 	args := append([]any{userID}, fromArgs...)
 	args = append(args, toArgs...)
@@ -313,6 +326,177 @@ func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, 
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// queryAccountLinkFlows returns each link whose endpoints sit in different
+// accounts, carrying both endpoints' transaction types so the money direction
+// can be derived. The same either-endpoint window predicate as the link summary
+// applies: a transfer is in scope when either side falls inside the window.
+func queryAccountLinkFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowAcctLinkRow, error) {
+	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID)
+	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID)
+	either := combineFlowConds(fromCond, toCond)
+
+	args := append([]any{userID}, fromArgs...)
+	args = append(args, toArgs...)
+
+	rows, err := db.Query(ctx, `
+		SELECT ft.type, tt.type,
+			   fa.id::text, fa.name, fa.color,
+			   ta.id::text, ta.name, ta.color,
+			   CASE WHEN ft.type = 'debit' THEN ft.amount ELSE tt.amount END
+		FROM links l
+		JOIN transactions ft ON l.from_txn_id = ft.id AND ft.user_id = l.user_id
+		JOIN accounts fa ON ft.account_id = fa.id
+		JOIN transactions tt ON l.to_txn_id = tt.id AND tt.user_id = l.user_id
+		JOIN accounts ta ON tt.account_id = ta.id
+		WHERE l.user_id = $1`+either+`
+		  AND fa.id <> ta.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []flowAcctLinkRow
+	for rows.Next() {
+		var r flowAcctLinkRow
+		if err := rows.Scan(&r.fromType, &r.toType,
+			&r.fromAcctID, &r.fromAcctName, &r.fromAcctColor,
+			&r.toAcctID, &r.toAcctName, &r.toAcctColor,
+			&r.amount); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// combineFlowConds joins the two endpoint predicate groups for a link query,
+// wrapped in parentheses and OR-ed when both are present. It returns the
+// fragment including its leading " AND " (empty when neither endpoint is
+// filtered), matching the call sites' splicing convention.
+func combineFlowConds(fromCond, toCond string) string {
+	switch {
+	case fromCond == "" && toCond == "":
+		return ""
+	case fromCond == "":
+		return " AND (" + toCond + ")"
+	case toCond == "":
+		return " AND (" + fromCond + ")"
+	default:
+		return " AND ((" + fromCond + ") OR (" + toCond + "))"
+	}
+}
+
+// accountFlowEdges turns raw cross-account links into directed account flows
+// (debit account -> credit account), then nets reciprocal pairs and drops the
+// remaining back edges so the result is a DAG the Sankey can render. The
+// processing order is deterministic (sorted ids), so the same input always
+// yields the same edges.
+func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
+	type account struct{ id, name, color string }
+
+	agg := map[[2]string]*flowAccountEdge{}
+	for _, r := range rows {
+		from := account{r.fromAcctID, r.fromAcctName, r.fromAcctColor}
+		to := account{r.toAcctID, r.toAcctName, r.toAcctColor}
+		src, dst := from, to
+		// Money flows from the debit side to the credit side; when both sides
+		// are the same kind the stored orientation is kept.
+		if r.fromType == "credit" && r.toType == "debit" {
+			src, dst = to, from
+		}
+		if src.id == dst.id {
+			continue
+		}
+		key := [2]string{src.id, dst.id}
+		if e, ok := agg[key]; ok {
+			e.value += r.amount
+			continue
+		}
+		agg[key] = &flowAccountEdge{
+			srcID: src.id, srcName: src.name, srcColor: src.color,
+			dstID: dst.id, dstName: dst.name, dstColor: dst.color,
+			value: r.amount,
+		}
+	}
+
+	// Net reciprocal pairs into a single edge in the dominant direction. This
+	// removes the common A->B / B->A two-cycles outright.
+	seen := map[[2]string]bool{}
+	for key, edge := range agg {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		rev := [2]string{key[1], key[0]}
+		revEdge, ok := agg[rev]
+		if !ok {
+			continue
+		}
+		seen[rev] = true
+		switch {
+		case edge.value > revEdge.value:
+			edge.value -= revEdge.value
+			delete(agg, rev)
+		case revEdge.value > edge.value:
+			revEdge.value -= edge.value
+			delete(agg, key)
+		default:
+			delete(agg, key)
+			delete(agg, rev)
+		}
+	}
+
+	// Drop back edges to break any longer cycles: a depth-first walk keeps
+	// every edge except those pointing at a node still on the recursion stack.
+	adj := map[string][]string{}
+	for key := range agg {
+		adj[key[0]] = append(adj[key[0]], key[1])
+	}
+	for id := range adj {
+		sort.Strings(adj[id])
+	}
+	state := map[string]int{} // 0 unvisited, 1 on stack, 2 done
+	kept := []flowAccountEdge{}
+	var visit func(string)
+	visit = func(u string) {
+		state[u] = 1
+		for _, v := range adj[u] {
+			edge, ok := agg[[2]string{u, v}]
+			if !ok {
+				continue
+			}
+			switch state[v] {
+			case 1:
+				// Back edge: dropping it breaks the cycle.
+			case 0:
+				kept = append(kept, *edge)
+				visit(v)
+			default:
+				kept = append(kept, *edge)
+			}
+		}
+		state[u] = 2
+	}
+	roots := make([]string, 0, len(adj))
+	for id := range adj {
+		roots = append(roots, id)
+	}
+	sort.Strings(roots)
+	for _, id := range roots {
+		if state[id] == 0 {
+			visit(id)
+		}
+	}
+
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].srcID != kept[j].srcID {
+			return kept[i].srcID < kept[j].srcID
+		}
+		return kept[i].dstID < kept[j].dstID
+	})
+	return kept
 }
 
 // flowFilter renders the shared date/account predicates for one table-alias
@@ -369,7 +553,7 @@ func flowPayeeNodeID(payeeID string) string {
 // caps the income/category/payee stages at limit (rolling the tail into an
 // "Other" node), then aggregates the edges through the same rollup so a node
 // and its edges stay consistent.
-func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRow, catPayeeRows []flowCatPayeeRow, linkRows []flowLinkRow, limit int) models.MoneyFlowGraph {
+func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRow, catPayeeRows []flowCatPayeeRow, linkRows []flowLinkRow, acctLinkRows []flowAcctLinkRow, limit int) models.MoneyFlowGraph {
 	incomeNodes := map[string]*models.MoneyFlowNode{}
 	acctNodes := map[string]*models.MoneyFlowNode{}
 	catNodes := map[string]*models.MoneyFlowNode{}
@@ -417,6 +601,18 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		}
 		addNode(catNodes, "category", flowCategoryNodeID(r.catID), r.catName, color, r.groupID, r.total)
 		addNode(payeeNodes, "payee", flowPayeeNodeID(r.payeeID), r.payeeName, "", "", r.total)
+	}
+
+	// Cross-account link flows (transfers, refunds, cashbacks, bill payments)
+	// after netting and cycle-breaking so the account subgraph stays acyclic.
+	// An endpoint may be an account with no other activity in the window, so
+	// ensure its node exists before accumulating the link volume.
+	acctEdges := accountFlowEdges(acctLinkRows)
+	for _, e := range acctEdges {
+		addNode(acctNodes, "account", flowAccountNodeID(e.srcID), e.srcName, e.srcColor, "", 0)
+		addNode(acctNodes, "account", flowAccountNodeID(e.dstID), e.dstName, e.dstColor, "", 0)
+		acctOut[flowAccountNodeID(e.srcID)] += e.value
+		acctIn[flowAccountNodeID(e.dstID)] += e.value
 	}
 
 	// Account node volume is the larger of what flowed in and what flowed out,
@@ -482,6 +678,9 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 			rollup(flowPayeeNodeID(r.payeeID), payeeKept, "payee:other"),
 			r.total,
 		)
+	}
+	for _, e := range acctEdges {
+		addEdge(flowAccountNodeID(e.srcID), flowAccountNodeID(e.dstID), e.value)
 	}
 
 	links := make([]models.MoneyFlowEdge, 0, len(edges))
