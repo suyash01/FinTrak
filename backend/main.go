@@ -222,6 +222,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 
 		// Admin: global groups and global categories shared by every user
 		admin := api.Group("/admin", auth.RequireAdmin())
+		admin.GET("/catalog", srv.GetAdminCatalog)
 		admin.POST("/groups", srv.CreateGlobalGroup)
 		admin.POST("/categories", srv.CreateGlobalCategory)
 		admin.PUT("/categories/:id", srv.UpdateGlobalCategory)
@@ -239,7 +240,11 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		transactions.POST("/bulk-payee", srv.BulkUpdatePayee)
 		transactions.POST("/bulk-billing-cycle", srv.BulkUpdateBillingCycle)
 		transactions.POST("/bulk-loan", srv.BulkLinkLoan)
+		transactions.POST("/bulk-tags", srv.BulkUpdateTags)
 		transactions.POST("/bulk-delete", srv.BulkDeleteTransactions)
+		// Filter-aware report export: honors the same query grammar as GET
+		// /transactions (tags included) and streams a flat CSV.
+		transactions.GET("/export", srv.ExportTransactions)
 
 		// Statement parsing (forwards to the standalone parser service)
 		api.POST("/statements/parse", srv.ParseStatement)
@@ -258,12 +263,17 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		api.PUT("/rules/:id", srv.UpdateRule)
 		api.DELETE("/rules/:id", srv.DeleteRule)
 		api.POST("/rules/apply", srv.ApplyRules)
+		api.POST("/rules/preview", srv.PreviewRule)
 
 		// Payees
 		api.GET("/payees", srv.GetPayees)
 		api.POST("/payees", srv.CreatePayee)
 		api.PUT("/payees/:id", srv.UpdatePayee)
 		api.DELETE("/payees/:id", srv.DeletePayee)
+
+		// Tags (derived from transactions.tags; no tag table)
+		api.GET("/tags", srv.GetTags)
+		api.POST("/tags/rename", srv.RenameTag)
 
 		// Links
 		api.GET("/links", srv.GetLinks)

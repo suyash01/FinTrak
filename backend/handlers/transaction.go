@@ -36,14 +36,12 @@ const maxPageSize = 1000
 // largest offset is 1e9, which fits comfortably in a 32-bit int.
 const maxPage = 1_000_000
 
-// GetTransactions returns a paginated, filterable list of the user's
-// transactions. Filters cover account, category, payee, free-text description,
-// date range, type, exact amount, and linked state; sorting and pagination are
-// validated/clamped server-side. When filtering a single account that has a
-// billing day set (any account type) and sorting by date, synthetic summary
-// rows (per-cycle outstanding totals) are merged into the response.
-func (srv *Server) GetTransactions(c *gin.Context) {
-	userID := auth.GetUserID(c)
+// txnQueryFilter parses the shared transaction-list filter query parameters
+// (account, category/group, payee, tag, free-text, date range, type, amount,
+// linked, loan, recurring) into a txnFilter. It is used by both GetTransactions
+// and ExportTransactions so the list and the export can never disagree about
+// what a filter means. A malformed accountId writes a 400 and returns ok=false.
+func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, bool) {
 	accountID := c.Query("accountId")
 	categoryID := c.Query("categoryId")
 	groupId := c.Query("groupId")
@@ -51,31 +49,8 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	dateFrom := c.Query("dateFrom")
 	dateTo := c.Query("dateTo")
 	txnType := c.Query("type")
-	sortBy := c.DefaultQuery("sortBy", "date")
-	sortOrder := c.DefaultQuery("sortOrder", "DESC")
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	uncategorized := c.Query("uncategorized")
 	payeeID := c.Query("payeeId")
 	amountStr := c.Query("amount")
-
-	if page < 1 {
-		page = 1
-	}
-	// Reject an out-of-range page rather than letting (page-1)*limit overflow
-	// int into a negative SQL offset.
-	if page > maxPage {
-		validation.RespondError(c, "page out of range", http.StatusBadRequest)
-		return
-	}
-	// Clamp the page size so a crafted request can't bypass the frontend limit
-	// (0 or negative values fall back to the default).
-	if limit < 1 {
-		limit = 50
-	}
-	if limit > maxPageSize {
-		limit = maxPageSize
-	}
 
 	// Parse the account filter once: the summary-row path needs the UUID and a
 	// malformed value should surface as a 400 rather than a database error.
@@ -84,29 +59,11 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		parsed, err := uuid.Parse(accountID)
 		if err != nil {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
-			return
+			return nil, nil, false
 		}
 		accountUUID = &parsed
 	}
 
-	// Validate sort column
-	validSorts := map[string]string{
-		"date":      "t.date",
-		"amount":    "t.amount",
-		"createdAt": "t.created_at",
-	}
-	sortCol, ok := validSorts[sortBy]
-	if !ok {
-		sortCol = "t.date"
-	}
-	if sortOrder != "ASC" {
-		sortOrder = "DESC"
-	}
-
-	// Build the WHERE predicates once. Every clause references only
-	// `transactions t` (using correlated EXISTS subqueries where a join would
-	// otherwise be required), so the list and count queries share the exact same
-	// clause and args and can never drift apart.
 	f := newTxnFilter(userID)
 
 	if accountID != "" {
@@ -127,7 +84,7 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 			f.param("t.category_id = $%d", categoryID)
 		}
 	}
-	if uncategorized == "true" {
+	if c.Query("uncategorized") == "true" {
 		f.raw("t.category_id IS NULL")
 	}
 	if groupId != "" {
@@ -164,6 +121,13 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 			f.param("t.amount = $%d", amount)
 		}
 	}
+	// Tag filter: a comma-separated list matches transactions carrying ANY of
+	// the listed tags (Postgres array overlap). Blank entries are ignored.
+	if tagsParam := c.Query("tags"); tagsParam != "" {
+		if tags := splitTagFilter(tagsParam); len(tags) > 0 {
+			f.param("t.tags && $%d::text[]", tags)
+		}
+	}
 	switch c.Query("linked") {
 	case "true":
 		f.raw("EXISTS (SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)")
@@ -192,6 +156,63 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		f.raw("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)")
 	case "unlinked":
 		f.raw("NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)")
+	}
+
+	return f, accountUUID, true
+}
+
+// GetTransactions returns a paginated, filterable list of the user's
+// transactions. Filters cover account, category, payee, tag, free-text
+// description, date range, type, exact amount, and linked state; sorting and
+// pagination are validated/clamped server-side. When filtering a single account
+// that has a billing day set (any account type) and sorting by date, synthetic
+// summary rows (per-cycle outstanding totals) are merged into the response.
+func (srv *Server) GetTransactions(c *gin.Context) {
+	userID := auth.GetUserID(c)
+	sortBy := c.DefaultQuery("sortBy", "date")
+	sortOrder := c.DefaultQuery("sortOrder", "DESC")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+
+	if page < 1 {
+		page = 1
+	}
+	// Reject an out-of-range page rather than letting (page-1)*limit overflow
+	// int into a negative SQL offset.
+	if page > maxPage {
+		validation.RespondError(c, "page out of range", http.StatusBadRequest)
+		return
+	}
+	// Clamp the page size so a crafted request can't bypass the frontend limit
+	// (0 or negative values fall back to the default).
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+
+	// Validate sort column
+	validSorts := map[string]string{
+		"date":      "t.date",
+		"amount":    "t.amount",
+		"createdAt": "t.created_at",
+	}
+	sortCol, ok := validSorts[sortBy]
+	if !ok {
+		sortCol = "t.date"
+	}
+	if sortOrder != "ASC" {
+		sortOrder = "DESC"
+	}
+
+	// Build the WHERE predicates once. Every clause references only
+	// `transactions t` (using correlated EXISTS subqueries where a join would
+	// otherwise be required), so the list and count queries share the exact same
+	// clause and args and can never drift apart.
+	f, accountUUID, ok := txnQueryFilter(c, userID)
+	if !ok {
+		return
 	}
 
 	where := f.where()
@@ -267,7 +288,7 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	// Summary rows only make sense in a date-ordered list, so other sort
 	// columns skip them entirely.
 	if accountUUID != nil && sortBy == "date" {
-		summaryTxns, balanceTxns := srv.buildAccountSummaryRows(c, userID, *accountUUID, dateFrom, dateTo)
+		summaryTxns, balanceTxns := srv.buildAccountSummaryRows(c, userID, *accountUUID, c.Query("dateFrom"), c.Query("dateTo"))
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
 		transactions = mergeMonthEndRows(transactions, balanceTxns, sortOrder)
 	}
@@ -392,6 +413,8 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 
 	// Auto-categorize from rules when no explicit category is supplied.
 	categoryID, payeeID := req.CategoryID, req.PayeeID
+	tags := req.Tags
+	notes := req.Notes
 	if categoryID == nil {
 		rules, err := srv.loadRules(c, userID)
 		if err != nil {
@@ -399,10 +422,22 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		matchedCat, matchedPayee := autoCategorize(rules, req.Description)
-		categoryID = matchedCat
-		if payeeID == nil {
-			payeeID = matchedPayee
+		matched := autoCategorize(rules, ruleContext{
+			Description: req.Description,
+			AccountID:   req.AccountID,
+			Amount:      req.Amount,
+			Type:        req.Type,
+			Date:        req.Date,
+			PayeeID:     req.PayeeID,
+		})
+		if matched != nil {
+			cat := matched.CatID
+			categoryID = &cat
+			if payeeID == nil {
+				payeeID = matched.PayeeID
+			}
+			tags = unionTags(tags, matched.AddTags)
+			notes = appendNote(notes, matched.Notes)
 		}
 	}
 
@@ -435,7 +470,7 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 		 WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))
 		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
 		 RETURNING id`,
-		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, req.Tags, req.Notes).Scan(&id)
+		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, tags, notes).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
 		return

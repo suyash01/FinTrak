@@ -133,6 +133,37 @@ type Transaction struct {
 	RecurringSeriesName string     `json:"recurringSeriesName,omitempty"`
 }
 
+// TagCount is one entry of the user's tag vocabulary: the distinct tag name
+// and how many transactions carry it. Tags are not a table — they live in
+// transactions.tags — so this is an on-the-fly aggregation used to power the
+// tag picker, filter, and management UI.
+type TagCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// AdminCatalog is the admin console's view of the shared global catalog: the
+// global (user_id NULL) category groups and categories with usage counts, so an
+// operator can see what is actually referenced before retiring or retitling it.
+type AdminCatalog struct {
+	Groups     []AdminCatalogGroup    `json:"groups"`
+	Categories []AdminCatalogCategory `json:"categories"`
+}
+
+// AdminCatalogGroup is one global category group plus the number of global and
+// user-owned categories that belong to it.
+type AdminCatalogGroup struct {
+	CategoryGroup
+	CategoryCount int `json:"categoryCount"`
+}
+
+// AdminCatalogCategory is one global category plus how many transactions
+// reference it (across every user).
+type AdminCatalogCategory struct {
+	Category
+	TransactionCount int `json:"transactionCount"`
+}
+
 // BillingCycle is a persisted billing period for an account with a billing day
 // set. Cycles are auto-generated from the account's billing day; transactions
 // are attached to them via Transaction.BillingCycleID. TotalOutstanding is the
@@ -153,6 +184,12 @@ type BillingCycle struct {
 // transaction whose description matches Pattern. Rules are evaluated in
 // priority order (highest first) during transaction creation, imports, and
 // ApplyRules.
+//
+// On top of the description pattern a rule may carry optional ANDed conditions
+// (account, category, payee, amount range, transaction type, date window, and
+// linked/recurring state) and optional extra actions (add tags, append a note).
+// Every condition is a pointer/empty value when unset, so a rule with no
+// conditions behaves exactly like the original pattern-only rule.
 type Rule struct {
 	ID         uuid.UUID  `json:"id"`
 	Pattern    string     `json:"pattern"`
@@ -161,8 +198,36 @@ type Rule struct {
 	PayeeID    *uuid.UUID `json:"payeeId,omitempty"`
 	Payee      string     `json:"payee"`
 	Priority   int        `json:"priority"`
+
+	// Conditions (all optional; when set they must all match).
+	AccountID        *uuid.UUID    `json:"accountId,omitempty"`
+	FilterCategoryID *uuid.UUID    `json:"filterCategoryId,omitempty"`
+	FilterPayeeID    *uuid.UUID    `json:"filterPayeeId,omitempty"`
+	MinAmount        *money.Amount `json:"minAmount,omitempty"`
+	MaxAmount        *money.Amount `json:"maxAmount,omitempty"`
+	TxnType          string        `json:"txnType,omitempty"`
+	DateFrom         *string       `json:"dateFrom,omitempty"`
+	DateTo           *string       `json:"dateTo,omitempty"`
+	IsLinked         *bool         `json:"isLinked,omitempty"`
+	IsRecurring      *bool         `json:"isRecurring,omitempty"`
+
+	// Actions (applied on top of the category/payee assignment).
+	AddTags []string `json:"addTags"`
+	Notes   string   `json:"notes"`
+
 	// Joined
-	CategoryName string `json:"categoryName,omitempty"`
+	CategoryName       string `json:"categoryName,omitempty"`
+	AccountName        string `json:"accountName,omitempty"`
+	FilterCategoryName string `json:"filterCategoryName,omitempty"`
+	FilterPayeeName    string `json:"filterPayeeName,omitempty"`
+}
+
+// RulePreview reports how many currently-uncategorized transactions a
+// hypothetical rule (or rule edit) would categorize, and which of those would
+// be changed by its extra actions. It powers the rule editor's live
+// "N transactions match" hint without writing anything.
+type RulePreview struct {
+	Matched int `json:"matched"`
 }
 
 // Link pairs two transactions that belong together — typically a transfer
@@ -492,6 +557,23 @@ type BulkDeleteTransactionsRequest struct {
 	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
 }
 
+// BulkUpdateTagsRequest adds and/or removes tags on many transactions at once.
+// Add and Remove are applied in that order (remove wins when a tag appears in
+// both), blank entries are ignored, and duplicates are collapsed.
+type BulkUpdateTagsRequest struct {
+	TransactionIDs []uuid.UUID `json:"transactionIds" binding:"required"`
+	Add            []string    `json:"add"`
+	Remove         []string    `json:"remove"`
+}
+
+// RenameTagRequest renames every use of one tag to another across the user's
+// transactions. It is the "managed lookup" operation tags get in place of an
+// id-based entity: the name is the identity.
+type RenameTagRequest struct {
+	From string `json:"from" binding:"required"`
+	To   string `json:"to" binding:"required"`
+}
+
 // BulkLoanRequest attaches a batch of transactions to a single loan/EMI
 // account (LoanAccountID set) or detaches them from whatever loan account they
 // are currently attached to (LoanAccountID absent/null). One transaction can be
@@ -558,6 +640,19 @@ type CreateRuleRequest struct {
 	CategoryID uuid.UUID  `json:"categoryId" binding:"required"`
 	PayeeID    *uuid.UUID `json:"payeeId"`
 	Priority   int        `json:"priority"`
+
+	AccountID        *uuid.UUID    `json:"accountId"`
+	FilterCategoryID *uuid.UUID    `json:"filterCategoryId"`
+	FilterPayeeID    *uuid.UUID    `json:"filterPayeeId"`
+	MinAmount        *money.Amount `json:"minAmount"`
+	MaxAmount        *money.Amount `json:"maxAmount"`
+	TxnType          string        `json:"txnType"`
+	DateFrom         string        `json:"dateFrom"`
+	DateTo           string        `json:"dateTo"`
+	IsLinked         *bool         `json:"isLinked"`
+	IsRecurring      *bool         `json:"isRecurring"`
+	AddTags          []string      `json:"addTags"`
+	Notes            string        `json:"notes"`
 }
 
 // UpdateRuleRequest is the body for PUT /api/v1/rules/:id.
@@ -567,6 +662,19 @@ type UpdateRuleRequest struct {
 	CategoryID uuid.UUID  `json:"categoryId"`
 	PayeeID    *uuid.UUID `json:"payeeId"`
 	Priority   int        `json:"priority"`
+
+	AccountID        *uuid.UUID    `json:"accountId"`
+	FilterCategoryID *uuid.UUID    `json:"filterCategoryId"`
+	FilterPayeeID    *uuid.UUID    `json:"filterPayeeId"`
+	MinAmount        *money.Amount `json:"minAmount"`
+	MaxAmount        *money.Amount `json:"maxAmount"`
+	TxnType          string        `json:"txnType"`
+	DateFrom         string        `json:"dateFrom"`
+	DateTo           string        `json:"dateTo"`
+	IsLinked         *bool         `json:"isLinked"`
+	IsRecurring      *bool         `json:"isRecurring"`
+	AddTags          []string      `json:"addTags"`
+	Notes            string        `json:"notes"`
 }
 
 // CreatePayeeRequest is the body for POST /api/v1/payees.
@@ -1122,6 +1230,20 @@ type BackupRule struct {
 	CategoryID uuid.UUID  `json:"categoryId"`
 	PayeeID    *uuid.UUID `json:"payeeId,omitempty"`
 	Priority   int        `json:"priority"`
+	// Conditions & extra actions (added with richer rules). All optional so a
+	// bundle written before they existed still restores as a pattern-only rule.
+	AccountID        *uuid.UUID    `json:"accountId,omitempty"`
+	FilterCategoryID *uuid.UUID    `json:"filterCategoryId,omitempty"`
+	FilterPayeeID    *uuid.UUID    `json:"filterPayeeId,omitempty"`
+	MinAmount        *money.Amount `json:"minAmount,omitempty"`
+	MaxAmount        *money.Amount `json:"maxAmount,omitempty"`
+	TxnType          string        `json:"txnType,omitempty"`
+	DateFrom         *string       `json:"dateFrom,omitempty"`
+	DateTo           *string       `json:"dateTo,omitempty"`
+	IsLinked         *bool         `json:"isLinked,omitempty"`
+	IsRecurring      *bool         `json:"isRecurring,omitempty"`
+	AddTags          []string      `json:"addTags,omitempty"`
+	Notes            string        `json:"notes,omitempty"`
 }
 
 // BackupImportResult reports how many rows a restore created per resource and

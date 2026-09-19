@@ -43,6 +43,9 @@ vi.mock("../../context/ThemeContext", () => ({
 vi.mock("./AccountTypesManager", () => ({
   default: () => <div>Account types manager</div>,
 }));
+vi.mock("./AdminCatalogManager", () => ({
+  default: () => <div>Admin catalog manager</div>,
+}));
 vi.mock("./PaperlessSettingsManager", () => ({
   default: () => <div>Paperless manager</div>,
 }));
@@ -90,6 +93,7 @@ describe("Settings", () => {
     render(<Settings />);
     expect(screen.queryByText("Account types manager")).toBeNull();
     expect(screen.queryByText("Account Types")).toBeNull();
+    expect(screen.queryByText("Admin catalog manager")).toBeNull();
   });
 
   it("shows the Account Types manager for admins", () => {
@@ -97,6 +101,7 @@ describe("Settings", () => {
     render(<Settings />);
     expect(screen.getByText("Account Types")).toBeInTheDocument();
     expect(screen.getByText("Account types manager")).toBeInTheDocument();
+    expect(screen.getByText("Admin catalog manager")).toBeInTheDocument();
   });
 
   it("renders the Paperless manager and the app version", () => {

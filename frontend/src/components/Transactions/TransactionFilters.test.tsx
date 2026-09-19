@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TransactionFilters from "./TransactionFilters";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, Payee } from "../../types";
+import type { Account, Payee, TagCount } from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -30,6 +30,7 @@ const accounts: Account[] = [
 ];
 
 const payees = [{ id: "p1", name: "Swiggy" }] as unknown as Payee[];
+const tags = [{ name: "trip", count: 2 }] as unknown as TagCount[];
 
 const categorySections = [
   {
@@ -59,6 +60,7 @@ function renderFilters(
     onFilterChange: vi.fn(),
     accounts,
     payees,
+    tags,
     categorySections,
     groupIds: new Set(["g1"]),
     preset: "50",

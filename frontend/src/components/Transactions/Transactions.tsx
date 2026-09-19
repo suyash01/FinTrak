@@ -6,7 +6,7 @@ import {
   type RowSelectionState,
   type SortingState,
 } from "@/lib/react-table";
-import { Plus } from "lucide-react";
+import { Plus, Download } from "lucide-react";
 import LinkTransactionModal from "./LinkTransactionModal";
 import EditTransactionModal from "./EditTransactionModal";
 import TraceChainModal from "./TraceChainModal";
@@ -20,6 +20,7 @@ import type {
   Transaction,
   BillingCycle,
   RecurringSeries,
+  TagCount,
   TransactionsResponse,
   QueryParams,
 } from "../../types";
@@ -314,6 +315,17 @@ export default function Transactions() {
   );
   // Recurring subscriptions for the bulk "Link to subscription" action.
   const [recurringSeries, setRecurringSeries] = useState<RecurringSeries[]>([]);
+  // Tag vocabulary (name + usage count) powering the tag filter and the bulk
+  // add/remove actions. Derived from transactions.tags server-side.
+  const [tags, setTags] = useState<TagCount[]>([]);
+  const refreshTags = useCallback(() => {
+    api
+      .getTags()
+      .then((res) => setTags(res.data || []))
+      .catch(() => {
+        /* the tag filter/actions are simply not offered */
+      });
+  }, []);
   // Account id -> closed flag, so row actions can hide editing/deleting on
   // closed accounts (only linking stays possible).
   const closedById = useMemo(() => {
@@ -338,6 +350,11 @@ export default function Transactions() {
     };
   }, []);
 
+  // Load the tag vocabulary once; non-critical if it fails.
+  useEffect(() => {
+    refreshTags();
+  }, [refreshTags]);
+
   // True when any filter deviates from the defaults, so the header can tell a
   // filtered count apart from the unfiltered "all accounts" total.
   const isFiltered = useMemo(
@@ -350,7 +367,8 @@ export default function Transactions() {
       filters.type !== "" ||
       filters.dateFrom !== "" ||
       filters.dateTo !== "" ||
-      filters.linked !== "",
+      filters.linked !== "" ||
+      filters.tags !== "",
     [filters],
   );
 
@@ -608,6 +626,22 @@ export default function Transactions() {
     }
   };
 
+  const handleBulkUpdateTags = async (value: string, mode: "add" | "remove") => {
+    if (selected.size === 0 || !value) return;
+    try {
+      await api.bulkUpdateTags({
+        transactionIds: [...selected],
+        add: mode === "add" ? [value] : [],
+        remove: mode === "remove" ? [value] : [],
+      });
+      loadTransactions();
+      refreshTags();
+      setSelected(new Set());
+    } catch (err) {
+      toastApiError(err);
+    }
+  };
+
   const handleBulkDelete = () => {
     if (selected.size === 0) return;
     setBulkDeleteOpen(true);
@@ -626,6 +660,31 @@ export default function Transactions() {
   const handleDelete = useCallback((id: string) => {
     setDeleteTxnId(id);
   }, []);
+
+  // Export exactly what is currently filtered, using the same params the list
+  // query uses (minus pagination/sorting).
+  const handleExport = async () => {
+    try {
+      const params: QueryParams = {};
+      Object.entries(filters).forEach(([k, v]) => {
+        if (v !== "" && v !== null && v !== undefined) params[k] = v;
+      });
+      delete params.page;
+      delete params.limit;
+      delete params.sortBy;
+      delete params.sortOrder;
+      if (params.accountId) {
+        const loanAcc = accounts.find((a) => a.id === params.accountId);
+        if (loanAcc?.accountTypeId === "loan") {
+          params.loanAccountId = params.accountId;
+          delete params.accountId;
+        }
+      }
+      await api.exportTransactions(params);
+    } catch (err) {
+      toastApiError(err);
+    }
+  };
 
   const confirmDelete = useCallback(
     async (id: string) => {
@@ -666,13 +725,24 @@ export default function Transactions() {
               {isFiltered ? " matching your filters" : " across all accounts"}
             </p>
           </div>
-          <Button
-            className="px-4 shadow-lg shadow-primary/20"
-            onClick={() => setCreating(true)}
-          >
-            <Plus size={16} />
-            Add Transaction
-          </Button>
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              className="px-4"
+              onClick={handleExport}
+              title="Export the currently filtered transactions as CSV"
+            >
+              <Download size={16} />
+              Export CSV
+            </Button>
+            <Button
+              className="px-4 shadow-lg shadow-primary/20"
+              onClick={() => setCreating(true)}
+            >
+              <Plus size={16} />
+              Add Transaction
+            </Button>
+          </div>
         </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
@@ -682,6 +752,7 @@ export default function Transactions() {
           onFilterChange={updateFilter}
           accounts={accounts}
           payees={payees}
+          tags={tags}
           categorySections={categorySections}
           groupIds={groupIds}
           preset={preset}
@@ -701,11 +772,13 @@ export default function Transactions() {
             billingCycles={billingCycles}
             loanAccounts={loanAccounts}
             recurringSeries={recurringSeries}
+            tags={tags}
             onCategorize={handleBulkCategorize}
             onUpdatePayee={handleBulkUpdatePayee}
             onSetBillingCycle={handleBulkSetBillingCycle}
             onLinkLoan={handleBulkLinkLoan}
             onLinkRecurring={handleBulkLinkRecurring}
+            onUpdateTags={handleBulkUpdateTags}
             onDelete={handleBulkDelete}
             onClear={() => setSelected(new Set())}
           />

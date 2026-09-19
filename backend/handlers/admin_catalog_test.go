@@ -18,11 +18,85 @@ func newAdminCatalogRouter(srv *Server) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.Default()
 	r.Use(testAdminMiddleware())
+	r.GET("/admin/catalog", srv.GetAdminCatalog)
 	r.POST("/admin/groups", srv.CreateGlobalGroup)
 	r.POST("/admin/categories", srv.CreateGlobalCategory)
 	r.PUT("/admin/categories/:id", srv.UpdateGlobalCategory)
 	r.DELETE("/admin/categories/:id", srv.DeleteGlobalCategory)
 	return r
+}
+
+func TestGetAdminCatalog(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	r := newAdminCatalogRouter(newTestServer(mock))
+
+	catID := uuid.New()
+	mock.ExpectQuery("FROM category_groups g").
+		WithArgs().
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "is_base", "user_id", "sort_order", "category_count"}).
+			AddRow("expense", "Expense", "wallet", "#f00", true, nil, 1, 3))
+	mock.ExpectQuery("FROM categories c").
+		WithArgs().
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id", "group_name", "group_is_base", "transaction_count"}).
+			AddRow(catID, "Groceries", "cart", "#0f0", "expense", "Expense", true, 12))
+
+	req, _ := http.NewRequest(http.MethodGet, "/admin/catalog", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"categoryCount":3`)
+	assert.Contains(t, w.Body.String(), `"transactionCount":12`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetAdminCatalogErrors(t *testing.T) {
+	t.Run("group query error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newAdminCatalogRouter(newTestServer(mock))
+
+		mock.ExpectQuery("FROM category_groups g").
+			WithArgs().
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodGet, "/admin/catalog", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("category query error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		r := newAdminCatalogRouter(newTestServer(mock))
+
+		mock.ExpectQuery("FROM category_groups g").
+			WithArgs().
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "is_base", "user_id", "sort_order", "category_count"}))
+		mock.ExpectQuery("FROM categories c").
+			WithArgs().
+			WillReturnError(assert.AnError)
+
+		req, _ := http.NewRequest(http.MethodGet, "/admin/catalog", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 func TestCreateGlobalGroupErrors(t *testing.T) {

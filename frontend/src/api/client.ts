@@ -1,6 +1,7 @@
 import type {
   Account,
   AccountType,
+  AdminCatalog,
   ApplyRulesResult,
   AuthResponse,
   BackupImportResult,
@@ -11,6 +12,7 @@ import type {
   BulkBillingCycleRequest,
   BulkLoanRequest,
   BulkUpdatePayeeRequest,
+  BulkUpdateTagsRequest,
   CashFlowCalendar,
   Category,
   CategoryGroup,
@@ -45,9 +47,12 @@ import type {
   RecurringSeries,
   RecurringSeriesTerm,
   RecurringSuggestion,
+  RenameTagRequest,
   Rule,
+  RulePreview,
   StatementExtractor,
   StatementParseResult,
+  TagCount,
   Transaction,
   TransactionsResponse,
   UpdateAccountRequest,
@@ -382,6 +387,7 @@ const api = {
     request(`/groups/${id}`, { method: "DELETE" }),
 
   // Admin: global groups & categories shared by every user
+  getAdminCatalog: (): Promise<AdminCatalog> => request("/admin/catalog"),
   createGlobalGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/admin/groups", { method: "POST", body: JSON.stringify(data) }),
   createGlobalCategory: (data: CreateCategoryRequest): Promise<Category> =>
@@ -458,6 +464,19 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  bulkUpdateTags: (data: BulkUpdateTagsRequest): Promise<{ updated: number }> =>
+    request("/transactions/bulk-tags", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  // Filter-aware report export: honors the same params as getTransactions.
+  exportTransactions: (params: QueryParams = {}): Promise<void> => {
+    const qs = buildQuery(params);
+    return downloadFile(
+      `/transactions/export${qs ? `?${qs}` : ""}`,
+      "fintrak_transactions.csv",
+    );
+  },
 
   // Statement parsing (PDF) — forwarded by the backend to the parser service
   parseStatement: (formData: FormData): Promise<StatementParseResult> =>
@@ -540,6 +559,8 @@ const api = {
     request(`/rules/${id}`, { method: "DELETE" }),
   applyRules: (): Promise<ApplyRulesResult> =>
     request("/rules/apply", { method: "POST" }),
+  previewRule: (data: CreateRuleRequest): Promise<RulePreview> =>
+    request("/rules/preview", { method: "POST", body: JSON.stringify(data) }),
 
   // Payees
   getPayees: (): Promise<Payee[]> => request("/payees"),
@@ -549,6 +570,11 @@ const api = {
     request(`/payees/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deletePayee: (id: string): Promise<null> =>
     request(`/payees/${id}`, { method: "DELETE" }),
+
+  // Tags (derived from transactions.tags; no tag table)
+  getTags: (): Promise<{ data: TagCount[] }> => request("/tags"),
+  renameTag: (data: RenameTagRequest): Promise<{ updated: number }> =>
+    request("/tags/rename", { method: "POST", body: JSON.stringify(data) }),
 
   // Links
   getLinks: (params: QueryParams = {}): Promise<Link[]> => {

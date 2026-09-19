@@ -125,8 +125,11 @@ func TestExportUserData(t *testing.T) {
 
 	mock.ExpectQuery("FROM rules WHERE user_id").
 		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
-			AddRow(uuid.New(), "coffee", "contains", categoryID, &payeeID, 1))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority",
+			"account_id", "filter_category_id", "filter_payee_id", "min_amount", "max_amount", "txn_type",
+			"date_from", "date_to", "is_linked", "is_recurring", "add_tags", "notes"}).
+			AddRow(uuid.New(), "coffee", "contains", categoryID, &payeeID, 1,
+				nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, ""))
 
 	req, _ := http.NewRequest("GET", "/export", nil)
 	w := httptest.NewRecorder()
@@ -429,7 +432,7 @@ func TestImportUserDataFullBundle(t *testing.T) {
 	mock.ExpectExec("INSERT INTO recurring_series ").WithArgs(anyArgs(13)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO recurring_series_terms ").WithArgs(anyArgs(8)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO recurring_attachments ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec("INSERT INTO rules ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO rules ").WithArgs(anyArgs(19)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("UPDATE users SET").WithArgs(anyArgs(4)...).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 

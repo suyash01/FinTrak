@@ -1,4 +1,4 @@
-import { Search, Folder } from "lucide-react";
+import { Search, Folder, Tag } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/select";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, Payee } from "../../types";
+import type { Account, Payee, TagCount } from "../../types";
 import { PAGE_SIZE_OPTIONS } from "./transactionConstants";
 
 interface TransactionFiltersProps {
@@ -19,6 +19,7 @@ interface TransactionFiltersProps {
   onFilterChange: (key: string, value: string) => void;
   accounts: Account[];
   payees: Payee[];
+  tags: TagCount[];
   categorySections: CategorySection[];
   groupIds: Set<string>;
   preset: string;
@@ -36,6 +37,7 @@ export default function TransactionFilters({
   onFilterChange,
   accounts,
   payees,
+  tags,
   categorySections,
   groupIds,
   preset,
@@ -128,6 +130,29 @@ export default function TransactionFilters({
             {payees.map((p) => (
               <SelectItem key={p.id} value={p.id}>
                 {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={String(filters.tags || "all")}
+          onValueChange={(v) => onFilterChange("tags", v === "all" ? "" : v)}
+        >
+          <SelectTrigger
+            aria-label="Filter by tag"
+            className={`${triggerHeight} bg-background`}
+          >
+            <SelectValue placeholder="All Tags" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Tags</SelectItem>
+            {tags.map((t) => (
+              <SelectItem key={t.name} value={t.name}>
+                <span className="flex items-center gap-2">
+                  <Tag size={12} className="text-muted-foreground" />
+                  {t.name}
+                  <span className="text-muted-foreground">({t.count})</span>
+                </span>
               </SelectItem>
             ))}
           </SelectContent>

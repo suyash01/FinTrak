@@ -192,7 +192,18 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 	batch := &pgx.Batch{}
 	imported := 0
 	for _, t := range insertTxns {
-		categoryID, payeeID := autoCategorize(rules, t.Description)
+		matched := autoCategorize(rules, importRuleContext(req.AccountID, t))
+
+		var categoryID, payeeID *uuid.UUID
+		var addTags []string
+		notes := ""
+		if matched != nil {
+			cat := matched.CatID
+			categoryID = &cat
+			payeeID = matched.PayeeID
+			addTags = matched.AddTags
+			notes = matched.Notes
+		}
 
 		// If a rule gives no payee, fall back to the payee matched during import.
 		if payeeID == nil && t.PayeeID != nil {
@@ -200,9 +211,9 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		}
 
 		batch.Queue(
-			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID,
+			`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			req.AccountID, userID, t.Date, t.Description, t.Amount, t.Type, categoryID, payeeID, addTags, notes,
 		)
 		imported++
 	}
@@ -462,14 +473,29 @@ func dedupeTransactions(txns []models.ImportTransaction, existing map[string]boo
 	return kept, duplicates
 }
 
-// autoCategorize returns the category (and optional payee) of the first rule
-// matching the transaction description, or nil/nil when no rule matches. Rules
-// are expected to be pre-sorted by descending priority.
-func autoCategorize(rules []ruleEntry, description string) (*uuid.UUID, *uuid.UUID) {
-	for _, r := range rules {
-		if matchRule(description, r.Pattern, r.MatchType) {
-			return &r.CatID, r.PayeeID
+// autoCategorize returns the first rule matching the transaction context, or
+// nil when no rule matches. Rules are expected to be pre-sorted by descending
+// priority. The returned entry carries the rule's category/payee plus any extra
+// actions (tags, notes) for the caller to apply.
+func autoCategorize(rules []ruleEntry, ctx ruleContext) *ruleEntry {
+	for i := range rules {
+		if ruleMatches(rules[i], ctx) {
+			return &rules[i]
 		}
 	}
-	return nil, nil
+	return nil
+}
+
+// importRuleContext builds the matching context for an import row. Imports are
+// never linked or recurring at insert time, and have no category/payee yet
+// unless the client supplied a payee.
+func importRuleContext(accountID uuid.UUID, t models.ImportTransaction) ruleContext {
+	return ruleContext{
+		Description: t.Description,
+		AccountID:   accountID,
+		Amount:      t.Amount,
+		Type:        t.Type,
+		Date:        t.Date,
+		PayeeID:     t.PayeeID,
+	}
 }

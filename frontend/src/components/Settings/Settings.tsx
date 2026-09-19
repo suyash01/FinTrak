@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import packageJson from "../../../package.json";
 import AccountTypesManager from "./AccountTypesManager";
+import AdminCatalogManager from "./AdminCatalogManager";
 import PaperlessSettingsManager from "./PaperlessSettingsManager";
 import DataSettingsManager from "./DataSettingsManager";
 
@@ -93,6 +94,18 @@ export default function Settings() {
           <div className="bg-card border border-border rounded-xl p-6 max-w-125">
             <h3 className="text-base font-semibold mb-4">Account Types</h3>
             <AccountTypesManager />
+          </div>
+        )}
+
+        {/* Global Catalog (admin-only): shared groups & categories */}
+        {user?.role === "admin" && (
+          <div className="bg-card border border-border rounded-xl p-6 max-w-125">
+            <h3 className="text-base font-semibold mb-1">Global Catalog</h3>
+            <p className="text-[13px] text-muted-foreground mb-4">
+              Manage the category groups and categories shared with every user,
+              with usage counts.
+            </p>
+            <AdminCatalogManager />
           </div>
         )}
 

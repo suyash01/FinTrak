@@ -1143,14 +1143,14 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 
 	// Load rules for auto-categorization.
-	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
 		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"pattern", "match_type", "category_id", "payee_id"}).
-			AddRow("Zomato", "contains", catID, nil))
+		WillReturnRows(ruleEntryRows().
+			AddRow("Zomato", "contains", catID, nil, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, ""))
 
 	// Insert with auto-categorized category (no payee from rules).
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), ([]string)(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1441,19 +1441,76 @@ func TestAutoCategorize(t *testing.T) {
 		{Pattern: "Zomato", MatchType: "contains", CatID: catID, PayeeID: &payeeID},
 	}
 
-	cat, payee := autoCategorize(rules, "Zomato Order #123")
-	assert.NotNil(t, cat)
-	assert.Equal(t, catID, *cat)
-	assert.NotNil(t, payee)
-	assert.Equal(t, payeeID, *payee)
+	matched := autoCategorize(rules, ruleContext{Description: "Zomato Order #123"})
+	assert.NotNil(t, matched)
+	assert.Equal(t, catID, matched.CatID)
+	assert.NotNil(t, matched.PayeeID)
+	assert.Equal(t, payeeID, *matched.PayeeID)
 
-	cat, payee = autoCategorize(rules, "Swiggy Order")
-	assert.Nil(t, cat)
-	assert.Nil(t, payee)
+	matched = autoCategorize(rules, ruleContext{Description: "Swiggy Order"})
+	assert.Nil(t, matched)
 
-	cat, payee = autoCategorize(nil, "Anything")
-	assert.Nil(t, cat)
-	assert.Nil(t, payee)
+	matched = autoCategorize(nil, ruleContext{Description: "Anything"})
+	assert.Nil(t, matched)
+}
+
+func TestRuleMatchesConditions(t *testing.T) {
+	acct := uuid.New()
+	otherAcct := uuid.New()
+	catID := uuid.New()
+	payeeID := uuid.New()
+	linked := true
+	unlinked := false
+	min := money.FromFloat(100)
+	max := money.FromFloat(500)
+	from := "2024-01-01"
+	to := "2024-12-31"
+
+	base := ruleContext{
+		Description: "Zomato Order",
+		AccountID:   acct,
+		Amount:      money.FromFloat(250),
+		Type:        "debit",
+		Date:        "2024-06-15",
+		CategoryID:  &catID,
+		PayeeID:     &payeeID,
+		IsLinked:    true,
+	}
+
+	tests := []struct {
+		name  string
+		rule  ruleEntry
+		ctx   ruleContext
+		match bool
+	}{
+		{"account match", ruleEntry{Pattern: "zomato", MatchType: "contains", AccountID: &acct}, base, true},
+		{"account mismatch", ruleEntry{Pattern: "zomato", MatchType: "contains", AccountID: &otherAcct}, base, false},
+		{"category match", ruleEntry{Pattern: "zomato", MatchType: "contains", FilterCategoryID: &catID}, base, true},
+		{"payee match", ruleEntry{Pattern: "zomato", MatchType: "contains", FilterPayeeID: &payeeID}, base, true},
+		{"amount in range", ruleEntry{Pattern: "zomato", MatchType: "contains", MinAmount: &min, MaxAmount: &max}, base, true},
+		{"amount below range", ruleEntry{Pattern: "zomato", MatchType: "contains", MinAmount: &max}, base, false},
+		{"type match", ruleEntry{Pattern: "zomato", MatchType: "contains", TxnType: "debit"}, base, true},
+		{"type mismatch", ruleEntry{Pattern: "zomato", MatchType: "contains", TxnType: "credit"}, base, false},
+		{"date in window", ruleEntry{Pattern: "zomato", MatchType: "contains", DateFrom: &from, DateTo: &to}, base, true},
+		{"date outside window", ruleEntry{Pattern: "zomato", MatchType: "contains", DateFrom: &to}, base, false},
+		{"linked true", ruleEntry{Pattern: "zomato", MatchType: "contains", IsLinked: &linked}, base, true},
+		{"linked false mismatch", ruleEntry{Pattern: "zomato", MatchType: "contains", IsLinked: &unlinked}, base, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.match, ruleMatches(tt.rule, tt.ctx))
+		})
+	}
+}
+
+func TestUnionTagsAndAppendNote(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"}, unionTags([]string{"a"}, []string{"a", "b"}))
+	assert.Equal(t, []string{"a", "b"}, unionTags([]string{"a"}, []string{"", "b"}))
+	assert.Equal(t, []string{"a"}, unionTags([]string{"a"}, nil))
+	assert.Equal(t, "existing\nrule", appendNote("existing", "rule"))
+	assert.Equal(t, "rule", appendNote("", "rule"))
+	assert.Equal(t, "existing", appendNote("existing", ""))
 }
 
 func TestCreateTransactionCategoryNotOwned(t *testing.T) {

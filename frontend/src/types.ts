@@ -116,8 +116,59 @@ export interface Rule {
   payeeId?: string | null;
   payee?: string;
   priority: number;
+  // Conditions (all optional; all must match)
+  accountId?: string | null;
+  filterCategoryId?: string | null;
+  filterPayeeId?: string | null;
+  minAmount?: number | null;
+  maxAmount?: number | null;
+  txnType?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  isLinked?: boolean | null;
+  isRecurring?: boolean | null;
+  // Extra actions
+  addTags?: string[];
+  notes?: string;
   // Joined
   categoryName?: string;
+  accountName?: string;
+  filterCategoryName?: string;
+  filterPayeeName?: string;
+}
+
+export interface RulePreview {
+  matched: number;
+}
+
+export interface TagCount {
+  name: string;
+  count: number;
+}
+
+export interface BulkUpdateTagsRequest {
+  transactionIds: string[];
+  add?: string[];
+  remove?: string[];
+}
+
+export interface RenameTagRequest {
+  from: string;
+  to: string;
+}
+
+// Admin console: the shared global catalog with usage counts.
+export interface AdminCatalogGroup extends CategoryGroup {
+  categoryCount: number;
+}
+
+export interface AdminCatalogCategory extends Category {
+  transactionCount: number;
+}
+
+export interface AdminCatalog {
+  groups: AdminCatalogGroup[];
+  categories: AdminCatalogCategory[];
 }
 
 export type LinkType = "transfer" | "cashback" | "refund" | "bill_payment";
@@ -543,6 +594,18 @@ export interface CreateRuleRequest {
   categoryId: string;
   payeeId?: string | null;
   priority: number;
+  accountId?: string | null;
+  filterCategoryId?: string | null;
+  filterPayeeId?: string | null;
+  minAmount?: number | null;
+  maxAmount?: number | null;
+  txnType?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  isLinked?: boolean | null;
+  isRecurring?: boolean | null;
+  addTags?: string[];
+  notes?: string;
 }
 
 export interface UpdateRuleRequest {
@@ -551,6 +614,18 @@ export interface UpdateRuleRequest {
   categoryId?: string;
   payeeId?: string | null;
   priority?: number;
+  accountId?: string | null;
+  filterCategoryId?: string | null;
+  filterPayeeId?: string | null;
+  minAmount?: number | null;
+  maxAmount?: number | null;
+  txnType?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  isLinked?: boolean | null;
+  isRecurring?: boolean | null;
+  addTags?: string[];
+  notes?: string;
 }
 
 export interface CreatePayeeRequest {

@@ -2,7 +2,13 @@ import { Tags, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "../../utils/formatters";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, BillingCycle, Payee, RecurringSeries } from "../../types";
+import type {
+  Account,
+  BillingCycle,
+  Payee,
+  RecurringSeries,
+  TagCount,
+} from "../../types";
 
 // Sentinel value for the bulk "Link to Loan" action: detach instead of attach.
 export const UNLINK_LOAN = "__unlink__";
@@ -19,11 +25,13 @@ interface BulkActionBarProps {
   billingCycles: BillingCycle[];
   loanAccounts: Account[];
   recurringSeries: RecurringSeries[];
+  tags: TagCount[];
   onCategorize: (categoryId: string) => void;
   onUpdatePayee: (payeeId: string) => void;
   onSetBillingCycle: (billingCycleId: string) => void;
   onLinkLoan: (value: string) => void;
   onLinkRecurring: (value: string) => void;
+  onUpdateTags: (value: string, mode: "add" | "remove") => void;
   onDelete: () => void;
   onClear: () => void;
 }
@@ -43,11 +51,13 @@ export default function BulkActionBar({
   billingCycles,
   loanAccounts,
   recurringSeries,
+  tags,
   onCategorize,
   onUpdatePayee,
   onSetBillingCycle,
   onLinkLoan,
   onLinkRecurring,
+  onUpdateTags,
   onDelete,
   onClear,
 }: BulkActionBarProps) {
@@ -154,6 +164,36 @@ export default function BulkActionBar({
               {rs.name}
             </option>
           ))}
+        </select>
+      )}
+
+      {tags.length > 0 && (
+        <select
+          className={selectClass}
+          aria-label="Add or remove a tag on selected transactions"
+          onChange={(e) => {
+            if (e.target.value) {
+              const [mode, ...rest] = e.target.value.split(":");
+              onUpdateTags(rest.join(":"), mode as "add" | "remove");
+            }
+            e.target.value = "";
+          }}
+        >
+          <option value="">Tags...</option>
+          <optgroup label="Add tag" className="bg-popover text-muted-foreground">
+            {tags.map((t) => (
+              <option key={`add-${t.name}`} value={`add:${t.name}`}>
+                {t.name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Remove tag" className="bg-popover text-muted-foreground">
+            {tags.map((t) => (
+              <option key={`remove-${t.name}`} value={`remove:${t.name}`}>
+                {t.name}
+              </option>
+            ))}
+          </optgroup>
         </select>
       )}
 

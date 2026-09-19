@@ -943,6 +943,113 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /transactions/export:
+    get:
+      tags:
+        - Transactions
+      summary: Export the filtered transactions as CSV
+      description: >
+        Streams a flat CSV of the user's transactions honoring the same filter
+        grammar as GET /transactions (account, category/groupId, payee, tags,
+        search, date range, type, amount, linked, loan, recurring). Unlike the
+        per-account export it covers whatever the caller has filtered to and
+        includes account/category/group/payee names.
+      operationId: exportTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: accountId
+          schema: { type: string }
+        - in: query
+          name: categoryId
+          schema: { type: string }
+        - in: query
+          name: groupId
+          schema: { type: string }
+        - in: query
+          name: payeeId
+          schema: { type: string }
+        - in: query
+          name: tags
+          schema: { type: string }
+          description: Comma-separated tag list; matches transactions with any of them.
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: dateFrom
+          schema: { type: string, format: date }
+        - in: query
+          name: dateTo
+          schema: { type: string, format: date }
+        - in: query
+          name: type
+          schema: { type: string, enum: [debit, credit] }
+        - in: query
+          name: amount
+          schema: { type: string }
+        - in: query
+          name: linked
+          schema: { type: string, enum: ["true", "false"] }
+        - in: query
+          name: loanAccountId
+          schema: { type: string }
+        - in: query
+          name: recurringId
+          schema: { type: string }
+        - in: query
+          name: recurring
+          schema: { type: string, enum: [linked, unlinked] }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /transactions/bulk-tags:
+    post:
+      tags:
+        - Transactions
+      summary: Bulk add/remove tags on transactions
+      description: >
+        Adds and/or removes tags on the given transactions. Additions are
+        applied before removals, blank entries are ignored, and duplicates are
+        collapsed. At least one of add/remove is required.
+      operationId: bulkUpdateTags
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkUpdateTagsRequest"
+      responses:
+        "200":
+          description: Tag update completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /transactions/bulk-delete:
     post:
       tags:
@@ -1190,6 +1297,54 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
   # ============= Admin (global groups & categories) =============
+  /admin/catalog:
+    get:
+      tags:
+        - Admin
+      summary: Read the global catalog with usage counts
+      description: >
+        Admin-only. Returns the global category groups and global categories,
+        each with the usage counts an operator needs before editing or retiring
+        a row (categories per group, transactions per category).
+      operationId: getAdminCatalog
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Global catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        icon: { type: string }
+                        color: { type: string }
+                        isBase: { type: boolean }
+                        isGlobal: { type: boolean }
+                        sortOrder: { type: integer }
+                        categoryCount: { type: integer }
+                  categories:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Category"
+                        - type: object
+                          properties:
+                            transactionCount: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /admin/groups:
     post:
       tags:
@@ -1430,6 +1585,69 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # ============= Tags =============
+  /tags:
+    get:
+      tags:
+        - Transactions
+      summary: List the user's tags with usage counts
+      description: >
+        Tags are derived from transactions.tags (there is no tag table). Returns
+        every distinct tag and how many transactions carry it, most-used first.
+      operationId: getTags
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Tag vocabulary with usage counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TagCount"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tags/rename:
+    post:
+      tags:
+        - Transactions
+      summary: Rename a tag across all transactions
+      description: >
+        Rewrites every occurrence of one tag to another across the user's
+        transactions, collapsing any duplicate the rename creates.
+      operationId: renameTag
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameTagRequest"
+      responses:
+        "200":
+          description: Rename completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ============= Rules =============
   /rules:
     get:
@@ -1565,6 +1783,41 @@ paths:
                 properties:
                   updated:
                     type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /rules/preview:
+    post:
+      tags:
+        - Rules
+      summary: Preview how many uncategorized transactions a rule would match
+      description: >
+        Read-only. Builds the same predicate as POST /rules/apply for a
+        hypothetical rule (the request body is a CreateRuleRequest) and returns
+        how many currently-uncategorized transactions it would categorize.
+      operationId: previewRule
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRuleRequest"
+      responses:
+        "200":
+          description: Match count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -3359,6 +3612,46 @@ components:
             type: string
             format: uuid
 
+    BulkUpdateTagsRequest:
+      type: object
+      required:
+        - transactionIds
+      properties:
+        transactionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        add:
+          type: array
+          items:
+            type: string
+          description: Tags to add (applied before removals).
+        remove:
+          type: array
+          items:
+            type: string
+          description: Tags to remove.
+
+    RenameTagRequest:
+      type: object
+      required:
+        - from
+        - to
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+
+    TagCount:
+      type: object
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+
     CreatePayeeRequest:
       type: object
       required:
@@ -3390,6 +3683,50 @@ components:
           format: uuid
         priority:
           type: integer
+        accountId:
+          type: string
+          format: uuid
+          description: Condition - only match transactions on this account.
+        filterCategoryId:
+          type: string
+          format: uuid
+          description: Condition - only match transactions with this category.
+        filterPayeeId:
+          type: string
+          format: uuid
+          description: Condition - only match transactions with this payee.
+        minAmount:
+          type: number
+          description: Condition - minimum amount (major units).
+        maxAmount:
+          type: number
+          description: Condition - maximum amount (major units).
+        txnType:
+          type: string
+          enum: [debit, credit]
+          description: Condition - only match this transaction type.
+        dateFrom:
+          type: string
+          format: date
+          description: Condition - inclusive lower date bound.
+        dateTo:
+          type: string
+          format: date
+          description: Condition - inclusive upper date bound.
+        isLinked:
+          type: boolean
+          description: Condition - match only linked (true) or unlinked (false).
+        isRecurring:
+          type: boolean
+          description: Condition - match only recurring (true) or non-recurring (false).
+        addTags:
+          type: array
+          items:
+            type: string
+          description: Action - tags to add to matching transactions.
+        notes:
+          type: string
+          description: Action - note text appended to matching transactions.
 
     UpdateRuleRequest:
       type: object
@@ -3407,6 +3744,38 @@ components:
           format: uuid
         priority:
           type: integer
+        accountId:
+          type: string
+          format: uuid
+        filterCategoryId:
+          type: string
+          format: uuid
+        filterPayeeId:
+          type: string
+          format: uuid
+        minAmount:
+          type: number
+        maxAmount:
+          type: number
+        txnType:
+          type: string
+          enum: [debit, credit]
+        dateFrom:
+          type: string
+          format: date
+        dateTo:
+          type: string
+          format: date
+        isLinked:
+          type: boolean
+        isRecurring:
+          type: boolean
+        addTags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
 
     CreateLinkRequest:
       type: object
@@ -3688,6 +4057,44 @@ components:
           type: string
         priority:
           type: integer
+        accountId:
+          type: string
+          format: uuid
+        accountName:
+          type: string
+        filterCategoryId:
+          type: string
+          format: uuid
+        filterCategoryName:
+          type: string
+        filterPayeeId:
+          type: string
+          format: uuid
+        filterPayeeName:
+          type: string
+        minAmount:
+          type: number
+        maxAmount:
+          type: number
+        txnType:
+          type: string
+          enum: [debit, credit]
+        dateFrom:
+          type: string
+          format: date
+        dateTo:
+          type: string
+          format: date
+        isLinked:
+          type: boolean
+        isRecurring:
+          type: boolean
+        addTags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
 
     Link:
       type: object

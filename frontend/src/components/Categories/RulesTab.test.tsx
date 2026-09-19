@@ -21,6 +21,7 @@ const { apiMock, domainMock, toastMock } = vi.hoisted(() => ({
     updateRule: vi.fn(),
     deleteRule: vi.fn(),
     applyRules: vi.fn(),
+    previewRule: vi.fn(),
   },
   domainMock: { useDomainData: vi.fn() },
   toastMock: { error: vi.fn(), success: vi.fn() },
@@ -82,7 +83,12 @@ const rules: Rule[] = [
 ];
 
 const setDomain = () =>
-  domainMock.useDomainData.mockReturnValue({ categories, groups, payees });
+  domainMock.useDomainData.mockReturnValue({
+    categories,
+    groups,
+    payees,
+    accounts: [],
+  });
 
 function comboboxes(): HTMLElement[] {
   return screen.getAllByRole("combobox");
@@ -97,6 +103,7 @@ describe("RulesTab", () => {
     apiMock.updateRule.mockResolvedValue({});
     apiMock.deleteRule.mockResolvedValue(null);
     apiMock.applyRules.mockResolvedValue({ updated: 0 });
+    apiMock.previewRule.mockResolvedValue({ matched: 0 });
   });
 
   it("loads and renders the rule table", async () => {
@@ -108,7 +115,8 @@ describe("RulesTab", () => {
     expect(screen.getByText("starts with")).toBeInTheDocument();
     expect(screen.getAllByText("Groceries")).toHaveLength(2);
     expect(screen.getByText("Swiggy")).toBeInTheDocument();
-    expect(screen.getByText("—")).toBeInTheDocument();
+    // Rule 1: payee present, no conditions. Rule 2: no payee, no conditions.
+    expect(screen.getAllByText("—")).toHaveLength(3);
   });
 
   it("shows the empty state when there are no rules", async () => {

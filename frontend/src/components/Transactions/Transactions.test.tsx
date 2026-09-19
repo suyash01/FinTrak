@@ -35,6 +35,9 @@ const { apiMock, domainMock, setSettings, toastApiError } = vi.hoisted(() => ({
     getRecurringSeries: vi.fn(),
     attachRecurring: vi.fn(),
     detachRecurring: vi.fn(),
+    getTags: vi.fn(),
+    bulkUpdateTags: vi.fn(),
+    exportTransactions: vi.fn(),
   },
   domainMock: { useDomainData: vi.fn() },
   setSettings: vi.fn(),
@@ -147,6 +150,7 @@ beforeEach(() => {
   });
   apiMock.getBillingCycles.mockResolvedValue({ data: [] });
   apiMock.getRecurringSeries.mockResolvedValue({ data: [] });
+  apiMock.getTags.mockResolvedValue({ data: [] });
   apiMock.updateTransaction.mockResolvedValue({});
   apiMock.bulkCategorize.mockResolvedValue({});
   apiMock.updateUserSettings.mockResolvedValue({});

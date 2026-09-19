@@ -5,8 +5,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import GroupsTab from "./GroupsTab";
 import CategoriesTab from "./CategoriesTab";
 import RulesTab from "./RulesTab";
+import TagsTab from "./TagsTab";
 
-type CategoryTab = "groups" | "categories" | "rules";
+type CategoryTab = "groups" | "categories" | "rules" | "tags";
 
 const TAB_PARAM = "tab";
 
@@ -15,7 +16,7 @@ export default function Categories() {
   const syncedUrlRef = useRef(searchParams.toString());
   const [tab, setTab] = useState<CategoryTab>(() => {
     const t = searchParams.get(TAB_PARAM);
-    return t === "categories" || t === "rules" ? t : "groups";
+    return t === "categories" || t === "rules" || t === "tags" ? t : "groups";
   });
   const { compactLayout } = useSettings();
 
@@ -35,7 +36,7 @@ export default function Categories() {
     if (currentQs === syncedUrlRef.current) return;
     const t = searchParams.get(TAB_PARAM);
     const next: CategoryTab =
-      t === "categories" || t === "rules" ? t : "groups";
+      t === "categories" || t === "rules" || t === "tags" ? t : "groups";
     if (next !== tab) setTab(next);
     syncedUrlRef.current = currentQs;
     // React to external URL changes only; the setters/state read above are
@@ -68,6 +69,7 @@ export default function Categories() {
               <TabsTrigger value="groups">Groups</TabsTrigger>
               <TabsTrigger value="categories">Categories</TabsTrigger>
               <TabsTrigger value="rules">Rules</TabsTrigger>
+              <TabsTrigger value="tags">Tags</TabsTrigger>
             </TabsList>
           </div>
 
@@ -81,6 +83,10 @@ export default function Categories() {
 
           <TabsContent value="rules">
             <RulesTab />
+          </TabsContent>
+
+          <TabsContent value="tags">
+            <TagsTab />
           </TabsContent>
         </Tabs>
       </div>

@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/fintrak/backend/auth"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -16,14 +18,23 @@ import (
 )
 
 // GetRules lists the user's categorization rules, highest priority first, with
-// the joined category name and payee name.
+// the joined category/payee/account/filter names.
 func (srv *Server) GetRules(c *gin.Context) {
 	rows, err := srv.db.Query(c,
 		`SELECT r.id, r.pattern, r.match_type, r.category_id, r.payee_id, COALESCE(p.name, '') as payee, r.priority,
-		 COALESCE(c.name, '') as category_name
+		 COALESCE(c.name, '') as category_name,
+		 r.account_id, COALESCE(a.name, '') as account_name,
+		 r.filter_category_id, COALESCE(fc.name, '') as filter_category_name,
+		 r.filter_payee_id, COALESCE(fp.name, '') as filter_payee_name,
+		 r.min_amount, r.max_amount, COALESCE(r.txn_type, ''),
+		 r.date_from, r.date_to, r.is_linked, r.is_recurring,
+		 COALESCE(r.add_tags, '{}'), COALESCE(r.notes, '')
 		 FROM rules r
 		 LEFT JOIN categories c ON r.category_id = c.id
 		 LEFT JOIN payees p ON r.payee_id = p.id
+		 LEFT JOIN accounts a ON r.account_id = a.id
+		 LEFT JOIN categories fc ON r.filter_category_id = fc.id
+		 LEFT JOIN payees fp ON r.filter_payee_id = fp.id
 		 WHERE r.user_id = $1
 		 ORDER BY r.priority DESC`, auth.GetUserID(c))
 	if err != nil {
@@ -36,11 +47,17 @@ func (srv *Server) GetRules(c *gin.Context) {
 	rules := []models.Rule{}
 	for rows.Next() {
 		var r models.Rule
-		if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Payee, &r.Priority, &r.CategoryName); err != nil {
+		var dateFrom, dateTo *time.Time
+		if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Payee, &r.Priority,
+			&r.CategoryName, &r.AccountID, &r.AccountName, &r.FilterCategoryID, &r.FilterCategoryName,
+			&r.FilterPayeeID, &r.FilterPayeeName, &r.MinAmount, &r.MaxAmount, &r.TxnType,
+			&dateFrom, &dateTo, &r.IsLinked, &r.IsRecurring, &r.AddTags, &r.Notes); err != nil {
 			slog.Error("GetRules scan", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		r.DateFrom = formatDatePtr(dateFrom)
+		r.DateTo = formatDatePtr(dateTo)
 		rules = append(rules, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -52,8 +69,52 @@ func (srv *Server) GetRules(c *gin.Context) {
 	c.JSON(http.StatusOK, rules)
 }
 
-// CreateRule inserts a categorization rule, defaulting MatchType to "contains"
-// and rejecting references to categories/payees the user doesn't own.
+// formatDatePtr formats an optional DATE for JSON ("YYYY-MM-DD").
+func formatDatePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format("2006-01-02")
+	return &s
+}
+
+// normalizeRuleMatchType defaults an empty match type to "contains" and rejects
+// an unknown one so a typo never silently creates a rule that can't fire.
+func normalizeRuleMatchType(c *gin.Context, mt string) (string, bool) {
+	if mt == "" {
+		return "contains", true
+	}
+	switch mt {
+	case "contains", "starts_with", "exact":
+		return mt, true
+	}
+	validation.RespondError(c, "matchType must be 'contains', 'starts_with' or 'exact'", http.StatusBadRequest)
+	return "", false
+}
+
+// validateRuleDates parses optional date bounds, writing a 400 and returning
+// false when either is not YYYY-MM-DD.
+func validateRuleDates(c *gin.Context, from, to string) (fromPtr, toPtr *string, ok bool) {
+	if from != "" {
+		if _, err := time.Parse("2006-01-02", from); err != nil {
+			validation.RespondError(c, "invalid dateFrom (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return nil, nil, false
+		}
+		fromPtr = &from
+	}
+	if to != "" {
+		if _, err := time.Parse("2006-01-02", to); err != nil {
+			validation.RespondError(c, "invalid dateTo (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return nil, nil, false
+		}
+		toPtr = &to
+	}
+	return fromPtr, toPtr, true
+}
+
+// CreateRule inserts a categorization rule with optional conditions/actions,
+// defaulting MatchType to "contains" and rejecting references to
+// accounts/categories/payees the user doesn't own.
 func (srv *Server) CreateRule(c *gin.Context) {
 	var req models.CreateRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -61,29 +122,58 @@ func (srv *Server) CreateRule(c *gin.Context) {
 		return
 	}
 
-	if req.MatchType == "" {
-		req.MatchType = "contains"
+	matchType, ok := normalizeRuleMatchType(c, req.MatchType)
+	if !ok {
+		return
+	}
+	if req.TxnType != "" && req.TxnType != "debit" && req.TxnType != "credit" {
+		validation.RespondError(c, "txnType must be 'debit' or 'credit'", http.StatusBadRequest)
+		return
+	}
+	dateFrom, dateTo, ok := validateRuleDates(c, req.DateFrom, req.DateTo)
+	if !ok {
+		return
 	}
 
 	var rule models.Rule
 	err := srv.db.QueryRow(c,
-		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority)
-		 SELECT $1, $2, $3, $4, $5, $6
+		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority,
+		     account_id, filter_category_id, filter_payee_id, min_amount, max_amount, txn_type,
+		     date_from, date_to, is_linked, is_recurring, add_tags, notes)
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))
 		   AND ($5 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
+		   AND ($7 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $7 AND a.user_id = $1))
+		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $8 AND (fc.user_id = $1 OR fc.user_id IS NULL)))
+		   AND ($9 IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $9 AND fp.user_id = $1))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
-		auth.GetUserID(c), req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority,
+		auth.GetUserID(c), req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
+		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount, nullIfEmpty(req.TxnType),
+		dateFrom, dateTo, req.IsLinked, req.IsRecurring, req.AddTags, req.Notes,
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
+			validation.RespondError(c, "referenced category, payee, or account not found", http.StatusBadRequest)
 			return
 		}
 		slog.Error("CreateRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	rule.AccountID = req.AccountID
+	rule.FilterCategoryID = req.FilterCategoryID
+	rule.FilterPayeeID = req.FilterPayeeID
+	rule.MinAmount = req.MinAmount
+	rule.MaxAmount = req.MaxAmount
+	rule.TxnType = req.TxnType
+	rule.DateFrom = dateFrom
+	rule.DateTo = dateTo
+	rule.IsLinked = req.IsLinked
+	rule.IsRecurring = req.IsRecurring
+	rule.AddTags = req.AddTags
+	rule.Notes = req.Notes
 
 	c.JSON(http.StatusCreated, rule)
 }
@@ -113,7 +203,7 @@ func (srv *Server) DeleteRule(c *gin.Context) {
 }
 
 // UpdateRule edits a rule's fields, enforcing ownership of any referenced
-// category/payee and returning 404 when the rule isn't found.
+// account/category/payee and returning 404 when the rule isn't found.
 func (srv *Server) UpdateRule(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -127,14 +217,36 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		return
 	}
 
+	matchType, ok := normalizeRuleMatchType(c, req.MatchType)
+	if !ok {
+		return
+	}
+	if req.TxnType != "" && req.TxnType != "debit" && req.TxnType != "credit" {
+		validation.RespondError(c, "txnType must be 'debit' or 'credit'", http.StatusBadRequest)
+		return
+	}
+	dateFrom, dateTo, ok := validateRuleDates(c, req.DateFrom, req.DateTo)
+	if !ok {
+		return
+	}
+
 	var rule models.Rule
 	err = srv.db.QueryRow(c,
-		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5
-		 WHERE id = $6 AND user_id = $7
-		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND (c.user_id = $7 OR c.user_id IS NULL))
-		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $7))
+		`UPDATE rules SET pattern = $1, match_type = $2, category_id = $3, payee_id = $4, priority = $5,
+		     account_id = $6, filter_category_id = $7, filter_payee_id = $8, min_amount = $9, max_amount = $10,
+		     txn_type = $11, date_from = $12, date_to = $13, is_linked = $14, is_recurring = $15,
+		     add_tags = $16, notes = $17
+		 WHERE id = $18 AND user_id = $19
+		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND (c.user_id = $19 OR c.user_id IS NULL))
+		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $19))
+		   AND ($6 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $6 AND a.user_id = $19))
+		   AND ($7 IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $7 AND (fc.user_id = $19 OR fc.user_id IS NULL)))
+		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $8 AND fp.user_id = $19))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
-		req.Pattern, req.MatchType, req.CategoryID, req.PayeeID, req.Priority, id, auth.GetUserID(c),
+		req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
+		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount,
+		nullIfEmpty(req.TxnType), dateFrom, dateTo, req.IsLinked, req.IsRecurring,
+		req.AddTags, req.Notes, id, auth.GetUserID(c),
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
@@ -147,16 +259,73 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		return
 	}
 
+	rule.AccountID = req.AccountID
+	rule.FilterCategoryID = req.FilterCategoryID
+	rule.FilterPayeeID = req.FilterPayeeID
+	rule.MinAmount = req.MinAmount
+	rule.MaxAmount = req.MaxAmount
+	rule.TxnType = req.TxnType
+	rule.DateFrom = dateFrom
+	rule.DateTo = dateTo
+	rule.IsLinked = req.IsLinked
+	rule.IsRecurring = req.IsRecurring
+	rule.AddTags = req.AddTags
+	rule.Notes = req.Notes
+
 	c.JSON(http.StatusOK, rule)
 }
 
+// PreviewRule reports how many currently-uncategorized transactions a
+// hypothetical rule (or rule edit) would categorize, without writing anything.
+// It builds the same predicate ApplyRules uses, so the preview and a real apply
+// agree by construction.
+func (srv *Server) PreviewRule(c *gin.Context) {
+	var req models.CreateRuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		validation.RespondBindError(c, err)
+		return
+	}
+
+	matchType, ok := normalizeRuleMatchType(c, req.MatchType)
+	if !ok {
+		return
+	}
+	if req.TxnType != "" && req.TxnType != "debit" && req.TxnType != "credit" {
+		validation.RespondError(c, "txnType must be 'debit' or 'credit'", http.StatusBadRequest)
+		return
+	}
+	dateFrom, dateTo, ok := validateRuleDates(c, req.DateFrom, req.DateTo)
+	if !ok {
+		return
+	}
+
+	entry := ruleEntryFromRequest(req, matchType, dateFrom, dateTo)
+	f := newTxnFilter(auth.GetUserID(c))
+	f.raw("t.category_id IS NULL")
+	if !appendRulePredicate(f, entry) {
+		// An unrecognized match type never fires; report zero matches rather
+		// than an error, matching ApplyRules' skip behavior.
+		c.JSON(http.StatusOK, models.RulePreview{Matched: 0})
+		return
+	}
+
+	var matched int
+	if err := srv.db.QueryRow(c, "SELECT COUNT(*) FROM transactions t"+f.where(), f.args...).Scan(&matched); err != nil {
+		slog.Error("PreviewRule", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, models.RulePreview{Matched: matched})
+}
+
 // ApplyRules re-runs all of the user's rules against uncategorized transactions
-// (category_id IS NULL), applying the first matching rule's category and payee.
-// It runs as one set-based UPDATE per rule in descending priority order: the
-// category_id IS NULL guard means a transaction is categorized by exactly one
-// (the highest-priority matching) rule, and any failure rolls the whole apply
-// back so a mid-batch error can never commit a silently partial result.
-// Returns the number of transactions updated.
+// (category_id IS NULL), applying the first matching rule's category, payee,
+// tags and note. It runs as one set-based UPDATE per rule in descending
+// priority order: the category_id IS NULL guard means a transaction is
+// categorized by exactly one (the highest-priority matching) rule, and any
+// failure rolls the whole apply back so a mid-batch error can never commit a
+// silently partial result. Returns the number of transactions updated.
 func (srv *Server) ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
@@ -179,29 +348,45 @@ func (srv *Server) ApplyRules(c *gin.Context) {
 
 	updated := 0
 	for _, r := range rules {
-		// Param layout: $1 user_id, $2 category_id, and the pattern is $3
-		// (no payee) or $4 (payee at $3).
+		// Param layout: $1 user_id, $2 category_id, and the rule's own
+		// predicates (pattern + conditions) are appended from $3.
 		args := []any{userID, r.CatID}
-		payeeClause := ""
+		setClauses := []string{"category_id = $2"}
 		paramIdx := 3
+
 		if r.PayeeID != nil {
-			payeeClause = ", payee_id = $3"
-			args = append(args, r.PayeeID)
-			paramIdx = 4
+			setClauses = append(setClauses, fmt.Sprintf("payee_id = $%d", paramIdx))
+			args = append(args, *r.PayeeID)
+			paramIdx++
 		}
-		matchExpr, matchArg, ok := ruleMatchSQL(r.MatchType, r.Pattern, paramIdx)
-		if !ok {
+		if len(r.AddTags) > 0 {
+			setClauses = append(setClauses, fmt.Sprintf(
+				"tags = (SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), '{}') FROM unnest(tags || $%d::text[]) AS x)", paramIdx))
+			args = append(args, r.AddTags)
+			paramIdx++
+		}
+		if r.Notes != "" {
+			setClauses = append(setClauses, fmt.Sprintf(
+				"notes = CASE WHEN notes = '' THEN $%d ELSE notes || E'\\n' || $%d END", paramIdx, paramIdx))
+			args = append(args, r.Notes)
+			paramIdx++
+		}
+
+		f := &txnFilter{args: args}
+		f.raw("category_id IS NULL")
+		if !appendRulePredicate(f, r) {
 			// Unrecognized match types never fire in matchRule either — skip
 			// them here rather than failing the whole batch.
 			continue
 		}
-		args = append(args, matchArg)
 
-		res, err := tx.Exec(c,
-			fmt.Sprintf(`UPDATE transactions SET category_id = $2%s
-			 WHERE user_id = $1 AND category_id IS NULL AND %s`, payeeClause, matchExpr),
-			args...,
-		)
+		// Rebuild the args after appendRulePredicate appended condition args.
+		// The SET placeholders above reference the first len(args) positions,
+		// which appendRulePredicate must therefore start after.
+		query := fmt.Sprintf("UPDATE transactions SET %s WHERE user_id = $1 AND %s",
+			strings.Join(setClauses, ", "), strings.Join(f.clauses, " AND "))
+
+		res, err := tx.Exec(c, query, f.args...)
 		if err != nil {
 			slog.Error("applying rule", slog.String("pattern", r.Pattern), slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -242,19 +427,129 @@ func escapeLikePattern(p string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
 }
 
-// ruleEntry is the minimal rule representation used for in-memory matching
-// during transaction creation, imports, and ApplyRules.
+// ruleEntry is the in-memory representation used for matching during
+// transaction creation, imports, and ApplyRules. Its optional fields are the
+// rule's conditions (all ANDed) and its extra actions.
 type ruleEntry struct {
 	Pattern   string
 	MatchType string
 	CatID     uuid.UUID
 	PayeeID   *uuid.UUID
+
+	AccountID        *uuid.UUID
+	FilterCategoryID *uuid.UUID
+	FilterPayeeID    *uuid.UUID
+	MinAmount        *money.Amount
+	MaxAmount        *money.Amount
+	TxnType          string
+	DateFrom         *string
+	DateTo           *string
+	IsLinked         *bool
+	IsRecurring      *bool
+
+	AddTags []string
+	Notes   string
 }
 
-// loadRules fetches the user's rules ordered by descending priority.
+// ruleContext is the transaction state a rule is matched against. CategoryID
+// and PayeeID are the transaction's current values (nil for a new/uncategorized
+// transaction); IsLinked/IsRecurring are false at create time.
+type ruleContext struct {
+	Description string
+	AccountID   uuid.UUID
+	Amount      money.Amount
+	Type        string
+	Date        string
+	CategoryID  *uuid.UUID
+	PayeeID     *uuid.UUID
+	IsLinked    bool
+	IsRecurring bool
+}
+
+// ruleEntryFromRequest maps a create-rule request into a ruleEntry (used by the
+// preview endpoint, which doesn't persist the rule).
+func ruleEntryFromRequest(req models.CreateRuleRequest, matchType string, dateFrom, dateTo *string) ruleEntry {
+	return ruleEntry{
+		Pattern:          req.Pattern,
+		MatchType:        matchType,
+		CatID:            req.CategoryID,
+		PayeeID:          req.PayeeID,
+		AccountID:        req.AccountID,
+		FilterCategoryID: req.FilterCategoryID,
+		FilterPayeeID:    req.FilterPayeeID,
+		MinAmount:        req.MinAmount,
+		MaxAmount:        req.MaxAmount,
+		TxnType:          req.TxnType,
+		DateFrom:         dateFrom,
+		DateTo:           dateTo,
+		IsLinked:         req.IsLinked,
+		IsRecurring:      req.IsRecurring,
+		AddTags:          req.AddTags,
+		Notes:            req.Notes,
+	}
+}
+
+// appendRulePredicate appends a rule's full WHERE predicate (description match
+// plus every set condition) to f. Columns are referenced unqualified so the
+// same predicate works both for a plain `transactions` scan and for an
+// `UPDATE transactions ...` (neither introduces an alias). It returns false for
+// an unrecognized match type (which never fires) without appending anything.
+func appendRulePredicate(f *txnFilter, r ruleEntry) bool {
+	matchExpr, matchArg, ok := ruleMatchSQL(r.MatchType, r.Pattern, len(f.args)+1)
+	if !ok {
+		return false
+	}
+	f.param(matchExpr, matchArg)
+
+	if r.AccountID != nil {
+		f.param("account_id = $%d", *r.AccountID)
+	}
+	if r.FilterCategoryID != nil {
+		f.param("category_id = $%d", *r.FilterCategoryID)
+	}
+	if r.FilterPayeeID != nil {
+		f.param("payee_id = $%d", *r.FilterPayeeID)
+	}
+	if r.MinAmount != nil {
+		f.param("amount >= $%d", *r.MinAmount)
+	}
+	if r.MaxAmount != nil {
+		f.param("amount <= $%d", *r.MaxAmount)
+	}
+	if r.TxnType != "" {
+		f.param("type = $%d", r.TxnType)
+	}
+	if r.DateFrom != nil {
+		f.param("date >= $%d", *r.DateFrom)
+	}
+	if r.DateTo != nil {
+		f.param("date <= $%d", *r.DateTo)
+	}
+	if r.IsLinked != nil {
+		if *r.IsLinked {
+			f.raw("EXISTS (SELECT 1 FROM links WHERE from_txn_id = transactions.id OR to_txn_id = transactions.id)")
+		} else {
+			f.raw("NOT EXISTS (SELECT 1 FROM links WHERE from_txn_id = transactions.id OR to_txn_id = transactions.id)")
+		}
+	}
+	if r.IsRecurring != nil {
+		if *r.IsRecurring {
+			f.raw("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = transactions.id)")
+		} else {
+			f.raw("NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = transactions.id)")
+		}
+	}
+	return true
+}
+
+// loadRules fetches the user's rules (with conditions/actions) ordered by
+// descending priority.
 func (srv *Server) loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
 	rows, err := srv.db.Query(c,
-		"SELECT pattern, match_type, category_id, payee_id FROM rules WHERE user_id = $1 ORDER BY priority DESC", userID)
+		`SELECT pattern, match_type, category_id, payee_id,
+		        account_id, filter_category_id, filter_payee_id, min_amount, max_amount, txn_type,
+		        date_from, date_to, is_linked, is_recurring, COALESCE(add_tags, '{}'), COALESCE(notes, '')
+		 FROM rules WHERE user_id = $1 ORDER BY priority DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +558,14 @@ func (srv *Server) loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, err
 	rules := []ruleEntry{}
 	for rows.Next() {
 		var r ruleEntry
-		if err := rows.Scan(&r.Pattern, &r.MatchType, &r.CatID, &r.PayeeID); err != nil {
+		var dateFrom, dateTo *time.Time
+		if err := rows.Scan(&r.Pattern, &r.MatchType, &r.CatID, &r.PayeeID,
+			&r.AccountID, &r.FilterCategoryID, &r.FilterPayeeID, &r.MinAmount, &r.MaxAmount, &r.TxnType,
+			&dateFrom, &dateTo, &r.IsLinked, &r.IsRecurring, &r.AddTags, &r.Notes); err != nil {
 			return nil, err
 		}
+		r.DateFrom = formatDatePtr(dateFrom)
+		r.DateTo = formatDatePtr(dateTo)
 		rules = append(rules, r)
 	}
 	return rules, rows.Err()
@@ -287,4 +587,96 @@ func matchRule(desc, pattern, matchType string) bool {
 		return descLower == patternLower
 	}
 	return false
+}
+
+// ruleMatches reports whether a transaction context satisfies a rule's
+// description pattern and every set condition. A rule with no conditions
+// reduces to matchRule.
+func ruleMatches(r ruleEntry, ctx ruleContext) bool {
+	if !matchRule(ctx.Description, r.Pattern, r.MatchType) {
+		return false
+	}
+	if r.AccountID != nil && *r.AccountID != ctx.AccountID {
+		return false
+	}
+	if r.FilterCategoryID != nil {
+		if ctx.CategoryID == nil || *ctx.CategoryID != *r.FilterCategoryID {
+			return false
+		}
+	}
+	if r.FilterPayeeID != nil {
+		if ctx.PayeeID == nil || *ctx.PayeeID != *r.FilterPayeeID {
+			return false
+		}
+	}
+	if r.MinAmount != nil && ctx.Amount < *r.MinAmount {
+		return false
+	}
+	if r.MaxAmount != nil && ctx.Amount > *r.MaxAmount {
+		return false
+	}
+	if r.TxnType != "" && ctx.Type != r.TxnType {
+		return false
+	}
+	if r.DateFrom != nil && ctx.Date < *r.DateFrom {
+		return false
+	}
+	if r.DateTo != nil && ctx.Date > *r.DateTo {
+		return false
+	}
+	if r.IsLinked != nil && *r.IsLinked != ctx.IsLinked {
+		return false
+	}
+	if r.IsRecurring != nil && *r.IsRecurring != ctx.IsRecurring {
+		return false
+	}
+	return true
+}
+
+// nullIfEmpty maps "" to a nil so an unset string column is stored as NULL.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// unionTags returns base plus additions, de-duplicated and preserving order
+// (base first). Used to apply a rule's AddTags to a transaction's own tags.
+func unionTags(base, additions []string) []string {
+	if len(additions) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(additions))
+	out := make([]string, 0, len(base)+len(additions))
+	for _, t := range base {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	for _, t := range additions {
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+// appendNote appends a rule's note to a transaction's existing notes (or
+// returns the note when there are none), matching ApplyRules' newline join.
+func appendNote(existing, note string) string {
+	if note == "" {
+		return existing
+	}
+	if existing == "" {
+		return note
+	}
+	return existing + "\n" + note
 }

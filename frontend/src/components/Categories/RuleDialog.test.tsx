@@ -71,6 +71,8 @@ function Harness({
       onSubmit={onSubmit}
       categorySections={SECTIONS}
       payees={PAYEES}
+      accounts={[]}
+      previewCount={null}
     />
   );
 }
@@ -86,6 +88,8 @@ function renderClosed() {
       onSubmit={() => {}}
       categorySections={SECTIONS}
       payees={PAYEES}
+      accounts={[]}
+      previewCount={null}
     />,
   );
 }

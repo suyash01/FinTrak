@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +16,25 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
+
+// ruleEntryRows is the column set loadRules returns (16 columns).
+func ruleEntryRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{
+		"pattern", "match_type", "category_id", "payee_id",
+		"account_id", "filter_category_id", "filter_payee_id", "min_amount", "max_amount", "txn_type",
+		"date_from", "date_to", "is_linked", "is_recurring", "add_tags", "notes",
+	})
+}
+
+// ruleListRows is the column set GetRules returns (23 columns).
+func ruleListRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{
+		"id", "pattern", "match_type", "category_id", "payee_id", "payee", "priority", "category_name",
+		"account_id", "account_name", "filter_category_id", "filter_category_name",
+		"filter_payee_id", "filter_payee_name", "min_amount", "max_amount", "txn_type",
+		"date_from", "date_to", "is_linked", "is_recurring", "add_tags", "notes",
+	})
+}
 
 func TestMatchRule(t *testing.T) {
 	tests := []struct {
@@ -111,11 +131,11 @@ func TestApplyRules(t *testing.T) {
 	// 1. Get all rules (priority order): contains rule without payee, then
 	// starts_with rule with a payee. pgxmock can only scan pointer mock
 	// values into *uuid.UUID destinations (account_test.go's intPtr pattern).
-	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
 		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"pattern", "match_type", "category_id", "payee_id"}).
-			AddRow("Zomato", "contains", cat1, nil).
-			AddRow("Netflix", "starts_with", cat2, &payeeID))
+		WillReturnRows(ruleEntryRows().
+			AddRow("Zomato", "contains", cat1, nil, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, "").
+			AddRow("Netflix", "starts_with", cat2, &payeeID, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, ""))
 
 	// 2. One set-based UPDATE per rule (no per-transaction N+1 loop).
 	mock.ExpectBegin()
@@ -123,7 +143,7 @@ func TestApplyRules(t *testing.T) {
 		WithArgs(userID, cat1, "%Zomato%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 	mock.ExpectExec("UPDATE transactions SET category_id = \\$2, payee_id = \\$3").
-		WithArgs(userID, cat2, &payeeID, "Netflix%").
+		WithArgs(userID, cat2, payeeID, "Netflix%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
@@ -155,11 +175,11 @@ func TestApplyRulesFailureRollsBack(t *testing.T) {
 	userID := testUserID()
 	cat1 := uuid.New()
 
-	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id FROM rules").
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
 		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"pattern", "match_type", "category_id", "payee_id"}).
-			AddRow("Zomato", "contains", cat1, nil).
-			AddRow("Netflix", "contains", cat1, nil))
+		WillReturnRows(ruleEntryRows().
+			AddRow("Zomato", "contains", cat1, nil, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, "").
+			AddRow("Netflix", "contains", cat1, nil, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, ""))
 
 	// First rule's UPDATE succeeds, the second fails...
 	mock.ExpectBegin()
@@ -231,6 +251,102 @@ func newRuleTestRouter(t *testing.T) (*gin.Engine, *Server, pgxmock.PgxPoolIface
 	return r, srv, mock
 }
 
+func TestPreviewRule(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules/preview", srv.PreviewRule)
+
+	catID := uuid.New()
+	acctID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID(), "zomato%", acctID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(4))
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    "zomato",
+		MatchType:  "starts_with",
+		CategoryID: catID,
+		AccountID:  &acctID,
+	})
+	req, _ := http.NewRequest("POST", "/rules/preview", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"matched":4`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPreviewRuleInvalidTxnType(t *testing.T) {
+	r, srv, _ := newRuleTestRouter(t)
+	r.POST("/rules/preview", srv.PreviewRule)
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    "x",
+		CategoryID: uuid.New(),
+		TxnType:    "refund",
+	})
+	req, _ := http.NewRequest("POST", "/rules/preview", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestCreateRuleWithConditions(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
+
+	userID := testUserID()
+	ruleID := uuid.New()
+	catID := uuid.New()
+	acctID := uuid.New()
+	minAmount := money.FromFloat(100)
+
+	mock.ExpectQuery("INSERT INTO rules").
+		WithArgs(userID, "Zomato", "contains", catID, (*uuid.UUID)(nil), 0,
+			&acctID, (*uuid.UUID)(nil), (*uuid.UUID)(nil), &minAmount, (*money.Amount)(nil), "debit",
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{"food"}, "note").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
+			AddRow(ruleID, "Zomato", "contains", catID, nil, 0))
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    "Zomato",
+		CategoryID: catID,
+		AccountID:  &acctID,
+		MinAmount:  &minAmount,
+		TxnType:    "debit",
+		AddTags:    []string{"food"},
+		Notes:      "note",
+	})
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateRuleInvalidMatchType(t *testing.T) {
+	r, srv, _ := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    "x",
+		MatchType:  "regex",
+		CategoryID: uuid.New(),
+	})
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestGetRules(t *testing.T) {
 	r, srv, mock := newRuleTestRouter(t)
 	r.GET("/rules", srv.GetRules)
@@ -239,8 +355,9 @@ func TestGetRules(t *testing.T) {
 	ruleID := uuid.New()
 	catID := uuid.New()
 
-	rows := pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "payee", "priority", "category_name"}).
-		AddRow(ruleID, "Zomato", "contains", catID, nil, "Zomato", 10, "Food")
+	rows := ruleListRows().
+		AddRow(ruleID, "Zomato", "contains", catID, nil, "Zomato", 10, "Food",
+			nil, "", nil, "", nil, "", nil, nil, "", nil, nil, nil, nil, []string{}, "")
 
 	mock.ExpectQuery("SELECT r.id, r.pattern, r.match_type").
 		WithArgs(userID).
@@ -281,7 +398,9 @@ func TestCreateRule(t *testing.T) {
 	}
 
 	mock.ExpectQuery("INSERT INTO rules").
-		WithArgs(userID, "Swiggy", "contains", catID, &payeeID, 5).
+		WithArgs(userID, "Swiggy", "contains", catID, &payeeID, 5,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Swiggy", "contains", catID, &payeeID, 5))
 
@@ -316,7 +435,9 @@ func TestCreateRuleDefaultsMatchType(t *testing.T) {
 
 	// Empty match type defaults to "contains".
 	mock.ExpectQuery("INSERT INTO rules").
-		WithArgs(userID, "Rent", "contains", catID, (*uuid.UUID)(nil), 0).
+		WithArgs(userID, "Rent", "contains", catID, (*uuid.UUID)(nil), 0,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Rent", "contains", catID, nil, 0))
 
@@ -409,7 +530,9 @@ func TestUpdateRule(t *testing.T) {
 	}
 
 	mock.ExpectQuery("UPDATE rules SET pattern").
-		WithArgs("Netflix", "starts_with", catID, (*uuid.UUID)(nil), 3, ruleID, userID).
+		WithArgs("Netflix", "starts_with", catID, (*uuid.UUID)(nil), 3,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Netflix", "starts_with", catID, nil, 3))
 
@@ -441,7 +564,9 @@ func TestUpdateRuleNotFound(t *testing.T) {
 	}
 
 	mock.ExpectQuery("UPDATE rules SET pattern").
-		WithArgs("Netflix", "", catID, (*uuid.UUID)(nil), 0, ruleID, testUserID()).
+		WithArgs("Netflix", "contains", catID, (*uuid.UUID)(nil), 0,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, testUserID()).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -483,7 +608,9 @@ func TestCreateRuleCategoryNotOwned(t *testing.T) {
 
 	// Category belongs to another user -> INSERT...SELECT matches no rows.
 	mock.ExpectQuery("INSERT INTO rules").
-		WithArgs(userID, "Swiggy", "contains", otherCatID, (*uuid.UUID)(nil), 5).
+		WithArgs(userID, "Swiggy", "contains", otherCatID, (*uuid.UUID)(nil), 5,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -513,7 +640,9 @@ func TestCreateRulePayeeNotOwned(t *testing.T) {
 	}
 
 	mock.ExpectQuery("INSERT INTO rules").
-		WithArgs(userID, "Swiggy", "contains", catID, &otherPayeeID, 5).
+		WithArgs(userID, "Swiggy", "contains", catID, &otherPayeeID, 5,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -543,7 +672,9 @@ func TestUpdateRuleCategoryNotOwned(t *testing.T) {
 
 	// Category belongs to another user -> ownership predicate fails -> no rows.
 	mock.ExpectQuery("UPDATE rules SET pattern").
-		WithArgs("Netflix", "starts_with", otherCatID, (*uuid.UUID)(nil), 3, ruleID, userID).
+		WithArgs("Netflix", "starts_with", otherCatID, (*uuid.UUID)(nil), 3,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, userID).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -572,7 +703,9 @@ func TestCreateRuleWithGlobalCategory(t *testing.T) {
 
 	// The ownership guard must admit global categories (user_id IS NULL).
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))")).
-		WithArgs(userID, reqBody.Pattern, "contains", globalCatID, (*uuid.UUID)(nil), 10).
+		WithArgs(userID, reqBody.Pattern, "contains", globalCatID, (*uuid.UUID)(nil), 10,
+			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, reqBody.Pattern, "contains", globalCatID, nil, 10))
 

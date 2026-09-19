@@ -339,13 +339,20 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 	}
 
 	if err := exportUserRows(ctx, pool,
-		`SELECT id, pattern, COALESCE(match_type, 'contains'), category_id, payee_id, priority
+		`SELECT id, pattern, COALESCE(match_type, 'contains'), category_id, payee_id, priority,
+		        account_id, filter_category_id, filter_payee_id, min_amount, max_amount, txn_type,
+		        date_from, date_to, is_linked, is_recurring, COALESCE(add_tags, '{}'), COALESCE(notes, '')
 		 FROM rules WHERE user_id = $1 ORDER BY priority DESC`,
 		[]any{userID}, func(rows pgx.Rows) error {
 			var r models.BackupRule
-			if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Priority); err != nil {
+			var dateFrom, dateTo *time.Time
+			if err := rows.Scan(&r.ID, &r.Pattern, &r.MatchType, &r.CategoryID, &r.PayeeID, &r.Priority,
+				&r.AccountID, &r.FilterCategoryID, &r.FilterPayeeID, &r.MinAmount, &r.MaxAmount, &r.TxnType,
+				&dateFrom, &dateTo, &r.IsLinked, &r.IsRecurring, &r.AddTags, &r.Notes); err != nil {
 				return err
 			}
+			r.DateFrom = backupDatePtr(dateFrom)
+			r.DateTo = backupDatePtr(dateTo)
 			b.Rules = append(b.Rules, r)
 			return nil
 		}); err != nil {
@@ -582,7 +589,17 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		if matchType == "" {
 			matchType = "contains"
 		}
-		ruleRows = append(ruleRows, []any{uuid.New(), userID, r.Pattern, matchType, categoryID, mapBackupUUID(payeeMap, r.PayeeID), r.Priority})
+		// Conditions referencing a resource missing from the bundle degrade to
+		// "condition unset" rather than dropping the whole rule, so a partial
+		// bundle still restores the rule's core behavior.
+		ruleRows = append(ruleRows, []any{
+			uuid.New(), userID, r.Pattern, matchType, categoryID, mapBackupUUID(payeeMap, r.PayeeID), r.Priority,
+			mapBackupUUID(accountMap, r.AccountID),
+			mapBackupUUID(categoryMap, r.FilterCategoryID),
+			mapBackupUUID(payeeMap, r.FilterPayeeID),
+			r.MinAmount, r.MaxAmount, nullIfEmpty(r.TxnType),
+			r.DateFrom, r.DateTo, r.IsLinked, r.IsRecurring, r.AddTags, r.Notes,
+		})
 	}
 
 	// Insert in dependency order. Parents must exist before children so every
@@ -604,7 +621,9 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		{"recurring_series", []string{"id", "user_id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}, seriesRows, &res.RecurringSeries},
 		{"recurring_series_terms", []string{"id", "user_id", "series_id", "start_date", "end_date", "amount", "account_id", "created_at"}, termRows, &res.RecurringTerms},
 		{"recurring_attachments", []string{"id", "user_id", "series_id", "transaction_id", "created_at"}, recurringRows, &res.RecurringAttachments},
-		{"rules", []string{"id", "user_id", "pattern", "match_type", "category_id", "payee_id", "priority"}, ruleRows, &res.Rules},
+		{"rules", []string{"id", "user_id", "pattern", "match_type", "category_id", "payee_id", "priority",
+			"account_id", "filter_category_id", "filter_payee_id", "min_amount", "max_amount", "txn_type",
+			"date_from", "date_to", "is_linked", "is_recurring", "add_tags", "notes"}, ruleRows, &res.Rules},
 	}
 	for _, ins := range inserts {
 		if err := insertBackupRows(ctx, tx, ins.table, ins.columns, ins.rows); err != nil {

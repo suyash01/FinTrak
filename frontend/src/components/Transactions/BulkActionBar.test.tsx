@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import BulkActionBar, { UNLINK_LOAN } from "./BulkActionBar";
 import type { CategorySection } from "../../lib/categories";
-import type { Account, BillingCycle, Payee, RecurringSeries } from "../../types";
+import type { Account, BillingCycle, Payee, RecurringSeries, TagCount } from "../../types";
 
 const categorySections = [
   {
@@ -19,6 +19,7 @@ const loanAccounts = [{ id: "l1", name: "Car Loan" }] as unknown as Account[];
 const recurringSeries = [
   { id: "rs1", name: "Netflix" },
 ] as unknown as RecurringSeries[];
+const tags = [{ name: "trip", count: 2 }] as unknown as TagCount[];
 
 function renderBar(overrides: Partial<Parameters<typeof BulkActionBar>[0]> = {}) {
   const props = {
@@ -30,11 +31,13 @@ function renderBar(overrides: Partial<Parameters<typeof BulkActionBar>[0]> = {})
     billingCycles,
     loanAccounts: [],
     recurringSeries: [],
+    tags: [],
     onCategorize: vi.fn(),
     onUpdatePayee: vi.fn(),
     onSetBillingCycle: vi.fn(),
     onLinkLoan: vi.fn(),
     onLinkRecurring: vi.fn(),
+    onUpdateTags: vi.fn(),
     onDelete: vi.fn(),
     onClear: vi.fn(),
     ...overrides,
@@ -101,5 +104,25 @@ describe("BulkActionBar", () => {
 
     fireEvent.change(selects[2], { target: { value: "rs1" } });
     expect(props.onLinkRecurring).toHaveBeenCalledWith("rs1");
+  });
+
+  it("renders the tag select and fires add/remove actions", () => {
+    const { container, props } = renderBar({ tags });
+    const selects = Array.from(
+      container.querySelectorAll<HTMLSelectElement>("select"),
+    );
+    // categorize, payee, tags
+    expect(selects).toHaveLength(3);
+    const tagOptions = Array.from(
+      selects[2].querySelectorAll<HTMLOptionElement>("option"),
+    ).map((o) => o.value);
+    expect(tagOptions).toContain("add:trip");
+    expect(tagOptions).toContain("remove:trip");
+
+    fireEvent.change(selects[2], { target: { value: "add:trip" } });
+    expect(props.onUpdateTags).toHaveBeenCalledWith("trip", "add");
+
+    fireEvent.change(selects[2], { target: { value: "remove:trip" } });
+    expect(props.onUpdateTags).toHaveBeenCalledWith("trip", "remove");
   });
 });
