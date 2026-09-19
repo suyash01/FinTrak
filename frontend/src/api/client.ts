@@ -275,14 +275,17 @@ async function request<T>(
 // requestMultipart POSTs a FormData payload (multipart/form-data) without
 // forcing a JSON content type, which the browser must set itself (including the
 // boundary). Used for statement PDF uploads. Auth rides on the session cookie.
+// Parsing an upload proxies to an extractor that can spend a minute on a large
+// PDF, so callers may pass a longer timeout than REQUEST_TIMEOUT.
 async function requestMultipart<T>(
   url: string,
   formData: FormData,
+  timeout: number = REQUEST_TIMEOUT,
 ): Promise<T> {
   const res = await sendWithAuthRetry(
     url,
     { method: "POST", body: formData },
-    REQUEST_TIMEOUT,
+    timeout,
   );
 
   if (res.status === 401 && !isAuthEndpoint(url)) {
@@ -497,7 +500,7 @@ const api = {
 
   // Statement parsing (PDF) — forwarded by the backend to the parser service
   parseStatement: (formData: FormData): Promise<StatementParseResult> =>
-    requestMultipart("/statements/parse", formData),
+    requestMultipart("/statements/parse", formData, 120000),
   getStatementExtractors: (): Promise<{ extractors: StatementExtractor[] }> =>
     request("/statements/extractors"),
 
@@ -548,6 +551,8 @@ const api = {
     request("/paperless/import", {
       method: "POST",
       body: JSON.stringify(data),
+      // Same parser round-trip as /statements/parse.
+      timeout: 120000,
     }),
   getPaperlessDocumentFile: async (id: number): Promise<Blob> => {
     const res = await sendWithAuthRetry(

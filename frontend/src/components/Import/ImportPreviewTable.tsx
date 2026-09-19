@@ -131,7 +131,7 @@ export default function ImportPreviewTable({
             className={`${
               row.original.type === "debit"
                 ? "bg-destructive/10 text-destructive border-destructive/30"
-                : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
+                : "bg-chart-3/10 text-chart-3 border-chart-3/20"
             }`}
           >
             {row.original.type}
@@ -149,7 +149,7 @@ export default function ImportPreviewTable({
             className={`font-medium whitespace-nowrap ${
               row.original.type === "debit"
                 ? "text-destructive"
-                : "text-emerald-500"
+                : "text-chart-3"
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}

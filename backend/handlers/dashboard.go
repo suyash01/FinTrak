@@ -33,6 +33,24 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	dateTo := c.Query("dateTo")
 	accountID := c.Query("accountId")
 
+	// The date bounds are compared against a date column and the account id
+	// against a uuid column, so reject malformed filters up front instead of
+	// letting them surface as 500s.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", dateFrom)
+	if !ok {
+		return
+	}
+	dateTo, ok = parseQueryDate(c, "dateTo", dateTo)
+	if !ok {
+		return
+	}
+	if accountID != "" {
+		if _, err := uuid.Parse(accountID); err != nil {
+			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Billing-cycle view: the whole summary is framed around the statement
 	// periods of a single account that has a billing day set.
 	if c.Query("groupBy") == billingCycleGroupBy {

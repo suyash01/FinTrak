@@ -302,7 +302,9 @@ func TestGetRecurringSeries(t *testing.T) {
 		"HDFC", "Income", "cash", "#0f0", "Employer", 0)
 	rows := pgxmock.NewRows(cols).AddRow(row1...).AddRow(row2...)
 
-	expectQueryAny(mock, "SELECT rs.id, rs.name", 1).WillReturnRows(rows)
+	// The attached-count subquery is tenant-filtered so the
+	// recurring_attachments (user_id, series_id) index can serve it.
+	expectQueryAny(mock, "SELECT rs.id, rs.name.*FROM recurring_attachments ra WHERE ra.user_id = rs.user_id AND ra.series_id = rs.id", 1).WillReturnRows(rows)
 
 	req, _ := http.NewRequest(http.MethodGet, "/recurring", nil)
 	w := httptest.NewRecorder()

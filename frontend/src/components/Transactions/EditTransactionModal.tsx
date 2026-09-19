@@ -356,7 +356,7 @@ export default function EditTransactionModal({
                     <Button
                       type="button"
                       variant="ghost"
-                      className={`flex-1 h-auto px-3 py-2.5 rounded-none ${form.type === "credit" ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30" : "bg-background text-muted-foreground hover:text-foreground"}`}
+                      className={`flex-1 h-auto px-3 py-2.5 rounded-none ${form.type === "credit" ? "bg-chart-3/20 text-chart-3 hover:bg-chart-3/30" : "bg-background text-muted-foreground hover:text-foreground"}`}
                       onClick={() => setForm((f) => ({ ...f, type: "credit" }))}
                     >
                       <ArrowUpRight size={14} />

@@ -42,6 +42,20 @@ describe("DuplicateDialog", () => {
     ).toBe(true);
   });
 
+  it("keeps the warning text legible on the light theme", () => {
+    renderDialog({ partialExisting: true });
+    // The dialog renders in a portal, so assert against the document.
+    expect(document.body.innerHTML).not.toMatch(/text-amber-(200|300|400)/);
+    expect(
+      screen.getByText("Duplicate transactions found").className,
+    ).toContain("text-foreground");
+    expect(
+      screen.getByText(/existing-duplicate check may be incomplete/).className,
+    ).toContain("text-muted-foreground");
+    // Amber stays on the icon as the warning affordance.
+    expect(document.querySelector("svg.text-amber-500")).not.toBeNull();
+  });
+
   it("invokes skip and keep", async () => {
     const user = userEvent.setup();
     const props = renderDialog();

@@ -21,7 +21,7 @@ export default function DoneStep({
 
   return (
     <div className="bg-card border border-border rounded-xl p-10 max-w-125 text-center mx-auto mt-10">
-      <div className="w-16 h-16 rounded-full bg-emerald-500/15 flex items-center justify-center mx-auto mb-6 text-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.2)]">
+      <div className="w-16 h-16 rounded-full bg-chart-3/15 flex items-center justify-center mx-auto mb-6 text-chart-3 shadow-[0_0_20px_rgba(16,185,129,0.2)]">
         <Check size={32} />
       </div>
       <h2 className="text-2xl font-bold text-foreground mb-2">

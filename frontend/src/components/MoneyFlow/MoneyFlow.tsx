@@ -581,9 +581,9 @@ export default function MoneyFlow() {
           <StatCard
             label="Money In"
             value={data.totalIncome}
-            icon={<TrendingUp size={22} className="text-emerald-500" />}
-            iconClass="bg-emerald-500/15"
-            valueClass="text-emerald-500"
+            icon={<TrendingUp size={22} className="text-chart-3" />}
+            iconClass="bg-chart-3/15"
+            valueClass="text-chart-3"
             compact={compactLayout}
           />
           <StatCard
@@ -599,7 +599,7 @@ export default function MoneyFlow() {
             value={net}
             icon={<Waypoints size={22} className="text-primary" />}
             iconClass="bg-primary/10"
-            valueClass={net >= 0 ? "text-emerald-500" : "text-destructive"}
+            valueClass={net >= 0 ? "text-chart-3" : "text-destructive"}
             compact={compactLayout}
           />
         </div>
@@ -810,7 +810,7 @@ function TimelineStrip({
             </div>
             <div className="mt-1 flex h-16 items-end justify-center gap-1">
               <span
-                className="w-2.5 rounded-t bg-emerald-500/70"
+                className="w-2.5 rounded-t bg-chart-3/70"
                 style={{ height: `${incomePct}%` }}
               />
               <span
@@ -820,7 +820,7 @@ function TimelineStrip({
             </div>
             <div
               className={`mt-1 truncate text-[11px] font-medium ${
-                p.net >= 0 ? "text-emerald-500" : "text-destructive"
+                p.net >= 0 ? "text-chart-3" : "text-destructive"
               }`}
             >
               {formatCurrency(p.net)}

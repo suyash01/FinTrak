@@ -246,3 +246,21 @@ func TestGetCashFlowCalendarErrors(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+// The date window is compared against a date column, so a malformed bound must
+// be a 400 rather than a Postgres parse error surfacing as a 500.
+func TestGetCashFlowCalendarRejectsMalformedDates(t *testing.T) {
+	srv, _ := newMockServer(t)
+	r := newCashFlowCalendarTestRouter(srv)
+
+	for _, query := range []string{"dateFrom=2024-1-5", "dateTo=not-a-date"} {
+		t.Run(query, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/dashboard/cash-flow-calendar?"+query, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "must be YYYY-MM-DD")
+		})
+	}
+}

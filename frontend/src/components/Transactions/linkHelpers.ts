@@ -6,11 +6,11 @@ export function linkTypeBadgeClass(type: LinkType | string): string {
     case "transfer":
       return "bg-primary/10 text-primary";
     case "cashback":
-      return "bg-emerald-500/10 text-emerald-400";
+      return "bg-chart-3/10 text-chart-3";
     case "refund":
-      return "bg-amber-500/10 text-amber-400";
+      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
     default:
-      return "bg-sky-500/10 text-sky-400";
+      return "bg-chart-2/10 text-chart-2";
   }
 }
 

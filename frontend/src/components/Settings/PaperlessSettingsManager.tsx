@@ -146,7 +146,7 @@ export default function PaperlessSettingsManager() {
           {saving ? "Saving..." : "Save"}
         </Button>
         {saved && (
-          <Badge variant="secondary" className="text-emerald-500">
+          <Badge variant="secondary" className="text-chart-3">
             Saved
           </Badge>
         )}

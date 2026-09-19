@@ -244,7 +244,7 @@ describe("Import exclusion", () => {
     expect(descriptions).not.toContain("Skipped Row Test");
   });
 
-  it("clears stale PDF rows when switching back to CSV", async () => {
+  it("clears stale PDF rows and parser warnings when switching back to CSV", async () => {
     const user = userEvent.setup();
     apiMocks.getStatementExtractors.mockResolvedValue({
       extractors: [{ name: "sbi_cc", label: "SBI Credit Card" }],
@@ -259,6 +259,9 @@ describe("Import exclusion", () => {
         },
       ],
       summary: {},
+      validationErrors: [
+        "page 1: rebuilt total 1000.00 does not match the printed 1250.00",
+      ],
     });
 
     render(
@@ -290,6 +293,11 @@ describe("Import exclusion", () => {
       new File(["pdf"], "statement.pdf", { type: "application/pdf" }),
     );
     expect(await screen.findByText("PDF ONLY ROW")).toBeTruthy();
+    // The parser's subtotal mismatch is surfaced above the rows.
+    expect(await screen.findByText(/1 parse warning/)).toBeTruthy();
+    expect(
+      screen.getByText(/does not match the printed 1250\.00/),
+    ).toBeTruthy();
 
     // Go back to step 2, switch to CSV and upload a different file.
     await user.click(screen.getByRole("button", { name: /upload csv/i }));
@@ -306,8 +314,11 @@ describe("Import exclusion", () => {
       await screen.findByRole("button", { name: /preview transactions/i }),
     );
 
-    // The CSV rows win; the previously parsed PDF row must be gone.
+    // The CSV rows win; the previously parsed PDF row and its warnings must be
+    // gone.
     expect(await screen.findByText("Coffee Shop")).toBeTruthy();
     expect(screen.queryByText("PDF ONLY ROW")).toBeNull();
+    expect(screen.queryByText(/parse warning/)).toBeNull();
+    expect(screen.queryByText(/does not match the printed/)).toBeNull();
   });
 });

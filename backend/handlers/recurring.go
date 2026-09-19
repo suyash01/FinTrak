@@ -581,7 +581,8 @@ func (srv *Server) GetRecurringSeries(c *gin.Context) {
 		       a.name,
 		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''),
 		       COALESCE(p.name, ''),
-		       (SELECT COUNT(*) FROM recurring_attachments ra WHERE ra.series_id = rs.id)
+		       (SELECT COUNT(*) FROM recurring_attachments ra
+		        WHERE ra.user_id = rs.user_id AND ra.series_id = rs.id)
 		FROM recurring_series rs
 		JOIN LATERAL (
 		    SELECT t.account_id, t.amount

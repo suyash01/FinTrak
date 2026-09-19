@@ -166,6 +166,33 @@ func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// Moving a transaction to another account must not leave it attached to the
+// old account's cycle: cycles belong to one account, and the billing-cycle
+// rollups aggregate by cycle id without rechecking the account, so a stale
+// cycle would pollute the old cycle's net. Naming no cycle binds no parameter,
+// so the id/user placeholders after it stay where they were.
+func TestUpdateTransactionAccountMoveClearsBillingCycle(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
+
+	userID := testUserID()
+	txnID := uuid.New()
+	accountID := uuid.New()
+
+	mock.ExpectExec("UPDATE transactions SET account_id = \\$1, billing_cycle_id = NULL WHERE id = \\$2 AND user_id = \\$3").
+		WithArgs(accountID, txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(map[string]interface{}{"accountId": accountID})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.POST("/transactions", srv.CreateTransaction)
@@ -707,6 +734,35 @@ func TestGetTransactionsRejectsInvalidAccountID(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "invalid accountId")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransactionsRejectsMalformedFilters(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	// A malformed date and a malformed amount are rejected before any query
+	// runs, rather than being passed to Postgres (a 500) or silently dropped.
+	tests := []struct {
+		name      string
+		query     string
+		errorText string
+	}{
+		{name: "dateFrom", query: "dateFrom=2024-1-5", errorText: "dateFrom must be YYYY-MM-DD"},
+		{name: "dateTo", query: "dateTo=yesterday", errorText: "dateTo must be YYYY-MM-DD"},
+		{name: "amount", query: "amount=abc", errorText: "invalid amount"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/transactions?"+tt.query, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), tt.errorText)
+		})
+	}
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -36,22 +36,46 @@ const maxPageSize = 1000
 // largest offset is 1e9, which fits comfortably in a 32-bit int.
 const maxPage = 1_000_000
 
+// parseQueryDate validates an optional YYYY-MM-DD query parameter. It writes a
+// 400 and returns ok=false when the value is malformed; an empty value passes
+// through unchanged, so "filter not set" keeps working.
+func parseQueryDate(c *gin.Context, name, value string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		validation.RespondError(c, name+" must be YYYY-MM-DD", http.StatusBadRequest)
+		return "", false
+	}
+	return value, true
+}
+
 // txnQueryFilter parses the shared transaction-list filter query parameters
 // (account, category/group, payee, tag, free-text, date range, type, amount,
 // linked, loan, recurring) into a txnFilter. The free-text search spans the
 // description, notes, payee name, and tags. It is used by both GetTransactions
 // and ExportTransactions so the list and the export can never disagree about
-// what a filter means. A malformed accountId writes a 400 and returns ok=false.
+// what a filter means. A malformed accountId, dateFrom/dateTo, or amount writes
+// a 400 and returns ok=false.
 func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, bool) {
 	accountID := c.Query("accountId")
 	categoryID := c.Query("categoryId")
 	groupId := c.Query("groupId")
 	search := c.Query("search")
-	dateFrom := c.Query("dateFrom")
-	dateTo := c.Query("dateTo")
 	txnType := c.Query("type")
 	payeeID := c.Query("payeeId")
 	amountStr := c.Query("amount")
+
+	// The date bounds are compared against a date column, so reject a
+	// malformed value up front instead of letting it surface as a 500.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", c.Query("dateFrom"))
+	if !ok {
+		return nil, nil, false
+	}
+	dateTo, ok := parseQueryDate(c, "dateTo", c.Query("dateTo"))
+	if !ok {
+		return nil, nil, false
+	}
 
 	// Parse the account filter once: the summary-row path needs the UUID and a
 	// malformed value should surface as a 400 rather than a database error.
@@ -127,9 +151,12 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		}
 	}
 	if amountStr != "" {
-		if amount, err := money.Parse(amountStr); err == nil {
-			f.param("t.amount = $%d", amount)
+		amount, err := money.Parse(amountStr)
+		if err != nil {
+			validation.RespondError(c, "invalid amount", http.StatusBadRequest)
+			return nil, nil, false
 		}
+		f.param("t.amount = $%d", amount)
 	}
 	// Tag filter: a comma-separated list matches transactions carrying ANY of
 	// the listed tags (Postgres array overlap). Blank entries are ignored.
@@ -651,6 +678,11 @@ func (srv *Server) UpdateTransaction(c *gin.Context) {
 			args = append(args, nil)
 		}
 		paramIdx++
+	} else if req.AccountID != nil {
+		// Moving a transaction to another account invalidates the old cycle
+		// (cycles belong to one account), so clear it unless the caller names
+		// the new account's cycle explicitly.
+		setClauses = append(setClauses, "billing_cycle_id = NULL")
 	}
 
 	if len(setClauses) == 0 {

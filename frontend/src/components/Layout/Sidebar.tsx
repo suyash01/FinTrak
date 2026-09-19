@@ -83,11 +83,11 @@ export default function Sidebar({ onOpenCommandPalette }: SidebarProps) {
           collapsed ? "justify-center" : "gap-3"
         }`}
       >
-        <div className="w-9 h-9 bg-linear-to-br from-primary to-violet-500 rounded-lg flex items-center justify-center text-white font-extrabold text-base shrink-0">
+        <div className="w-9 h-9 bg-linear-to-br from-primary to-chart-2 rounded-lg flex items-center justify-center text-white font-extrabold text-base shrink-0">
           F
         </div>
         {!collapsed && (
-          <span className="text-xl font-bold bg-linear-to-br from-primary to-violet-500 bg-clip-text text-transparent">
+          <span className="text-xl font-bold bg-linear-to-br from-primary to-chart-2 bg-clip-text text-transparent">
             FinTrak
           </span>
         )}

@@ -196,7 +196,7 @@ export default function Linking() {
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {l.toTxn?.accountName} · {formatDate(l.toTxn?.date)} ·{" "}
-                          <span className="text-emerald-500 font-medium">
+                          <span className="text-chart-3 font-medium">
                             +{formatCurrency(l.toTxn?.amount || 0)}
                           </span>
                         </div>
@@ -220,7 +220,7 @@ export default function Linking() {
             {cashbackLinks.length > 0 && (
               <div>
                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-chart-3"></div>
                   Cashbacks ({cashbackLinks.length})
                 </h4>
                 <div className="space-y-3">
@@ -263,7 +263,7 @@ export default function Linking() {
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
-                          <span className="text-emerald-500 font-medium">
+                          <span className="text-chart-3 font-medium">
                             +{formatCurrency(l.toTxn?.amount || 0)}
                           </span>
                         </div>
@@ -287,7 +287,7 @@ export default function Linking() {
             {refundLinks.length > 0 && (
               <div>
                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-amber-500"></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-chart-4"></div>
                   Refunds ({refundLinks.length})
                 </h4>
                 <div className="space-y-3">
@@ -330,7 +330,7 @@ export default function Linking() {
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
-                          <span className="text-emerald-500 font-medium">
+                          <span className="text-chart-3 font-medium">
                             +{formatCurrency(l.toTxn?.amount || 0)}
                           </span>
                         </div>
@@ -354,7 +354,7 @@ export default function Linking() {
             {billPaymentLinks.length > 0 && (
               <div>
                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500"></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-chart-2"></div>
                   Bill Payments ({billPaymentLinks.length})
                 </h4>
                 <div className="space-y-3">
@@ -397,7 +397,7 @@ export default function Linking() {
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
-                          <span className="text-emerald-500 font-medium">
+                          <span className="text-chart-3 font-medium">
                             +{formatCurrency(l.toTxn?.amount || 0)}
                           </span>
                         </div>

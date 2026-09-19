@@ -4544,6 +4544,14 @@ components:
           type: integer
         transactionCount:
           type: integer
+        validationErrors:
+          type: array
+          description: >-
+            Parser reconciliation warnings (one entry per page whose rebuilt
+            subtotal did not match the printed one). Empty when the statement
+            reconciled; a non-empty list means the extracted rows are suspect.
+          items:
+            type: string
 
     TransferSuggestion:
       type: object

@@ -33,6 +33,7 @@ function renderStep(overrides: Partial<Parameters<typeof PreviewStep>[0]> = {}) 
     importBillingCycleId: "",
     onImportBillingCycleChange: vi.fn(),
     statementSummary: null,
+    validationErrors: [],
     dupCount: 0,
     existingDupCount: 0,
     inFileDupCount: 0,
@@ -51,8 +52,8 @@ function renderStep(overrides: Partial<Parameters<typeof PreviewStep>[0]> = {}) 
     onImport: vi.fn(),
     ...overrides,
   };
-  render(<PreviewStep {...props} />);
-  return props;
+  const { container } = render(<PreviewStep {...props} />);
+  return { ...props, container };
 }
 
 describe("PreviewStep", () => {
@@ -91,6 +92,39 @@ describe("PreviewStep", () => {
   it("shows the duplicate warning when duplicates are detected", () => {
     renderStep({ dupCount: 1, existingDupCount: 1 });
     expect(screen.getByText(/look like duplicates/)).toBeInTheDocument();
+  });
+
+  it("renders the parser's validation warnings", () => {
+    const { container } = renderStep({
+      validationErrors: [
+        "page 2: rebuilt total 1200.00 does not match the printed 1250.00",
+      ],
+    });
+    expect(screen.getByText(/1 parse warning/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/does not match the printed 1250\.00/),
+    ).toBeInTheDocument();
+    // Amber stays the warning affordance; the text must not use the dark-theme
+    // amber tints, which are unreadable on the light background.
+    expect(container.innerHTML).toContain("bg-amber-500/10");
+    expect(container.innerHTML).not.toMatch(/text-amber-(200|400)/);
+  });
+
+  it("renders nothing when the parser reports no validation errors", () => {
+    const { container } = renderStep();
+    expect(screen.queryByText(/parse warning/)).not.toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("bg-amber-500/10");
+  });
+
+  it("uses theme tokens for the duplicate warning text", () => {
+    const { container } = renderStep({ dupCount: 2, existingDupCount: 2 });
+    expect(container.innerHTML).not.toMatch(/text-amber-(200|400)/);
+    expect(
+      screen.getByText(/look like duplicates/).className,
+    ).toContain("text-foreground");
+    expect(
+      screen.getByText(/You'll be asked what to do before importing/).className,
+    ).toContain("text-muted-foreground");
   });
 
   it("reports CSV rows skipped as empty or invalid", () => {

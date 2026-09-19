@@ -532,6 +532,70 @@ func TestUpdateAccountBillingDayExplicitNullClears(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The closed flag and an explicit billing day are appended after the eight
+// fixed arguments, each numbering its own placeholder from the argument list.
+// Closing an account without touching billingDay used to emit "closed = $10"
+// while binding only nine arguments, so Postgres failed to parse the statement
+// and the request 500ed without ever closing the account.
+func TestUpdateAccountClosedPlaceholderNumbering(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		query      string
+		billingDay *int
+	}{
+		{
+			name:  "closed without billingDay",
+			body:  `{"closed":true}`,
+			query: "closed = \\$9, updated_at = NOW",
+		},
+		{
+			name:       "closed alongside billingDay",
+			body:       `{"billingDay":20,"closed":true}`,
+			query:      "billing_day = \\$9, closed = \\$10, updated_at = NOW",
+			billingDay: intPtr(20),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, srv, mock := newAccountTestRouter(t)
+			r.PUT("/accounts/:id", srv.UpdateAccount)
+
+			accountID := uuid.New()
+			userID := testUserID()
+
+			args := []interface{}{"", "", "", "", "", (*bool)(nil), accountID, userID}
+			if tt.billingDay != nil {
+				args = append(args, tt.billingDay)
+			}
+			args = append(args, true)
+
+			mock.ExpectBegin()
+			mock.ExpectQuery(tt.query).
+				WithArgs(args...).
+				WillReturnRows(pgxmock.NewRows([]string{"id", "name", "account_type_id", "account_type_name", "bank", "currency", "color", "is_default", "billing_day", "created_at", "closed", "balance"}).
+					AddRow(accountID, "Savings", "bank", "Bank Account", "HDFC", "INR", "#06b6d4", false, intPtr(1), time.Now(), true, 0.0))
+			// The linked payee keeps the (preserved) account name.
+			mock.ExpectExec("UPDATE payees SET name").
+				WithArgs("Savings", accountID, userID).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			mock.ExpectCommit()
+
+			req, _ := http.NewRequest("PUT", "/accounts/"+accountID.String(), bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			var account models.Account
+			assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &account))
+			assert.True(t, account.Closed)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestUpdateAccountBillingDayInvalidRange(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
 	r.PUT("/accounts/:id", srv.UpdateAccount)

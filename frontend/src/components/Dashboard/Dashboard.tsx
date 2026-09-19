@@ -312,7 +312,7 @@ export default function Dashboard() {
             className={`text-sm text-right font-semibold ${
               row.original.type === "debit"
                 ? "text-destructive"
-                : "text-emerald-500"
+                : "text-chart-3"
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}
@@ -477,13 +477,13 @@ export default function Dashboard() {
             className="hover:ring-foreground/20 transition-colors"
           >
             <CardContent className="flex flex-col">
-              <div className="w-11 h-11 rounded-lg flex items-center justify-center bg-emerald-500/15 mb-3">
-                <TrendingUp size={22} className="text-emerald-500" />
+              <div className="w-11 h-11 rounded-lg flex items-center justify-center bg-chart-3/15 mb-3">
+                <TrendingUp size={22} className="text-chart-3" />
               </div>
               <div className="text-xs text-muted-foreground mb-1">
                 Total Income
               </div>
-              <div className="text-2xl font-bold text-emerald-500">
+              <div className="text-2xl font-bold text-chart-3">
                 {formatCurrency(data.totalIncome)}
               </div>
             </CardContent>
@@ -510,7 +510,7 @@ export default function Dashboard() {
                 Net Savings
               </div>
               <div
-                className={`text-2xl font-bold ${netSavings >= 0 ? "text-emerald-500" : "text-destructive"}`}
+                className={`text-2xl font-bold ${netSavings >= 0 ? "text-chart-3" : "text-destructive"}`}
               >
                 {formatCurrency(netSavings)}
               </div>
@@ -703,7 +703,7 @@ function RecurringSection({
             <div className="text-xs text-muted-foreground mb-1">
               Monthly recurring income
             </div>
-            <div className="text-xl font-bold text-emerald-500">
+            <div className="text-xl font-bold text-chart-3">
               {formatCurrency(monthlyIncome)}
             </div>
           </div>
@@ -714,7 +714,7 @@ function RecurringSection({
             <div
               className={`text-xl font-bold ${
                 monthlyIncome - monthlyExpense >= 0
-                  ? "text-emerald-500"
+                  ? "text-chart-3"
                   : "text-destructive"
               }`}
             >
@@ -753,7 +753,7 @@ function RecurringSection({
                     className={
                       s.type === "debit"
                         ? "text-destructive font-semibold"
-                        : "text-emerald-500 font-semibold"
+                        : "text-chart-3 font-semibold"
                     }
                   >
                     {formatCurrency(s.amount)}

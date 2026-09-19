@@ -162,7 +162,7 @@ export default function RulesTab() {
             <Play /> Apply Rules to Uncategorized
           </Button>
           {applyResult && (
-            <span className="text-sm font-medium text-emerald-500">
+            <span className="text-sm font-medium text-chart-3">
               {applyResult.updated} transactions updated
             </span>
           )}

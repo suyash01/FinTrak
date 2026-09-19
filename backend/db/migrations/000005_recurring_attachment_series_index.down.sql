@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS recurring_attachments_tenant_series_id;

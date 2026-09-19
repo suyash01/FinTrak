@@ -66,7 +66,7 @@ export default function ValidationDialog({
             className={`${
               row.original.type === "debit"
                 ? "bg-destructive/10 text-destructive border-destructive/30"
-                : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
+                : "bg-chart-3/10 text-chart-3 border-chart-3/20"
             }`}
           >
             {row.original.type}
@@ -84,7 +84,7 @@ export default function ValidationDialog({
             className={`font-medium whitespace-nowrap ${
               row.original.type === "debit"
                 ? "text-destructive"
-                : "text-emerald-500"
+                : "text-chart-3"
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}
@@ -103,14 +103,14 @@ export default function ValidationDialog({
           row.original.exists ? (
             <Badge
               variant="outline"
-              className="bg-amber-500/10 text-amber-400 border-amber-500/25"
+              className="bg-amber-500/10 border-amber-500/25"
             >
               <CheckCircle2 size={12} /> Already exists
             </Badge>
           ) : (
             <Badge
               variant="outline"
-              className="bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
+              className="bg-chart-3/10 text-chart-3 border-chart-3/25"
             >
               <PlusCircle size={12} /> New
             </Badge>
@@ -156,16 +156,16 @@ export default function ValidationDialog({
             <div className="text-xs text-muted-foreground mt-0.5">Total</div>
           </div>
           <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-center">
-            <div className="text-2xl font-bold text-amber-400">
+            <div className="text-2xl font-bold text-foreground">
               {result.existingCount}
             </div>
-            <div className="text-xs text-amber-500/80 mt-0.5">Already exist</div>
+            <div className="text-xs text-muted-foreground mt-0.5">Already exist</div>
           </div>
-          <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg text-center">
-            <div className="text-2xl font-bold text-emerald-400">
+          <div className="p-3 bg-chart-3/10 border border-chart-3/25 rounded-lg text-center">
+            <div className="text-2xl font-bold text-chart-3">
               {result.missingCount}
             </div>
-            <div className="text-xs text-emerald-500/80 mt-0.5">New</div>
+            <div className="text-xs text-muted-foreground mt-0.5">New</div>
           </div>
         </div>
 

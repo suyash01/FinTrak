@@ -60,13 +60,13 @@ export default function LinkResultsList({
                     <span>{formatDate(r.date)}</span>
                     <span>·</span>
                     <span
-                      className={`font-bold ${r.type === "debit" ? "text-destructive" : "text-emerald-500"}`}
+                      className={`font-bold ${r.type === "debit" ? "text-destructive" : "text-chart-3"}`}
                     >
                       {r.type === "debit" ? "−" : "+"}
                       {formatCurrency(r.amount)}
                     </span>
                     {sameAccount && (
-                      <Badge className="h-auto px-1.5 py-0.5 bg-amber-500/10 text-amber-400 text-[10px] font-semibold rounded">
+                      <Badge className="h-auto px-1.5 py-0.5 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-semibold rounded">
                         Same Account
                       </Badge>
                     )}

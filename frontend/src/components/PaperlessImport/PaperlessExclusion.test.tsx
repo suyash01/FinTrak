@@ -162,6 +162,42 @@ describe("PaperlessImport exclusion", () => {
     expect(descriptions).not.toContain("Skipped Row Test");
   });
 
+  it("surfaces the parser's validation warnings for the parsed documents", async () => {
+    const user = userEvent.setup();
+    apiMocks.importPaperlessDocument.mockResolvedValue({
+      transactions: TXNS,
+      validationErrors: [
+        "page 1: rebuilt total 1000.00 does not match the printed 1250.00",
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <DomainDataProvider>
+          <PaperlessImport />
+        </DomainDataProvider>
+      </MemoryRouter>,
+    );
+
+    const trigger = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[role="combobox"]');
+      if (!el) throw new Error("account select trigger not found");
+      return el;
+    });
+    await user.click(trigger);
+    await user.click(await screen.findByText("Excl Test CC"));
+
+    await user.click(await screen.findByText("Statement March"));
+    await user.click(
+      screen.getByRole("button", { name: /fetch & parse selected \(1\)/i }),
+    );
+
+    // Each message is prefixed with the document it came from.
+    expect(await screen.findByText(/1 parse warning/)).toBeTruthy();
+    expect(
+      screen.getByText(/Statement March: page 1: rebuilt total 1000\.00/),
+    ).toBeTruthy();
+  });
+
   it("renders Paperless rows as labelled list items with a sibling Preview button", async () => {
     render(
       <MemoryRouter>

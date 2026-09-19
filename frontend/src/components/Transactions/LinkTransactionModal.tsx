@@ -224,7 +224,7 @@ export default function LinkTransactionModal({
                     className={
                       txn.type === "debit"
                         ? "text-destructive"
-                        : "text-emerald-500"
+                        : "text-chart-3"
                     }
                   >
                     {txn.type === "debit" ? "−" : "+"}

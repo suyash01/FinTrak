@@ -30,8 +30,18 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 	dateTo := c.Query("dateTo")
 	accountID := c.Query("accountId")
 
-	// The account id is compared against a uuid column, so reject a malformed
-	// value up front instead of letting it surface as a 500.
+	// The date bounds are compared against a date column and the account id
+	// against a uuid column, so reject malformed filters up front instead of
+	// letting them surface as 500s.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", dateFrom)
+	if !ok {
+		return
+	}
+	dateTo, ok = parseQueryDate(c, "dateTo", dateTo)
+	if !ok {
+		return
+	}
+
 	var accountUUID uuid.UUID
 	if accountID != "" {
 		parsed, err := uuid.Parse(accountID)

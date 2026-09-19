@@ -51,10 +51,10 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="w-10 h-10 bg-linear-to-br from-primary to-violet-500 rounded-lg flex items-center justify-center text-white font-extrabold text-lg">
+          <div className="w-10 h-10 bg-linear-to-br from-primary to-chart-2 rounded-lg flex items-center justify-center text-white font-extrabold text-lg">
             F
           </div>
-          <span className="text-2xl font-bold bg-linear-to-br from-primary to-violet-500 bg-clip-text text-transparent">
+          <span className="text-2xl font-bold bg-linear-to-br from-primary to-chart-2 bg-clip-text text-transparent">
             FinTrak
           </span>
         </div>

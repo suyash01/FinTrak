@@ -40,10 +40,14 @@ describe("linkHelpers", () => {
     expect(toId).toBe("b");
   });
 
-  it("maps each link type to a badge class", () => {
-    expect(linkTypeBadgeClass("transfer")).toContain("text-primary");
-    expect(linkTypeBadgeClass("cashback")).toContain("emerald");
-    expect(linkTypeBadgeClass("refund")).toContain("amber");
-    expect(linkTypeBadgeClass("bill_payment")).toContain("sky");
+  it("gives every link type a distinct badge colour", () => {
+    const types = ["transfer", "cashback", "refund", "bill_payment"];
+    const textColours = types.map(
+      (type) => linkTypeBadgeClass(type).match(/\btext-\S+/)?.[0],
+    );
+
+    expect(textColours[0]).toBe("text-primary");
+    const unique = textColours.filter((c, i) => textColours.indexOf(c) === i);
+    expect(unique).toHaveLength(types.length);
   });
 });

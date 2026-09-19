@@ -86,6 +86,20 @@ func multipartUploadWithExtractor(t *testing.T, password, extractor string) (*by
 	return buf, w.FormDataContentType()
 }
 
+// multipartUploadOfSize builds an upload whose file part is `size` bytes, so a
+// test can drive the backend past its request-body cap without a real PDF.
+func multipartUploadOfSize(t *testing.T, size int) (*bytes.Buffer, string) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	w := multipart.NewWriter(buf)
+	fw, err := w.CreateFormFile("file", "statement.pdf")
+	require.NoError(t, err)
+	fw.Write([]byte("%PDF-1.4 fake"))
+	fw.Write(make([]byte, size))
+	w.Close()
+	return buf, w.FormDataContentType()
+}
+
 func TestParseStatementForwardsExtractor(t *testing.T) {
 	var gotExtractor string
 	parser, closeParser := startFakeExtractorParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`, &gotExtractor)
@@ -186,6 +200,56 @@ func TestParseStatementSuccess(t *testing.T) {
 	assert.Equal(t, 7, res.PageCount)
 	assert.Equal(t, 3, res.TxnCount)
 	assert.Equal(t, "2,29,000.00", res.Summary["credit_limit"])
+	assert.Empty(t, res.ValidationErrors)
+
+	// The parser reported no warnings, but the field must still serialize as an
+	// array so the frontend never has to null-check it.
+	var envelope map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
+	assert.JSONEq(t, `[]`, string(envelope["validationErrors"]))
+}
+
+// TestParseStatementCarriesValidationErrors verifies the parser's per-page
+// consistency warnings reach the client instead of being dropped, so a drifted
+// parse is never presented to the user as clean.
+func TestParseStatementCarriesValidationErrors(t *testing.T) {
+	parser, closeParser := startFakeParser(t, http.StatusOK, `{
+		"transactions": [],
+		"summary": {},
+		"page_count": 2,
+		"transaction_count": 0,
+		"validation_errors": ["page 2: rebuilt subtotal 1,204.00 does not match printed 1,234.00"]
+	}`)
+	defer closeParser()
+
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
+	body, ct := multipartUpload(t, "")
+	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res parseStatementResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, []string{"page 2: rebuilt subtotal 1,204.00 does not match printed 1,234.00"}, res.ValidationErrors)
+}
+
+// TestParseStatementRejectsOversizedBody verifies the body is capped before gin
+// parses the multipart form: an upload past the limit is answered with 413 (not
+// the misleading 400 "no file provided") and never reaches the parser.
+func TestParseStatementRejectsOversizedBody(t *testing.T) {
+	parser, closeParser := startFakeParser(t, http.StatusOK, `{"transactions":[],"page_count":1,"transaction_count":0}`)
+	defer closeParser()
+
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
+	body, ct := multipartUploadOfSize(t, maxStatementUpload+(1<<20))
+	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
 func TestParseStatementPasswordRequired(t *testing.T) {

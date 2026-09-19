@@ -484,6 +484,9 @@ export interface StatementExtractor {
 export interface StatementParseResult {
   transactions?: ImportTransaction[];
   summary?: Record<string, string | number>;
+  // Parser-reported mismatches between a page's rebuilt subtotal and the
+  // printed one; non-empty means the extracted rows are suspect.
+  validationErrors?: string[];
 }
 
 export interface PaperlessDocumentsResponse {
@@ -511,6 +514,7 @@ export interface PaperlessDocumentsParams {
 
 export interface PaperlessImportResult {
   transactions?: ImportTransaction[];
+  validationErrors?: string[];
 }
 
 // ---- Request payloads ----

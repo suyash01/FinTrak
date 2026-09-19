@@ -172,7 +172,7 @@ export default function TraceChainModal({
                               className={`whitespace-nowrap text-sm font-semibold ${
                                 node.txn.type === "debit"
                                   ? "text-destructive"
-                                  : "text-emerald-500"
+                                  : "text-chart-3"
                               }`}
                             >
                               {node.txn.type === "debit" ? "−" : "+"}

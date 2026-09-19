@@ -58,7 +58,7 @@ export default function LinkedTransactionsList({
                       className={
                         other?.type === "debit"
                           ? "text-destructive"
-                          : "text-emerald-500"
+                          : "text-chart-3"
                       }
                     >
                       {other?.type === "debit" ? "−" : "+"}

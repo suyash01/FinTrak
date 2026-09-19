@@ -263,7 +263,7 @@ export default function Payees() {
                         {payee.accountId ? (
                           <Wallet
                             size={compactLayout ? 16 : 18}
-                            className="text-violet-400 shrink-0"
+                            className="text-chart-2 shrink-0"
                           />
                         ) : (
                           <ReceiptText
@@ -275,7 +275,7 @@ export default function Payees() {
                           {payee.name}
                         </span>
                         {payee.accountId && (
-                          <Badge className="bg-violet-500/20 text-violet-400 hover:bg-violet-500/20">
+                          <Badge className="bg-chart-2/20 text-chart-2 hover:bg-chart-2/20">
                             Account
                           </Badge>
                         )}

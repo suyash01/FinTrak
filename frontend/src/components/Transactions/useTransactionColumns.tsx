@@ -182,7 +182,7 @@ export function useTransactionColumns({
               className={`text-sm text-right font-semibold whitespace-nowrap ${
                 row.original.type === "debit"
                   ? "text-destructive"
-                  : "text-emerald-500"
+                  : "text-chart-3"
               }`}
             >
               {row.original.type === "debit" ? "−" : "+"}

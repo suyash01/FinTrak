@@ -47,6 +47,7 @@ import { useDomainData } from "../../context/DomainDataContext";
 import { formatDateOnly } from "../../utils/formatters";
 import { filterExcluded } from "../Import/importHelpers";
 import ImportPreviewTable from "../Import/ImportPreviewTable";
+import ParseWarnings from "../Import/ParseWarnings";
 import ValidationDialog from "../Import/ValidationDialog";
 import type {
   PaperlessDocument,
@@ -164,7 +165,7 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
           className="absolute z-20 mt-1 w-full min-w-55 bg-popover text-popover-foreground border border-border rounded-lg shadow-xl overflow-hidden"
         >
           <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground">
-            {label} — <span className="text-emerald-500">+ include</span> ·{" "}
+            {label} — <span className="text-chart-3">+ include</span> ·{" "}
             <span className="text-destructive">− exclude</span>
           </div>
           <div className="max-h-52 overflow-y-auto">
@@ -180,7 +181,7 @@ function MultiFilter({ label, options, map, onSet }: MultiFilterProps) {
                     key={opt}
                     className={`flex items-center justify-between gap-2 px-3 py-1.5 text-sm transition-colors ${
                       mode === "inc"
-                        ? "bg-emerald-500/10 text-emerald-400"
+                        ? "bg-chart-3/10 text-chart-3"
                         : mode === "exc"
                           ? "bg-destructive/10 text-destructive"
                           : "text-foreground hover:bg-accent"
@@ -254,6 +255,8 @@ interface ImportPreview {
   title: string;
   transactions: ImportTransaction[];
   documentIds: number[];
+  // Parser-reported subtotal mismatches across the parsed documents.
+  validationErrors: string[];
 }
 
 // Inc/exclude filter maps (correspondents, document types, tags) are serialized
@@ -672,6 +675,7 @@ export default function PaperlessImport() {
       const transactions: ImportTransaction[] = [];
       const titles: string[] = [];
       const successIds: number[] = [];
+      const validationErrors: string[] = [];
       const failures: string[] = [];
       results.forEach((result, i) => {
         const id = ids[i];
@@ -680,6 +684,11 @@ export default function PaperlessImport() {
         if (result.status === "fulfilled") {
           titles.push(title);
           transactions.push(...(result.value.transactions || []));
+          // Prefix each message with its document so a warning can be traced
+          // back to the statement it came from.
+          (result.value.validationErrors || []).forEach((warning) =>
+            validationErrors.push(`${title}: ${warning}`),
+          );
           successIds.push(id);
         } else {
           const reason = (result.reason as Error)?.message || "failed";
@@ -695,6 +704,7 @@ export default function PaperlessImport() {
         title: titles.join(", "),
         transactions,
         documentIds: successIds,
+        validationErrors,
       });
     } finally {
       setParsing(false);
@@ -823,7 +833,7 @@ export default function PaperlessImport() {
         {success && (
           <div
             role="status"
-            className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm rounded-lg px-4 py-3"
+            className="bg-chart-3/10 border border-chart-3/30 text-chart-3 text-sm rounded-lg px-4 py-3"
           >
             {success}
           </div>
@@ -1179,6 +1189,10 @@ export default function PaperlessImport() {
                 </>
               )}
             </p>
+            <ParseWarnings
+              warnings={preview.validationErrors}
+              className="mb-3"
+            />
             {preview.transactions.length === 0 ? (
               <div className="text-sm text-muted-foreground py-4">
                 No transactions were parsed from these documents.

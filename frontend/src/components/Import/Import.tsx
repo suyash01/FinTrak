@@ -90,6 +90,8 @@ export default function Import() {
     string,
     string | number
   > | null>(null);
+  // Parser-reported subtotal mismatches for the current statement rows.
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [statementTxns, setStatementTxns] = useState<
     ImportTransaction[] | null
   >(null);
@@ -242,6 +244,7 @@ export default function Import() {
     // preview (parsedTransactions prefers statementTxns when non-null).
     setStatementTxns(null);
     setStatementSummary(null);
+    setValidationErrors([]);
     setPdfFile(null);
 
     Papa.parse<CsvRow>(file, {
@@ -279,6 +282,7 @@ export default function Import() {
     setParsing(true);
     setStatementTxns(null);
     setStatementSummary(null);
+    setValidationErrors([]);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -288,6 +292,7 @@ export default function Import() {
       const result = await api.parseStatement(fd);
       setStatementTxns(result.transactions || []);
       setStatementSummary(result.summary || null);
+      setValidationErrors(result.validationErrors || []);
       setStep(4);
     } catch (err) {
       toast.error((err as Error).message);
@@ -684,6 +689,7 @@ export default function Import() {
             importBillingCycleId={importBillingCycleId}
             onImportBillingCycleChange={setImportBillingCycleId}
             statementSummary={statementSummary}
+            validationErrors={validationErrors}
             dupCount={dupCount}
             existingDupCount={existingDupCount}
             inFileDupCount={inFileDupCount}
@@ -726,6 +732,7 @@ export default function Import() {
               setImportResult(null);
               setStatementTxns(null);
               setStatementSummary(null);
+              setValidationErrors([]);
               setPdfPassword("");
               setPdfDateFormat("auto");
               setPdfFile(null);

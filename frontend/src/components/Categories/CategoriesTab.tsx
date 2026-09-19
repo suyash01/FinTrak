@@ -141,7 +141,7 @@ export default function CategoriesTab() {
       </div>
 
       {deleteResult && (
-        <div className="mb-4 px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-sm text-emerald-400">
+        <div className="mb-4 px-4 py-2.5 bg-chart-3/10 border border-chart-3/20 rounded-lg text-sm text-chart-3">
           {deleteResult}
         </div>
       )}

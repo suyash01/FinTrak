@@ -54,7 +54,7 @@ export default function AccountRow({
             {acc.name}
           </span>
           {acc.isDefault && (
-            <span className="shrink-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded uppercase tracking-wider">
+            <span className="shrink-0 text-[9px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded uppercase tracking-wider">
               Default
             </span>
           )}
@@ -86,7 +86,7 @@ export default function AccountRow({
         {acc.closed ? (
           <span className="text-destructive">Closed</span>
         ) : (
-          <span className="text-emerald-500">Open</span>
+          <span className="text-chart-3">Open</span>
         )}
       </TableCell>
       <TableCell className={`${cellPad} text-right`}>
@@ -96,8 +96,8 @@ export default function AccountRow({
             size="icon-sm"
             className={
               acc.isDefault
-                ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
-                : "text-muted-foreground hover:text-amber-400 hover:bg-accent"
+                ? "text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                : "text-muted-foreground hover:text-amber-700 dark:hover:text-amber-300 hover:bg-accent"
             }
             onClick={() => onSetDefault(acc)}
             title={
@@ -148,7 +148,7 @@ export default function AccountRow({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground hover:text-amber-400 hover:bg-accent"
+            className="text-muted-foreground hover:text-amber-700 dark:hover:text-amber-300 hover:bg-accent"
             onClick={() => onToggleClosed(acc)}
             title={
               acc.closed

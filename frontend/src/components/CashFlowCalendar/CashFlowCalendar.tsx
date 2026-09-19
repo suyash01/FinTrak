@@ -486,9 +486,9 @@ export default function CashFlowCalendar() {
           <StatCard
             label="Money In"
             value={data.totalIncome}
-            icon={<TrendingUp size={22} className="text-emerald-500" />}
-            iconClass="bg-emerald-500/15"
-            valueClass="text-emerald-500"
+            icon={<TrendingUp size={22} className="text-chart-3" />}
+            iconClass="bg-chart-3/15"
+            valueClass="text-chart-3"
             compact={compactLayout}
           />
           <StatCard
@@ -504,7 +504,7 @@ export default function CashFlowCalendar() {
             value={data.net}
             icon={<Waypoints size={22} className="text-primary" />}
             iconClass="bg-primary/10"
-            valueClass={data.net >= 0 ? "text-emerald-500" : "text-destructive"}
+            valueClass={data.net >= 0 ? "text-chart-3" : "text-destructive"}
             compact={compactLayout}
           />
         </div>
@@ -603,7 +603,7 @@ export default function CashFlowCalendar() {
                         <TooltipRow
                           label="In"
                           value={
-                            <span className="text-emerald-500">
+                            <span className="text-chart-3">
                               {formatCurrency(hover.cell.income)}
                             </span>
                           }
@@ -622,7 +622,7 @@ export default function CashFlowCalendar() {
                             <span
                               className={
                                 hover.cell.net >= 0
-                                  ? "text-emerald-500"
+                                  ? "text-chart-3"
                                   : "text-destructive"
                               }
                             >
@@ -690,7 +690,7 @@ export default function CashFlowCalendar() {
                     <span className="font-medium">{formatDate(selected.date)}</span>
                     <span className="text-muted-foreground">
                       In{" "}
-                      <span className="font-medium text-emerald-500">
+                      <span className="font-medium text-chart-3">
                         {formatCurrency(selected.income)}
                       </span>
                     </span>
@@ -705,7 +705,7 @@ export default function CashFlowCalendar() {
                       <span
                         className={`font-medium ${
                           selected.net >= 0
-                            ? "text-emerald-500"
+                            ? "text-chart-3"
                             : "text-destructive"
                         }`}
                       >

@@ -21,6 +21,18 @@ function jsonResponse(
   };
 }
 
+// A fetch that only settles once the caller aborts, so fake timers can tell a
+// timed-out request from one that is still in flight.
+function abortOnSignal(_url: unknown, opts: RequestInit): Promise<Response> {
+  return new Promise<Response>((_resolve, reject) => {
+    opts.signal?.addEventListener("abort", () => {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      reject(err);
+    });
+  });
+}
+
 describe("user storage", () => {
   beforeEach(() => localStorage.clear());
 
@@ -170,19 +182,39 @@ describe("api request", () => {
 
   it("throws a timeout error when the request exceeds the timeout", async () => {
     vi.useFakeTimers();
-    fetchMock.mockImplementation((_url: unknown, opts: RequestInit) => {
-      return new Promise((_resolve, reject) => {
-        opts.signal?.addEventListener("abort", () => {
-          const err = new Error("Aborted");
-          err.name = "AbortError";
-          reject(err);
-        });
-      });
-    });
+    fetchMock.mockImplementation(abortOnSignal);
     const promise = api.getAccounts();
     vi.advanceTimersByTime(15000);
     await expect(promise).rejects.toThrow("Request timed out");
   });
+
+  // The parser can spend ~a minute on a PDF, so the parse routes must not be
+  // aborted at the default timeout.
+  async function expectNotAbortedAtDefaultTimeout(
+    call: () => Promise<unknown>,
+  ) {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(abortOnSignal);
+    const promise = call();
+    const settled = vi.fn();
+    void promise.catch(settled);
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(settled).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(105000);
+    await expect(promise).rejects.toThrow("Request timed out");
+  }
+
+  it("keeps statement parsing alive past the default 15s timeout", () =>
+    expectNotAbortedAtDefaultTimeout(() =>
+      api.parseStatement(new FormData()),
+    ));
+
+  it("keeps the Paperless import alive past the default 15s timeout", () =>
+    expectNotAbortedAtDefaultTimeout(() =>
+      api.importPaperlessDocument({ documentId: 1 }),
+    ));
 
   it("clears the stored user and redirects to /login on 401", async () => {
     storeUser({ id: 1 } as any);

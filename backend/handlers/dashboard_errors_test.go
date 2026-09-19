@@ -275,3 +275,33 @@ func TestGetDashboardSummaryBillingCycleErrors(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+// The summary filters are compared against typed columns, so a malformed value
+// must be a 400 rather than a Postgres cast/parse error surfacing as a 500.
+func TestGetDashboardSummaryRejectsMalformedFilters(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		errorText string
+	}{
+		{name: "accountId", query: "accountId=not-a-uuid", errorText: "invalid accountId"},
+		{name: "dateFrom", query: "dateFrom=2024-1-5", errorText: "dateFrom must be YYYY-MM-DD"},
+		{name: "dateTo", query: "dateTo=not-a-date", errorText: "dateTo must be YYYY-MM-DD"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer mock.Close()
+
+			w := httptest.NewRecorder()
+			newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w,
+				httptest.NewRequest(http.MethodGet, "/dashboard/summary?"+tt.query, nil))
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), tt.errorText)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

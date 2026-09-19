@@ -153,6 +153,13 @@ class IciciBankExtractTransactionsTests(unittest.TestCase):
         self.assertEqual(result["total_deposits"], 30000.0)
         self.assertEqual(result["total_withdrawals"], 3500.0)
         self.assertEqual(result["validation_errors"], [])
+        # The import preview's summary card: opening/closing balances as the
+        # same 2-decimal strings the sibling bank extractors emit.
+        self.assertEqual(
+            result["summary"],
+            {"opening_balance": "194497.61", "closing_balance": "18842.61"},
+        )
+        self.assertEqual(result["page_count"], 1)
 
         first = result["transactions"][0]
         self.assertEqual(first["date"], "2024-04-02")
@@ -349,6 +356,7 @@ class IciciBankTemplateRegressionTests(unittest.TestCase):
         result = extract_transactions("/tmp/statement.pdf")
 
         self.assertEqual(result["transaction_count"], 2)
+        self.assertEqual(result["page_count"], 2)
         self.assertTrue(
             all(t["account_number"] == "057001527034" for t in result["transactions"])
         )

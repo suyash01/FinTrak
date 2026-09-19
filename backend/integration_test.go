@@ -1012,3 +1012,149 @@ func TestIntegrationLoanSchedule(t *testing.T) {
 	require.Nil(t, removed.Schedule)
 }
 
+
+// TestIntegrationRuleApplyRunsAgainstPostgres covers R-1: appendRulePredicate
+// double-formatted the pattern clause ("%!(EXTRA int=N)"), so /rules/apply and
+// /rules/preview emitted SQL PostgreSQL rejects. pgxmock could not catch it —
+// its regexp matcher is unanchored, so a prefix expectation passed on the
+// malformed tail. Only a real server rejects the statement.
+func TestIntegrationRuleApplyRunsAgainstPostgres(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("rulesflow@example.com")
+
+	open := a.createAccount("Rule Bank", "bank", nil)
+	frozen := a.createAccount("Frozen Card", "credit_card", billingDayPtr(15))
+	cat := categoryByName(t, a.categories(), "Food & Dining")
+
+	openTxn := a.createTransaction(open.ID, nil, "2024-03-10", "Zomato dinner", 250, "debit")
+	frozenTxn := a.createTransaction(frozen.ID, nil, "2024-03-11", "Zomato lunch", 300, "debit")
+
+	// Closing with only `closed` (no billingDay) must not 500 — the optional
+	// SET clauses each number their own placeholder.
+	a.call(http.MethodPut, "/api/v1/accounts/"+frozen.ID.String(),
+		map[string]any{"closed": true}, http.StatusOK, nil)
+
+	rule := map[string]any{"pattern": "Zomato", "matchType": "contains", "categoryId": cat.ID}
+	var created models.Rule
+	a.call(http.MethodPost, "/api/v1/rules", rule, http.StatusCreated, &created)
+
+	// UpdateRule builds the same untyped-NULL construct, so it must parse too.
+	var updated models.Rule
+	a.call(http.MethodPut, "/api/v1/rules/"+created.ID.String(), rule, http.StatusOK, &updated)
+	require.Equal(t, created.ID, updated.ID)
+	require.Equal(t, cat.ID, updated.CategoryID)
+
+	// The preview and the apply must agree, and both must be valid SQL.
+	var preview models.RulePreview
+	a.call(http.MethodPost, "/api/v1/rules/preview", rule, http.StatusOK, &preview)
+	require.Equal(t, 1, preview.Matched, "only the open account's transaction is eligible")
+
+	var applied struct {
+		Updated int `json:"updated"`
+	}
+	a.call(http.MethodPost, "/api/v1/rules/apply", nil, http.StatusOK, &applied)
+	require.Equal(t, 1, applied.Updated)
+
+	categorized := txnsByID(a.transactions(open.ID))[openTxn]
+	require.NotNil(t, categorized.CategoryID)
+	require.Equal(t, cat.ID, *categorized.CategoryID)
+
+	frozenTxnAfter := txnsByID(a.transactions(frozen.ID))[frozenTxn]
+	require.Nil(t, frozenTxnAfter.CategoryID, "a closed account's transactions stay uncategorized")
+}
+
+// TestIntegrationAccountMoveClearsBillingCycle covers R-2: moving a transaction
+// to another account used to leave the previous account's cycle attached, which
+// polluted that cycle's totals. The composite FK
+// (user_id, account_id, billing_cycle_id) now also makes a stale cycle
+// impossible to persist.
+func TestIntegrationAccountMoveClearsBillingCycle(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("cyclemove@example.com")
+
+	from := a.createAccount("Move From", "credit_card", billingDayPtr(15))
+	to := a.createAccount("Move To", "credit_card", billingDayPtr(15))
+
+	txn := a.createTransaction(from.ID, nil, "2024-03-10", "moving purchase", 100, "debit")
+	before := txnsByID(a.transactions(from.ID))[txn]
+	require.NotNil(t, before.BillingCycleID, "a credit-card transaction attaches to a cycle")
+
+	a.call(http.MethodPatch, "/api/v1/transactions/"+txn.String(),
+		map[string]any{"accountId": to.ID}, http.StatusOK, nil)
+
+	moved := txnsByID(a.transactions(to.ID))[txn]
+	require.Equal(t, to.ID, moved.AccountID)
+	require.Nil(t, moved.BillingCycleID, "the old account's cycle must be cleared")
+
+	// The origin account's cycles no longer count the moved transaction.
+	var cycles struct {
+		Data []models.BillingCycle `json:"data"`
+	}
+	a.call(http.MethodGet, "/api/v1/accounts/"+from.ID.String()+"/billing-cycles", nil, http.StatusOK, &cycles)
+	for _, c := range cycles.Data {
+		require.Zero(t, c.TransactionCount, "cycle %s still counts a moved transaction", c.Label)
+	}
+}
+
+// billingDayPtr returns a pointer to a billing day, for accounts that must
+// generate billing cycles.
+func billingDayPtr(day int) *int {
+	return &day
+}
+
+// TestIntegrationRestoreClearsCrossAccountCycle covers the restore path: the
+// composite FK (user_id, account_id, billing_cycle_id) rejects a bundle that
+// pairs a transaction with another account's cycle — the corruption the
+// pre-fix PATCH could produce — so the restore clears the reference and warns
+// instead of failing the whole import.
+func TestIntegrationRestoreClearsCrossAccountCycle(t *testing.T) {
+	source := newAPIClient(t)
+	source.register("bundle-source@example.com")
+	day := 15
+	cardA := source.createAccount("Bundle Card A", "credit_card", billingDayPtr(day))
+	cardB := source.createAccount("Bundle Card B", "credit_card", billingDayPtr(day))
+	source.createTransaction(cardA.ID, nil, "2024-03-10", "bundle purchase A", 50, "debit")
+	source.createTransaction(cardB.ID, nil, "2024-03-11", "bundle purchase B", 60, "debit")
+
+	var bundle models.BackupBundle
+	source.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+
+	// Point B's transaction at one of A's cycles, as the pre-fix PATCH did.
+	var cycleA *uuid.UUID
+	for i, c := range bundle.BillingCycles {
+		if c.AccountID == cardA.ID {
+			cycleA = &bundle.BillingCycles[i].ID
+			break
+		}
+	}
+	require.NotNil(t, cycleA, "account A should have exported billing cycles")
+	target := -1
+	for i, tx := range bundle.Transactions {
+		if tx.AccountID == cardB.ID {
+			target = i
+		}
+	}
+	require.NotEqual(t, -1, target)
+	bundle.Transactions[target].BillingCycleID = cycleA
+
+	// A fresh user restores it: the bad reference is dropped with a warning
+	// rather than tripping the foreign key.
+	targetClient := newAPIClient(t)
+	targetClient.register("bundle-target@example.com")
+	var res models.BackupImportResult
+	targetClient.call(http.MethodPost, "/api/v1/import", bundle, http.StatusOK, &res)
+	require.Contains(t, res.Warnings, "cleared billing cycle: it belongs to another account")
+
+	var all struct {
+		Data []models.Transaction `json:"data"`
+	}
+	targetClient.call(http.MethodGet, "/api/v1/transactions", nil, http.StatusOK, &all)
+	restored := 0
+	for _, tx := range all.Data {
+		if tx.Description == "bundle purchase B" {
+			restored++
+			require.Nil(t, tx.BillingCycleID, "the cross-account cycle must be cleared")
+		}
+	}
+	require.Equal(t, 1, restored, "the transaction should still be restored")
+}

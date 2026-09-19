@@ -2,6 +2,7 @@ import { type Dispatch, type SetStateAction } from "react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { DATE_FORMAT_OPTIONS, type CsvRow } from "./importHelpers";
 import ImportPreviewTable from "./ImportPreviewTable";
+import ParseWarnings from "./ParseWarnings";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
@@ -34,6 +35,7 @@ interface PreviewStepProps {
   importBillingCycleId: string;
   onImportBillingCycleChange: (id: string) => void;
   statementSummary: Record<string, string | number> | null;
+  validationErrors: string[];
   dupCount: number;
   existingDupCount: number;
   inFileDupCount: number;
@@ -68,6 +70,7 @@ export default function PreviewStep({
   importBillingCycleId,
   onImportBillingCycleChange,
   statementSummary,
+  validationErrors,
   dupCount,
   existingDupCount,
   inFileDupCount,
@@ -91,7 +94,7 @@ export default function PreviewStep({
         <h3 className="text-xl font-bold text-foreground">
           Preview — {parsedTransactions.length} transactions
           {excludedCount > 0 && (
-            <span className="ml-2 text-base font-semibold text-amber-500">
+            <span className="ml-2 text-base font-semibold text-amber-700 dark:text-amber-300">
               ({includedCount} selected)
             </span>
           )}
@@ -104,7 +107,7 @@ export default function PreviewStep({
             </div>
           )}
           {excludedCount > 0 && (
-            <div className="text-sm font-medium text-amber-500/90">
+            <div className="text-sm font-medium text-amber-700 dark:text-amber-300">
               {excludedCount} transaction{excludedCount === 1 ? "" : "s"}{" "}
               excluded from import
             </div>
@@ -243,15 +246,17 @@ export default function PreviewStep({
         </div>
       )}
 
+      <ParseWarnings warnings={validationErrors} className="mb-5" />
+
       {dupCount > 0 && (
         <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/25 rounded-lg flex gap-3 items-start">
           <AlertTriangle size={18} className="text-amber-500 shrink-0 mt-0.5" />
-          <div className="text-sm text-amber-200">
-            <p className="font-semibold mb-1">
+          <div className="text-sm">
+            <p className="font-semibold mb-1 text-foreground">
               {dupCount} transaction{dupCount === 1 ? "" : "s"} look like
               duplicates.
             </p>
-            <p className="text-amber-200/80">
+            <p className="text-muted-foreground">
               {existingDupCount > 0 && (
                 <span>
                   {existingDupCount} already exist

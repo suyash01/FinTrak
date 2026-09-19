@@ -101,8 +101,17 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 	dateTo := c.Query("dateTo")
 	accountID := c.Query("accountId")
 
-	// Reject a malformed account id up front: the parameter is compared against
-	// a uuid column, so a non-uuid would otherwise surface as a 500.
+	// The date bounds are compared against a date column and the account id
+	// against a uuid column, so reject malformed filters up front instead of
+	// letting them surface as 500s.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", dateFrom)
+	if !ok {
+		return
+	}
+	dateTo, ok = parseQueryDate(c, "dateTo", dateTo)
+	if !ok {
+		return
+	}
 	if accountID != "" {
 		if _, err := uuid.Parse(accountID); err != nil {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)

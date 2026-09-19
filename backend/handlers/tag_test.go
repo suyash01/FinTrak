@@ -5,12 +5,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
+
+// wantClosedAccountGuard is the predicate every transaction write must carry:
+// closing an account freezes its transactions, so a write touching such a row
+// is a no-op. The handler tests match it verbatim, so dropping or moving it
+// fails instead of silently rewriting frozen rows.
+const wantClosedAccountGuard = "NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)"
 
 func TestGetTags(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
@@ -47,7 +54,12 @@ func TestBulkUpdateTags(t *testing.T) {
 
 	id1 := uuid.New()
 	id2 := uuid.New()
-	mock.ExpectExec("UPDATE transactions").
+	// pgxmock collapses whitespace on both sides, so the statement is pinned
+	// here in its single-line form, closed-account guard included.
+	mock.ExpectExec(regexp.QuoteMeta(
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) " +
+			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') " +
+			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND " + wantClosedAccountGuard)).
 		WithArgs(testUserID(), []string{"trip"}, []string{"draft"}, []uuid.UUID{id1, id2}).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
@@ -63,6 +75,34 @@ func TestBulkUpdateTags(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"updated":2`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A batch whose rows all sit on closed accounts changes nothing: the guard
+// makes every frozen transaction unmatchable, so the count reports zero.
+func TestBulkUpdateTagsSkipsClosedAccounts(t *testing.T) {
+	r, srv, mock := newAccountTestRouter(t)
+	r.POST("/transactions/bulk-tags", srv.BulkUpdateTags)
+
+	closedID := uuid.New()
+	mock.ExpectExec(regexp.QuoteMeta(
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) " +
+			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') " +
+			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND " + wantClosedAccountGuard)).
+		WithArgs(testUserID(), []string{"trip"}, []string{}, []uuid.UUID{closedID}).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	body, _ := json.Marshal(map[string]any{
+		"transactionIds": []string{closedID.String()},
+		"add":            []string{"trip"},
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/transactions/bulk-tags", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"updated":0`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -105,7 +145,10 @@ func TestRenameTag(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
 	r.POST("/tags/rename", srv.RenameTag)
 
-	mock.ExpectExec("UPDATE transactions").
+	mock.ExpectExec(regexp.QuoteMeta(
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) " +
+			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped " +
+			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND " + wantClosedAccountGuard)).
 		WithArgs(testUserID(), "old", "new").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 4))
 
@@ -117,6 +160,31 @@ func TestRenameTag(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"updated":4`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A rename is a global rewrite, so the guard is what keeps it from reaching a
+// frozen transaction: nothing on a closed account matches, and the response
+// reports zero rows rewritten.
+func TestRenameTagSkipsClosedAccounts(t *testing.T) {
+	r, srv, mock := newAccountTestRouter(t)
+	r.POST("/tags/rename", srv.RenameTag)
+
+	mock.ExpectExec(regexp.QuoteMeta(
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) " +
+			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped " +
+			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND " + wantClosedAccountGuard)).
+		WithArgs(testUserID(), "old", "new").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	body, _ := json.Marshal(map[string]string{"from": "old", "to": "new"})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/tags/rename", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"updated":0`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

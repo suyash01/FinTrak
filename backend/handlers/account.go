@@ -246,8 +246,9 @@ func (srv *Server) UpdateAccount(c *gin.Context) {
 		// COALESCE(NULLIF(...)) convention as UpdateCategory), so a request can
 		// never blank a required field such as name or account_type_id. The id
 		// and user_id params stay at $7/$8 so the outer SELECT references hold;
-		// an explicit billing day is appended as $9 and an explicit closed flag
-		// as $10.
+		// the optional billing day and closed flag are appended after them,
+		// each numbering its own placeholder from the argument list so a
+		// request that sets only one of the two never references a gap.
 		setClauses := []string{
 			"name = COALESCE(NULLIF($1, ''), name)",
 			"account_type_id = COALESCE(NULLIF($2, ''), account_type_id)",
@@ -258,11 +259,11 @@ func (srv *Server) UpdateAccount(c *gin.Context) {
 		}
 		args := []interface{}{req.Name, req.AccountTypeID, req.Bank, req.Currency, req.Color, req.IsDefault, id, userID}
 		if req.BillingDay.Set() {
-			setClauses = append(setClauses, "billing_day = $9")
+			setClauses = append(setClauses, fmt.Sprintf("billing_day = $%d", len(args)+1))
 			args = append(args, req.BillingDay.Value())
 		}
 		if req.Closed != nil {
-			setClauses = append(setClauses, "closed = $10")
+			setClauses = append(setClauses, fmt.Sprintf("closed = $%d", len(args)+1))
 			args = append(args, *req.Closed)
 		}
 

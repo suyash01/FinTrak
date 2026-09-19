@@ -87,7 +87,8 @@ func (srv *Server) BulkUpdateTags(c *gin.Context) {
 	}
 
 	// Rebuild tags as: (existing ∪ add) \ remove, deduplicated and sorted. The
-	// COALESCE keeps an empty result as '{}' rather than NULL.
+	// COALESCE keeps an empty result as '{}' rather than NULL. Transactions on
+	// closed accounts are skipped (immutable; linking only).
 	result, err := srv.db.Exec(c,
 		`UPDATE transactions
 		 SET tags = COALESCE((
@@ -95,7 +96,8 @@ func (srv *Server) BulkUpdateTags(c *gin.Context) {
 		     FROM unnest(tags || $2::text[]) AS x
 		     WHERE x <> ALL($3::text[])
 		 ), '{}')
-		 WHERE user_id = $1 AND id = ANY($4::uuid[])`,
+		 WHERE user_id = $1 AND id = ANY($4::uuid[])
+		   AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`,
 		auth.GetUserID(c), add, remove, req.TransactionIDs)
 	if err != nil {
 		slog.Error("BulkUpdateTags", slog.String("error", err.Error()))
@@ -129,6 +131,8 @@ func (srv *Server) RenameTag(c *gin.Context) {
 		return
 	}
 
+	// Transactions on closed accounts are skipped (immutable; linking only),
+	// so a rename never rewrites a frozen row.
 	result, err := srv.db.Exec(c,
 		`UPDATE transactions
 		 SET tags = COALESCE((
@@ -138,7 +142,8 @@ func (srv *Server) RenameTag(c *gin.Context) {
 		         FROM unnest(tags) AS x
 		     ) mapped
 		 ), '{}')
-		 WHERE user_id = $1 AND $2 = ANY(tags)`,
+		 WHERE user_id = $1 AND $2 = ANY(tags)
+		   AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`,
 		auth.GetUserID(c), from[0], to[0])
 	if err != nil {
 		slog.Error("RenameTag", slog.String("error", err.Error()))

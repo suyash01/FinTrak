@@ -40,9 +40,9 @@ export default function DuplicateDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md sm:max-w-md">
         <DialogHeader>
-          <div className="flex items-center gap-2.5 text-amber-400">
-            <AlertTriangle size={20} />
-            <DialogTitle className="text-lg font-bold">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle size={20} className="text-amber-500" />
+            <DialogTitle className="text-lg font-bold text-foreground">
               Duplicate transactions found
             </DialogTitle>
           </div>
@@ -67,7 +67,7 @@ export default function DuplicateDialog({
           )}
         </ul>
         {partialExisting && (
-          <p className="text-xs text-amber-400">
+          <p className="text-xs text-muted-foreground">
             This account has more history than the import screen loads, so the
             existing-duplicate check may be incomplete.
           </p>

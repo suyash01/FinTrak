@@ -288,7 +288,7 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"transactions":[{"date":"18 May 26","description":"UPI-SUYASH MITTAL","amount":310.0,"type":"Credit"}],"summary":{},"page_count":1,"transaction_count":1}`))
+		w.Write([]byte(`{"transactions":[{"date":"18 May 26","description":"UPI-SUYASH MITTAL","amount":310.0,"type":"Credit"}],"summary":{},"page_count":1,"transaction_count":1,"validation_errors":["page 1: rebuilt subtotal does not match printed total"]}`))
 	}))
 	defer parser.Close()
 
@@ -308,6 +308,9 @@ func TestImportPaperlessDocumentSuccess(t *testing.T) {
 	require.Len(t, res.Transactions, 1)
 	assert.Equal(t, "2026-05-18", res.Transactions[0].Date)
 	assert.Equal(t, "credit", res.Transactions[0].Type)
+	// The Paperless path shares the manual path's result shape, so parser
+	// warnings must survive it too.
+	assert.Equal(t, []string{"page 1: rebuilt subtotal does not match printed total"}, res.ValidationErrors)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

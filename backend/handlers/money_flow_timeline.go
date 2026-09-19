@@ -30,6 +30,17 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 	accountID := c.Query("accountId")
 	groupBy := c.DefaultQuery("groupBy", "month")
 
+	// The date bounds are compared against a date column and the account id
+	// against a uuid column, so reject malformed filters up front instead of
+	// letting them surface as 500s.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", dateFrom)
+	if !ok {
+		return
+	}
+	dateTo, ok = parseQueryDate(c, "dateTo", dateTo)
+	if !ok {
+		return
+	}
 	if accountID != "" {
 		if _, err := uuid.Parse(accountID); err != nil {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)

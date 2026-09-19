@@ -293,3 +293,21 @@ func TestAccountFlowEdgesBreaksCyclesDeterministically(t *testing.T) {
 	assert.Equal(t, b, edges[1].srcID)
 	assert.Equal(t, c, edges[1].dstID)
 }
+
+// The date window is compared against a date column, so a malformed bound must
+// be a 400 rather than a Postgres parse error surfacing as a 500.
+func TestGetMoneyFlowRejectsMalformedDates(t *testing.T) {
+	srv, _ := newMockServer(t)
+	r := newMoneyFlowTestRouter(srv)
+
+	for _, query := range []string{"dateFrom=2024-1-5", "dateTo=not-a-date"} {
+		t.Run(query, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/dashboard/money-flow?"+query, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "must be YYYY-MM-DD")
+		})
+	}
+}

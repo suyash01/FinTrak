@@ -472,8 +472,10 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		})
 	}
 
-	// Billing cycles.
+	// Billing cycles. cycleAccount tracks each new cycle's account so a
+	// transaction's cycle reference can be checked against it below.
 	cycleMap := map[uuid.UUID]uuid.UUID{}
+	cycleAccount := map[uuid.UUID]uuid.UUID{}
 	cycleRows := make([][]any, 0, len(b.BillingCycles))
 	for _, bc := range b.BillingCycles {
 		accountID, ok := accountMap[bc.AccountID]
@@ -491,6 +493,7 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		}
 		newID := uuid.New()
 		cycleMap[bc.ID] = newID
+		cycleAccount[newID] = accountID
 		cycleRows = append(cycleRows, []any{newID, accountID, userID, start, end, bc.Label, nonZeroTime(bc.CreatedAt)})
 	}
 
@@ -513,10 +516,19 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		}
 		newID := uuid.New()
 		txnMap[t.ID] = newID
+		// The composite FK requires a transaction's billing cycle to belong to
+		// its own account. A bundle written before that invariant was enforced
+		// can still pair them across accounts, so clear the reference and warn
+		// rather than failing the whole restore.
+		cycleID := mapBackupUUID(cycleMap, t.BillingCycleID)
+		if cycleID != nil && cycleAccount[*cycleID] != accountID {
+			addBackupWarning(res, "cleared billing cycle: it belongs to another account")
+			cycleID = nil
+		}
 		txnRows = append(txnRows, []any{
 			newID, accountID, userID, date, t.Description, t.Amount, t.Type,
 			mapBackupUUID(categoryMap, t.CategoryID), tags, t.Notes,
-			mapBackupUUID(payeeMap, t.PayeeID), mapBackupUUID(cycleMap, t.BillingCycleID),
+			mapBackupUUID(payeeMap, t.PayeeID), cycleID,
 			nonZeroTime(t.CreatedAt), nonZeroTime(t.UpdatedAt),
 		})
 	}

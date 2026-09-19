@@ -61,6 +61,16 @@ describe("ValidationDialog", () => {
     expect(screen.getByText(/50,000\.00/)).toBeInTheDocument();
   });
 
+  it("uses theme tokens for the positive status colours", () => {
+    renderDialog();
+    // The dialog renders in a portal, so assert against the document. Positive
+    // status must stay legible on the light theme — no dark-only tints.
+    expect(document.body.innerHTML).not.toMatch(
+      /text-(emerald|amber)-(100|200|300|400)/,
+    );
+    expect(document.body.innerHTML).toContain("text-chart-3");
+  });
+
   it("falls back to a generic account label when none is provided", () => {
     renderDialog({ accountName: "" });
     expect(screen.getByText("this account")).toBeInTheDocument();

@@ -142,10 +142,10 @@ func (srv *Server) CreateRule(c *gin.Context) {
 		     date_from, date_to, is_linked, is_recurring, add_tags, notes)
 		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))
-		   AND ($5 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
-		   AND ($7 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $7 AND a.user_id = $1))
-		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $8 AND (fc.user_id = $1 OR fc.user_id IS NULL)))
-		   AND ($9 IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $9 AND fp.user_id = $1))
+		   AND ($5::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
+		   AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $7 AND a.user_id = $1))
+		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $8 AND (fc.user_id = $1 OR fc.user_id IS NULL)))
+		   AND ($9::uuid IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $9 AND fp.user_id = $1))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		auth.GetUserID(c), req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
 		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount, nullIfEmpty(req.TxnType),
@@ -238,10 +238,10 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		     add_tags = $16, notes = $17
 		 WHERE id = $18 AND user_id = $19
 		   AND EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 AND (c.user_id = $19 OR c.user_id IS NULL))
-		   AND ($4 IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $19))
-		   AND ($6 IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $6 AND a.user_id = $19))
-		   AND ($7 IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $7 AND (fc.user_id = $19 OR fc.user_id IS NULL)))
-		   AND ($8 IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $8 AND fp.user_id = $19))
+		   AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $4 AND p.user_id = $19))
+		   AND ($6::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $6 AND a.user_id = $19))
+		   AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories fc WHERE fc.id = $7 AND (fc.user_id = $19 OR fc.user_id IS NULL)))
+		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees fp WHERE fp.id = $8 AND fp.user_id = $19))
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
 		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount,
@@ -301,7 +301,8 @@ func (srv *Server) PreviewRule(c *gin.Context) {
 
 	entry := ruleEntryFromRequest(req, matchType, dateFrom, dateTo)
 	f := newTxnFilter(auth.GetUserID(c))
-	f.raw("t.category_id IS NULL")
+	f.raw("category_id IS NULL")
+	f.raw("NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)")
 	if !appendRulePredicate(f, entry) {
 		// An unrecognized match type never fires; report zero matches rather
 		// than an error, matching ApplyRules' skip behavior.
@@ -309,8 +310,12 @@ func (srv *Server) PreviewRule(c *gin.Context) {
 		return
 	}
 
+	// Render the WHERE fragment exactly as ApplyRules does — an unaliased
+	// `transactions` scan and the same clause order — so the preview counts
+	// precisely the rows a real apply would update.
+	query := "SELECT COUNT(*) FROM transactions WHERE user_id = $1 AND " + strings.Join(f.clauses, " AND ")
 	var matched int
-	if err := srv.db.QueryRow(c, "SELECT COUNT(*) FROM transactions t"+f.where(), f.args...).Scan(&matched); err != nil {
+	if err := srv.db.QueryRow(c, query, f.args...).Scan(&matched); err != nil {
 		slog.Error("PreviewRule", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -325,7 +330,8 @@ func (srv *Server) PreviewRule(c *gin.Context) {
 // priority order: the category_id IS NULL guard means a transaction is
 // categorized by exactly one (the highest-priority matching) rule, and any
 // failure rolls the whole apply back so a mid-batch error can never commit a
-// silently partial result. Returns the number of transactions updated.
+// silently partial result. Transactions on closed accounts are skipped
+// (immutable; linking only). Returns the number of transactions updated.
 func (srv *Server) ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
@@ -374,6 +380,7 @@ func (srv *Server) ApplyRules(c *gin.Context) {
 
 		f := &txnFilter{args: args}
 		f.raw("category_id IS NULL")
+		f.raw("NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)")
 		if !appendRulePredicate(f, r) {
 			// Unrecognized match types never fire in matchRule either — skip
 			// them here rather than failing the whole batch.
@@ -499,7 +506,13 @@ func appendRulePredicate(f *txnFilter, r ruleEntry) bool {
 	if !ok {
 		return false
 	}
-	f.param(matchExpr, matchArg)
+	// ruleMatchSQL already substituted the placeholder index into matchExpr, so
+	// bind it directly: f.param would run the clause through fmt.Sprintf a
+	// second time and append a "%!(EXTRA int=N)" artifact, which PostgreSQL
+	// rejects as a syntax error (it broke every /rules/apply and /rules/preview
+	// call that had a pattern).
+	f.args = append(f.args, matchArg)
+	f.clauses = append(f.clauses, matchExpr)
 
 	if r.AccountID != nil {
 		f.param("account_id = $%d", *r.AccountID)
@@ -547,7 +560,7 @@ func appendRulePredicate(f *txnFilter, r ruleEntry) bool {
 func (srv *Server) loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
 	rows, err := srv.db.Query(c,
 		`SELECT pattern, match_type, category_id, payee_id,
-		        account_id, filter_category_id, filter_payee_id, min_amount, max_amount, txn_type,
+		        account_id, filter_category_id, filter_payee_id, min_amount, max_amount, COALESCE(txn_type, ''),
 		        date_from, date_to, is_linked, is_recurring, COALESCE(add_tags, '{}'), COALESCE(notes, '')
 		 FROM rules WHERE user_id = $1 ORDER BY priority DESC`, userID)
 	if err != nil {

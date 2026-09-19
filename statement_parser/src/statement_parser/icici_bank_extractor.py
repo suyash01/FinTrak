@@ -133,6 +133,8 @@ class StatementResult(TypedDict):
     transaction_count: int
     transactions: List[Transaction]
     validation_errors: List[str]
+    summary: Dict[str, str]
+    page_count: int
 
 
 class _RawRecord(TypedDict):
@@ -930,6 +932,9 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             ],
             "validation_errors": [],  # non-empty => a page's rebuilt
                                       # subtotal didn't match the printed one
+            "summary": {"opening_balance": "194497.61",
+                        "closing_balance": "219825.76"},  # headline figures
+            "page_count": 3,
         }
 
     Raises:
@@ -939,7 +944,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
     _decrypt_if_needed(path, password)
     pdf = _open_pdf(path, password)
     try:
-        ensure_page_limit(pdf)
+        page_count: int = ensure_page_limit(pdf)
 
         # Customer name/ID live on page 1; the account list and statement
         # period line live on the page that starts the transaction table
@@ -1063,6 +1068,15 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         # transaction (the app rejects zero-amount rows), so drop it here.
         importable: List[Transaction] = [t for t in transactions if t["amount"] > 0]
 
+        # Headline figures for the import preview's summary card: the same
+        # opening_balance/closing_balance keys and 2-decimal string form the
+        # other bank extractors emit, from balances already computed above.
+        summary_strings: Dict[str, str] = {}
+        if opening_balance is not None:
+            summary_strings["opening_balance"] = f"{opening_balance:.2f}"
+        if closing_balance is not None:
+            summary_strings["closing_balance"] = f"{closing_balance:.2f}"
+
         return StatementResult(
             bank="ICICI Bank",
             statement_type="savings_current_account",
@@ -1078,6 +1092,8 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             transaction_count=len(importable),
             transactions=importable,
             validation_errors=validation_errors,
+            summary=summary_strings,
+            page_count=page_count,
         )
     finally:
         pdf.close()

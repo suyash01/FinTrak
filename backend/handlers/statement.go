@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
@@ -31,6 +32,10 @@ type parseStatementResult struct {
 	Summary      map[string]string          `json:"summary"`
 	PageCount    int                        `json:"pageCount"`
 	TxnCount     int                        `json:"transactionCount"`
+	// ValidationErrors carries the parser's per-page consistency warnings
+	// (e.g. a rebuilt subtotal that didn't match the printed one) so the
+	// preview can flag a drifted parse instead of presenting it as clean.
+	ValidationErrors []string `json:"validationErrors"`
 }
 
 // rawParserTransaction is the shape returned by the statement-parser REST API.
@@ -50,6 +55,10 @@ type rawParserResponse struct {
 	TransactionCount int                    `json:"transaction_count"`
 	Error            string                 `json:"error"`
 	PasswordRequired bool                   `json:"password_required"`
+	// ValidationErrors is the parser's own JSON key (snake_case, unlike the
+	// frontend-facing camelCase) and is absent when the extractor had nothing
+	// to report.
+	ValidationErrors []string `json:"validation_errors"`
 }
 
 // ParseStatement accepts an uploaded bank/credit-card statement PDF (plus an
@@ -57,8 +66,18 @@ type rawParserResponse struct {
 // returns the extracted transactions normalized to the app's import format so the
 // frontend can preview and import them directly.
 func (srv *Server) ParseStatement(c *gin.Context) {
+	// Cap the request body before gin parses the multipart form: c.FormFile would
+	// otherwise read (and spool) an unbounded upload before the size check runs.
+	// The extra megabyte covers multipart boundaries and the form's text fields.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxStatementUpload+(1<<20))
+
 	file, err := c.FormFile("file")
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			validation.RespondError(c, "file too large. Max upload size is 20 MB.", http.StatusRequestEntityTooLarge)
+			return
+		}
 		validation.RespondError(c, "no file provided. Attach it as 'file'.", http.StatusBadRequest)
 		return
 	}
@@ -195,6 +214,12 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 		Summary:      raw.Summary,
 		PageCount:    raw.PageCount,
 		TxnCount:     raw.TransactionCount,
+	}
+	// Always emit an array: the frontend renders the warnings as a list and
+	// would have to null-check a missing/null field otherwise.
+	result.ValidationErrors = raw.ValidationErrors
+	if result.ValidationErrors == nil {
+		result.ValidationErrors = []string{}
 	}
 	for _, t := range raw.Transactions {
 		result.Transactions = append(result.Transactions, models.ImportTransaction{

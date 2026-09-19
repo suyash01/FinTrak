@@ -47,7 +47,7 @@ export default function LinkTypeStep({
       <div className="text-xs text-muted-foreground mt-1">
         {t.accountName} · {formatDate(t.date)} ·
         <span
-          className={t.type === "debit" ? "text-destructive" : "text-emerald-500"}
+          className={t.type === "debit" ? "text-destructive" : "text-chart-3"}
         >
           {t.type === "debit" ? "−" : "+"}
           {formatCurrency(t.amount)}
@@ -125,7 +125,7 @@ export default function LinkTypeStep({
               onClick={() => onLinkTypeChange("cashback")}
               className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
                 linkType === "cashback"
-                  ? "border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10"
+                  ? "border-chart-3 bg-chart-3/10 shadow-lg shadow-chart-3/10"
                   : "border-border bg-background/50 hover:border-muted-foreground"
               }`}
             >
@@ -133,12 +133,12 @@ export default function LinkTypeStep({
                 size={22}
                 className={
                   linkType === "cashback"
-                    ? "text-emerald-400"
+                    ? "text-chart-3"
                     : "text-muted-foreground"
                 }
               />
               <span
-                className={`text-sm font-semibold ${linkType === "cashback" ? "text-emerald-400" : "text-muted-foreground"}`}
+                className={`text-sm font-semibold ${linkType === "cashback" ? "text-chart-3" : "text-muted-foreground"}`}
               >
                 Cashback
               </span>
@@ -152,18 +152,18 @@ export default function LinkTypeStep({
               onClick={() => onLinkTypeChange("refund")}
               className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
                 linkType === "refund"
-                  ? "border-amber-500 bg-amber-500/10 shadow-lg shadow-amber-500/10"
+                  ? "border-chart-4 bg-chart-4/10 shadow-lg shadow-chart-4/10"
                   : "border-border bg-background/50 hover:border-muted-foreground"
               }`}
             >
               <RotateCcw
                 size={22}
                 className={
-                  linkType === "refund" ? "text-amber-400" : "text-muted-foreground"
+                  linkType === "refund" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"
                 }
               />
               <span
-                className={`text-sm font-semibold ${linkType === "refund" ? "text-amber-400" : "text-muted-foreground"}`}
+                className={`text-sm font-semibold ${linkType === "refund" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
               >
                 Refund
               </span>
@@ -177,7 +177,7 @@ export default function LinkTypeStep({
               onClick={() => onLinkTypeChange("bill_payment")}
               className={`relative flex flex-col items-center gap-2 p-4 h-auto rounded-xl border-2 transition-all ${
                 linkType === "bill_payment"
-                  ? "border-sky-500 bg-sky-500/10 shadow-lg shadow-sky-500/10"
+                  ? "border-chart-2 bg-chart-2/10 shadow-lg shadow-chart-2/10"
                   : "border-border bg-background/50 hover:border-muted-foreground"
               }`}
             >
@@ -185,12 +185,12 @@ export default function LinkTypeStep({
                 size={22}
                 className={
                   linkType === "bill_payment"
-                    ? "text-sky-400"
+                    ? "text-chart-2"
                     : "text-muted-foreground"
                 }
               />
               <span
-                className={`text-sm font-semibold ${linkType === "bill_payment" ? "text-sky-400" : "text-muted-foreground"}`}
+                className={`text-sm font-semibold ${linkType === "bill_payment" ? "text-chart-2" : "text-muted-foreground"}`}
               >
                 Bill Payment
               </span>
