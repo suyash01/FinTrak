@@ -85,7 +85,7 @@ function comboBoxWithText(text: string): HTMLElement {
 describe("TransactionFilters", () => {
   it("emits search changes", () => {
     const { props } = renderFilters();
-    fireEvent.change(screen.getByPlaceholderText("Search descriptions..."), {
+    fireEvent.change(screen.getByPlaceholderText("Search descriptions, notes, payees, tags..."), {
       target: { value: "coffee" },
     });
     expect(props.onFilterChange).toHaveBeenCalledWith("search", "coffee");

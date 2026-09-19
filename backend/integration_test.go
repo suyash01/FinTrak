@@ -585,6 +585,9 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 		"name": "Rent", "type": "debit", "frequency": "monthly",
 		"startDate": "2024-05-01", "accountId": bank.ID, "amount": 1500,
 	}, http.StatusCreated, nil)
+	alice.call(http.MethodPut, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", map[string]any{
+		"principal": 12000, "annualRateBps": 900, "tenureMonths": 24, "startDate": "2024-05-01",
+	}, http.StatusOK, nil)
 
 	var bundle models.BackupBundle
 	alice.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
@@ -593,6 +596,7 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 	require.Len(t, bundle.Transactions, 3)
 	require.Len(t, bundle.Links, 1)
 	require.Len(t, bundle.LoanAttachments, 1)
+	require.Len(t, bundle.LoanSchedules, 1)
 	require.Len(t, bundle.RecurringSeries, 1)
 
 	bob := newAPIClient(t)
@@ -605,6 +609,7 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 	require.Equal(t, 3, result.Transactions)
 	require.Equal(t, 1, result.Links)
 	require.Equal(t, 1, result.LoanAttachments)
+	require.Equal(t, 1, result.LoanSchedules)
 	require.Equal(t, 1, result.RecurringSeries)
 	require.Equal(t, len(bundle.BillingCycles), result.BillingCycles)
 	require.Empty(t, result.Warnings)
@@ -617,18 +622,29 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 	// duplicating it.
 	require.Equal(t, categoriesBefore, len(bob.categories()))
 
-	var bankID, cardID uuid.UUID
+	var bankID, cardID, loanID uuid.UUID
 	for _, acc := range bobAccounts {
 		switch acc.Name {
 		case "Checking":
 			bankID = acc.ID
 		case "Card":
 			cardID = acc.ID
+		case "Car Loan":
+			loanID = acc.ID
 		}
 	}
 	require.NotEqual(t, uuid.Nil, bankID)
 	require.NotEqual(t, uuid.Nil, cardID)
+	require.NotEqual(t, uuid.Nil, loanID)
 	require.Len(t, bob.transactions(bankID), 2)
+
+	// The amortization schedule came across too, remapped onto bob's loan.
+	var restored models.LoanScheduleDetail
+	bob.call(http.MethodGet, "/api/v1/accounts/"+loanID.String()+"/loan-schedule", nil, http.StatusOK, &restored)
+	require.NotNil(t, restored.Schedule)
+	require.Equal(t, money.FromFloat(12000), restored.Schedule.Principal)
+	require.Equal(t, 900, restored.Schedule.AnnualRateBps)
+	require.Len(t, restored.Entries, 24)
 
 	// The loan attachment was remapped onto bob's own loan account.
 	cardTxns := bob.transactions(cardID)
@@ -809,3 +825,190 @@ func findNode(nodes []models.MoneyFlowNode, id string) *models.MoneyFlowNode {
 	}
 	return nil
 }
+
+// TestIntegrationSearchSpansNotesPayeeAndTags verifies against real Postgres
+// that the shared free-text filter reaches every text field the list renders:
+// description, notes, the payee's name, and tags (a correlated EXISTS over
+// `unnest(tags)` — the part pgxmock cannot validate).
+func TestIntegrationSearchSpansNotesPayeeAndTags(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("searchall@example.com")
+	acc := a.createAccount("Checking", "bank", nil)
+
+	var payee models.Payee
+	a.call(http.MethodPost, "/api/v1/payees", map[string]any{"name": "Blue Bottle Coffee"}, http.StatusCreated, &payee)
+
+	create := func(body map[string]any) uuid.UUID {
+		var out struct {
+			ID uuid.UUID `json:"id"`
+		}
+		body["accountId"] = acc.ID
+		a.call(http.MethodPost, "/api/v1/transactions", body, http.StatusCreated, &out)
+		return out.ID
+	}
+	byDesc := create(map[string]any{
+		"date": "2024-03-01", "description": "LATTE morning", "amount": 5, "type": "debit",
+	})
+	byNote := create(map[string]any{
+		"date": "2024-03-02", "description": "POS 4471", "amount": 7, "type": "debit",
+		"notes": "latte with a friend",
+	})
+	byTag := create(map[string]any{
+		"date": "2024-03-03", "description": "POS 9930", "amount": 9, "type": "debit",
+		"tags": []string{"LatteFund"},
+	})
+	byPayee := create(map[string]any{
+		"date": "2024-03-04", "description": "POS 1111", "amount": 11, "type": "debit",
+		"payeeId": payee.ID,
+	})
+	unrelated := create(map[string]any{
+		"date": "2024-03-05", "description": "Rent", "amount": 100, "type": "debit",
+	})
+
+	search := func(q string) map[uuid.UUID]bool {
+		var out struct {
+			Data []models.Transaction `json:"data"`
+		}
+		a.call(http.MethodGet, "/api/v1/transactions?search="+q, nil, http.StatusOK, &out)
+		found := map[uuid.UUID]bool{}
+		for _, tx := range out.Data {
+			found[tx.ID] = true
+		}
+		return found
+	}
+
+	hits := search("latte")
+	// Case-insensitive across description, notes, and tags.
+	require.True(t, hits[byDesc], "description should match")
+	require.True(t, hits[byNote], "notes should match")
+	require.True(t, hits[byTag], "tags should match")
+	require.False(t, hits[byPayee], "only the payee's own name matches")
+	require.False(t, hits[unrelated])
+
+	require.True(t, search("blue%20bottle")[byPayee], "payee name should match")
+	require.False(t, search("blue%20bottle")[byDesc])
+}
+
+// TestIntegrationLinkCycles verifies the circular-money report end to end: a
+// reciprocal pair is reported as a cycle (with the Sankey netting it away), the
+// residual one-way pair is reported as a one-sided flow, and a balanced pair is
+// neither.
+func TestIntegrationLinkCycles(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("cycles@example.com")
+	checking := a.createAccount("Checking", "bank", nil)
+	card := a.createAccount("Card", "credit_card", nil)
+	savings := a.createAccount("Savings", "bank", nil)
+
+	link := func(from, to uuid.UUID) {
+		a.call(http.MethodPost, "/api/v1/links", map[string]any{
+			"type": "transfer", "fromTxnId": from, "toTxnId": to,
+		}, http.StatusCreated, nil)
+	}
+
+	// Checking -> Card 8000 and Card -> Checking 3000: a reciprocal pair, which
+	// the Sankey nets down to a single 5000 edge.
+	out := a.createTransaction(checking.ID, nil, "2024-05-01", "Pay card", 8000, "debit")
+	in := a.createTransaction(card.ID, nil, "2024-05-01", "Card paid", 8000, "credit")
+	link(out, in)
+
+	back := a.createTransaction(card.ID, nil, "2024-05-02", "Card refund out", 3000, "debit")
+	backIn := a.createTransaction(checking.ID, nil, "2024-05-02", "Refund in", 3000, "credit")
+	link(back, backIn)
+
+	// A one-way pair: Checking -> Savings with no flow back.
+	out2 := a.createTransaction(checking.ID, nil, "2024-05-03", "Move to savings", 1500, "debit")
+	in2 := a.createTransaction(savings.ID, nil, "2024-05-03", "Savings in", 1500, "credit")
+	link(out2, in2)
+
+	var report models.LinkCycleReport
+	a.call(http.MethodGet, "/api/v1/links/cycles?dateFrom=2024-05-01&dateTo=2024-05-31", nil, http.StatusOK, &report)
+
+	require.Len(t, report.Cycles, 1)
+	cycle := report.Cycles[0]
+	require.Equal(t, "reciprocal", cycle.Kind)
+	require.Len(t, cycle.Accounts, 2)
+	require.Len(t, cycle.Legs, 2)
+	require.Equal(t, money.FromFloat(3000), cycle.Net)
+	require.Equal(t, money.FromFloat(11000), cycle.Gross)
+	require.Equal(t, money.FromFloat(3000), report.TotalCircular)
+
+	require.Len(t, report.OneSidedFlows, 1)
+	flow := report.OneSidedFlows[0]
+	require.Equal(t, checking.ID.String(), flow.FromAccountID)
+	require.Equal(t, savings.ID.String(), flow.ToAccountID)
+	require.Equal(t, money.FromFloat(1500), flow.Total)
+	require.Equal(t, 1, flow.Count)
+	require.Len(t, flow.Types, 1)
+	require.Equal(t, "transfer", flow.Types[0].Type)
+}
+
+// TestIntegrationLoanSchedule walks idea #33 end to end: store the loan terms,
+// attach EMI payments, and read back the amortization table with the principal/
+// interest split and the progress derived from the attachments.
+func TestIntegrationLoanSchedule(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("amort@example.com")
+	bank := a.createAccount("Bank", "bank", nil)
+	loan := a.createAccount("Car Loan", "loan", nil)
+
+	// An unconfigured loan answers with a null schedule rather than a 404.
+	var empty models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", nil, http.StatusOK, &empty)
+	require.Nil(t, empty.Schedule)
+	require.Empty(t, empty.Entries)
+	require.Equal(t, "Car Loan", empty.LoanAccountName)
+
+	var saved models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", map[string]any{
+		"principal":     1000,
+		"annualRateBps": 1200,
+		"tenureMonths":  12,
+		"startDate":     "2024-04-01",
+	}, http.StatusOK, &saved)
+
+	require.NotNil(t, saved.Schedule)
+	require.Equal(t, money.FromFloat(88.85), saved.EMI)
+	require.Len(t, saved.Entries, 12)
+	require.Equal(t, "2024-04-01", saved.Entries[0].DueDate.Format("2006-01-02"))
+	require.Equal(t, money.FromFloat(10), saved.Entries[0].Interest)
+	require.Equal(t, money.FromFloat(78.85), saved.Entries[0].Principal)
+	require.Equal(t, money.FromFloat(1000), saved.OutstandingPrincipal)
+	require.NotNil(t, saved.NextDueDate)
+
+	// Attach two EMI payments (a debit) plus a refund (a credit).
+	emi1 := a.createTransaction(bank.ID, nil, "2024-04-01", "EMI Apr", 88.85, "debit")
+	emi2 := a.createTransaction(bank.ID, nil, "2024-05-01", "EMI May", 88.85, "debit")
+	refund := a.createTransaction(bank.ID, nil, "2024-05-02", "EMI reversal", 10, "credit")
+	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{emi1, emi2, refund},
+		"loanAccountId":  loan.ID,
+	}, http.StatusOK, nil)
+
+	var progress models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", nil, http.StatusOK, &progress)
+	require.Equal(t, 2, progress.PaidInstallments)
+	require.True(t, progress.Entries[0].Paid)
+	require.True(t, progress.Entries[1].Paid)
+	require.False(t, progress.Entries[2].Paid)
+	require.NotNil(t, progress.Entries[0].TransactionID)
+	require.Equal(t, emi1, *progress.Entries[0].TransactionID)
+	require.Equal(t, money.FromFloat(167.70), progress.PaidAmount) // 88.85*2 - 10
+	require.Equal(t, money.FromFloat(19.21), progress.InterestPaid)
+	require.Equal(t, money.FromFloat(158.49), progress.PrincipalPaid)
+	require.Equal(t, money.FromFloat(841.51), progress.OutstandingPrincipal)
+	require.False(t, progress.Completed)
+
+	// The schedule survives a backup round trip.
+	var bundle models.BackupBundle
+	a.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+	require.Len(t, bundle.LoanSchedules, 1)
+	require.Equal(t, money.FromFloat(1000), bundle.LoanSchedules[0].Principal)
+
+	a.call(http.MethodDelete, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", nil, http.StatusOK, nil)
+
+	var removed models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", nil, http.StatusOK, &removed)
+	require.Nil(t, removed.Schedule)
+}
+

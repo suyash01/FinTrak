@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { useCommandIntent } from "../../lib/useCommandIntent";
 import AccountFormDialog from "./AccountFormDialog";
 import AccountRow from "./AccountRow";
+import LoanScheduleDialog from "./LoanScheduleDialog";
 import {
   EMPTY_NEW_ACCOUNT,
   toUpdatePayload,
@@ -46,6 +47,8 @@ export default function Accounts() {
   const [editing, setEditing] = useState<Account | null>(null);
   const [editAcc, setEditAcc] = useState<AccountForm | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  // The loan whose amortization schedule dialog is open, if any.
+  const [scheduleTarget, setScheduleTarget] = useState<Account | null>(null);
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -291,6 +294,7 @@ export default function Accounts() {
                     onSetDefault={handleSetDefault}
                     onExport={handleExport}
                     onEdit={startEdit}
+                    onSchedule={setScheduleTarget}
                     onToggleClosed={handleToggleClosed}
                     onDelete={setDeleteTarget}
                   />
@@ -333,6 +337,13 @@ export default function Accounts() {
           submitLabel="Save"
           billingDayHint="Optional. Set to show monthly summary rows for this account. Leave empty to disable."
           showClosed
+        />
+      )}
+
+      {scheduleTarget && (
+        <LoanScheduleDialog
+          account={scheduleTarget}
+          onClose={() => setScheduleTarget(null)}
         />
       )}
 

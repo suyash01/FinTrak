@@ -108,6 +108,11 @@ func TestExportUserData(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "loan_account_id", "transaction_id", "created_at"}).
 			AddRow(uuid.New(), loanID, txnID, now))
 
+	mock.ExpectQuery("FROM loan_schedules WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "loan_account_id", "principal", "annual_rate_bps", "tenure_months", "start_date", "created_at", "updated_at"}).
+			AddRow(uuid.New(), loanID, int64(100000), 900, 24, now, now, now))
+
 	mock.ExpectQuery("FROM recurring_series WHERE user_id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}).
@@ -151,6 +156,9 @@ func TestExportUserData(t *testing.T) {
 	require.Len(t, bundle.Transactions, 1)
 	assert.Equal(t, "2024-01-15", bundle.Transactions[0].Date)
 	require.Len(t, bundle.Links, 1)
+	require.Len(t, bundle.LoanSchedules, 1)
+	assert.Equal(t, int64(100000), int64(bundle.LoanSchedules[0].Principal))
+	assert.Equal(t, 900, bundle.LoanSchedules[0].AnnualRateBps)
 	require.Len(t, bundle.RecurringSeries, 1)
 	require.Len(t, bundle.RecurringTerms, 1)
 	require.Len(t, bundle.Rules, 1)

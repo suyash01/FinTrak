@@ -394,22 +394,61 @@ func combineFlowConds(fromCond, toCond string) string {
 // processing order is deterministic (sorted ids), so the same input always
 // yields the same edges.
 func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
-	type account struct{ id, name, color string }
+	edges, _ := analyzeAccountFlows(rows)
+	return edges
+}
 
+// flowCycleEdge is one directed account leg of a circular flow.
+type flowCycleEdge struct {
+	srcID, dstID string
+	value        money.Amount
+}
+
+// flowCycle is one circular money flow between accounts. kind is "reciprocal"
+// for a pair that flows both ways (netted into a single Sankey edge) or "cycle"
+// for a longer loop broken by dropping its back edge. nodes lists the accounts
+// in flow order, each leg running from nodes[i] to nodes[(i+1)%len(nodes)].
+type flowCycle struct {
+	kind  string
+	nodes []string
+	legs  []flowCycleEdge
+}
+
+// flowAccountEnd is the display identity of one endpoint of an account flow.
+type flowAccountEnd struct{ id, name, color string }
+
+// flowLinkEnds resolves the directed account pair one raw cross-account link
+// contributes: money flows from the debit side to the credit side, or in the
+// stored orientation when both sides are the same kind. ok is false for a link
+// whose endpoints sit on the same account — there is no account-to-account flow
+// to draw (a same-account refund or cashback, for instance).
+func flowLinkEnds(r flowAcctLinkRow) (key [2]string, src, dst flowAccountEnd, ok bool) {
+	from := flowAccountEnd{r.fromAcctID, r.fromAcctName, r.fromAcctColor}
+	to := flowAccountEnd{r.toAcctID, r.toAcctName, r.toAcctColor}
+	src, dst = from, to
+	if r.fromType == "credit" && r.toType == "debit" {
+		src, dst = to, from
+	}
+	if src.id == dst.id {
+		return [2]string{}, flowAccountEnd{}, flowAccountEnd{}, false
+	}
+	return [2]string{src.id, dst.id}, src, dst, true
+}
+
+// analyzeAccountFlows turns raw cross-account links into directed account flows
+// (debit account -> credit account), then nets reciprocal pairs and drops the
+// remaining back edges so the returned edges form a DAG the Sankey can render.
+// The cycles this discards are returned alongside them, so the circular-money
+// report (GetLinkCycles) can surface exactly what the graph had to hide. The
+// processing order is deterministic (sorted ids), so the same input always
+// yields the same edges and the same cycles.
+func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle) {
 	agg := map[[2]string]*flowAccountEdge{}
 	for _, r := range rows {
-		from := account{r.fromAcctID, r.fromAcctName, r.fromAcctColor}
-		to := account{r.toAcctID, r.toAcctName, r.toAcctColor}
-		src, dst := from, to
-		// Money flows from the debit side to the credit side; when both sides
-		// are the same kind the stored orientation is kept.
-		if r.fromType == "credit" && r.toType == "debit" {
-			src, dst = to, from
-		}
-		if src.id == dst.id {
+		key, src, dst, ok := flowLinkEnds(r)
+		if !ok {
 			continue
 		}
-		key := [2]string{src.id, dst.id}
 		if e, ok := agg[key]; ok {
 			e.value += r.amount
 			continue
@@ -420,12 +459,24 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 			value: r.amount,
 		}
 	}
-
 	// Net reciprocal pairs into a single edge in the dominant direction. This
-	// removes the common A->B / B->A two-cycles outright.
+	// removes the common A->B / B->A two-cycles outright; each one is reported
+	// as a "reciprocal" cycle before it is netted away.
+	var cycles []flowCycle
+	keys := make([][2]string, 0, len(agg))
+	for key := range agg {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i][0] != keys[j][0] {
+			return keys[i][0] < keys[j][0]
+		}
+		return keys[i][1] < keys[j][1]
+	})
 	seen := map[[2]string]bool{}
-	for key, edge := range agg {
-		if seen[key] {
+	for _, key := range keys {
+		edge, ok := agg[key]
+		if !ok || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -435,6 +486,14 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 			continue
 		}
 		seen[rev] = true
+		cycles = append(cycles, flowCycle{
+			kind:  "reciprocal",
+			nodes: []string{key[0], key[1]},
+			legs: []flowCycleEdge{
+				{srcID: key[0], dstID: key[1], value: edge.value},
+				{srcID: key[1], dstID: key[0], value: revEdge.value},
+			},
+		})
 		switch {
 		case edge.value > revEdge.value:
 			edge.value -= revEdge.value
@@ -450,6 +509,8 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 
 	// Drop back edges to break any longer cycles: a depth-first walk keeps
 	// every edge except those pointing at a node still on the recursion stack.
+	// Each dropped back edge closes a cycle, so the recursion stack at that
+	// moment spells out the loop being hidden.
 	adj := map[string][]string{}
 	for key := range agg {
 		adj[key[0]] = append(adj[key[0]], key[1])
@@ -458,10 +519,12 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 		sort.Strings(adj[id])
 	}
 	state := map[string]int{} // 0 unvisited, 1 on stack, 2 done
+	stack := []string{}
 	kept := []flowAccountEdge{}
 	var visit func(string)
 	visit = func(u string) {
 		state[u] = 1
+		stack = append(stack, u)
 		for _, v := range adj[u] {
 			edge, ok := agg[[2]string{u, v}]
 			if !ok {
@@ -469,7 +532,11 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 			}
 			switch state[v] {
 			case 1:
-				// Back edge: dropping it breaks the cycle.
+				// Back edge: dropping it breaks the cycle. The stack holds the
+				// cycle's participants in flow order.
+				if cycle, ok := flowStackCycle(agg, stack, v, edge.value); ok {
+					cycles = append(cycles, cycle)
+				}
 			case 0:
 				kept = append(kept, *edge)
 				visit(v)
@@ -477,6 +544,7 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 				kept = append(kept, *edge)
 			}
 		}
+		stack = stack[:len(stack)-1]
 		state[u] = 2
 	}
 	roots := make([]string, 0, len(adj))
@@ -496,7 +564,67 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 		}
 		return kept[i].dstID < kept[j].dstID
 	})
-	return kept
+
+	return kept, dedupeAndSortCycles(cycles)
+}
+
+// flowStackCycle builds the cycle closed by a back edge from the current DFS
+// stack: v is the already-on-stack node the edge points back at, so the loop is
+// stack[indexOf(v):] plus the closing leg. Legs carry the aggregated flow of
+// each consecutive pair.
+func flowStackCycle(agg map[[2]string]*flowAccountEdge, stack []string, v string, closing money.Amount) (flowCycle, bool) {
+	start := -1
+	for i, id := range stack {
+		if id == v {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return flowCycle{}, false
+	}
+	nodes := append([]string{}, stack[start:]...)
+	if len(nodes) < 2 {
+		return flowCycle{}, false
+	}
+	legs := make([]flowCycleEdge, 0, len(nodes))
+	for i := range nodes {
+		if i == len(nodes)-1 {
+			legs = append(legs, flowCycleEdge{srcID: nodes[i], dstID: nodes[0], value: closing})
+			continue
+		}
+		edge, ok := agg[[2]string{nodes[i], nodes[i+1]}]
+		if !ok {
+			return flowCycle{}, false
+		}
+		legs = append(legs, flowCycleEdge{srcID: nodes[i], dstID: nodes[i+1], value: edge.value})
+	}
+	return flowCycle{kind: "cycle", nodes: nodes, legs: legs}, true
+}
+
+// dedupeAndSortCycles drops duplicate loops (the same accounts can be closed by
+// more than one back edge) and orders the result deterministically: reciprocal
+// two-cycles first, then by participant id.
+func dedupeAndSortCycles(cycles []flowCycle) []flowCycle {
+	unique := make([]flowCycle, 0, len(cycles))
+	seen := map[string]bool{}
+	for _, c := range cycles {
+		ids := append([]string{}, c.nodes...)
+		sort.Strings(ids)
+		key := strings.Join(ids, "|")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, c)
+	}
+	sort.SliceStable(unique, func(i, j int) bool {
+		if (unique[i].kind == "reciprocal") != (unique[j].kind == "reciprocal") {
+			return unique[i].kind == "reciprocal"
+		}
+		return strings.Join(unique[i].nodes, "|") < strings.Join(unique[j].nodes, "|")
+	})
+	return unique
 }
 
 // flowFilter renders the shared date/account predicates for one table-alias

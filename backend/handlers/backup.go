@@ -138,6 +138,7 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 		Transactions:         []models.BackupTransaction{},
 		Links:                []models.BackupLink{},
 		LoanAttachments:      []models.BackupLoanAttachment{},
+		LoanSchedules:        []models.BackupLoanSchedule{},
 		RecurringSeries:      []models.BackupRecurringSeries{},
 		RecurringTerms:       []models.BackupRecurringTerm{},
 		RecurringAttachments: []models.BackupRecurringAttachment{},
@@ -291,6 +292,22 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 			return nil
 		}); err != nil {
 		return nil, fmt.Errorf("export loan attachments: %w", err)
+	}
+
+	if err := exportUserRows(ctx, pool,
+		`SELECT id, loan_account_id, principal, annual_rate_bps, tenure_months, start_date, created_at, updated_at
+		 FROM loan_schedules WHERE user_id = $1 ORDER BY created_at`,
+		[]any{userID}, func(rows pgx.Rows) error {
+			var ls models.BackupLoanSchedule
+			var start time.Time
+			if err := rows.Scan(&ls.ID, &ls.LoanAccountID, &ls.Principal, &ls.AnnualRateBps, &ls.TenureMonths, &start, &ls.CreatedAt, &ls.UpdatedAt); err != nil {
+				return err
+			}
+			ls.StartDate = start.Format("2006-01-02")
+			b.LoanSchedules = append(b.LoanSchedules, ls)
+			return nil
+		}); err != nil {
+		return nil, fmt.Errorf("export loan schedules: %w", err)
 	}
 
 	if err := exportUserRows(ctx, pool,
@@ -528,6 +545,24 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		loanRows = append(loanRows, []any{uuid.New(), userID, accountID, txnID, nonZeroTime(la.CreatedAt)})
 	}
 
+	// Loan schedules (the optional amortization terms of a loan account).
+	loanScheduleRows := make([][]any, 0, len(b.LoanSchedules))
+	for _, ls := range b.LoanSchedules {
+		accountID, okAccount := accountMap[ls.LoanAccountID]
+		if !okAccount {
+			addBackupWarning(res, "skipped loan schedule: its account is not in the backup")
+			continue
+		}
+		start, err := parseBackupDate(ls.StartDate)
+		if err != nil {
+			return err
+		}
+		loanScheduleRows = append(loanScheduleRows, []any{
+			uuid.New(), userID, accountID, ls.Principal, ls.AnnualRateBps,
+			ls.TenureMonths, start, nonZeroTime(ls.CreatedAt), nonZeroTime(ls.UpdatedAt),
+		})
+	}
+
 	// Recurring series. Amount/account/date range live on the series' terms.
 	seriesMap := map[uuid.UUID]uuid.UUID{}
 	seriesRows := make([][]any, 0, len(b.RecurringSeries))
@@ -618,6 +653,7 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		{"transactions", []string{"id", "account_id", "user_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "billing_cycle_id", "created_at", "updated_at"}, txnRows, &res.Transactions},
 		{"links", []string{"id", "user_id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}, linkRows, &res.Links},
 		{"loan_attachments", []string{"id", "user_id", "loan_account_id", "transaction_id", "created_at"}, loanRows, &res.LoanAttachments},
+		{"loan_schedules", []string{"id", "user_id", "loan_account_id", "principal", "annual_rate_bps", "tenure_months", "start_date", "created_at", "updated_at"}, loanScheduleRows, &res.LoanSchedules},
 		{"recurring_series", []string{"id", "user_id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}, seriesRows, &res.RecurringSeries},
 		{"recurring_series_terms", []string{"id", "user_id", "series_id", "start_date", "end_date", "amount", "account_id", "created_at"}, termRows, &res.RecurringTerms},
 		{"recurring_attachments", []string{"id", "user_id", "series_id", "transaction_id", "created_at"}, recurringRows, &res.RecurringAttachments},

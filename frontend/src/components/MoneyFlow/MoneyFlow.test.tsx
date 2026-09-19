@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import MoneyFlow, { nodeDrilldownPath } from "./MoneyFlow";
 import { formatCurrency } from "../../utils/formatters";
 import type {
+  LinkCycleReport,
   MoneyFlowGraph,
   MoneyFlowNode,
   MoneyFlowTimeline,
@@ -28,7 +29,11 @@ vi.mock("recharts", () => ({
 }));
 
 const { apiMock, domainMock } = vi.hoisted(() => ({
-  apiMock: { getMoneyFlow: vi.fn(), getMoneyFlowTimeline: vi.fn() },
+  apiMock: {
+    getMoneyFlow: vi.fn(),
+    getMoneyFlowTimeline: vi.fn(),
+    getLinkCycles: vi.fn(),
+  },
   domainMock: { useDomainData: vi.fn() },
 }));
 
@@ -106,6 +111,56 @@ function timeline(): MoneyFlowTimeline {
   };
 }
 
+function cycleReport(overrides: Partial<LinkCycleReport> = {}): LinkCycleReport {
+  return {
+    cycles: [
+      {
+        kind: "reciprocal",
+        accounts: [
+          { id: "a1", name: "Checking", color: "#3b82f6" },
+          { id: "a2", name: "Card", color: "#f97316" },
+        ],
+        legs: [
+          {
+            fromAccountId: "a1",
+            fromAccountName: "Checking",
+            toAccountId: "a2",
+            toAccountName: "Card",
+            amount: 8000,
+            count: 2,
+            types: [{ type: "transfer", count: 2, total: 8000 }],
+          },
+          {
+            fromAccountId: "a2",
+            fromAccountName: "Card",
+            toAccountId: "a1",
+            toAccountName: "Checking",
+            amount: 3000,
+            count: 1,
+            types: [{ type: "transfer", count: 1, total: 3000 }],
+          },
+        ],
+        net: 3000,
+        gross: 11000,
+        transactions: 3,
+      },
+    ],
+    totalCircular: 3000,
+    oneSidedFlows: [
+      {
+        fromAccountId: "a1",
+        fromAccountName: "Checking",
+        toAccountId: "a3",
+        toAccountName: "Savings",
+        total: 1500,
+        count: 1,
+        types: [{ type: "bill_payment", count: 1, total: 1500 }],
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function page(entry = "/money-flow") {
   return (
     <MemoryRouter initialEntries={[entry]}>
@@ -118,6 +173,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   apiMock.getMoneyFlow.mockResolvedValue(graph());
   apiMock.getMoneyFlowTimeline.mockResolvedValue(timeline());
+  apiMock.getLinkCycles.mockResolvedValue(cycleReport());
   domainMock.useDomainData.mockReturnValue({
     accounts: [],
     groups: [{ id: "expense", name: "Expense" }],
@@ -139,12 +195,58 @@ describe("MoneyFlow", () => {
     expect(screen.getByText(formatCurrency(30000))).toBeInTheDocument();
   });
 
+  it("renders the circular-money report", async () => {
+    render(page());
+
+    expect(await screen.findByText("Circular Money")).toBeInTheDocument();
+    expect(screen.getByText("Cycles between your accounts")).toBeInTheDocument();
+    expect(screen.getByText("Two-way pair")).toBeInTheDocument();
+    expect(
+      screen.getByText(`${formatCurrency(3000)} circulating`),
+    ).toBeInTheDocument();
+    // Both cycle legs are listed with their own flows.
+    expect(
+      screen.getByText(`Checking → Card: ${formatCurrency(8000)}`),
+    ).toBeInTheDocument();
+    expect(screen.getByText("One-way account flows")).toBeInTheDocument();
+    expect(screen.getByText("Bill payments (1)")).toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(1500))).toBeInTheDocument();
+  });
+
+  it("shows an empty state when there is no circular money", async () => {
+    apiMock.getLinkCycles.mockResolvedValue(
+      cycleReport({ cycles: [], oneSidedFlows: [], totalCircular: 0 }),
+    );
+    render(page());
+
+    expect(
+      await screen.findByText(
+        "No circular or one-way account flows in this range.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the circular-money panel when the report fails to load", async () => {
+    apiMock.getLinkCycles.mockRejectedValue(new Error("load failed"));
+    render(page());
+
+    await screen.findByText("Money Flow");
+    await waitFor(() => expect(apiMock.getLinkCycles).toHaveBeenCalled());
+    expect(screen.queryByText("Circular Money")).not.toBeInTheDocument();
+  });
+
   it("passes the account filter and node limit to the API", async () => {
     render(page("/money-flow?accountId=a1"));
 
     await waitFor(() =>
       expect(apiMock.getMoneyFlow).toHaveBeenCalledWith(
         expect.objectContaining({ accountId: "a1", limit: "12" }),
+      ),
+    );
+    // The circular-money report follows the same window as the graph.
+    await waitFor(() =>
+      expect(apiMock.getLinkCycles).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: "a1" }),
       ),
     );
   });

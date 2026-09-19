@@ -379,6 +379,126 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /accounts/{id}/loan-schedule:
+    get:
+      tags:
+        - Accounts
+      summary: Get a loan account's amortization schedule
+      description: >-
+        Return a Loan / EMI account's optional amortization schedule: the terms,
+        the generated table (every installment split into principal and
+        interest, with its remaining balance), and progress derived from the EMI
+        transactions attached to the loan. Attached payments are matched to
+        installments in date order (the Nth payment pays the Nth installment);
+        a credit (refund) reduces `paidAmount` without covering an installment.
+        The schedule is optional, so an unconfigured loan answers 200 with
+        `schedule: null` and an empty `entries` list rather than 404. 400 when
+        the account is not a Loan / EMI account.
+      operationId: getLoanSchedule
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+      responses:
+        "200":
+          description: Amortization schedule and progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanScheduleDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags:
+        - Accounts
+      summary: Create or replace a loan account's amortization schedule
+      description: >-
+        Store the terms (principal, annual rate in basis points, tenure in
+        months, first installment date) that the amortization table is generated
+        from, and return the same detail as `GET`. A rate of 0 is valid (an
+        interest-free loan). One schedule per loan account; an existing one is
+        replaced.
+      operationId: upsertLoanSchedule
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoanScheduleRequest"
+      responses:
+        "200":
+          description: The saved schedule and its generated table
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanScheduleDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags:
+        - Accounts
+      summary: Delete a loan account's amortization schedule
+      description: >-
+        Remove the schedule. Idempotent: deleting an unconfigured loan reports
+        `deleted: 0`.
+      operationId: deleteLoanSchedule
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ============= Account Types =============
   /account-types:
     get:
@@ -545,7 +665,9 @@ paths:
           name: search
           schema:
             type: string
-          description: Search in description (case-insensitive)
+          description: >
+            Case-insensitive free text matched against the description, notes,
+            payee name, and tags (substring, with % and _ treated literally).
         - in: query
           name: dateFrom
           schema:
@@ -977,6 +1099,9 @@ paths:
         - in: query
           name: search
           schema: { type: string }
+          description: >
+            Case-insensitive free text matched against the description, notes,
+            payee name, and tags.
         - in: query
           name: dateFrom
           schema: { type: string, format: date }
@@ -2034,6 +2159,63 @@ paths:
                     type: integer
                   hasMore:
                     type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /links/cycles:
+    get:
+      tags:
+        - Links
+      summary: Get the circular-money report
+      description: >-
+        Report the account-to-account link flows the Money Flow Sankey cannot
+        draw. The graph has to stay acyclic, so reciprocal pairs are netted and
+        the DFS back edges that close a longer loop are dropped; this endpoint
+        returns exactly those discarded cycles (kind `reciprocal` for a
+        two-account loop, `cycle` for a longer one) with their participants, the
+        gross flow of each leg, and the amount that actually circulates the
+        whole loop. It also lists the directed account flows with no flow in the
+        opposite direction — a legitimately one-way bill payment or refund looks
+        the same as a half-entered transfer, which is why they are surfaced for
+        review rather than corrected. Leg amounts are gross flows within the
+        window (before netting).
+      operationId: getLinkCycles
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: dateFrom
+          schema:
+            type: string
+            format: date
+          description: Filter from date (YYYY-MM-DD)
+        - in: query
+          name: dateTo
+          schema:
+            type: string
+            format: date
+          description: Filter to date (YYYY-MM-DD)
+        - in: query
+          name: accountId
+          schema:
+            type: string
+            format: uuid
+          description: Only links with either endpoint on this account
+      responses:
+        "200":
+          description: Circular-money report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkCycleReport"
+        "400":
+          description: Invalid accountId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -3601,6 +3783,121 @@ components:
           format: uuid
           description: Loan / EMI account to attach to. Omit or null to detach.
 
+    LoanSchedule:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        loanAccountId:
+          type: string
+          format: uuid
+        principal:
+          type: number
+        annualRateBps:
+          type: integer
+          description: Annual interest rate in basis points (950 = 9.50% p.a.).
+        tenureMonths:
+          type: integer
+        startDate:
+          type: string
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    LoanScheduleRequest:
+      type: object
+      required:
+        - principal
+        - tenureMonths
+        - startDate
+      properties:
+        principal:
+          type: number
+          description: Loan principal; must be positive.
+        annualRateBps:
+          type: integer
+          default: 0
+          description: Annual rate in basis points (950 = 9.50% p.a.). 0 is valid.
+        tenureMonths:
+          type: integer
+          description: Tenure in months (1-600).
+        startDate:
+          type: string
+          format: date
+          description: Due date of the first installment (YYYY-MM-DD).
+
+    LoanScheduleEntry:
+      type: object
+      description: >-
+        One installment: the EMI split into principal and interest, and the
+        principal still outstanding after it.
+      properties:
+        number:
+          type: integer
+        dueDate:
+          type: string
+          format: date
+        amount:
+          type: number
+        principal:
+          type: number
+        interest:
+          type: number
+        balance:
+          type: number
+        paid:
+          type: boolean
+        transactionId:
+          type: string
+          format: uuid
+          description: The attached EMI payment covering this installment.
+
+    LoanScheduleDetail:
+      type: object
+      properties:
+        schedule:
+          allOf:
+            - $ref: "#/components/schemas/LoanSchedule"
+          nullable: true
+          description: Null until the loan has a schedule.
+        loanAccountName:
+          type: string
+        emi:
+          type: number
+          description: The scheduled equated monthly installment.
+        totalInterest:
+          type: number
+        totalPayable:
+          type: number
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoanScheduleEntry"
+        paidInstallments:
+          type: integer
+        paidAmount:
+          type: number
+          description: >-
+            Attached EMI debits minus any attached credits — the same figure the
+            account list shows as "Repaid".
+        principalPaid:
+          type: number
+        interestPaid:
+          type: number
+        outstandingPrincipal:
+          type: number
+        nextDueDate:
+          type: string
+          format: date
+          nullable: true
+        completed:
+          type: boolean
+
     BulkDeleteTransactionsRequest:
       type: object
       required:
@@ -4416,6 +4713,133 @@ components:
           items:
             $ref: "#/components/schemas/MoneyFlowLinkSummary"
 
+    LinkCycleAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        color:
+          type: string
+
+    LinkFlowTypeTotal:
+      type: object
+      description: Per-link-type rollup of one account-to-account flow.
+      properties:
+        type:
+          type: string
+          enum: [transfer, cashback, refund, bill_payment]
+        count:
+          type: integer
+        total:
+          type: number
+
+    LinkCycleLeg:
+      type: object
+      description: >-
+        One directed leg of a cycle, running from `fromAccountId` to
+        `toAccountId`. `amount` is the gross flow in the window.
+      properties:
+        fromAccountId:
+          type: string
+          format: uuid
+        fromAccountName:
+          type: string
+        fromAccountColor:
+          type: string
+        toAccountId:
+          type: string
+          format: uuid
+        toAccountName:
+          type: string
+        toAccountColor:
+          type: string
+        amount:
+          type: number
+        count:
+          type: integer
+        types:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkFlowTypeTotal"
+
+    LinkCycle:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [reciprocal, cycle]
+          description: >-
+            `reciprocal` for a two-account loop that flows both ways (netted
+            into a single Sankey edge), `cycle` for a longer loop broken by
+            dropping its back edge.
+        accounts:
+          type: array
+          description: Participants in flow order.
+          items:
+            $ref: "#/components/schemas/LinkCycleAccount"
+        legs:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkCycleLeg"
+        net:
+          type: number
+          description: >-
+            The smallest leg — the amount that actually circulates the whole
+            loop.
+        gross:
+          type: number
+          description: Sum of the legs.
+        transactions:
+          type: integer
+          description: Number of links making up the cycle.
+
+    LinkOneSidedFlow:
+      type: object
+      description: >-
+        A directed account-to-account flow with no flow in the opposite
+        direction in the window.
+      properties:
+        fromAccountId:
+          type: string
+          format: uuid
+        fromAccountName:
+          type: string
+        fromAccountColor:
+          type: string
+        toAccountId:
+          type: string
+          format: uuid
+        toAccountName:
+          type: string
+        toAccountColor:
+          type: string
+        total:
+          type: number
+        count:
+          type: integer
+        types:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkFlowTypeTotal"
+
+    LinkCycleReport:
+      type: object
+      properties:
+        cycles:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkCycle"
+        totalCircular:
+          type: number
+          description: Sum of every cycle's `net`.
+        oneSidedFlows:
+          type: array
+          items:
+            $ref: "#/components/schemas/LinkOneSidedFlow"
+
     CashFlowCalendarDay:
       type: object
       properties:
@@ -4895,6 +5319,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BackupLoanAttachment"
+        loanSchedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupLoanSchedule"
         recurringSeries:
           type: array
           items:
@@ -5114,6 +5542,34 @@ components:
           type: string
           format: date-time
 
+    BackupLoanSchedule:
+      type: object
+      required: [id, loanAccountId, principal, annualRateBps, tenureMonths, startDate]
+      description: A loan account's optional amortization schedule.
+      properties:
+        id:
+          type: string
+          format: uuid
+        loanAccountId:
+          type: string
+          format: uuid
+        principal:
+          type: integer
+          description: Minor units (cents).
+        annualRateBps:
+          type: integer
+        tenureMonths:
+          type: integer
+        startDate:
+          type: string
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
     BackupRecurringSeries:
       type: object
       description: |
@@ -5238,6 +5694,8 @@ components:
         links:
           type: integer
         loanAttachments:
+          type: integer
+        loanSchedules:
           type: integer
         recurringSeries:
           type: integer

@@ -54,8 +54,8 @@ export default function TransactionFilters({
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           className={`pl-9 ${compactLayout ? "h-8" : "h-10"} bg-background`}
-          placeholder="Search descriptions..."
-          aria-label="Search transactions by description"
+          placeholder="Search descriptions, notes, payees, tags..."
+          aria-label="Search transactions by description, notes, payee, or tag"
           value={filters.search}
           onChange={(e) => onFilterChange("search", e.target.value)}
         />

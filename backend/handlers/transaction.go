@@ -38,7 +38,8 @@ const maxPage = 1_000_000
 
 // txnQueryFilter parses the shared transaction-list filter query parameters
 // (account, category/group, payee, tag, free-text, date range, type, amount,
-// linked, loan, recurring) into a txnFilter. It is used by both GetTransactions
+// linked, loan, recurring) into a txnFilter. The free-text search spans the
+// description, notes, payee name, and tags. It is used by both GetTransactions
 // and ExportTransactions so the list and the export can never disagree about
 // what a filter means. A malformed accountId writes a 400 and returns ok=false.
 func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, bool) {
@@ -95,8 +96,17 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 	}
 	if search != "" {
 		// Escape % and _ so "100%" matches the literal text, not "1000" —
-		// same semantics as the rules engine's matchRule.
-		f.param("LOWER(t.description) LIKE LOWER($%d)", "%"+escapeLikePattern(search)+"%")
+		// same semantics as the rules engine's matchRule. The term spans every
+		// text field the list renders: description, notes, the payee's name,
+		// and each tag. Payee and tags use correlated EXISTS subqueries so the
+		// predicate still references only `transactions t` (the count query has
+		// no joins) and the list/export/count can never disagree.
+		pattern := "%" + escapeLikePattern(search) + "%"
+		f.params(`(LOWER(t.description) LIKE LOWER($%d)
+			  OR LOWER(COALESCE(t.notes, '')) LIKE LOWER($%d)
+			  OR EXISTS (SELECT 1 FROM payees sp WHERE sp.id = t.payee_id AND LOWER(sp.name) LIKE LOWER($%d))
+			  OR EXISTS (SELECT 1 FROM unnest(t.tags) AS tag WHERE LOWER(tag) LIKE LOWER($%d)))`,
+			pattern, pattern, pattern, pattern)
 	}
 	if dateFrom != "" {
 		f.param("t.date >= $%d", dateFrom)
@@ -163,10 +173,11 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 
 // GetTransactions returns a paginated, filterable list of the user's
 // transactions. Filters cover account, category, payee, tag, free-text
-// description, date range, type, exact amount, and linked state; sorting and
-// pagination are validated/clamped server-side. When filtering a single account
-// that has a billing day set (any account type) and sorting by date, synthetic
-// summary rows (per-cycle outstanding totals) are merged into the response.
+// (description, notes, payee name, or tag), date range, type, exact amount, and
+// linked state; sorting and pagination are validated/clamped server-side. When
+// filtering a single account that has a billing day set (any account type) and
+// sorting by date, synthetic summary rows (per-cycle outstanding totals) are
+// merged into the response.
 func (srv *Server) GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	sortBy := c.DefaultQuery("sortBy", "date")
@@ -324,6 +335,20 @@ func newTxnFilter(userID uuid.UUID) *txnFilter {
 func (f *txnFilter) param(clause string, value any) {
 	f.args = append(f.args, value)
 	f.clauses = append(f.clauses, fmt.Sprintf(clause, len(f.args)))
+}
+
+// params appends a predicate containing several %d placeholders, substituted
+// with the next positional placeholders in order, and binds each value. It
+// exists for predicates that compare one value against several columns (the
+// free-text search), which must stay a single AND-ed clause.
+func (f *txnFilter) params(clause string, values ...any) {
+	first := len(f.args) + 1
+	f.args = append(f.args, values...)
+	placeholders := make([]any, len(values))
+	for i := range values {
+		placeholders[i] = first + i
+	}
+	f.clauses = append(f.clauses, fmt.Sprintf(clause, placeholders...))
 }
 
 // raw appends a predicate with no bound parameter.

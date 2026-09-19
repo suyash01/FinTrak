@@ -583,6 +583,77 @@ type BulkLoanRequest struct {
 	LoanAccountID  *uuid.UUID  `json:"loanAccountId"`
 }
 
+// LoanSchedule is the optional amortization schedule of a Loan / EMI account:
+// the terms the amortization table is generated from. Principal and the derived
+// EMI are integer minor units; AnnualRateBps is integer basis points (950 =
+// 9.50% p.a.), so no money arithmetic runs in float64. At most one schedule per
+// loan account.
+type LoanSchedule struct {
+	ID            uuid.UUID    `json:"id"`
+	LoanAccountID uuid.UUID    `json:"loanAccountId"`
+	Principal     money.Amount `json:"principal"`
+	AnnualRateBps int          `json:"annualRateBps"`
+	TenureMonths  int          `json:"tenureMonths"`
+	StartDate     time.Time    `json:"startDate"`
+	CreatedAt     time.Time    `json:"createdAt"`
+	UpdatedAt     time.Time    `json:"updatedAt"`
+}
+
+// LoanScheduleRequest is the body for PUT /accounts/:id/loan-schedule. A zero
+// rate is valid (an interest-free loan), so the rate is validated in the
+// handler rather than by a binding rule.
+type LoanScheduleRequest struct {
+	Principal     money.Amount `json:"principal" binding:"required"`
+	AnnualRateBps int          `json:"annualRateBps"`
+	TenureMonths  int          `json:"tenureMonths" binding:"required"`
+	StartDate     string       `json:"startDate" binding:"required"`
+}
+
+// LoanScheduleEntry is one installment of the amortization table: the EMI split
+// into principal and interest, with Balance the principal still outstanding
+// after it. An entry is Paid when an EMI payment attached to the loan covers it
+// — payments are matched in date order, the way a lender numbers installments —
+// and then carries that transaction's id.
+type LoanScheduleEntry struct {
+	Number        int          `json:"number"`
+	DueDate       time.Time    `json:"dueDate"`
+	Amount        money.Amount `json:"amount"`
+	Principal     money.Amount `json:"principal"`
+	Interest      money.Amount `json:"interest"`
+	Balance       money.Amount `json:"balance"`
+	Paid          bool         `json:"paid"`
+	TransactionID *uuid.UUID   `json:"transactionId,omitempty"`
+}
+
+// LoanScheduleDetail is the response of GET /accounts/:id/loan-schedule. The
+// schedule is optional, so an unconfigured loan returns schedule: null with an
+// empty table and zeroed totals instead of a 404; the account itself missing or
+// not being a loan account is still an error.
+type LoanScheduleDetail struct {
+	Schedule        *LoanSchedule        `json:"schedule"`
+	LoanAccountName string               `json:"loanAccountName,omitempty"`
+	EMI             money.Amount         `json:"emi"`
+	TotalInterest   money.Amount         `json:"totalInterest"`
+	TotalPayable    money.Amount         `json:"totalPayable"`
+	Entries         []LoanScheduleEntry  `json:"entries"`
+	// Progress derived from the EMI transactions attached to the loan. Paid
+	// installments are counted in date order; Credits reduces PaidAmount.
+	PaidInstallments     int          `json:"paidInstallments"`
+	PaidAmount           money.Amount `json:"paidAmount"`
+	PrincipalPaid        money.Amount `json:"principalPaid"`
+	InterestPaid         money.Amount `json:"interestPaid"`
+	OutstandingPrincipal money.Amount `json:"outstandingPrincipal"`
+	// NextDueDate is the next unpaid installment's due date; absent once every
+	// installment is covered.
+	NextDueDate *time.Time `json:"nextDueDate,omitempty"`
+	Completed   bool       `json:"completed"`
+}
+
+// DeleteLoanScheduleResult reports how many schedules a delete removed (0 or 1).
+type DeleteLoanScheduleResult struct {
+	Deleted int64 `json:"deleted"`
+}
+
 // ImportRequest is the body for POST /api/v1/transactions/import. DuplicateAction
 // is "skip" (drop rows that already exist) or "keep" (insert everything);
 // BillingCycleID attaches credit-card imports to a specific cycle; and
@@ -804,6 +875,81 @@ type MoneyFlowGraph struct {
 	TotalIncome  money.Amount           `json:"totalIncome"`
 	TotalExpense money.Amount           `json:"totalExpense"`
 	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
+}
+
+// Circular-money report types. The Sankey has to be acyclic, so the account
+// graph silently nets reciprocal pairs and drops the DFS back edges that close
+// a cycle; GetLinkCycles reports exactly those discarded cycles plus the
+// account-to-account flows that have no counterpart in the opposite direction.
+
+// LinkCycleAccount is one participant of a circular flow.
+type LinkCycleAccount struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty"`
+}
+
+// LinkCycleLeg is one directed account-to-account flow inside a cycle, with the
+// link types that make it up.
+type LinkCycleLeg struct {
+	FromAccountID    string              `json:"fromAccountId"`
+	FromAccountName  string              `json:"fromAccountName"`
+	FromAccountColor string              `json:"fromAccountColor,omitempty"`
+	ToAccountID      string              `json:"toAccountId"`
+	ToAccountName    string              `json:"toAccountName"`
+	ToAccountColor   string              `json:"toAccountColor,omitempty"`
+	Amount           money.Amount        `json:"amount"`
+	Count            int                 `json:"count"`
+	Types            []LinkFlowTypeTotal `json:"types"`
+}
+
+// LinkCycle is one circular money flow between accounts. Kind is "reciprocal"
+// for a pair that flows both ways (netted into one edge for the Sankey) or
+// "cycle" for a longer loop broken by dropping its back edge. Net is the
+// smallest leg — the amount that actually circulates the whole loop — and Gross
+// the sum of the legs.
+type LinkCycle struct {
+	Kind         string             `json:"kind"`
+	Accounts     []LinkCycleAccount `json:"accounts"`
+	Legs         []LinkCycleLeg     `json:"legs"`
+	Net          money.Amount       `json:"net"`
+	Gross        money.Amount       `json:"gross"`
+	Transactions int                `json:"transactions"`
+}
+
+// LinkFlowTypeTotal is a per-link-type rollup of an account-to-account flow.
+type LinkFlowTypeTotal struct {
+	Type  string       `json:"type"`
+	Count int          `json:"count"`
+	Total money.Amount `json:"total"`
+}
+
+// LinkOneSidedFlow is a directed account-to-account flow whose counterpart is
+// missing: no link moves money between the same two accounts in the opposite
+// direction within the window. A legitimate one-way flow (a card bill paid from
+// a bank account, a refund landing on a different card) looks the same as a
+// half-entered transfer, which is why it is surfaced for review rather than
+// corrected.
+type LinkOneSidedFlow struct {
+	FromAccountID    string              `json:"fromAccountId"`
+	FromAccountName  string              `json:"fromAccountName"`
+	FromAccountColor string              `json:"fromAccountColor,omitempty"`
+	ToAccountID      string              `json:"toAccountId"`
+	ToAccountName    string              `json:"toAccountName"`
+	ToAccountColor   string              `json:"toAccountColor,omitempty"`
+	Total            money.Amount        `json:"total"`
+	Count            int                 `json:"count"`
+	Types            []LinkFlowTypeTotal `json:"types"`
+}
+
+// LinkCycleReport is the response of GET /api/v1/links/cycles.
+type LinkCycleReport struct {
+	Cycles []LinkCycle `json:"cycles"`
+	// TotalCircular is the sum of every cycle's Net: the money that travels a
+	// full loop between the user's own accounts.
+	TotalCircular money.Amount `json:"totalCircular"`
+	// OneSidedFlows are directed pairs with no flow in the opposite direction.
+	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`
 }
 
 // Cash-flow calendar types. GetCashFlowCalendar returns one CashFlowCalendarDay
@@ -1082,6 +1228,7 @@ type BackupBundle struct {
 	Transactions         []BackupTransaction         `json:"transactions"`
 	Links                []BackupLink                `json:"links"`
 	LoanAttachments      []BackupLoanAttachment      `json:"loanAttachments"`
+	LoanSchedules        []BackupLoanSchedule        `json:"loanSchedules"`
 	RecurringSeries      []BackupRecurringSeries     `json:"recurringSeries"`
 	RecurringTerms       []BackupRecurringTerm       `json:"recurringTerms"`
 	RecurringAttachments []BackupRecurringAttachment `json:"recurringAttachments"`
@@ -1186,6 +1333,19 @@ type BackupLoanAttachment struct {
 	CreatedAt     time.Time `json:"createdAt"`
 }
 
+// BackupLoanSchedule is a loan account's optional amortization schedule (the
+// terms the amortization table is generated from).
+type BackupLoanSchedule struct {
+	ID            uuid.UUID    `json:"id"`
+	LoanAccountID uuid.UUID    `json:"loanAccountId"`
+	Principal     money.Amount `json:"principal"`
+	AnnualRateBps int          `json:"annualRateBps"`
+	TenureMonths  int          `json:"tenureMonths"`
+	StartDate     string       `json:"startDate"`
+	CreatedAt     time.Time    `json:"createdAt"`
+	UpdatedAt     time.Time    `json:"updatedAt"`
+}
+
 // BackupRecurringSeries is one recurring series/subscription template. Its
 // amount, account and date range live on its terms (BackupRecurringTerm).
 type BackupRecurringSeries struct {
@@ -1257,6 +1417,7 @@ type BackupImportResult struct {
 	Transactions         int      `json:"transactions"`
 	Links                int      `json:"links"`
 	LoanAttachments      int      `json:"loanAttachments"`
+	LoanSchedules        int      `json:"loanSchedules"`
 	RecurringSeries      int      `json:"recurringSeries"`
 	RecurringTerms       int      `json:"recurringTerms"`
 	RecurringAttachments int      `json:"recurringAttachments"`

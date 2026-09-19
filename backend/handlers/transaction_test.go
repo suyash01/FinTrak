@@ -2000,18 +2000,51 @@ func TestGetTransactionsSearchEscapesWildcards(t *testing.T) {
 	r.GET("/transactions", srv.GetTransactions)
 
 	userID := testUserID()
+	// The same escaped pattern is bound once per searched field (description,
+	// notes, payee name, tags).
+	pattern := `%100\%%`
 
 	// Searching "100%" must pass the escaped pattern (%100\%%), not the raw
 	// text that LIKE would interpret as a wildcard.
 	// The handler issues the COUNT query first, then the paged list.
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
-		WithArgs(userID, `%100\%%`).
+		WithArgs(userID, pattern, pattern, pattern, pattern).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("SELECT t.id, t.account_id").
-		WithArgs(userID, `%100\%%`, 50, 0).
+		WithArgs(userID, pattern, pattern, pattern, pattern, 50, 0).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "account_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "payee", "created_at", "account_name", "category_name", "category_icon", "category_color", "is_linked", "billing_cycle_id", "billing_cycle_label"}))
 
 	req, _ := http.NewRequest("GET", "/transactions?search=100%25", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetTransactionsSearchSpansNotesPayeeAndTags(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	pattern := "%coffee%"
+
+	// The free-text term must reach every text field the list renders, not just
+	// the description. Payee and tags are correlated subqueries so the count
+	// query (which has no joins) stays valid.
+	searchClause := `SELECT COUNT\(\*\) FROM transactions t WHERE t\.user_id = \$1 AND ` +
+		`\(LOWER\(t\.description\) LIKE LOWER\(\$2\)` +
+		`[\s\S]*LOWER\(COALESCE\(t\.notes, ''\)\) LIKE LOWER\(\$3\)` +
+		`[\s\S]*FROM payees sp WHERE sp\.id = t\.payee_id AND LOWER\(sp\.name\) LIKE LOWER\(\$4\)` +
+		`[\s\S]*FROM unnest\(t\.tags\) AS tag WHERE LOWER\(tag\) LIKE LOWER\(\$5\)`
+	mock.ExpectQuery(searchClause).
+		WithArgs(userID, pattern, pattern, pattern, pattern).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT t.id, t.account_id").
+		WithArgs(userID, pattern, pattern, pattern, pattern, 50, 0).
+		WillReturnRows(pgxmock.NewRows(txnListCols))
+
+	req, _ := http.NewRequest("GET", "/transactions?search=coffee", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

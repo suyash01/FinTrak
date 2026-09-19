@@ -31,6 +31,9 @@ import type {
   ImportResult,
   ImportTransactionsRequest,
   Link,
+  LinkCycleReport,
+  LoanScheduleDetail,
+  LoanScheduleRequest,
   LoginRequest,
   MoneyFlowGraph,
   MoneyFlowTimeline,
@@ -464,6 +467,20 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  // Optional amortization schedule of a Loan / EMI account. GET answers with
+  // schedule: null when the loan has no schedule yet.
+  getLoanSchedule: (accountId: string): Promise<LoanScheduleDetail> =>
+    request(`/accounts/${accountId}/loan-schedule`),
+  saveLoanSchedule: (
+    accountId: string,
+    data: LoanScheduleRequest,
+  ): Promise<LoanScheduleDetail> =>
+    request(`/accounts/${accountId}/loan-schedule`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteLoanSchedule: (accountId: string): Promise<{ deleted: number }> =>
+    request(`/accounts/${accountId}/loan-schedule`, { method: "DELETE" }),
   bulkUpdateTags: (data: BulkUpdateTagsRequest): Promise<{ updated: number }> =>
     request("/transactions/bulk-tags", {
       method: "POST",
@@ -679,6 +696,12 @@ const api = {
   ): Promise<MoneyFlowTimeline> => {
     const qs = buildQuery(params);
     return request(`/dashboard/money-flow/timeline${qs ? `?${qs}` : ""}`);
+  },
+  // Circular-money report: the account cycles the Sankey cannot draw plus
+  // one-directional account flows.
+  getLinkCycles: (params: QueryParams = {}): Promise<LinkCycleReport> => {
+    const qs = buildQuery(params);
+    return request(`/links/cycles${qs ? `?${qs}` : ""}`);
   },
   // Cash-flow calendar heatmap (daily net flow + billing-cycle/summary overlays)
   getCashFlowCalendar: (

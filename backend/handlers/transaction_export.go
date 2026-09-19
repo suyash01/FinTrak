@@ -22,10 +22,10 @@ const maxExportRows = 100000
 
 // ExportTransactions streams the user's transactions as a CSV attachment,
 // honoring the exact same filter grammar as GET /transactions (account,
-// category/group, payee, tag, free-text, date range, type, amount, linked,
-// loan, recurring). Unlike the per-account export it is a report over whatever
-// the caller has filtered to, and unlike the JSON backup it is flat and
-// spreadsheet-friendly.
+// category/group, payee, tag, free-text over description/notes/payee/tags, date
+// range, type, amount, linked, loan, recurring). Unlike the per-account export
+// it is a report over whatever the caller has filtered to, and unlike the JSON
+// backup it is flat and spreadsheet-friendly.
 func (srv *Server) ExportTransactions(c *gin.Context) {
 	f, _, ok := txnQueryFilter(c, auth.GetUserID(c))
 	if !ok {

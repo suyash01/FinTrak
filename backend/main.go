@@ -199,6 +199,12 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accounts.DELETE("/:id", srv.DeleteAccount)
 		accounts.GET("/:id/export", srv.ExportAccount)
 		accounts.GET("/:id/billing-cycles", srv.GetBillingCycles)
+		// Optional amortization schedule for a Loan / EMI account: the terms,
+		// the generated principal/interest table, and progress from the
+		// attached EMI payments.
+		accounts.GET("/:id/loan-schedule", srv.GetLoanSchedule)
+		accounts.PUT("/:id/loan-schedule", srv.UpsertLoanSchedule)
+		accounts.DELETE("/:id/loan-schedule", srv.DeleteLoanSchedule)
 
 		// Account Types (mutations are admin-only; the type list is shared
 		// reference data that affects balance semantics for every user)
@@ -283,6 +289,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		api.POST("/links/bulk-delete", srv.BulkDeleteLinks)
 		api.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 		api.GET("/links/cashback-suggestions", srv.GetCashbackSuggestions)
+		// Circular-money report: the account-to-account cycles the money-flow
+		// Sankey has to net/drop to stay acyclic, plus one-directional flows.
+		api.GET("/links/cycles", srv.GetLinkCycles)
 
 		// Recurring series & subscriptions. These only forecast schedules and
 		// suggest matching transactions — no transaction is ever auto-created

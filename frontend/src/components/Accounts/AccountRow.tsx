@@ -5,6 +5,7 @@ import {
   Star,
   Lock,
   LockOpen,
+  Calculator,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -20,6 +21,7 @@ interface AccountRowProps {
   onSetDefault: (acc: Account) => void;
   onExport: (id: string) => void;
   onEdit: (acc: Account) => void;
+  onSchedule: (acc: Account) => void;
   onToggleClosed: (acc: Account) => void;
   onDelete: (acc: Account) => void;
 }
@@ -31,6 +33,7 @@ export default function AccountRow({
   onSetDefault,
   onExport,
   onEdit,
+  onSchedule,
   onToggleClosed,
   onDelete,
 }: AccountRowProps) {
@@ -110,6 +113,18 @@ export default function AccountRow({
           >
             <Star size={15} fill={acc.isDefault ? "currentColor" : "none"} />
           </Button>
+          {acc.accountTypeId === "loan" && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-primary hover:bg-primary/10"
+              onClick={() => onSchedule(acc)}
+              title="Amortization schedule"
+              aria-label={`Amortization schedule for ${acc.name}`}
+            >
+              <Calculator size={14} />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"

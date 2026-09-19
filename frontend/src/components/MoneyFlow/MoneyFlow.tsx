@@ -18,6 +18,7 @@ import {
   ArrowRightLeft,
   CalendarDays,
   RefreshCw,
+  Repeat,
   TrendingDown,
   TrendingUp,
   Waypoints,
@@ -40,6 +41,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import type {
+  LinkCycleReport,
   MoneyFlowGraph,
   MoneyFlowLinkSummary,
   MoneyFlowNode,
@@ -372,12 +374,36 @@ export default function MoneyFlow() {
     void loadTimeline();
   }, [loadTimeline]);
 
-  // Refresh both the graph and the timeline when the tab regains focus, and on
-  // demand from the header button, so edits made elsewhere show up.
+  // Circular-money report. Like the timeline it is best-effort: a failure
+  // hides the panel rather than failing the page.
+  const [cycles, setCycles] = useState<LinkCycleReport | null>(null);
+  const cyclesReqRef = useRef(0);
+  const loadCycles = useCallback(async () => {
+    const requestId = ++cyclesReqRef.current;
+    try {
+      const params: QueryParams = {};
+      if (accountId) params.accountId = accountId;
+      if (dateFrom) params.dateFrom = dateFrom;
+      if (dateTo) params.dateTo = dateTo;
+      const res = await api.getLinkCycles(params);
+      if (requestId !== cyclesReqRef.current) return;
+      setCycles(res);
+    } catch {
+      if (requestId === cyclesReqRef.current) setCycles(null);
+    }
+  }, [accountId, dateFrom, dateTo]);
+
+  useEffect(() => {
+    void loadCycles();
+  }, [loadCycles]);
+
+  // Refresh the graph, timeline, and cycle report when the tab regains focus,
+  // and on demand from the header button, so edits made elsewhere show up.
   const reloadAll = useCallback(() => {
     void load();
     void loadTimeline();
-  }, [load, loadTimeline]);
+    void loadCycles();
+  }, [load, loadTimeline, loadCycles]);
   useRefetchOnFocus(reloadAll);
 
   const activeTimelineKey = useMemo(() => {
@@ -715,6 +741,22 @@ export default function MoneyFlow() {
             </CardContent>
           </Card>
         </div>
+
+        {cycles && (
+          <Card size={compactLayout ? "sm" : "default"} className="mt-6">
+            <CardHeader
+              className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
+            >
+              <CardTitle className="flex items-center gap-2">
+                <Repeat className="text-primary" size={18} />
+                Circular Money
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <CircularMoneyPanel report={cycles} />
+            </CardContent>
+          </Card>
+        )}
       </div>
     </>
   );
@@ -865,6 +907,142 @@ function LinkSummaryPanel({
           </div>
         </button>
       ))}
+    </div>
+  );
+}
+
+// CircularMoneyPanel surfaces what the Sankey cannot draw: the account cycles
+// its cycle-breaking nets away or drops, and the account-to-account flows with
+// no counterpart in the opposite direction.
+function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
+  if (report.cycles.length === 0 && report.oneSidedFlows.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground py-6 text-center">
+        No circular or one-way account flows in this range.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {report.cycles.length > 0 && (
+        <div>
+          <div className="mb-2 flex items-baseline justify-between gap-3">
+            <h3 className="text-sm font-medium text-foreground">
+              Cycles between your accounts
+            </h3>
+            <span className="text-xs text-muted-foreground">
+              {formatCurrency(report.totalCircular)} circulating
+            </span>
+          </div>
+          <div className="space-y-2">
+            {report.cycles.map((c, i) => (
+              <div
+                key={`${c.kind}-${i}`}
+                className="rounded-lg border border-border px-3 py-2"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm text-foreground">
+                    {c.accounts.map((a, idx) => (
+                      <span key={a.id} className="flex items-center gap-1.5">
+                        {idx > 0 && (
+                          <span className="text-muted-foreground">→</span>
+                        )}
+                        <span className="flex items-center gap-1.5">
+                          {a.color && (
+                            <span
+                              className="h-2 w-2 shrink-0 rounded-full"
+                              style={{ background: a.color }}
+                            />
+                          )}
+                          <span className="truncate font-medium">{a.name}</span>
+                        </span>
+                      </span>
+                    ))}
+                    <span className="text-muted-foreground">→</span>
+                    <span className="truncate text-muted-foreground">
+                      {c.accounts[0]?.name}
+                    </span>
+                  </div>
+                  <div className="text-sm font-semibold text-foreground whitespace-nowrap">
+                    {formatCurrency(c.net)}
+                  </div>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span>
+                    {c.kind === "reciprocal"
+                      ? "Two-way pair"
+                      : `${c.accounts.length}-account loop`}
+                  </span>
+                  <span>
+                    {c.transactions}{" "}
+                    {c.transactions === 1 ? "link" : "links"}
+                  </span>
+                  {c.legs.map((leg) => (
+                    <span key={`${leg.fromAccountId}-${leg.toAccountId}`}>
+                      {leg.fromAccountName} → {leg.toAccountName}:{" "}
+                      {formatCurrency(leg.amount)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {report.oneSidedFlows.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-medium text-foreground">
+            One-way account flows
+          </h3>
+          <p className="mb-2 text-xs text-muted-foreground">
+            No link moves money back the other way. A card bill paid from a bank
+            account looks the same as a half-entered transfer.
+          </p>
+          <div className="space-y-2">
+            {report.oneSidedFlows.map((f) => (
+              <div
+                key={`${f.fromAccountId}-${f.toAccountId}`}
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-border px-3 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+                  {f.fromAccountColor && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: f.fromAccountColor }}
+                    />
+                  )}
+                  <span className="truncate font-medium">
+                    {f.fromAccountName}
+                  </span>
+                  <span className="text-muted-foreground">→</span>
+                  {f.toAccountColor && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: f.toAccountColor }}
+                    />
+                  )}
+                  <span className="truncate font-medium">{f.toAccountName}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground">
+                    {f.types
+                      .map(
+                        (t) =>
+                          `${LINK_TYPE_LABELS[t.type] ?? t.type} (${t.count})`,
+                      )
+                      .join(", ")}
+                  </span>
+                  <span className="text-sm font-semibold text-foreground whitespace-nowrap">
+                    {formatCurrency(f.total)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

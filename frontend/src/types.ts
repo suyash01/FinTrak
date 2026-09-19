@@ -339,6 +339,66 @@ export interface MoneyFlowTimeline {
   periods: MoneyFlowTimelinePeriod[];
 }
 
+// ---- Circular money (link cycles) ----
+
+// Per-type rollup of one account-to-account flow.
+export interface LinkFlowTypeTotal {
+  type: LinkType;
+  count: number;
+  total: number;
+}
+
+export interface LinkCycleAccount {
+  id: string;
+  name: string;
+  color?: string;
+}
+
+// One directed leg of a cycle. `amount` is the gross flow in the window.
+export interface LinkCycleLeg {
+  fromAccountId: string;
+  fromAccountName: string;
+  fromAccountColor?: string;
+  toAccountId: string;
+  toAccountName: string;
+  toAccountColor?: string;
+  amount: number;
+  count: number;
+  types: LinkFlowTypeTotal[];
+}
+
+// One circular money flow between accounts. `kind` is "reciprocal" for a pair
+// that flows both ways (netted into a single Sankey edge) or "cycle" for a
+// longer loop broken by dropping its back edge. `net` is the smallest leg — the
+// amount that actually circulates the whole loop.
+export interface LinkCycle {
+  kind: "reciprocal" | "cycle";
+  accounts: LinkCycleAccount[];
+  legs: LinkCycleLeg[];
+  net: number;
+  gross: number;
+  transactions: number;
+}
+
+// A directed account-to-account flow with no flow in the opposite direction.
+export interface LinkOneSidedFlow {
+  fromAccountId: string;
+  fromAccountName: string;
+  fromAccountColor?: string;
+  toAccountId: string;
+  toAccountName: string;
+  toAccountColor?: string;
+  total: number;
+  count: number;
+  types: LinkFlowTypeTotal[];
+}
+
+export interface LinkCycleReport {
+  cycles: LinkCycle[];
+  totalCircular: number;
+  oneSidedFlows: LinkOneSidedFlow[];
+}
+
 // ---- Cash-flow calendar heatmap ----
 
 // One day of daily net flow. Days with no transactions are omitted by the API;
@@ -573,6 +633,59 @@ export interface BulkLoanRequest {
   transactionIds: string[];
   // Loan / EMI account to attach to; null/omitted detaches from any loan.
   loanAccountId?: string | null;
+}
+
+// ---- Loan amortization schedule ----
+
+// The optional amortization terms of a Loan / EMI account. `annualRateBps` is
+// basis points (950 = 9.50% p.a.); `principal` and the derived EMI are plain
+// numbers in major units, like every other money field.
+export interface LoanSchedule {
+  id: string;
+  loanAccountId: string;
+  principal: number;
+  annualRateBps: number;
+  tenureMonths: number;
+  startDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// One installment: the EMI split into principal and interest, with the
+// principal still outstanding after it. An entry is `paid` once an attached EMI
+// payment covers it (payments are matched in date order).
+export interface LoanScheduleEntry {
+  number: number;
+  dueDate: string;
+  amount: number;
+  principal: number;
+  interest: number;
+  balance: number;
+  paid: boolean;
+  transactionId?: string;
+}
+
+export interface LoanScheduleDetail {
+  schedule: LoanSchedule | null;
+  loanAccountName?: string;
+  emi: number;
+  totalInterest: number;
+  totalPayable: number;
+  entries: LoanScheduleEntry[];
+  paidInstallments: number;
+  paidAmount: number;
+  principalPaid: number;
+  interestPaid: number;
+  outstandingPrincipal: number;
+  nextDueDate?: string;
+  completed: boolean;
+}
+
+export interface LoanScheduleRequest {
+  principal: number;
+  annualRateBps: number;
+  tenureMonths: number;
+  startDate: string;
 }
 
 export interface ImportTransactionsRequest {

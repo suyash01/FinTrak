@@ -1,13 +1,17 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"time"
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -183,4 +187,311 @@ func (srv *Server) BulkLinkLoan(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"attached": attached})
+}
+
+// maxLoanTenureMonths mirrors the CHECK on loan_schedules.tenure_months.
+const maxLoanTenureMonths = 600
+
+// GetLoanSchedule returns a loan account's amortization schedule: the terms, the
+// generated table (each installment split into principal and interest), and the
+// progress derived from the EMI transactions attached to the loan. The schedule
+// is optional, so an unconfigured loan answers 200 with `schedule: null` rather
+// than a 404; a missing or non-loan account is still an error.
+func (srv *Server) GetLoanSchedule(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	userID := auth.GetUserID(c)
+	name, ok := srv.loanAccountGuard(c, userID, accountID)
+	if !ok {
+		return
+	}
+
+	detail, err := srv.loadLoanScheduleDetail(c, userID, accountID)
+	if err != nil {
+		slog.Error("GetLoanSchedule", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	detail.LoanAccountName = name
+	c.JSON(http.StatusOK, detail)
+}
+
+// UpsertLoanSchedule creates or replaces a loan account's amortization schedule
+// and returns the same detail as GET, so the caller can render the generated
+// table without a second request.
+func (srv *Server) UpsertLoanSchedule(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	var req models.LoanScheduleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		validation.RespondBindError(c, err)
+		return
+	}
+	if req.Principal <= 0 {
+		validation.RespondError(c, "principal must be positive", http.StatusBadRequest)
+		return
+	}
+	if req.AnnualRateBps < 0 {
+		validation.RespondError(c, "annualRateBps must not be negative", http.StatusBadRequest)
+		return
+	}
+	if req.TenureMonths < 1 || req.TenureMonths > maxLoanTenureMonths {
+		validation.RespondError(c, fmt.Sprintf("tenureMonths must be between 1 and %d", maxLoanTenureMonths), http.StatusBadRequest)
+		return
+	}
+	start, err := parseRecurringDate(req.StartDate)
+	if err != nil {
+		validation.RespondError(c, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	userID := auth.GetUserID(c)
+	name, ok := srv.loanAccountGuard(c, userID, accountID)
+	if !ok {
+		return
+	}
+
+	// The INSERT ... SELECT re-checks ownership and the loan type inside the
+	// statement, so a cross-user or non-loan account can never be written even
+	// if it changes between the guard and the write.
+	if _, err := srv.db.Exec(c,
+		`INSERT INTO loan_schedules (loan_account_id, user_id, principal, annual_rate_bps, tenure_months, start_date)
+		 SELECT a.id, $2, $3, $4, $5, $6
+		 FROM accounts a
+		 WHERE a.id = $1 AND a.user_id = $2 AND a.account_type_id = 'loan'
+		 ON CONFLICT (user_id, loan_account_id) DO UPDATE
+		 SET principal = EXCLUDED.principal,
+		     annual_rate_bps = EXCLUDED.annual_rate_bps,
+		     tenure_months = EXCLUDED.tenure_months,
+		     start_date = EXCLUDED.start_date,
+		     updated_at = NOW()`,
+		accountID, userID, req.Principal, req.AnnualRateBps, req.TenureMonths, start,
+	); err != nil {
+		slog.Error("UpsertLoanSchedule", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	detail, err := srv.loadLoanScheduleDetail(c, userID, accountID)
+	if err != nil {
+		slog.Error("UpsertLoanSchedule (reload)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	detail.LoanAccountName = name
+	c.JSON(http.StatusOK, detail)
+}
+
+// DeleteLoanSchedule removes a loan account's amortization schedule. It is
+// idempotent: deleting an unconfigured loan reports `deleted: 0`.
+func (srv *Server) DeleteLoanSchedule(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	userID := auth.GetUserID(c)
+	if _, ok := srv.loanAccountGuard(c, userID, accountID); !ok {
+		return
+	}
+
+	res, err := srv.db.Exec(c, "DELETE FROM loan_schedules WHERE loan_account_id = $1 AND user_id = $2", accountID, userID)
+	if err != nil {
+		slog.Error("DeleteLoanSchedule", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, models.DeleteLoanScheduleResult{Deleted: res.RowsAffected()})
+}
+
+// loanAccountGuard resolves the loan account named by the route, writing the
+// matching 4xx and returning ok=false when it does not exist, is not the
+// caller's, or is not a Loan / EMI account. It returns the account's name so
+// callers can echo it without a second lookup.
+func (srv *Server) loanAccountGuard(c *gin.Context, userID, accountID uuid.UUID) (string, bool) {
+	var name, accountType string
+	err := srv.db.QueryRow(c,
+		"SELECT name, account_type_id FROM accounts WHERE id = $1 AND user_id = $2",
+		accountID, userID).Scan(&name, &accountType)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		validation.RespondError(c, "account not found", http.StatusNotFound)
+		return "", false
+	case err != nil:
+		slog.Error("loanAccountGuard", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return "", false
+	case accountType != loanAccountTypeID:
+		validation.RespondError(c, "not a loan account", http.StatusBadRequest)
+		return "", false
+	}
+	return name, true
+}
+
+// loadLoanScheduleDetail reads the loan's schedule (if any) and the EMI
+// transactions attached to it, then generates the amortization table and the
+// progress figures. Attached payments are matched to installments in date
+// order: the Nth EMI payment pays the Nth installment, the way a lender numbers
+// them, so paying early or late does not misalign the table.
+func (srv *Server) loadLoanScheduleDetail(ctx context.Context, userID, loanAccountID uuid.UUID) (models.LoanScheduleDetail, error) {
+	detail := models.LoanScheduleDetail{Entries: []models.LoanScheduleEntry{}}
+
+	var sched models.LoanSchedule
+	err := srv.db.QueryRow(ctx,
+		`SELECT id, loan_account_id, principal, annual_rate_bps, tenure_months, start_date, created_at, updated_at
+		 FROM loan_schedules WHERE loan_account_id = $1 AND user_id = $2`,
+		loanAccountID, userID,
+	).Scan(&sched.ID, &sched.LoanAccountID, &sched.Principal, &sched.AnnualRateBps,
+		&sched.TenureMonths, &sched.StartDate, &sched.CreatedAt, &sched.UpdatedAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return detail, nil
+	case err != nil:
+		return detail, err
+	}
+	detail.Schedule = &sched
+
+	emi, entries := loanAmortization(sched.Principal, sched.AnnualRateBps, sched.TenureMonths, sched.StartDate)
+	detail.EMI = emi
+	detail.Entries = entries
+	for _, e := range entries {
+		detail.TotalInterest += e.Interest
+		detail.TotalPayable += e.Amount
+	}
+
+	payments, err := srv.loadLoanPayments(ctx, userID, loanAccountID)
+	if err != nil {
+		return detail, err
+	}
+	paid := 0
+	for _, p := range payments {
+		if p.credit {
+			// A refund against an EMI reduces what was actually paid but does
+			// not cover another installment.
+			detail.PaidAmount -= p.amount
+			continue
+		}
+		detail.PaidAmount += p.amount
+		if paid < len(entries) {
+			txnID := p.id
+			detail.Entries[paid].Paid = true
+			detail.Entries[paid].TransactionID = &txnID
+			paid++
+		}
+	}
+	detail.PaidInstallments = paid
+	for i := range paid {
+		detail.PrincipalPaid += entries[i].Principal
+		detail.InterestPaid += entries[i].Interest
+	}
+	detail.OutstandingPrincipal = sched.Principal - detail.PrincipalPaid
+	if detail.OutstandingPrincipal < 0 {
+		detail.OutstandingPrincipal = 0
+	}
+	detail.Completed = paid >= len(entries)
+	if !detail.Completed {
+		next := entries[paid].DueDate
+		detail.NextDueDate = &next
+	}
+	return detail, nil
+}
+
+// loanPayment is one EMI transaction attached to a loan, in the order it counts
+// toward the installments.
+type loanPayment struct {
+	id     uuid.UUID
+	amount money.Amount
+	credit bool
+}
+
+// loadLoanPayments reads the loan's attached EMI transactions, oldest first
+// (created_at breaks a same-day tie so the numbering is stable).
+func (srv *Server) loadLoanPayments(ctx context.Context, userID, loanAccountID uuid.UUID) ([]loanPayment, error) {
+	rows, err := srv.db.Query(ctx,
+		`SELECT t.id, t.amount, t.type
+		 FROM loan_attachments la
+		 JOIN transactions t ON t.id = la.transaction_id
+		 WHERE la.loan_account_id = $1 AND la.user_id = $2
+		 ORDER BY t.date, t.created_at`,
+		loanAccountID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []loanPayment
+	for rows.Next() {
+		var p loanPayment
+		var txnType string
+		if err := rows.Scan(&p.id, &p.amount, &txnType); err != nil {
+			return nil, err
+		}
+		p.credit = txnType == "credit"
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// loanAmortization generates the amortization table for a schedule: every
+// installment split into principal and interest, with its remaining balance.
+// Monthly due dates come from the shared anchored-month helper the recurring
+// engine uses, so a schedule starting on the 31st clamps to month length instead
+// of drifting.
+//
+// The final installment clears whatever principal is left, so the table repays
+// the loan exactly despite per-installment rounding. The rate factor is a ratio,
+// not money: it is the one place float64 legitimately appears, and the EMI is
+// rounded to the nearest minor unit before any further arithmetic.
+func loanAmortization(principal money.Amount, annualRateBps, tenureMonths int, start time.Time) (money.Amount, []models.LoanScheduleEntry) {
+	if tenureMonths < 1 {
+		return principal, []models.LoanScheduleEntry{}
+	}
+	monthlyRate := float64(annualRateBps) / 120000.0
+	emi := loanEMI(principal, monthlyRate, tenureMonths)
+
+	anchor := dateOnly(start)
+	remaining := principal
+	entries := make([]models.LoanScheduleEntry, 0, tenureMonths)
+	for i := 1; i <= tenureMonths; i++ {
+		interest := money.Amount(math.Round(float64(remaining) * monthlyRate))
+		var principalPart money.Amount
+		if i == tenureMonths {
+			principalPart = remaining
+		} else {
+			principalPart = emi - interest
+			if principalPart < 0 {
+				principalPart = 0
+			}
+		}
+		remaining -= principalPart
+		entries = append(entries, models.LoanScheduleEntry{
+			Number:    i,
+			DueDate:   addMonthsAnchored(anchor, i-1),
+			Amount:    principalPart + interest,
+			Principal: principalPart,
+			Interest:  interest,
+			Balance:   remaining,
+		})
+	}
+	return emi, entries
+}
+
+// loanEMI returns the equated monthly installment: P * r * (1+r)^n / ((1+r)^n - 1)
+// for a monthly rate r, or an even principal split when the loan is
+// interest-free.
+func loanEMI(principal money.Amount, monthlyRate float64, months int) money.Amount {
+	if months <= 0 {
+		return principal
+	}
+	if monthlyRate <= 0 {
+		return money.Amount(math.Round(float64(principal) / float64(months)))
+	}
+	growth := math.Pow(1+monthlyRate, float64(months))
+	return money.Amount(math.Round(float64(principal) * monthlyRate * growth / (growth - 1)))
 }
