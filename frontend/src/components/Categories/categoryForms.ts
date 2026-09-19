@@ -1,4 +1,4 @@
-import type { CreateRuleRequest } from "../../types";
+import type { CreateRuleRequest, Rule } from "../../types";
 
 export interface CategoryForm {
   name: string;
@@ -103,25 +103,7 @@ export function ruleFormToRequest(form: NewRuleForm): CreateRuleRequest {
 }
 
 // ruleToForm maps a persisted Rule back into the editor form.
-export function ruleToForm(rule: {
-  pattern: string;
-  matchType: string;
-  categoryId: string;
-  payeeId?: string | null;
-  priority: number;
-  accountId?: string | null;
-  filterCategoryId?: string | null;
-  filterPayeeId?: string | null;
-  minAmount?: number | null;
-  maxAmount?: number | null;
-  txnType?: string;
-  dateFrom?: string | null;
-  dateTo?: string | null;
-  isLinked?: boolean | null;
-  isRecurring?: boolean | null;
-  addTags?: string[];
-  notes?: string;
-}): NewRuleForm {
+export function ruleToForm(rule: Rule): NewRuleForm {
   const tri = (v: boolean | null | undefined) =>
     v === null || v === undefined ? "" : v ? "true" : "false";
   return {
