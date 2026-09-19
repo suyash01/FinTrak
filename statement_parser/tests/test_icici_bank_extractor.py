@@ -697,5 +697,116 @@ class IciciBankTemplateRegressionTests(unittest.TestCase):
         )
 
 
+class IciciBankApr2026MonthlyTests(unittest.TestCase):
+    """FY2026-27 monthly savings vintage: masked account numbers and a
+    per-page ``Total:`` row (old-template traits) with the widest table font
+    seen so far (Mulish-SemiBold 6.75pt, MODE labels 5.80pt). Two geometry
+    facts made the whole statement parse as ZERO transactions with an EMPTY
+    validation_errors list, so both are pinned here:
+
+    1. the date token ends past the classic right-edge cap (x1 = 72.9 > 70),
+       so the date column must also be recognised by its LEFT edge;
+    2. pdfplumber glues the 5.80pt CMS MODE label onto the date token
+       (1.4pt gap -> one word ``10-04-2026CMS``), which made that record
+       vanish from the page and broke the printed-subtotal cross-check.
+    """
+
+    @staticmethod
+    def _rule(top):
+        return {"x0": 34.0, "x1": 73.7, "top": top, "bottom": top, "y0": top, "y1": top}
+
+    def _page_words(self):
+        return [
+            _word("PARTICULARS", 143.8, 191.9, 358.0),
+            # B/F opening row: date + label + balance, no amount -> not emitted.
+            _word("01-04-2026", 35.4, 72.9, 372.3),
+            _word("B/F", 143.8, 154.0, 372.3),
+            _word("1,75,677.70", 522.5, 559.0, 372.3),
+            # Row whose particulars wrap above AND below its date line.
+            _word("UPI/CHEQ", 143.8, 175.4, 382.2),
+            _word("DIGIT/cheq4.payu@axi/NO", 177.2, 260.1, 382.2),
+            _word("REMARKS/AXIS", 261.8, 311.2, 382.2),
+            _word("01-04-2026", 35.4, 72.9, 390.7),
+            _word("BANK/055125591711/UPI489c782ec7ba5073b8cd445236c77", 143.8, 337.3, 390.7),
+            _word("9,774.63", 459.4, 486.3, 390.7),
+            _word("1,65,903.07", 522.5, 559.1, 390.7),
+            _word("e60/", 143.8, 157.3, 399.2),
+            # CMS row: the PDF glues "CMS" onto the date token (widest date
+            # render + 5.80pt label) and prints TRANSACTION separately.
+            _word("10-04-2026CMS", 35.4, 86.6, 416.1),
+            _word("TRANSACTION", 88.1, 129.4, 416.1),
+            _word("CMS/ CMS5629209212/NAGARRO ENTERPRISE", 143.8, 327.4, 416.1),
+            _word("SERVICES", 329.2, 338.2, 416.1),
+            _word("PV", 340.0, 350.0, 416.1),
+            _word("2,502.00", 379.6, 406.6, 416.1),
+            _word("32,176.07", 528.1, 559.0, 416.1),
+            # Per-page subtotal row.
+            _word("Total:", 141.0, 159.2, 440.0),
+            _word("2,502.00", 374.6, 406.6, 440.0),
+            _word("9,774.63", 448.5, 486.3, 440.0),
+            _word("32,176.07", 526.9, 559.0, 440.0),
+        ]
+
+    @mock.patch("statement_parser.icici_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.icici_bank_extractor.PdfReader")
+    def test_wide_date_and_glued_cms_label_parse(self, mock_reader_cls, mock_open):
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+        page = _FakePage(
+            self._page_words(),
+            lines=[self._rule(380.7), self._rule(406.1), self._rule(431.5)],
+        )
+        mock_open.side_effect = lambda path, password="": _FakePdf([page])
+        result = extract_transactions("/tmp/statement.pdf")
+
+        self.assertEqual(result["transaction_count"], 2)
+        self.assertEqual(result["validation_errors"], [])
+        self.assertEqual(result["opening_balance"], 175677.70)
+        self.assertEqual(result["closing_balance"], 32176.07)
+        self.assertEqual(result["total_deposits"], 2502.0)
+        self.assertEqual(result["total_withdrawals"], 9774.63)
+        self.assertEqual(
+            result["transactions"][0]["description"],
+            "UPI/CHEQ DIGIT/cheq4.payu@axi/NO REMARKS/AXIS"
+            " BANK/055125591711/UPI489c782ec7ba5073b8cd445236c77e60/",
+        )
+        self.assertEqual(result["transactions"][1]["date"], "2026-04-10")
+        self.assertEqual(result["transactions"][1]["mode"], "CMS TRANSACTION")
+        self.assertEqual(result["transactions"][1]["deposit"], 2502.0)
+        self.assertEqual(
+            result["transactions"][1]["particulars"],
+            "CMS/ CMS5629209212/NAGARRO ENTERPRISE SERVICES PV",
+        )
+
+    def test_metadata_from_merged_name_line_and_spaced_customer_id(self):
+        # This vintage prints "Customer ID : XXXXX5687" (space before the
+        # colon) and pdfplumber merges the left address block with the right
+        # branch block, so the name line reads
+        # "MR.SUYASH MITTAL NO. 24, PHASE - II, VILL. MAAN,TAL. MULSHI,".
+        text = "\n".join(
+            [
+                "MR.SUYASH MITTAL NO. 24, PHASE - II, VILL. MAAN,TAL. MULSHI,",
+                "STATEMENT SUMMARY for Customer ID : XXXXX5687 as on April 30, 2026. CKYC ID: 10016018160027",
+                "Current A/c XXXXXXXX1064 0.00 Not Registered",
+                "Savings A/c XXXXXXXX7034 1,50,830.36 Not Registered",
+                "Statement of Transactions in Savings Account XXXXXXXX7034 in INR for the period April 01, 2026 - April 30, 2026",
+            ]
+        )
+        metadata = _extract_metadata(text)
+
+        self.assertEqual(metadata["account_holder"], "Mr.Suyash Mittal")
+        self.assertEqual(metadata["customer_id"], "XXXXX5687")
+        self.assertEqual(metadata["statement_period_from"], "2026-04-01")
+        self.assertEqual(metadata["statement_period_to"], "2026-04-30")
+        self.assertEqual(
+            metadata["accounts"],
+            [
+                {"type": "Current", "number": "XXXXXXXX1064", "balance": 0.0},
+                {"type": "Savings", "number": "XXXXXXXX7034", "balance": 150830.36},
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -197,6 +197,21 @@ def _is_password_exception(exc: BaseException) -> bool:
 # ICICI statement template and validated against every page's printed
 # subtotal row (see module docstring / project tests).
 _COL_DATE_MAX_X1 = 70
+# The date column is ALSO recognised by its left edge: templates whose
+# table font renders wider print the date token past the classic
+# right-edge cap (dd-mm-yyyy at 6.75pt reaches x1 = 72.9 on the Apr-2026
+# monthly statement), so a word that starts at the left edge of the table
+# AND is date-shaped belongs to the date column too. No other column
+# begins that far left.
+_COL_DATE_MAX_X0 = 60.0
+# The generator glues a short MODE label straight onto the date token when
+# the label is printed at a small size: on the 5.80pt CMS rows "CMS" sits
+# 1.4pt right of the date, below pdfplumber's word tolerance, so the row's
+# date comes out as one token "10-04-2026CMS".
+_GLUED_DATE_RE = re.compile(r"^(\d{2}-\d{2}-\d{4})(.+)$")
+# Rendered width of a dd-mm-yyyy token incl. the cell's right padding;
+# used to place the split-off MODE text just right of the date cell.
+_DATE_TOKEN_WIDTH = 40.0
 _COL_MODE_MAX_X0 = 140
 _COL_PARTICULARS_MAX_X0 = 355
 _COL_DEPOSIT_MAX_X0 = 420
@@ -215,8 +230,30 @@ _HEADER_WORD = "PARTICULARS"
 _TOTAL_WORDS = ("Total:", "TOTAL")
 
 
-def _classify_column(x0: float, x1: float) -> Column:
-    if x1 <= _COL_DATE_MAX_X1:
+def _split_glued_date_word(word: Word) -> List[Word]:
+    """Split a date token the PDF glued to the following MODE label
+    (see _GLUED_DATE_RE) into the date word and a synthetic MODE word
+    placed just right of the date cell, so every downstream column and
+    row rule sees one clean token per cell."""
+    m = _GLUED_DATE_RE.match(word["text"])
+    if not m:
+        return [word]
+    rest_x0: float = word["x0"] + _DATE_TOKEN_WIDTH
+    return [
+        {**word, "text": m.group(1)},
+        {
+            **word,
+            "text": m.group(2),
+            "x0": rest_x0,
+            "x1": max(word["x1"], rest_x0 + 1.0),
+        },
+    ]
+
+
+def _classify_column(x0: float, x1: float, text: Optional[str] = None) -> Column:
+    if x1 <= _COL_DATE_MAX_X1 or (
+        text is not None and x0 <= _COL_DATE_MAX_X0 and _DATE_RE.match(text)
+    ):
         return "date"
     if x0 < _COL_MODE_MAX_X0:
         return "mode"
@@ -377,9 +414,12 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
     # extract_words() returns List[Dict[str, Any]]; cast to our narrower
     # Word shape since List is invariant and mypy won't accept the plain
     # dict list where List[Word] is expected.
-    words: List[Word] = cast(
+    raw_words: List[Word] = cast(
         List[Word], page.extract_words(use_text_flow=False, keep_blank_chars=False)
     )
+    words: List[Word] = [
+        w for word in raw_words for w in _split_glued_date_word(word)
+    ]
     if not words:
         return None
 
@@ -435,7 +475,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
                 round(w["top"], 1)
                 for w in body
                 if t0 <= w["top"] < t1
-                and _classify_column(w["x0"], w["x1"]) == "date"
+                and _classify_column(w["x0"], w["x1"], w["text"]) == "date"
                 and _DATE_RE.match(w["text"])
             }
             if len(band_date_tops) > 1:
@@ -449,11 +489,11 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
                 continue
             by_col: Dict[Column, List[Word]] = defaultdict(list)
             for w in band_words:
-                by_col[_classify_column(w["x0"], w["x1"])].append(w)
+                by_col[_classify_column(w["x0"], w["x1"], w["text"])].append(w)
             dates: List[Word] = [
                 w
                 for w in band_words
-                if _classify_column(w["x0"], w["x1"]) == "date" and _DATE_RE.match(w["text"])
+                if _classify_column(w["x0"], w["x1"], w["text"]) == "date" and _DATE_RE.match(w["text"])
             ]
             if not dates:
                 continue  # header / totals / footer band
@@ -489,7 +529,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
             {
                 round(w["top"], 1)
                 for w in body
-                if _classify_column(w["x0"], w["x1"]) == "date" and _DATE_RE.match(w["text"])
+                if _classify_column(w["x0"], w["x1"], w["text"]) == "date" and _DATE_RE.match(w["text"])
             }
         )
         if not anchor_tops:
@@ -499,7 +539,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
             row_words: List[Word] = [w for w in body if abs(w["top"] - top) < _ROW_TOLERANCE]
             by_col = defaultdict(list)
             for w in row_words:
-                by_col[_classify_column(w["x0"], w["x1"])].append(w)
+                by_col[_classify_column(w["x0"], w["x1"], w["text"])].append(w)
 
             date_text: str = by_col["date"][0]["text"]
             mode_raw: str = " ".join(w["text"] for w in sorted(by_col["mode"], key=lambda w: w["x0"]))
@@ -537,7 +577,7 @@ def _parse_page(page: Page) -> Optional[_PageParseResult]:
             if records[a]["deposit_raw"] is not None or records[a]["withdrawal_raw"] is not None
         ]
         particulars_words: List[Word] = [
-            w for w in body if _classify_column(w["x0"], w["x1"]) == "particulars"
+            w for w in body if _classify_column(w["x0"], w["x1"], w["text"]) == "particulars"
         ]
         lines_by_top: Dict[float, List[Word]] = defaultdict(list)
         for w in particulars_words:
@@ -764,7 +804,7 @@ def _parse_ophistory_page(page: Page) -> Optional[_PageParseResult]:
 _PERIOD_RE = re.compile(
     r"for the period\s+([A-Za-z]+ \d{1,2},\s*\d{4})\s*-\s*([A-Za-z]+ \d{1,2},\s*\d{4})"
 )
-_CUSTOMER_ID_RE = re.compile(r"\bCust(?:omer)?\s*ID:\s*([A-Z0-9]+)")
+_CUSTOMER_ID_RE = re.compile(r"\bCust(?:omer)?\s*ID\s*:\s*([A-Z0-9]+)")
 # The account-summary table has BALANCE(I), FIXED DEPOSITS (LINKED) and
 # TOTAL BALANCE(I+II) amount columns; the useful figure is the last amount
 # (the total). Older templates print a single amount per row.
@@ -802,7 +842,11 @@ def _extract_metadata(statement_text: str) -> Metadata:
         # The name line may also carry branch/address text on the same line
         # (e.g. "MR.SUYASH MITTAL Your Base Branch: ICICI BANK LTD., ...").
         name_match = re.match(
-            r"^(MR|MS|MRS|M/S)\.\s*(.+?)(?:\s+Your\s+Base\s+Branch|$)",
+            # ... and stops where the address or branch text begins: this
+            # template's pdfplumber text merges the left address block
+            # with the right branch block into one line
+            # ("MR.SUYASH MITTAL NO. 24, PHASE - II, VILL. MAAN,TAL.").
+            r"^(MR|MS|MRS|M/S)\.\s*([A-Za-z][A-Za-z .'-]*?)(?:\s+NO\b|\s+Your\s+Base\s+Branch|\s*\d|,|$)",
             line,
             re.IGNORECASE,
         )
