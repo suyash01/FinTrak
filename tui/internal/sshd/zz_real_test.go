@@ -1,6 +1,7 @@
 package sshd
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -9,8 +10,20 @@ import (
 )
 
 // Drives the door against the REAL local API to isolate data as the variable.
+//
+// Opt-in by design: no API is reachable in CI, so an ungated version of this
+// test fails every run there. Point FINTRAK_REAL_API_URL at a live API to run
+// it, e.g.
+//
+//	FINTRAK_REAL_API_URL=http://localhost:8080/api/v1 go test -run TestZZRealAPI ./internal/sshd
+//
+// The credentials are a throwaway local development account.
 func TestZZRealAPI(t *testing.T) {
-	cfg := testConfig(t, "http://localhost:8080/api/v1")
+	baseURL := strings.TrimSpace(os.Getenv("FINTRAK_REAL_API_URL"))
+	if baseURL == "" {
+		t.Skip("set FINTRAK_REAL_API_URL to run this smoke test against a live API")
+	}
+	cfg := testConfig(t, baseURL)
 	addr := startServer(t, cfg)
 
 	client := dial(t, addr, "tui@fintrak.local", "tui-smoke-test-123")
