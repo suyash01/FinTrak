@@ -1442,7 +1442,7 @@ func (srv *Server) GetRecurringSuggestions(c *gin.Context) {
 		  AND t.date >= $5
 		  AND ($6::date IS NULL OR t.date < $6)
 		  AND NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)
-		ORDER BY t.date DESC
+		ORDER BY `+txnOrderByDate(false)+`
 		LIMIT $7`,
 		userID, accountIDs, series.Type, amounts, minStart, maxEnd, maxRecurringCandidates)
 	if err != nil {
@@ -1562,7 +1562,7 @@ func (srv *Server) GetRecurringTransactions(c *gin.Context) {
 		LEFT JOIN payees p ON t.payee_id = p.id
 		LEFT JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
 		WHERE ra.series_id = $1 AND ra.user_id = $2
-		ORDER BY t.date DESC`, id, userID)
+		ORDER BY `+txnOrderByDate(false), id, userID)
 	if err != nil {
 		slog.Error("GetRecurringTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

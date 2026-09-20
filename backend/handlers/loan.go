@@ -410,15 +410,17 @@ type loanPayment struct {
 	credit bool
 }
 
-// loadLoanPayments reads the loan's attached EMI transactions, oldest first
-// (created_at breaks a same-day tie so the numbering is stable).
+// loadLoanPayments reads the loan's attached EMI transactions, oldest first.
+// created_at breaks a same-day tie so the numbering is stable, with the id last
+// for the case created_at itself ties (every row of one bulk import shares a
+// single now()).
 func (srv *Server) loadLoanPayments(ctx context.Context, userID, loanAccountID uuid.UUID) ([]loanPayment, error) {
 	rows, err := srv.db.Query(ctx,
 		`SELECT t.id, t.amount, t.type
 		 FROM loan_attachments la
 		 JOIN transactions t ON t.id = la.transaction_id
 		 WHERE la.loan_account_id = $1 AND la.user_id = $2
-		 ORDER BY t.date, t.created_at`,
+		 ORDER BY t.date, t.created_at, t.id`,
 		loanAccountID, userID)
 	if err != nil {
 		return nil, err

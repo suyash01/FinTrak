@@ -46,7 +46,9 @@ func (srv *Server) ExportTransactions(c *gin.Context) {
 	          LEFT JOIN category_groups g ON c.group_id = g.id
 	          LEFT JOIN payees p ON t.payee_id = p.id` +
 		f.where() +
-		fmt.Sprintf(" ORDER BY t.date DESC, t.created_at DESC LIMIT %d", maxExportRows)
+		// Same total order as the list, so the truncation point at maxExportRows
+		// is stable too: an export of a given filter always keeps the same rows.
+		fmt.Sprintf(" ORDER BY %s LIMIT %d", txnOrderByDate(false), maxExportRows)
 
 	rows, err := srv.db.Query(c, query, f.args...)
 	if err != nil {

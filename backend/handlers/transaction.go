@@ -36,6 +36,27 @@ const maxPageSize = 1000
 // largest offset is 1e9, which fits comfortably in a 32-bit int.
 const maxPage = 1_000_000
 
+// txnOrderByDate renders the ORDER BY fragment every transaction list sorted by
+// date uses. The date column alone is not a total order: rows sharing a date —
+// and every row of one bulk import, which shares a single created_at — come
+// back in whatever order the planner picked, which changed between two
+// identical requests. That let paging repeat or skip rows and let a list walk
+// (a running balance, a CSV the user sorts) disagree with itself. Two
+// tiebreakers make the order total and reproducible:
+//
+//   - credits before debits: inside a calendar day, money in is applied before
+//     money out, so a running balance never dips below what the day's own
+//     income had already funded;
+//   - the primary key last: rows that also share a type stay in one fixed
+//     order. It is arbitrary but stable, which is all a tiebreak has to be.
+func txnOrderByDate(asc bool) string {
+	dir := "DESC"
+	if asc {
+		dir = "ASC"
+	}
+	return "t.date " + dir + ", CASE WHEN t.type = 'credit' THEN 0 ELSE 1 END, t.id"
+}
+
 // parseQueryDate validates an optional YYYY-MM-DD query parameter. It writes a
 // 400 and returns ok=false when the value is malformed; an empty value passes
 // through unchanged, so "filter not set" keeps working.
@@ -204,7 +225,8 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 // linked state; sorting and pagination are validated/clamped server-side. When
 // filtering a single account that has a billing day set (any account type) and
 // sorting by date, synthetic summary rows (per-cycle outstanding totals) are
-// merged into the response.
+// merged into the response. Sorting is a total order (see txnOrderByDate), so
+// the same request always returns the same rows in the same sequence.
 func (srv *Server) GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	sortBy := c.DefaultQuery("sortBy", "date")
@@ -287,7 +309,14 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 
 	offset := (page - 1) * limit
 	paramIdx := len(f.args) + 1
-	query += fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", sortCol, sortOrder, paramIdx, paramIdx+1)
+	// Date sorting uses the shared total order (credits first within a day,
+	// then the id); the other columns get the id alone, which is enough to keep
+	// page boundaries fixed.
+	orderBy := sortCol + " " + sortOrder + ", t.id"
+	if sortBy == "date" {
+		orderBy = txnOrderByDate(sortOrder == "ASC")
+	}
+	query += fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, paramIdx, paramIdx+1)
 	args := append(f.args, limit, offset)
 
 	rows, err := srv.db.Query(c, query, args...)

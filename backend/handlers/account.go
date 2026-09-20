@@ -343,7 +343,7 @@ func (srv *Server) ExportAccount(c *gin.Context) {
 		 FROM transactions t
 		 WHERE t.account_id = $1
 		 	 AND t.user_id = $2
-		 ORDER BY t.date DESC`, id, auth.GetUserID(c))
+		 ORDER BY `+txnOrderByDate(false), id, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("ExportAccount", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)

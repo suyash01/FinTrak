@@ -315,7 +315,9 @@ paths:
       tags:
         - Accounts
       summary: Export account transactions as CSV
-      description: Download all transactions for an account as a CSV file
+      description: >
+        Download all transactions for an account as a CSV file, newest date
+        first, credits before debits inside a day.
       operationId: exportAccount
       security:
         - BearerAuth: []
@@ -638,7 +640,12 @@ paths:
       tags:
         - Transactions
       summary: List transactions
-      description: Get transactions with optional filtering, sorting, and pagination
+      description: >
+        Get transactions with optional filtering, sorting, and pagination. The
+        order is total, so identical requests return the same rows in the same
+        sequence: ties on the sort column are broken by the transaction id and,
+        when sorting by date, by type — credits before debits inside a calendar
+        day.
       operationId: getTransactions
       security:
         - BearerAuth: []
@@ -1075,7 +1082,8 @@ paths:
         grammar as GET /transactions (account, category/groupId, payee, tags,
         search, date range, type, amount, linked, loan, recurring). Unlike the
         per-account export it covers whatever the caller has filtered to and
-        includes account/category/group/payee names.
+        includes account/category/group/payee names. Rows come in the same
+        total order as GET /transactions.
       operationId: exportTransactions
       security:
         - BearerAuth: []

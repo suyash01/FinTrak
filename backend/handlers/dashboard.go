@@ -113,14 +113,15 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 
-	// By category (expenses only)
+	// By category (expenses only). The top 15 are cut by name/id after the
+	// total so equal-spend categories can't swap in and out between fetches.
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC
+				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
 
 	catRows, err := q.Query(ctx, catQuery, args...)
@@ -147,7 +148,7 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC
+				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
 
 	incomeCatRows, err := q.Query(ctx, incomeCatQuery, args...)
@@ -205,7 +206,7 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 					LEFT JOIN categories c ON t.category_id = c.id
 					LEFT JOIN payees p ON t.payee_id = p.id
 					WHERE t.user_id = $1` + catFilter + `
-					ORDER BY t.date DESC, t.created_at DESC
+					ORDER BY ` + txnOrderByDate(false) + `
 					LIMIT 10`
 
 	recentRows, err := q.Query(ctx, recentQuery, args...)
@@ -413,13 +414,15 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	addCond("date", "<=", windowEnd)
 	addCond("account_id", "=", accountID)
 
+	// Category breakdowns over the cycle window; same name/id tiebreak as the
+	// unbounded summary so the top 15 are stable.
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC
+				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
 	catRows, err := q.Query(ctx, catQuery, catArgs...)
 	if err != nil {
@@ -444,7 +447,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC
+				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
 	incomeCatRows, err := q.Query(ctx, incomeCatQuery, catArgs...)
 	if err != nil {
@@ -477,7 +480,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 					LEFT JOIN payees p ON t.payee_id = p.id
 					WHERE t.user_id = $1 AND t.account_id = $2
 					  AND t.date >= $3 AND t.date <= $4
-					ORDER BY t.date DESC, t.created_at DESC
+					ORDER BY ` + txnOrderByDate(false) + `
 					LIMIT 10`
 	recentRows, err := q.Query(ctx, recentQuery, userID, accountID, windowStart, windowEnd)
 	if err != nil {

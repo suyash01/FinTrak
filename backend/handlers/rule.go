@@ -36,7 +36,7 @@ func (srv *Server) GetRules(c *gin.Context) {
 		 LEFT JOIN categories fc ON r.filter_category_id = fc.id
 		 LEFT JOIN payees fp ON r.filter_payee_id = fp.id
 		 WHERE r.user_id = $1
-		 ORDER BY r.priority DESC`, auth.GetUserID(c))
+		 ORDER BY r.priority DESC, r.id`, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("GetRules", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -563,13 +563,16 @@ func appendRulePredicate(f *txnFilter, r ruleEntry) bool {
 }
 
 // loadRules fetches the user's rules (with conditions/actions) ordered by
-// descending priority.
+// descending priority. Priority defaults to 0, so ties are the norm rather than
+// the exception; the id breaks them so the rule that auto-categorizes a new or
+// imported transaction is the same on every run instead of whatever order the
+// planner happened to return. It is the only stable key the rules table has.
 func (srv *Server) loadRules(c *gin.Context, userID uuid.UUID) ([]ruleEntry, error) {
 	rows, err := srv.db.Query(c,
 		`SELECT pattern, match_type, category_id, payee_id,
 		        account_id, filter_category_id, filter_payee_id, min_amount, max_amount, COALESCE(txn_type, ''),
 		        date_from, date_to, is_linked, is_recurring, COALESCE(add_tags, '{}'), COALESCE(notes, '')
-		 FROM rules WHERE user_id = $1 ORDER BY priority DESC`, userID)
+		 FROM rules WHERE user_id = $1 ORDER BY priority DESC, id`, userID)
 	if err != nil {
 		return nil, err
 	}

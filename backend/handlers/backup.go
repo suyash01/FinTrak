@@ -250,7 +250,7 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 
 	if err := exportUserRows(ctx, pool,
 		`SELECT id, account_id, date, description, amount, type, category_id, COALESCE(tags, '{}'), COALESCE(notes, ''), payee_id, billing_cycle_id, created_at, updated_at
-		 FROM transactions WHERE user_id = $1 ORDER BY date, created_at`,
+		 FROM transactions WHERE user_id = $1 ORDER BY date, created_at, id`,
 		[]any{userID}, func(rows pgx.Rows) error {
 			var t models.BackupTransaction
 			var date time.Time

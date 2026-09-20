@@ -10,6 +10,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -1012,7 +1014,6 @@ func TestIntegrationLoanSchedule(t *testing.T) {
 	require.Nil(t, removed.Schedule)
 }
 
-
 // TestIntegrationRuleApplyRunsAgainstPostgres covers R-1: appendRulePredicate
 // double-formatted the pattern clause ("%!(EXTRA int=N)"), so /rules/apply and
 // /rules/preview emitted SQL PostgreSQL rejects. pgxmock could not catch it —
@@ -1157,4 +1158,114 @@ func TestIntegrationRestoreClearsCrossAccountCycle(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, restored, "the transaction should still be restored")
+}
+
+// idAscending returns the ids sorted ascending, which is the tiebreak the
+// transaction list applies after the credit/debit split inside a day.
+func idAscending(ids []uuid.UUID) []uuid.UUID {
+	out := append([]uuid.UUID{}, ids...)
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}
+
+// realTransactionIDs returns the ids the list endpoint returned, in order.
+func realTransactionIDs(t *testing.T, a *apiClient, accountID uuid.UUID) []uuid.UUID {
+	t.Helper()
+	txns := a.transactions(accountID)
+	ids := make([]uuid.UUID, 0, len(txns))
+	for _, tx := range txns {
+		ids = append(ids, tx.ID)
+	}
+	return ids
+}
+
+// TestIntegrationTransactionOrderIsTotal covers the "the list reorders itself
+// between fetches" bug: ORDER BY date alone is not a total order, so same-date
+// rows — and every row of one bulk import, which shares a single created_at —
+// came back in whatever order the planner picked. The tiebreakers make it
+// total (credits before debits inside a day, then the id), which is also what
+// keeps a running balance from dipping below what the day's income funded.
+//
+// The test inserts a day's debits *before* its credits so an
+// insertion-ordered result cannot pass by accident, then walks the list with a
+// two-row page size: an unstable order repeats or skips rows at the page
+// boundaries.
+func TestIntegrationTransactionOrderIsTotal(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("ordering@example.com")
+	acc := a.createAccount("Ordering", "bank", nil)
+
+	const day = "2024-03-15"
+	debits := make([]uuid.UUID, 0, 3)
+	for i := 0; i < 3; i++ {
+		debits = append(debits, a.createTransaction(acc.ID, nil, day, fmt.Sprintf("spend %d", i), float64(100+i), "debit"))
+	}
+	credits := make([]uuid.UUID, 0, 3)
+	for i := 0; i < 3; i++ {
+		credits = append(credits, a.createTransaction(acc.ID, nil, day, fmt.Sprintf("income %d", i), float64(200+i), "credit"))
+	}
+	older := a.createTransaction(acc.ID, nil, "2024-03-14", "older", 42, "debit")
+
+	// Descending date, so the day leads: its credits first, then its debits,
+	// each group in id order, and the previous day last.
+	want := append(idAscending(credits), idAscending(debits)...)
+	want = append(want, older)
+
+	require.Equal(t, want, realTransactionIDs(t, a, acc.ID),
+		"a date-sorted list must return credits before debits inside a day, then id order")
+
+	// Ascending keeps the same inside-day rule: oldest first, credits still
+	// before debits.
+	asc := append([]uuid.UUID{older}, idAscending(credits)...)
+	asc = append(asc, idAscending(debits)...)
+	var ascRes struct {
+		Data []models.Transaction `json:"data"`
+	}
+	a.call(http.MethodGet, "/api/v1/transactions?accountId="+acc.ID.String()+"&sortOrder=ASC", nil, http.StatusOK, &ascRes)
+	ascGot := make([]uuid.UUID, 0, len(ascRes.Data))
+	for _, tx := range ascRes.Data {
+		if !tx.IsSummary {
+			ascGot = append(ascGot, tx.ID)
+		}
+	}
+	require.Equal(t, asc, ascGot, "ascending order keeps credits before debits inside a day")
+
+	// Three walks of the same two-row pages must produce one identical
+	// sequence: no row repeated, none skipped, no page boundary drifting.
+	for walk := 0; walk < 3; walk++ {
+		paged := []uuid.UUID{}
+		for page := 1; ; page++ {
+			path := fmt.Sprintf("/api/v1/transactions?accountId=%s&limit=2&page=%d", acc.ID, page)
+			status, body := a.request(http.MethodGet, path, nil)
+			require.Equal(t, http.StatusOK, status, "page %d: %s", page, body)
+			var res struct {
+				Data  []models.Transaction `json:"data"`
+				Pages int                  `json:"pages"`
+			}
+			require.NoError(t, json.Unmarshal(body, &res), "page %d: %s", page, body)
+			for _, tx := range res.Data {
+				if !tx.IsSummary {
+					paged = append(paged, tx.ID)
+				}
+			}
+			if page >= res.Pages {
+				break
+			}
+		}
+		require.Equal(t, want, paged, "paged walk %d", walk)
+	}
+
+	// The CSV exports share the order, so a report's rows match the list.
+	for _, path := range []string{
+		fmt.Sprintf("/api/v1/accounts/%s/export", acc.ID),
+		"/api/v1/transactions/export?accountId=" + acc.ID.String(),
+	} {
+		status, body := a.request(http.MethodGet, path, nil)
+		require.Equal(t, http.StatusOK, status, "%s: %s", path, body)
+		records, err := csv.NewReader(bytes.NewReader(body)).ReadAll()
+		require.NoError(t, err, path)
+		require.Len(t, records, 8, "%s: header plus seven transactions", path)
+		require.Equal(t, day, records[1][0], "%s must lead with the newest day", path)
+		require.Equal(t, "credit", records[1][3], "%s must lead with a credit", path)
+	}
 }

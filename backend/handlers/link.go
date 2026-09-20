@@ -45,7 +45,9 @@ func (srv *Server) GetLinks(c *gin.Context) {
 		query += fmt.Sprintf(" AND (l.from_txn_id = $%d OR l.to_txn_id = $%d)", paramIdx, paramIdx+1)
 		args = append(args, txnID, txnID)
 	}
-	query += " ORDER BY l.created_at DESC"
+	// created_at ties when links are created in one bulk request (they share a
+	// single now()), so the id breaks the tie and the list stops reshuffling.
+	query += " ORDER BY l.created_at DESC, l.id"
 
 	rows, err := srv.db.Query(c, query, args...)
 	if err != nil {
