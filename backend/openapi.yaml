@@ -390,12 +390,20 @@ paths:
         Return a Loan / EMI account's optional amortization schedule: the terms,
         the generated table (every installment split into principal and
         interest, with its remaining balance), and progress derived from the EMI
-        transactions attached to the loan. Attached payments are matched to
-        installments in date order (the Nth payment pays the Nth installment);
-        a credit (refund) reduces `paidAmount` without covering an installment.
-        The schedule is optional, so an unconfigured loan answers 200 with
-        `schedule: null` and an empty `entries` list rather than 404. 400 when
-        the account is not a Loan / EMI account.
+        transactions attached to the loan. The table amortizes the whole
+        principal — the processing fee is recorded for reference and changes
+        nothing — and a disbursal date that makes the first period a broken
+        month charges that period its actual days over a 30-day month inside a
+        re-solved EMI, so the installments stay level. A balance transfer that settled this loan cancels its unpaid
+        installments; one it absorbed recasts the installments due after it.
+        The transfers it took part in are listed in `transfers`.
+
+        Attached payments are matched to installments in date order (the Nth
+        payment pays the Nth installment); a credit (refund) reduces `paidAmount`
+        without covering an installment. The schedule is optional, so an
+        unconfigured loan answers 200 with `schedule: null` and an empty
+        `entries` list rather than 404. 400 when the account is not a Loan / EMI
+        account.
       operationId: getLoanSchedule
       security:
         - BearerAuth: []
@@ -427,11 +435,15 @@ paths:
         - Accounts
       summary: Create or replace a loan account's amortization schedule
       description: >-
-        Store the terms (principal, annual rate in basis points, tenure in
-        months, first installment date) that the amortization table is generated
-        from, and return the same detail as `GET`. A rate of 0 is valid (an
-        interest-free loan). One schedule per loan account; an existing one is
-        replaced.
+        Store the terms (principal, processing fee, annual rate in basis points,
+        tenure in months, first installment date, optional disbursal date) that
+        the amortization table is generated from, and return the same detail as
+        `GET`. A rate of 0 is valid (an interest-free loan). The fee is recorded
+        for reference only — it must be non-negative and it never changes the EMI
+        or the table, which amortize the principal in full. A disbursal date must
+        be before the first installment date and makes the first period a stub
+        when it is not a whole month; an empty one clears it. One
+        schedule per loan account; an existing one is replaced.
       operationId: upsertLoanSchedule
       security:
         - BearerAuth: []
@@ -498,6 +510,112 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/loan-transfer:
+    post:
+      tags:
+        - Accounts
+      summary: Transfer a loan's remaining principal to another loan
+      description: >-
+        Settle this loan (the source) at its outstanding principal on
+        `transferDate` and move that amount onto `toLoanAccountId`, which
+        absorbs it: the target's installments still due after the transfer date
+        are recast over the larger balance, so its EMI changes from then on and
+        those installments come back marked `recast`. The source's unpaid
+        installments come back marked `cancelled`, with nothing outstanding.
+
+        The amount is not a request field — it is what the source still owes,
+        the figure its own detail reports as `outstandingPrincipal`. A target
+        loan that has no schedule yet has nothing to recast, so the transferred
+        amount starts one from `targetAnnualRateBps`, `targetTenureMonths` and
+        `targetStartDate`, all three of which are then required; when the target
+        already has a schedule they are ignored.
+
+        Every derived figure on both loans comes from the recorded transfer, so
+        `DELETE /accounts/{id}/loan-transfer/{transferId}` reverts both — and
+        removes the target's schedule too when this transfer is what created it.
+      operationId: transferLoanBalance
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Source Loan / EMI account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoanTransferRequest"
+      responses:
+        "200":
+          description: The recorded transfer and both loans' regenerated tables
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanTransferResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A concurrent request already settled this source loan
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/loan-transfer/{transferId}:
+    delete:
+      tags:
+        - Accounts
+      summary: Delete a loan balance transfer
+      description: >-
+        Remove a recorded transfer, which reverts both loans: the target's
+        recast installments and the source's cancelled ones are all derived from
+        the transfer row. When the transfer is what created the target's
+        schedule (the target had no terms of its own), that schedule is removed
+        with it — it holds the moved amount as its principal — while a schedule
+        the target already had is left alone. `id` must be the transfer's source
+        account, so the same transfer cannot be deleted through an unrelated
+        account. Idempotent: reports `deleted: 0` when no such transfer exists.
+      operationId: deleteLoanTransfer
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Source Loan / EMI account ID
+        - in: path
+          name: transferId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Balance transfer ID
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteLoanTransferResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -645,7 +763,9 @@ paths:
         order is total, so identical requests return the same rows in the same
         sequence: ties on the sort column are broken by the transaction id and,
         when sorting by date, by type — credits before debits inside a calendar
-        day.
+        day. The id filters (accountId, categoryId, payeeId) each take a
+        comma-separated list and match a transaction that satisfies ANY entry,
+        so a single value is a one-element list.
       operationId: getTransactions
       security:
         - BearerAuth: []
@@ -654,20 +774,25 @@ paths:
           name: accountId
           schema:
             type: string
-            format: uuid
-          description: Filter by account ID
+          description: >
+            Filter by account ID, comma-separated to match any of several
+            accounts. Loan accounts are passed in loanAccountId instead, which
+            matches their attached EMI payments.
         - in: query
           name: categoryId
           schema:
             type: string
-            format: uuid
-          description: Filter by category ID
+          description: >
+            Filter by category ID (or a group id/slug, which matches every
+            category in that group), comma-separated to match any of several.
+            The "uncategorized" sentinel matches transactions with no category.
         - in: query
           name: payeeId
           schema:
             type: string
-            format: uuid
-          description: Filter by payee ID
+          description: >
+            Filter by payee ID, comma-separated to match any of several. The
+            "none" sentinel matches transactions with no payee.
         - in: query
           name: search
           schema:
@@ -1080,7 +1205,9 @@ paths:
       description: >
         Streams a flat CSV of the user's transactions honoring the same filter
         grammar as GET /transactions (account, category/groupId, payee, tags,
-        search, date range, type, amount, linked, loan, recurring). Unlike the
+        search, date range, type, amount, linked, loan, recurring). Every id
+        filter takes a comma-separated list and matches a transaction that
+        satisfies ANY entry, so a single value is a one-element list. Unlike the
         per-account export it covers whatever the caller has filtered to and
         includes account/category/group/payee names. Rows come in the same
         total order as GET /transactions.
@@ -1091,19 +1218,38 @@ paths:
         - in: query
           name: accountId
           schema: { type: string }
+          description: >
+            Filter by account ID, comma-separated to match any of several.
+            Loan accounts are passed in loanAccountId instead.
         - in: query
           name: categoryId
           schema: { type: string }
+          description: >
+            Filter by category ID, comma-separated to match any of several.
+            The "uncategorized" sentinel matches transactions with no category.
         - in: query
           name: groupId
           schema: { type: string }
+          description: >
+            Filter by category group id/slug, comma-separated to match any of
+            several. Combines with categoryId as one OR-ed category filter.
         - in: query
           name: payeeId
           schema: { type: string }
+          description: >
+            Filter by payee ID, comma-separated to match any of several. The
+            "none" sentinel matches transactions with no payee.
         - in: query
           name: tags
           schema: { type: string }
           description: Comma-separated tag list; matches transactions with any of them.
+        - in: query
+          name: loanAccountId
+          schema: { type: string }
+          description: >
+            Loan account id, comma-separated to match any of several; matches
+            transactions attached to those loan accounts as EMI payments.
+            Combines with accountId as one OR-ed account filter.
         - in: query
           name: search
           schema: { type: string }
@@ -1125,9 +1271,6 @@ paths:
         - in: query
           name: linked
           schema: { type: string, enum: ["true", "false"] }
-        - in: query
-          name: loanAccountId
-          schema: { type: string }
         - in: query
           name: recurringId
           schema: { type: string }
@@ -3802,6 +3945,14 @@ components:
           format: uuid
         principal:
           type: number
+          description: The sanctioned principal.
+        processingFee:
+          type: number
+          description: >-
+            What the lender charged, recorded for reference: it is never
+            amortized, so the table repays the whole principal whatever the fee
+            was. A lender that finances its charges has them entered in the
+            principal instead.
         annualRateBps:
           type: integer
           description: Annual interest rate in basis points (950 = 9.50% p.a.).
@@ -3810,6 +3961,16 @@ components:
         startDate:
           type: string
           format: date
+          description: Due date of the first installment.
+        disbursalDate:
+          type: string
+          format: date
+          nullable: true
+          description: >-
+            When the loan was disbursed. When the period from it to startDate is
+            not a whole month, that period is charged its actual days over a
+            30-day month and the EMI is solved so the loan still clears in the
+            full tenure, so every installment stays level.
         createdAt:
           type: string
           format: date-time
@@ -3827,6 +3988,12 @@ components:
         principal:
           type: number
           description: Loan principal; must be positive.
+        processingFee:
+          type: number
+          default: 0
+          description: >-
+            Lender fee recorded for reference; must not be negative. It does not
+            affect the EMI or the table, which always amortize the principal.
         annualRateBps:
           type: integer
           default: 0
@@ -3838,12 +4005,20 @@ components:
           type: string
           format: date
           description: Due date of the first installment (YYYY-MM-DD).
+        disbursalDate:
+          type: string
+          format: date
+          description: >-
+            Optional disbursal date (YYYY-MM-DD); must be before startDate.
+            Empty clears it.
 
     LoanScheduleEntry:
       type: object
       description: >-
         One installment: the EMI split into principal and interest, and the
-        principal still outstanding after it.
+        principal still outstanding after it. The split is not uniform: the
+        first installment differs when the first period is a broken month, and
+        every installment a balance transfer recast carries its own amount.
       properties:
         number:
           type: integer
@@ -3864,6 +4039,16 @@ components:
           type: string
           format: uuid
           description: The attached EMI payment covering this installment.
+        recast:
+          type: boolean
+          description: >-
+            Regenerated by a balance transfer, so its amount differs from the
+            installments before it.
+        cancelled:
+          type: boolean
+          description: >-
+            Voided because a balance transfer settled the loan. A cancelled
+            installment is never paid and is excluded from the totals.
 
     LoanScheduleDetail:
       type: object
@@ -3877,15 +4062,34 @@ components:
           type: string
         emi:
           type: number
-          description: The scheduled equated monthly installment.
+          description: >-
+            The installment in force — after a balance transfer, the recast one.
+            It is rounded up to the whole rupee, the way a lender quotes it, and
+            the final installment clears what that rounding leaves. Individual
+            entries still carry their own amount.
         totalInterest:
           type: number
+          description: Interest over the installments that were not cancelled.
         totalPayable:
           type: number
         entries:
           type: array
           items:
             $ref: "#/components/schemas/LoanScheduleEntry"
+        transfers:
+          type: array
+          description: >-
+            Balance transfers this loan took part in, in date order — the ones
+            it gave its balance away in and the ones it absorbed.
+          items:
+            $ref: "#/components/schemas/LoanPrincipalTransfer"
+        settledOn:
+          type: string
+          format: date
+          nullable: true
+          description: >-
+            Set when a balance transfer settled this loan: its unpaid
+            installments are cancelled and nothing is outstanding.
         paidInstallments:
           type: integer
         paidAmount:
@@ -3899,12 +4103,98 @@ components:
           type: number
         outstandingPrincipal:
           type: number
+          description: >-
+            What the borrower still owes, counting transferred-in principal and
+            excluding what a settlement cleared.
         nextDueDate:
           type: string
           format: date
           nullable: true
         completed:
           type: boolean
+
+    LoanPrincipalTransfer:
+      type: object
+      description: >-
+        A balance transfer between two loan accounts: the amount the source
+        still owed on transferDate moved to the target, which recast its
+        remaining installments over it. Deleting the transfer reverts both.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromLoanAccountId:
+          type: string
+          format: uuid
+        fromLoanAccountName:
+          type: string
+        toLoanAccountId:
+          type: string
+          format: uuid
+        toLoanAccountName:
+          type: string
+        amount:
+          type: number
+        transferDate:
+          type: string
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+
+    LoanTransferRequest:
+      type: object
+      required:
+        - toLoanAccountId
+        - transferDate
+      properties:
+        toLoanAccountId:
+          type: string
+          format: uuid
+          description: The loan account that takes over the balance.
+        transferDate:
+          type: string
+          format: date
+          description: Effective date (YYYY-MM-DD).
+        targetAnnualRateBps:
+          type: integer
+          nullable: true
+          description: >-
+            Required only when the target loan has no schedule yet, and ignored
+            when it has one.
+        targetTenureMonths:
+          type: integer
+          nullable: true
+          description: >-
+            Required only when the target loan has no schedule yet, and ignored
+            when it has one.
+        targetStartDate:
+          type: string
+          format: date
+          description: >-
+            First installment date for a target loan that has no schedule yet,
+            and ignored when it has one.
+
+    LoanTransferResult:
+      type: object
+      properties:
+        transfer:
+          $ref: "#/components/schemas/LoanPrincipalTransfer"
+        source:
+          allOf:
+            - $ref: "#/components/schemas/LoanScheduleDetail"
+          description: The settled source loan after the transfer.
+        target:
+          allOf:
+            - $ref: "#/components/schemas/LoanScheduleDetail"
+          description: The recast target loan after the transfer.
+
+    DeleteLoanTransferResult:
+      type: object
+      properties:
+        deleted:
+          type: integer
+          description: 1 when a transfer was removed, 0 when none matched.
 
     BulkDeleteTransactionsRequest:
       type: object
@@ -5339,6 +5629,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BackupLoanSchedule"
+        loanTransfers:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupLoanTransfer"
         recurringSeries:
           type: array
           items:
@@ -5572,6 +5866,11 @@ components:
         principal:
           type: integer
           description: Minor units (cents).
+        processingFee:
+          type: integer
+          description: >-
+            Minor units (cents); what the lender charged, recorded for reference
+            — it is never amortized.
         annualRateBps:
           type: integer
         tenureMonths:
@@ -5579,10 +5878,46 @@ components:
         startDate:
           type: string
           format: date
+        disbursalDate:
+          type: string
+          format: date
+          description: Optional; empty when the first period is a whole month.
         createdAt:
           type: string
           format: date-time
         updatedAt:
+          type: string
+          format: date-time
+
+    BackupLoanTransfer:
+      type: object
+      required: [id, fromLoanAccountId, toLoanAccountId, amount, transferDate]
+      description: >-
+        A balance transfer between two loan accounts. It is exported because
+        both loans' amortization tables are derived from it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromLoanAccountId:
+          type: string
+          format: uuid
+        toLoanAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          description: Minor units (cents).
+        transferDate:
+          type: string
+          format: date
+        recastsTarget:
+          type: boolean
+          description: >-
+            False when the transfer created the target loan's schedule, so the
+            amount is that schedule's principal rather than a balance added to
+            an existing one.
+        createdAt:
           type: string
           format: date-time
 
@@ -5712,6 +6047,8 @@ components:
         loanAttachments:
           type: integer
         loanSchedules:
+          type: integer
+        loanTransfers:
           type: integer
         recurringSeries:
           type: integer

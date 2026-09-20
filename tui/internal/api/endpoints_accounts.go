@@ -86,3 +86,21 @@ func (c *Client) SetLoanSchedule(ctx context.Context, accountID string, req Loan
 func (c *Client) DeleteLoanSchedule(ctx context.Context, accountID string) (DeleteLoanScheduleResult, error) {
 	return do[DeleteLoanScheduleResult](ctx, c, del("/accounts/"+pathEscape(accountID)+"/loan-schedule"))
 }
+
+// TransferLoanBalance moves a loan's remaining principal to another loan: the
+// source is settled at its outstanding principal on the transfer date and the
+// target's remaining installments are recast over the larger amount. A target
+// with no schedule of its own is started from the request's target terms, which
+// the API requires in that case and ignores otherwise.
+func (c *Client) TransferLoanBalance(ctx context.Context, sourceAccountID string, req LoanTransferRequest) (LoanTransferResult, error) {
+	return do[LoanTransferResult](ctx, c, post("/accounts/"+pathEscape(sourceAccountID)+"/loan-transfer").withJSON(req))
+}
+
+// DeleteLoanTransfer removes a recorded balance transfer, which reverts both
+// loans: every recast and cancelled installment is derived from the row.
+// sourceAccountID must be the transfer's source (from) account, so the delete
+// cannot be aimed at the same transfer through the other side; it is idempotent
+// and reports 0 when nothing matched.
+func (c *Client) DeleteLoanTransfer(ctx context.Context, sourceAccountID, transferID string) (DeleteLoanTransferResult, error) {
+	return do[DeleteLoanTransferResult](ctx, c, del("/accounts/"+pathEscape(sourceAccountID)+"/loan-transfer/"+pathEscape(transferID)))
+}

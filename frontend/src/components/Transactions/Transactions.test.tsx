@@ -70,6 +70,18 @@ const accounts: Account[] = [
     balance: 0,
     billingDay: null,
   },
+  {
+    id: "loan1",
+    name: "Car Loan",
+    accountTypeId: "loan",
+    bank: "",
+    currency: "INR",
+    color: "#000000",
+    isDefault: false,
+    closed: false,
+    balance: 0,
+    billingDay: null,
+  },
 ];
 
 const groups = [
@@ -127,9 +139,9 @@ function defaultDomain(settings: Record<string, unknown> = {}) {
   };
 }
 
-function renderPage() {
+function renderPage(entry = "/transactions") {
   return render(
-    <MemoryRouter initialEntries={["/transactions"]}>
+    <MemoryRouter initialEntries={[entry]}>
       <Transactions />
     </MemoryRouter>,
   );
@@ -166,6 +178,25 @@ describe("Transactions", () => {
 
     expect(lastTransactionParams()).toMatchObject({ accountId: "a1" });
     expect(screen.getByText(/2 transactions across all accounts|2 transactions matching your filters/)).toBeInTheDocument();
+  });
+
+  it("sends a lone loan account as loanAccountId", async () => {
+    renderPage("/transactions?accountId=loan1");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+
+    const params = lastTransactionParams();
+    expect(params.loanAccountId).toBe("loan1");
+    expect(params.accountId).toBeUndefined();
+  });
+
+  it("splits a mixed account selection across accountId and loanAccountId", async () => {
+    renderPage("/transactions?accountId=a1,loan1");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+
+    expect(lastTransactionParams()).toMatchObject({
+      accountId: "a1",
+      loanAccountId: "loan1",
+    });
   });
 
   it("uses 50 rows per page by default", async () => {

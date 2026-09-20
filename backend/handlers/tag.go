@@ -154,23 +154,26 @@ func (srv *Server) RenameTag(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"updated": result.RowsAffected()})
 }
 
-// splitTagFilter parses the comma-separated `tags` query parameter into a
-// de-duplicated, trimmed list. Tags are free text, but the filter uses a simple
-// comma-separated grammar, so a tag containing a comma cannot be filtered on.
-func splitTagFilter(raw string) []string {
+// splitCSVFilter parses a comma-separated list query parameter into a
+// de-duplicated, trimmed list. Every list-valued filter parameter of the
+// transaction list uses it (tags, accountId, categoryId, groupId, payeeId,
+// loanAccountId), so a single value and a one-element list are the same
+// grammar. Tags are free text, but the filter uses a simple comma-separated
+// grammar, so a tag containing a comma cannot be filtered on.
+func splitCSVFilter(raw string) []string {
 	parts := strings.Split(raw, ",")
 	seen := make(map[string]struct{}, len(parts))
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		tag := strings.TrimSpace(p)
-		if tag == "" {
+		item := strings.TrimSpace(p)
+		if item == "" {
 			continue
 		}
-		if _, dup := seen[tag]; dup {
+		if _, dup := seen[item]; dup {
 			continue
 		}
-		seen[tag] = struct{}{}
-		out = append(out, tag)
+		seen[item] = struct{}{}
+		out = append(out, item)
 	}
 	return out
 }

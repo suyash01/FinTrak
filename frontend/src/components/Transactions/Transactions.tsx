@@ -39,6 +39,7 @@ import {
   PAGE_SIZE_OPTIONS,
   MAX_PAGE_SIZE,
   PAGE_SIZE_LS_KEY,
+  parseFilterList,
 } from "./transactionConstants";
 
 export default function Transactions() {
@@ -254,6 +255,25 @@ export default function Transactions() {
     applyPageSize(n);
   };
 
+  // The account filter is one multi-select but two API parameters: a loan
+  // account owns no transactions, so it is filtered through loanAccountId,
+  // which lists its attached EMI payments. A mixed selection sets both, and the
+  // API matches either.
+  const splitAccountFilter = useCallback(
+    (params: QueryParams) => {
+      const ids = parseFilterList(params.accountId);
+      if (ids.length === 0) return;
+      const isLoan = (id: string) =>
+        accounts.find((a) => a.id === id)?.accountTypeId === "loan";
+      const loanIds = ids.filter(isLoan);
+      const accountIds = ids.filter((id) => !isLoan(id));
+      if (loanIds.length > 0) params.loanAccountId = loanIds.join(",");
+      if (accountIds.length > 0) params.accountId = accountIds.join(",");
+      else delete params.accountId;
+    },
+    [accounts],
+  );
+
   const loadTransactions = useCallback(async () => {
     const controller = new AbortController();
     abortRef.current?.abort();
@@ -265,15 +285,7 @@ export default function Transactions() {
       Object.entries(filters).forEach(([k, v]) => {
         if (v !== "" && v !== null && v !== undefined) params[k] = v;
       });
-      // A loan account owns no transactions: selecting one in the account
-      // filter lists its attached EMI payments instead (loanAccountId).
-      if (params.accountId) {
-        const loanAcc = accounts.find((a) => a.id === params.accountId);
-        if (loanAcc?.accountTypeId === "loan") {
-          params.loanAccountId = params.accountId;
-          delete params.accountId;
-        }
-      }
+      splitAccountFilter(params);
       const res = await api.getTransactions(params, {
         signal: controller.signal,
       });
@@ -283,7 +295,7 @@ export default function Transactions() {
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
-  }, [filters, accounts]);
+  }, [filters, splitAccountFilter]);
 
   useEffect(() => {
     const timer = setTimeout(loadTransactions, 300);
@@ -305,7 +317,11 @@ export default function Transactions() {
   // Bulk billing-cycle assignment is only offered when the account filter is a
   // single account with a billing day (cycles are per-account, so this
   // guarantees all selected transactions belong to the same account).
-  const selectedAccount = accounts.find((a) => a.id === filters.accountId);
+  const filteredAccountIds = parseFilterList(filters.accountId);
+  const selectedAccount =
+    filteredAccountIds.length === 1
+      ? accounts.find((a) => a.id === filteredAccountIds[0])
+      : undefined;
   const hasBillingDayFilter = Boolean(selectedAccount?.billingDay);
 
   // Loan/EMI targets for the bulk "Link to Loan" action.
@@ -381,7 +397,7 @@ export default function Transactions() {
     let cancelled = false;
     setLoadingCycles(true);
     api
-      .getBillingCycles(String(filters.accountId))
+      .getBillingCycles(filteredAccountIds[0])
       .then((res) => {
         if (!cancelled) setBillingCycles(res.data || []);
       })
@@ -673,13 +689,7 @@ export default function Transactions() {
       delete params.limit;
       delete params.sortBy;
       delete params.sortOrder;
-      if (params.accountId) {
-        const loanAcc = accounts.find((a) => a.id === params.accountId);
-        if (loanAcc?.accountTypeId === "loan") {
-          params.loanAccountId = params.accountId;
-          delete params.accountId;
-        }
-      }
+      splitAccountFilter(params);
       await api.exportTransactions(params);
     } catch (err) {
       toastApiError(err);

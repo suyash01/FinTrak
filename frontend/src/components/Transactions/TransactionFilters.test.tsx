@@ -27,10 +27,28 @@ const accounts: Account[] = [
     closed: false,
     balance: 0,
   },
+  {
+    id: "a2",
+    name: "Savings",
+    accountTypeId: "bank",
+    accountTypeName: "Bank",
+    bank: "",
+    currency: "INR",
+    color: "#000000",
+    isDefault: false,
+    closed: false,
+    balance: 0,
+  },
 ];
 
-const payees = [{ id: "p1", name: "Swiggy" }] as unknown as Payee[];
-const tags = [{ name: "trip", count: 2 }] as unknown as TagCount[];
+const payees = [
+  { id: "p1", name: "Swiggy" },
+  { id: "p2", name: "Uber" },
+] as unknown as Payee[];
+const tags = [
+  { name: "trip", count: 2 },
+  { name: "work", count: 1 },
+] as unknown as TagCount[];
 
 const categorySections = [
   {
@@ -49,6 +67,7 @@ const baseFilters: Record<string, string | number> = {
   linked: "",
   dateFrom: "",
   dateTo: "",
+  tags: "",
 };
 
 function renderFilters(
@@ -91,32 +110,59 @@ describe("TransactionFilters", () => {
     expect(props.onFilterChange).toHaveBeenCalledWith("search", "coffee");
   });
 
-  it("maps account selections and the all sentinel", async () => {
+  it("emits an account selection as a one-element list", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters();
 
-    await user.click(comboBoxWithText("All Accounts"));
-    await user.click(await screen.findByRole("option", { name: "Checking" }));
+    await user.click(screen.getByRole("button", { name: "Filter by account" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Checking" }));
+
     expect(props.onFilterChange).toHaveBeenCalledWith("accountId", "a1");
   });
 
-  it("maps the all-accounts sentinel back to an empty string", async () => {
+  it("appends to the account selection instead of replacing it", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters({
       filters: { ...baseFilters, accountId: "a1" },
     });
 
-    await user.click(comboBoxWithText("Checking"));
-    await user.click(await screen.findByRole("option", { name: "All Accounts" }));
+    // A single selection is summarised by name on the trigger.
+    expect(screen.getByRole("button", { name: "Filter by account" })).toHaveTextContent(
+      "Checking",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Filter by account" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Savings" }));
+
+    expect(props.onFilterChange).toHaveBeenCalledWith("accountId", "a1,a2");
+  });
+
+  it("clears the account filter when its last account is unchecked", async () => {
+    const user = userEvent.setup();
+    const { props } = renderFilters({
+      filters: { ...baseFilters, accountId: "a1" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Filter by account" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Checking" }));
+
     expect(props.onFilterChange).toHaveBeenCalledWith("accountId", "");
+  });
+
+  it("summarises a multi selection on the trigger", () => {
+    renderFilters({ filters: { ...baseFilters, accountId: "a1,a2" } });
+
+    expect(screen.getByRole("button", { name: "Filter by account" })).toHaveTextContent(
+      "2 selected",
+    );
   });
 
   it("routes a group selection to groupId", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters();
 
-    await user.click(comboBoxWithText("All Categories"));
-    await user.click(await screen.findByRole("option", { name: /Food/ }));
+    await user.click(screen.getByRole("button", { name: "Filter by category" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: /Food/ }));
 
     expect(props.onFilterChange).toHaveBeenCalledWith("categoryId", "");
     expect(props.onFilterChange).toHaveBeenCalledWith("groupId", "g1");
@@ -126,33 +172,53 @@ describe("TransactionFilters", () => {
     const user = userEvent.setup();
     const { props } = renderFilters();
 
-    await user.click(comboBoxWithText("All Categories"));
-    await user.click(await screen.findByRole("option", { name: "Groceries" }));
+    await user.click(screen.getByRole("button", { name: "Filter by category" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Groceries" }));
 
     expect(props.onFilterChange).toHaveBeenCalledWith("groupId", "");
     expect(props.onFilterChange).toHaveBeenCalledWith("categoryId", "c1");
   });
 
-  it("clears both category and group on the all sentinel", async () => {
+  it("keeps a group and a category selection in their own parameters", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters({
       filters: { ...baseFilters, categoryId: "c1" },
     });
 
-    await user.click(comboBoxWithText("Groceries"));
-    await user.click(await screen.findByRole("option", { name: "All Categories" }));
+    await user.click(screen.getByRole("button", { name: "Filter by category" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: /Food/ }));
 
-    expect(props.onFilterChange).toHaveBeenCalledWith("categoryId", "");
-    expect(props.onFilterChange).toHaveBeenCalledWith("groupId", "");
+    expect(props.onFilterChange).toHaveBeenCalledWith("categoryId", "c1");
+    expect(props.onFilterChange).toHaveBeenCalledWith("groupId", "g1");
   });
 
-  it("emits payee, type and link-status changes", async () => {
+  it("emits payee selections as a list", async () => {
+    const user = userEvent.setup();
+    const { props } = renderFilters({
+      filters: { ...baseFilters, payeeId: "p1" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Filter by payee" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Uber" }));
+
+    expect(props.onFilterChange).toHaveBeenCalledWith("payeeId", "p1,p2");
+  });
+
+  it("emits tag selections as a list", async () => {
+    const user = userEvent.setup();
+    const { props } = renderFilters({
+      filters: { ...baseFilters, tags: "trip" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Filter by tag" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: /work/ }));
+
+    expect(props.onFilterChange).toHaveBeenCalledWith("tags", "trip,work");
+  });
+
+  it("emits type and link-status changes", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters();
-
-    await user.click(comboBoxWithText("All Payees"));
-    await user.click(await screen.findByRole("option", { name: "Swiggy" }));
-    expect(props.onFilterChange).toHaveBeenCalledWith("payeeId", "p1");
 
     await user.click(comboBoxWithText("All Types"));
     await user.click(await screen.findByRole("option", { name: "Debit" }));

@@ -584,29 +584,42 @@ type BulkLoanRequest struct {
 }
 
 // LoanSchedule is the optional amortization schedule of a Loan / EMI account:
-// the terms the amortization table is generated from. Principal and the derived
-// EMI are integer minor units; AnnualRateBps is integer basis points (950 =
-// 9.50% p.a.), so no money arithmetic runs in float64. At most one schedule per
-// loan account.
+// the terms the amortization table is generated from. Principal, ProcessingFee
+// and the derived EMI are integer minor units; AnnualRateBps is integer basis
+// points (950 = 9.50% p.a.), so no money arithmetic runs in float64. At most one
+// schedule per loan account.
+//
+// ProcessingFee is what the lender charged, recorded for reference: it is never
+// amortized, so the table repays the whole principal whatever the fee was (a
+// lender that finances its charges instead has them entered in the principal).
+// DisbursalDate is when the money was released; when it is set and the period
+// from it to StartDate (the first installment date) is not a whole anchored
+// month, the first installment carries day-count interest for the broken period
+// and so splits differently from every later one.
 type LoanSchedule struct {
 	ID            uuid.UUID    `json:"id"`
 	LoanAccountID uuid.UUID    `json:"loanAccountId"`
 	Principal     money.Amount `json:"principal"`
+	ProcessingFee money.Amount `json:"processingFee"`
 	AnnualRateBps int          `json:"annualRateBps"`
 	TenureMonths  int          `json:"tenureMonths"`
 	StartDate     time.Time    `json:"startDate"`
+	DisbursalDate *time.Time   `json:"disbursalDate,omitempty"`
 	CreatedAt     time.Time    `json:"createdAt"`
 	UpdatedAt     time.Time    `json:"updatedAt"`
 }
 
 // LoanScheduleRequest is the body for PUT /accounts/:id/loan-schedule. A zero
 // rate is valid (an interest-free loan), so the rate is validated in the
-// handler rather than by a binding rule.
+// handler rather than by a binding rule. An absent ProcessingFee is a loan
+// without a fee, and an empty DisbursalDate clears one.
 type LoanScheduleRequest struct {
 	Principal     money.Amount `json:"principal" binding:"required"`
+	ProcessingFee money.Amount `json:"processingFee"`
 	AnnualRateBps int          `json:"annualRateBps"`
 	TenureMonths  int          `json:"tenureMonths" binding:"required"`
 	StartDate     string       `json:"startDate" binding:"required"`
+	DisbursalDate string       `json:"disbursalDate"`
 }
 
 // LoanScheduleEntry is one installment of the amortization table: the EMI split
@@ -614,6 +627,13 @@ type LoanScheduleRequest struct {
 // after it. An entry is Paid when an EMI payment attached to the loan covers it
 // — payments are matched in date order, the way a lender numbers installments —
 // and then carries that transaction's id.
+//
+// The split is not uniform across a loan: the first entry differs when the
+// disbursal-to-first-due period is a broken month (day-count interest), and
+// every entry after a balance transfer is Recast (regenerated over the
+// remaining tenure at the new balance, so its amount differs from the EMI of
+// the entries before it). Cancelled marks an installment voided because a
+// transfer settled the loan, which also makes it ineligible to be paid.
 type LoanScheduleEntry struct {
 	Number        int          `json:"number"`
 	DueDate       time.Time    `json:"dueDate"`
@@ -623,6 +643,59 @@ type LoanScheduleEntry struct {
 	Balance       money.Amount `json:"balance"`
 	Paid          bool         `json:"paid"`
 	TransactionID *uuid.UUID   `json:"transactionId,omitempty"`
+	Recast        bool         `json:"recast"`
+	Cancelled     bool         `json:"cancelled"`
+}
+
+// LoanPrincipalTransfer is one balance transfer between two loan accounts: the
+// source loan's outstanding principal (Amount) on TransferDate moves to the
+// target loan, which recasts its remaining installments over that amount. Both
+// sides are derived from this row, so deleting it reverts both.
+//
+// RecastsTarget is FALSE when the transfer created the target loan's schedule
+// (the target had no terms of its own): the amount is then that schedule's
+// principal rather than a balance added to an existing one, so it must not be
+// counted twice. It stays out of the API payload — the generated tables already
+// show the result.
+type LoanPrincipalTransfer struct {
+	ID                  uuid.UUID    `json:"id"`
+	FromLoanAccountID   uuid.UUID    `json:"fromLoanAccountId"`
+	FromLoanAccountName string       `json:"fromLoanAccountName,omitempty"`
+	ToLoanAccountID     uuid.UUID    `json:"toLoanAccountId"`
+	ToLoanAccountName   string       `json:"toLoanAccountName,omitempty"`
+	Amount              money.Amount `json:"amount"`
+	TransferDate        time.Time    `json:"transferDate"`
+	RecastsTarget       bool         `json:"-"`
+	CreatedAt           time.Time    `json:"createdAt"`
+}
+
+// LoanTransferRequest is the body for POST /accounts/:id/loan-transfer, where
+// :id is the source loan. The amount is never supplied by the caller: it is the
+// source loan's outstanding principal on TransferDate, which is what a balance
+// transfer moves.
+//
+// The target terms are required only when the target loan has no schedule yet
+// (nothing to recast), and are ignored when it has one.
+type LoanTransferRequest struct {
+	ToLoanAccountID     uuid.UUID `json:"toLoanAccountId" binding:"required"`
+	TransferDate        string    `json:"transferDate" binding:"required"`
+	TargetAnnualRateBps *int      `json:"targetAnnualRateBps"`
+	TargetTenureMonths  *int      `json:"targetTenureMonths"`
+	TargetStartDate     string    `json:"targetStartDate"`
+}
+
+// LoanTransferResult is the response of POST /accounts/:id/loan-transfer: the
+// recorded transfer plus both loans' regenerated details, so the caller can
+// render both sides without a second request.
+type LoanTransferResult struct {
+	Transfer LoanPrincipalTransfer `json:"transfer"`
+	Source   LoanScheduleDetail    `json:"source"`
+	Target   LoanScheduleDetail    `json:"target"`
+}
+
+// DeleteLoanTransferResult reports how many transfers a delete removed (0 or 1).
+type DeleteLoanTransferResult struct {
+	Deleted int64 `json:"deleted"`
 }
 
 // LoanScheduleDetail is the response of GET /accounts/:id/loan-schedule. The
@@ -630,12 +703,22 @@ type LoanScheduleEntry struct {
 // empty table and zeroed totals instead of a 404; the account itself missing or
 // not being a loan account is still an error.
 type LoanScheduleDetail struct {
-	Schedule        *LoanSchedule        `json:"schedule"`
-	LoanAccountName string               `json:"loanAccountName,omitempty"`
-	EMI             money.Amount         `json:"emi"`
-	TotalInterest   money.Amount         `json:"totalInterest"`
-	TotalPayable    money.Amount         `json:"totalPayable"`
-	Entries         []LoanScheduleEntry  `json:"entries"`
+	Schedule        *LoanSchedule `json:"schedule"`
+	LoanAccountName string        `json:"loanAccountName,omitempty"`
+	// EMI is the installment in force: the amount of the current table
+	// segment, which after a balance transfer is the recast one. Individual
+	// entries still carry their own Amount, since a stub first period and every
+	// recast segment differ from it.
+	EMI           money.Amount        `json:"emi"`
+	TotalInterest money.Amount        `json:"totalInterest"`
+	TotalPayable  money.Amount        `json:"totalPayable"`
+	Entries       []LoanScheduleEntry `json:"entries"`
+	// Transfers touching this loan, in date order, whether it gave or received
+	// the balance. SettledOn is set when one of them settled this loan (it gave
+	// the balance away), which cancels every later installment and zeroes the
+	// outstanding principal.
+	Transfers []LoanPrincipalTransfer `json:"transfers"`
+	SettledOn *time.Time              `json:"settledOn,omitempty"`
 	// Progress derived from the EMI transactions attached to the loan. Paid
 	// installments are counted in date order; Credits reduces PaidAmount.
 	PaidInstallments     int          `json:"paidInstallments"`
@@ -1229,6 +1312,7 @@ type BackupBundle struct {
 	Links                []BackupLink                `json:"links"`
 	LoanAttachments      []BackupLoanAttachment      `json:"loanAttachments"`
 	LoanSchedules        []BackupLoanSchedule        `json:"loanSchedules"`
+	LoanTransfers        []BackupLoanTransfer        `json:"loanTransfers"`
 	RecurringSeries      []BackupRecurringSeries     `json:"recurringSeries"`
 	RecurringTerms       []BackupRecurringTerm       `json:"recurringTerms"`
 	RecurringAttachments []BackupRecurringAttachment `json:"recurringAttachments"`
@@ -1339,11 +1423,27 @@ type BackupLoanSchedule struct {
 	ID            uuid.UUID    `json:"id"`
 	LoanAccountID uuid.UUID    `json:"loanAccountId"`
 	Principal     money.Amount `json:"principal"`
+	ProcessingFee money.Amount `json:"processingFee"`
 	AnnualRateBps int          `json:"annualRateBps"`
 	TenureMonths  int          `json:"tenureMonths"`
 	StartDate     string       `json:"startDate"`
+	DisbursalDate string       `json:"disbursalDate,omitempty"`
 	CreatedAt     time.Time    `json:"createdAt"`
 	UpdatedAt     time.Time    `json:"updatedAt"`
+}
+
+// BackupLoanTransfer is a balance transfer between two loan accounts. It is
+// exported because both loans' amortization tables are derived from it: without
+// it a restored target loan would still carry the pre-transfer balance and a
+// restored source loan would still owe its cancelled installments.
+type BackupLoanTransfer struct {
+	ID                uuid.UUID    `json:"id"`
+	FromLoanAccountID uuid.UUID    `json:"fromLoanAccountId"`
+	ToLoanAccountID   uuid.UUID    `json:"toLoanAccountId"`
+	Amount            money.Amount `json:"amount"`
+	TransferDate      string       `json:"transferDate"`
+	RecastsTarget     bool         `json:"recastsTarget"`
+	CreatedAt         time.Time    `json:"createdAt"`
 }
 
 // BackupRecurringSeries is one recurring series/subscription template. Its
@@ -1418,6 +1518,7 @@ type BackupImportResult struct {
 	Links                int      `json:"links"`
 	LoanAttachments      int      `json:"loanAttachments"`
 	LoanSchedules        int      `json:"loanSchedules"`
+	LoanTransfers        int      `json:"loanTransfers"`
 	RecurringSeries      int      `json:"recurringSeries"`
 	RecurringTerms       int      `json:"recurringTerms"`
 	RecurringAttachments int      `json:"recurringAttachments"`

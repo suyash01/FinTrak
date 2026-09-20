@@ -139,6 +139,7 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 		Links:                []models.BackupLink{},
 		LoanAttachments:      []models.BackupLoanAttachment{},
 		LoanSchedules:        []models.BackupLoanSchedule{},
+		LoanTransfers:        []models.BackupLoanTransfer{},
 		RecurringSeries:      []models.BackupRecurringSeries{},
 		RecurringTerms:       []models.BackupRecurringTerm{},
 		RecurringAttachments: []models.BackupRecurringAttachment{},
@@ -295,19 +296,43 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 	}
 
 	if err := exportUserRows(ctx, pool,
-		`SELECT id, loan_account_id, principal, annual_rate_bps, tenure_months, start_date, created_at, updated_at
+		`SELECT id, loan_account_id, principal, processing_fee, annual_rate_bps, tenure_months, start_date, disbursal_date, created_at, updated_at
 		 FROM loan_schedules WHERE user_id = $1 ORDER BY created_at`,
 		[]any{userID}, func(rows pgx.Rows) error {
 			var ls models.BackupLoanSchedule
 			var start time.Time
-			if err := rows.Scan(&ls.ID, &ls.LoanAccountID, &ls.Principal, &ls.AnnualRateBps, &ls.TenureMonths, &start, &ls.CreatedAt, &ls.UpdatedAt); err != nil {
+			var disbursal *time.Time
+			if err := rows.Scan(&ls.ID, &ls.LoanAccountID, &ls.Principal, &ls.ProcessingFee, &ls.AnnualRateBps,
+				&ls.TenureMonths, &start, &disbursal, &ls.CreatedAt, &ls.UpdatedAt); err != nil {
 				return err
 			}
 			ls.StartDate = start.Format("2006-01-02")
+			if disbursal != nil {
+				ls.DisbursalDate = disbursal.Format("2006-01-02")
+			}
 			b.LoanSchedules = append(b.LoanSchedules, ls)
 			return nil
 		}); err != nil {
 		return nil, fmt.Errorf("export loan schedules: %w", err)
+	}
+
+	// Balance transfers. Both loans' amortization tables are derived from these
+	// rows, so a bundle without them would restore the pre-transfer balances.
+	if err := exportUserRows(ctx, pool,
+		`SELECT id, from_loan_account_id, to_loan_account_id, amount, transfer_date, recasts_target, created_at
+		 FROM loan_transfers WHERE user_id = $1 ORDER BY created_at`,
+		[]any{userID}, func(rows pgx.Rows) error {
+			var t models.BackupLoanTransfer
+			var date time.Time
+			if err := rows.Scan(&t.ID, &t.FromLoanAccountID, &t.ToLoanAccountID, &t.Amount,
+				&date, &t.RecastsTarget, &t.CreatedAt); err != nil {
+				return err
+			}
+			t.TransferDate = date.Format("2006-01-02")
+			b.LoanTransfers = append(b.LoanTransfers, t)
+			return nil
+		}); err != nil {
+		return nil, fmt.Errorf("export loan transfers: %w", err)
 	}
 
 	if err := exportUserRows(ctx, pool,
@@ -569,9 +594,38 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		if err != nil {
 			return err
 		}
+		var disbursal *time.Time
+		if ls.DisbursalDate != "" {
+			d, err := parseBackupDate(ls.DisbursalDate)
+			if err != nil {
+				return err
+			}
+			disbursal = &d
+		}
 		loanScheduleRows = append(loanScheduleRows, []any{
-			uuid.New(), userID, accountID, ls.Principal, ls.AnnualRateBps,
-			ls.TenureMonths, start, nonZeroTime(ls.CreatedAt), nonZeroTime(ls.UpdatedAt),
+			uuid.New(), userID, accountID, ls.Principal, ls.ProcessingFee, ls.AnnualRateBps,
+			ls.TenureMonths, start, disbursal, nonZeroTime(ls.CreatedAt), nonZeroTime(ls.UpdatedAt),
+		})
+	}
+
+	// Balance transfers. Both accounts must be in the bundle or the transfer
+	// cannot be replayed: a half-restored transfer would settle one loan and
+	// leave the other's balance untouched.
+	loanTransferRows := make([][]any, 0, len(b.LoanTransfers))
+	for _, t := range b.LoanTransfers {
+		fromID, okFrom := accountMap[t.FromLoanAccountID]
+		toID, okTo := accountMap[t.ToLoanAccountID]
+		if !okFrom || !okTo {
+			addBackupWarning(res, "skipped loan transfer: one of its accounts is not in the backup")
+			continue
+		}
+		date, err := parseBackupDate(t.TransferDate)
+		if err != nil {
+			return err
+		}
+		loanTransferRows = append(loanTransferRows, []any{
+			uuid.New(), userID, fromID, toID, t.Amount, date, t.RecastsTarget,
+			nonZeroTime(t.CreatedAt),
 		})
 	}
 
@@ -665,7 +719,8 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		{"transactions", []string{"id", "account_id", "user_id", "date", "description", "amount", "type", "category_id", "tags", "notes", "payee_id", "billing_cycle_id", "created_at", "updated_at"}, txnRows, &res.Transactions},
 		{"links", []string{"id", "user_id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}, linkRows, &res.Links},
 		{"loan_attachments", []string{"id", "user_id", "loan_account_id", "transaction_id", "created_at"}, loanRows, &res.LoanAttachments},
-		{"loan_schedules", []string{"id", "user_id", "loan_account_id", "principal", "annual_rate_bps", "tenure_months", "start_date", "created_at", "updated_at"}, loanScheduleRows, &res.LoanSchedules},
+		{"loan_schedules", []string{"id", "user_id", "loan_account_id", "principal", "processing_fee", "annual_rate_bps", "tenure_months", "start_date", "disbursal_date", "created_at", "updated_at"}, loanScheduleRows, &res.LoanSchedules},
+		{"loan_transfers", []string{"id", "user_id", "from_loan_account_id", "to_loan_account_id", "amount", "transfer_date", "recasts_target", "created_at"}, loanTransferRows, &res.LoanTransfers},
 		{"recurring_series", []string{"id", "user_id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}, seriesRows, &res.RecurringSeries},
 		{"recurring_series_terms", []string{"id", "user_id", "series_id", "start_date", "end_date", "amount", "account_id", "created_at"}, termRows, &res.RecurringTerms},
 		{"recurring_attachments", []string{"id", "user_id", "series_id", "transaction_id", "created_at"}, recurringRows, &res.RecurringAttachments},

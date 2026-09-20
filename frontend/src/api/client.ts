@@ -34,6 +34,8 @@ import type {
   LinkCycleReport,
   LoanScheduleDetail,
   LoanScheduleRequest,
+  LoanTransferRequest,
+  LoanTransferResult,
   LoginRequest,
   MoneyFlowGraph,
   MoneyFlowTimeline,
@@ -484,6 +486,26 @@ const api = {
     }),
   deleteLoanSchedule: (accountId: string): Promise<{ deleted: number }> =>
     request(`/accounts/${accountId}/loan-schedule`, { method: "DELETE" }),
+  // Balance transfer: settles `accountId` at its outstanding balance and
+  // recasts the target loan's remaining installments. The target terms are
+  // required only when the target loan has no schedule yet.
+  transferLoanBalance: (
+    accountId: string,
+    data: LoanTransferRequest,
+  ): Promise<LoanTransferResult> =>
+    request(`/accounts/${accountId}/loan-transfer`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  // Reverts both loans touched by a transfer. `accountId` must be the source
+  // loan account, or the transfer is not found.
+  deleteLoanTransfer: (
+    accountId: string,
+    transferId: string,
+  ): Promise<{ deleted: number }> =>
+    request(`/accounts/${accountId}/loan-transfer/${transferId}`, {
+      method: "DELETE",
+    }),
   bulkUpdateTags: (data: BulkUpdateTagsRequest): Promise<{ updated: number }> =>
     request("/transactions/bulk-tags", {
       method: "POST",

@@ -153,6 +153,21 @@ func routeCases() []routeCase {
 			}},
 		{name: "loan schedule delete", method: "DELETE", path: "/accounts/:id/loan-schedule", body: `{"deleted":1}`,
 			call: func(ctx context.Context, c *Client) error { _, err := c.DeleteLoanSchedule(ctx, idAcct); return err }},
+		{name: "loan balance transfer", method: "POST", path: "/accounts/:id/loan-transfer",
+			body: `{"transfer":{"id":"tr1","fromLoanAccountId":"acct-1","toLoanAccountId":"acct-2","amount":1000.00,` +
+				`"transferDate":"2026-01-05T00:00:00Z","createdAt":"2026-01-05T00:00:00Z"},"source":` + schedule + `,"target":` + schedule + `}`,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.TransferLoanBalance(ctx, idAcct, LoanTransferRequest{
+					ToLoanAccountID: "acct-2", TransferDate: "2026-01-05",
+				})
+				return err
+			}},
+		{name: "loan transfer delete", method: "DELETE", path: "/accounts/:id/loan-transfer/:transferId",
+			params: map[string]string{"id": idAcct, "transferId": "tr1"}, body: `{"deleted":1}`,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.DeleteLoanTransfer(ctx, idAcct, "tr1")
+				return err
+			}},
 		{name: "list account types", method: "GET", path: "/account-types", body: `[]`,
 			call: func(ctx context.Context, c *Client) error { _, err := c.ListAccountTypes(ctx); return err }},
 		{name: "create account type", method: "POST", path: "/account-types", body: `{"id":"x","name":"X","positiveTxnType":"debit"}`,

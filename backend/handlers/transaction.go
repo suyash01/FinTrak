@@ -71,6 +71,13 @@ func parseQueryDate(c *gin.Context, name, value string) (string, bool) {
 	return value, true
 }
 
+// isUUID reports whether value parses as a UUID. The category filter uses it to
+// tell a category id apart from a group slug ("expense") in the same parameter.
+func isUUID(value string) bool {
+	_, err := uuid.Parse(value)
+	return err == nil
+}
+
 // txnQueryFilter parses the shared transaction-list filter query parameters
 // (account, category/group, payee, tag, free-text, date range, type, amount,
 // linked, loan, recurring) into a txnFilter. The free-text search spans the
@@ -78,13 +85,21 @@ func parseQueryDate(c *gin.Context, name, value string) (string, bool) {
 // and ExportTransactions so the list and the export can never disagree about
 // what a filter means. A malformed accountId, dateFrom/dateTo, or amount writes
 // a 400 and returns ok=false.
+//
+// The id parameters (accountId, loanAccountId, categoryId, groupId, payeeId,
+// tags) each take a comma-separated list and match a transaction when it
+// satisfies ANY entry, so a single value is just a one-element list. The
+// account and category dimensions each combine two parameters (an account's
+// transactions and a loan account's attached EMI payments; a group's categories
+// and individual categories), because the UI picks both in one control.
 func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, bool) {
-	accountID := c.Query("accountId")
-	categoryID := c.Query("categoryId")
-	groupId := c.Query("groupId")
+	accountIDs := splitCSVFilter(c.Query("accountId"))
+	loanAccountIDs := splitCSVFilter(c.Query("loanAccountId"))
+	categoryIDs := splitCSVFilter(c.Query("categoryId"))
+	groupIDs := splitCSVFilter(c.Query("groupId"))
+	payeeIDs := splitCSVFilter(c.Query("payeeId"))
 	search := c.Query("search")
 	txnType := c.Query("type")
-	payeeID := c.Query("payeeId")
 	amountStr := c.Query("amount")
 
 	// The date bounds are compared against a date column, so reject a
@@ -98,46 +113,66 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		return nil, nil, false
 	}
 
-	// Parse the account filter once: the summary-row path needs the UUID and a
-	// malformed value should surface as a 400 rather than a database error.
-	var accountUUID *uuid.UUID
-	if accountID != "" {
-		parsed, err := uuid.Parse(accountID)
-		if err != nil {
+	f := newTxnFilter(userID)
+
+	// Account dimension: any of the selected accounts, plus the EMI payments
+	// attached to any of the selected loan accounts (a loan account owns no
+	// transactions of its own, so filtering by one lists its attached
+	// payments instead).
+	accountClauses := make([]string, 0, len(accountIDs)+len(loanAccountIDs))
+	for _, id := range accountIDs {
+		// The id is compared against a uuid column, so a malformed value is
+		// rejected here rather than surfacing as a database error.
+		if _, err := uuid.Parse(id); err != nil {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
 			return nil, nil, false
 		}
+		accountClauses = append(accountClauses, f.clause("t.account_id = $%d", id))
+	}
+	for _, id := range loanAccountIDs {
+		accountClauses = append(accountClauses, f.clause("EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = $%d)", id))
+	}
+	f.anyOf(accountClauses)
+
+	// The per-cycle/month-end summary rows below are computed for one account
+	// only. Loan accounts never reach that path: the UI routes them through
+	// loanAccountId, which leaves this nil.
+	var accountUUID *uuid.UUID
+	if len(accountIDs) == 1 {
+		parsed, _ := uuid.Parse(accountIDs[0])
 		accountUUID = &parsed
 	}
 
-	f := newTxnFilter(userID)
-
-	if accountID != "" {
-		f.param("t.account_id = $%d", accountID)
-	}
-	if categoryID != "" {
-		// The "uncategorized" sentinel (from the frontend's category filter)
-		// means transactions with no category assigned.
-		if categoryID == "uncategorized" {
-			f.raw("t.category_id IS NULL")
-		} else if _, err := uuid.Parse(categoryID); err != nil {
+	// Category dimension: any of the selected groups, any of the selected
+	// categories, and/or the uncategorized sentinel.
+	categoryClauses := make([]string, 0, len(categoryIDs)+len(groupIDs))
+	for _, id := range categoryIDs {
+		switch {
+		case id == "uncategorized":
+			// The "uncategorized" sentinel (from the frontend's category
+			// filter) means transactions with no category assigned.
+			categoryClauses = append(categoryClauses, "t.category_id IS NULL")
+		case isUUID(id):
+			// Filter to the selected category (scoped to the user).
+			// Categories are flat, so this is a plain equality against the
+			// category id.
+			categoryClauses = append(categoryClauses, f.clause("t.category_id = $%d", id))
+		default:
 			// Not a UUID -> group-level filter: every category in the given
 			// group (a base group slug like "expense" or a custom group id).
-			f.param("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", categoryID)
-		} else {
-			// Filter to the selected category (scoped to the user). Categories
-			// are flat, so this is a plain equality against the category id.
-			f.param("t.category_id = $%d", categoryID)
+			categoryClauses = append(categoryClauses, f.clause("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", id))
 		}
 	}
-	if c.Query("uncategorized") == "true" {
-		f.raw("t.category_id IS NULL")
-	}
-	if groupId != "" {
+	for _, id := range groupIDs {
 		// Group-level filter: every transaction whose category belongs to the
 		// given group. Works for base group slugs ("expense") and custom group
 		// ids alike, unlike the non-UUID fallback on categoryId.
-		f.param("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", groupId)
+		categoryClauses = append(categoryClauses, f.clause("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", id))
+	}
+	f.anyOf(categoryClauses)
+
+	if c.Query("uncategorized") == "true" {
+		f.raw("t.category_id IS NULL")
 	}
 	if search != "" {
 		// Escape % and _ so "100%" matches the literal text, not "1000" —
@@ -162,15 +197,19 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 	if txnType != "" {
 		f.param("t.type = $%d", txnType)
 	}
-	if payeeID != "" {
-		// The "none" sentinel (from the money-flow payee:none node) means
-		// transactions with no payee assigned.
-		if payeeID == "none" {
-			f.raw("t.payee_id IS NULL")
-		} else {
-			f.param("t.payee_id = $%d", payeeID)
+	// Payee dimension: any of the selected payees, and/or the "none" sentinel
+	// (from the money-flow payee:none node), which means transactions with no
+	// payee assigned.
+	payeeClauses := make([]string, 0, len(payeeIDs))
+	for _, id := range payeeIDs {
+		if id == "none" {
+			payeeClauses = append(payeeClauses, "t.payee_id IS NULL")
+			continue
 		}
+		payeeClauses = append(payeeClauses, f.clause("t.payee_id = $%d", id))
 	}
+	f.anyOf(payeeClauses)
+
 	if amountStr != "" {
 		amount, err := money.Parse(amountStr)
 		if err != nil {
@@ -179,12 +218,10 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		}
 		f.param("t.amount = $%d", amount)
 	}
-	// Tag filter: a comma-separated list matches transactions carrying ANY of
-	// the listed tags (Postgres array overlap). Blank entries are ignored.
-	if tagsParam := c.Query("tags"); tagsParam != "" {
-		if tags := splitTagFilter(tagsParam); len(tags) > 0 {
-			f.param("t.tags && $%d::text[]", tags)
-		}
+	// Tag filter: matches transactions carrying ANY of the listed tags
+	// (Postgres array overlap). Blank entries are ignored.
+	if tags := splitCSVFilter(c.Query("tags")); len(tags) > 0 {
+		f.param("t.tags && $%d::text[]", tags)
 	}
 	switch c.Query("linked") {
 	case "true":
@@ -193,12 +230,6 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		f.raw("NOT EXISTS (SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id)")
 	}
 
-	// Loan/EMI filters: loanAccountId narrows to transactions attached to one
-	// loan account (its EMI payments); excludeAttached=true narrows to
-	// transactions not attached to any loan account (attach candidates).
-	if loanAccountID := c.Query("loanAccountId"); loanAccountID != "" {
-		f.param("EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = $%d)", loanAccountID)
-	}
 	if c.Query("excludeAttached") == "true" {
 		f.raw("NOT EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id)")
 	}
@@ -391,6 +422,25 @@ func newTxnFilter(userID uuid.UUID) *txnFilter {
 func (f *txnFilter) param(clause string, value any) {
 	f.args = append(f.args, value)
 	f.clauses = append(f.clauses, fmt.Sprintf(clause, len(f.args)))
+}
+
+// clause binds value and returns the predicate with its placeholder filled in,
+// without adding it to the WHERE. It exists for the multi-value filters, which
+// OR several predicates of different shapes (an equality, an EXISTS, or an
+// IS NULL) into one clause and therefore render them before joining.
+func (f *txnFilter) clause(format string, value any) string {
+	f.args = append(f.args, value)
+	return fmt.Sprintf(format, len(f.args))
+}
+
+// anyOf appends the rendered predicates as a single OR-ed clause, so a
+// transaction matches when it satisfies any of them. An empty group adds
+// nothing.
+func (f *txnFilter) anyOf(clauses []string) {
+	if len(clauses) == 0 {
+		return
+	}
+	f.clauses = append(f.clauses, "("+strings.Join(clauses, " OR ")+")")
 }
 
 // params appends a predicate containing several %d placeholders, substituted

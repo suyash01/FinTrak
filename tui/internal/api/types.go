@@ -493,28 +493,46 @@ type ValidateTransactionsResponse struct {
 
 // ---- Loan schedules ----
 
-// LoanScheduleRequest is the body for PUT /accounts/:id/loan-schedule.
+// LoanScheduleRequest is the body for PUT /accounts/:id/loan-schedule. A blank
+// ProcessingFee is a loan without a fee, and a blank DisbursalDate clears one.
 type LoanScheduleRequest struct {
 	Principal     Amount `json:"principal"`
+	ProcessingFee Amount `json:"processingFee"`
 	AnnualRateBps int    `json:"annualRateBps"`
 	TenureMonths  int    `json:"tenureMonths"`
 	StartDate     string `json:"startDate"`
+	DisbursalDate string `json:"disbursalDate,omitzero"`
 }
 
-// LoanSchedule is a loan account's amortization terms.
+// LoanSchedule is a loan account's amortization terms. ProcessingFee is what the
+// lender charged and is reference data: the table repays the whole Principal
+// whatever it was, so recording a fee never moves an installment.
+// DisbursalDate is when the money was released: when it is set and the period
+// from it to StartDate (the first installment date) is not a whole anchored
+// month, the first installment carries day-count interest for the broken period
+// and so splits differently from every later one.
 type LoanSchedule struct {
 	ID            string    `json:"id"`
 	LoanAccountID string    `json:"loanAccountId"`
 	Principal     Amount    `json:"principal"`
+	ProcessingFee Amount    `json:"processingFee"`
 	AnnualRateBps int       `json:"annualRateBps"`
 	TenureMonths  int       `json:"tenureMonths"`
 	StartDate     time.Time `json:"startDate"`
+	DisbursalDate time.Time `json:"disbursalDate,omitzero"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // LoanScheduleEntry is one generated installment, split into principal and
 // interest, marked Paid when an attached EMI payment covers it.
+//
+// The split is not uniform: the first entry differs when the disbursal-to-first-
+// due period is a broken month, and every entry after a balance transfer is
+// Recast (regenerated over the remaining tenure at the larger balance, so its
+// amount differs from the EMI of the entries before it). Cancelled marks an
+// installment voided because a transfer settled the loan, which also makes it
+// ineligible to be paid.
 type LoanScheduleEntry struct {
 	Number        int       `json:"number"`
 	DueDate       time.Time `json:"dueDate"`
@@ -524,28 +542,85 @@ type LoanScheduleEntry struct {
 	Balance       Amount    `json:"balance"`
 	Paid          bool      `json:"paid"`
 	TransactionID *string   `json:"transactionId,omitempty"`
+	Recast        bool      `json:"recast"`
+	Cancelled     bool      `json:"cancelled"`
+}
+
+// LoanPrincipalTransfer is one balance transfer between two loan accounts: the
+// source loan's outstanding principal (Amount) on TransferDate moves to the
+// target loan, which recasts the installments it still owes over that amount.
+// Both sides are derived from this row, so deleting it reverts both.
+type LoanPrincipalTransfer struct {
+	ID                  string    `json:"id"`
+	FromLoanAccountID   string    `json:"fromLoanAccountId"`
+	FromLoanAccountName string    `json:"fromLoanAccountName,omitempty"`
+	ToLoanAccountID     string    `json:"toLoanAccountId"`
+	ToLoanAccountName   string    `json:"toLoanAccountName,omitempty"`
+	Amount              Amount    `json:"amount"`
+	TransferDate        time.Time `json:"transferDate"`
+	CreatedAt           time.Time `json:"createdAt"`
+}
+
+// LoanTransferRequest is the body for POST /accounts/:id/loan-transfer, where
+// :id is the source loan. The amount is never supplied by the caller: it is the
+// source loan's outstanding principal on TransferDate, which is what a balance
+// transfer moves. The target terms are read only when the target loan has no
+// schedule yet (nothing to recast) and are required in that case; the two
+// integers are optional so an unset one stays off the wire, and TargetStartDate
+// is a date-only string the API treats "" and an absent key alike.
+type LoanTransferRequest struct {
+	ToLoanAccountID     string      `json:"toLoanAccountId"`
+	TransferDate        string      `json:"transferDate"`
+	TargetAnnualRateBps OptionalInt `json:"targetAnnualRateBps,omitzero"`
+	TargetTenureMonths  OptionalInt `json:"targetTenureMonths,omitzero"`
+	TargetStartDate     string      `json:"targetStartDate,omitzero"`
+}
+
+// LoanTransferResult is the response of POST /accounts/:id/loan-transfer: the
+// recorded transfer plus both loans' regenerated details, so the caller can
+// render both sides without a second request.
+type LoanTransferResult struct {
+	Transfer LoanPrincipalTransfer `json:"transfer"`
+	Source   LoanScheduleDetail    `json:"source"`
+	Target   LoanScheduleDetail    `json:"target"`
 }
 
 // LoanScheduleDetail is the GET /accounts/:id/loan-schedule response. Schedule
 // is null (with an empty table and zeroed totals) when the loan has none.
 type LoanScheduleDetail struct {
-	Schedule             *LoanSchedule       `json:"schedule"`
-	LoanAccountName      string              `json:"loanAccountName,omitempty"`
-	EMI                  Amount              `json:"emi"`
-	TotalInterest        Amount              `json:"totalInterest"`
-	TotalPayable         Amount              `json:"totalPayable"`
-	Entries              []LoanScheduleEntry `json:"entries"`
-	PaidInstallments     int                 `json:"paidInstallments"`
-	PaidAmount           Amount              `json:"paidAmount"`
-	PrincipalPaid        Amount              `json:"principalPaid"`
-	InterestPaid         Amount              `json:"interestPaid"`
-	OutstandingPrincipal Amount              `json:"outstandingPrincipal"`
-	NextDueDate          *time.Time          `json:"nextDueDate,omitempty"`
-	Completed            bool                `json:"completed"`
+	Schedule        *LoanSchedule `json:"schedule"`
+	LoanAccountName string        `json:"loanAccountName,omitempty"`
+	// EMI is the installment in force: the amount of the current table segment,
+	// which after a balance transfer is the recast one. Individual entries still
+	// carry their own Amount, since a stub first period and every recast segment
+	// differ from it.
+	EMI           Amount              `json:"emi"`
+	TotalInterest Amount              `json:"totalInterest"`
+	TotalPayable  Amount              `json:"totalPayable"`
+	Entries       []LoanScheduleEntry `json:"entries"`
+	// Transfers touching this loan, in date order, whether it gave or received
+	// the balance. SettledOn is set when one of them settled this loan (it gave
+	// the balance away), which cancels every later installment and zeroes the
+	// outstanding principal.
+	Transfers            []LoanPrincipalTransfer `json:"transfers"`
+	SettledOn            *time.Time              `json:"settledOn,omitempty"`
+	PaidInstallments     int                     `json:"paidInstallments"`
+	PaidAmount           Amount                  `json:"paidAmount"`
+	PrincipalPaid        Amount                  `json:"principalPaid"`
+	InterestPaid         Amount                  `json:"interestPaid"`
+	OutstandingPrincipal Amount                  `json:"outstandingPrincipal"`
+	NextDueDate          *time.Time              `json:"nextDueDate,omitempty"`
+	Completed            bool                    `json:"completed"`
 }
 
 // DeleteLoanScheduleResult reports how many schedules a delete removed.
 type DeleteLoanScheduleResult struct {
+	Deleted int64 `json:"deleted"`
+}
+
+// DeleteLoanTransferResult reports how many balance transfers a delete reverted
+// (0 or 1).
+type DeleteLoanTransferResult struct {
 	Deleted int64 `json:"deleted"`
 }
 

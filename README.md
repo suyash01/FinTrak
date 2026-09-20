@@ -13,16 +13,22 @@
 
 ## ✨ Features
 
-- **Dashboard & Analytics**: Get a clear overview of your financial health with income vs. expense summaries and category-wise breakdowns using **Recharts**.
+- **Dashboard & Analytics**: Get a clear overview of your financial health with income vs. expense summaries and category-wise breakdowns using **Recharts**, framed by calendar month or by an account's statement cycles (`groupBy=billing_cycle` — offered for any account that has a billing day, not just credit cards).
+- **Money Flow**: The transaction link graph drawn as a Sankey — money sources (income categories) → accounts → spending categories → payees — with a period timeline strip that scrubs the window, clickable nodes that open Transactions pre-filtered to them, and link tracing that walks a transaction's chain (purchase → refund, transfer → transfer) hop by hop.
+- **Cash Flow Calendar**: A GitHub-style heatmap of each day's income, expense and net, with the selected account's billing-cycle boundaries and its synthetic balance rows overlaid.
 - **Transaction Management**:
-  - **CSV Import**: Seamlessly import your bank statements (powered by PapaParse).
-  - **PDF Statement Import**: Upload a bank/credit-card statement PDF and preview the extracted transactions before importing (powered by a standalone parser service).
-  - **Advanced Filtering**: Search and filter transactions by date, amount, account, category, payee, type, or linked state. Free-text search spans the description, notes, payee name, and tags.
+  - **CSV Import**: Import a bank/credit-card CSV export (powered by PapaParse) through a column-mapping step, then preview the parsed rows before importing — uncheck the rows you don't want, and rows that already exist in the account are flagged from a read-only duplicate check (the preview can be imported with duplicates skipped or kept).
+  - **PDF Statement Import**: Upload a bank/credit-card statement PDF (password-protected files supported) and preview the extracted transactions before importing (powered by a standalone parser service). The parser's per-page reconciliation warnings are surfaced in the preview, so a statement whose rebuilt subtotals disagreed with the printed ones is flagged before anything is written.
+  - **Paperless-ngx Import**: Pull a document straight from a Paperless instance — with correspondent/type/tag filters — and parse it through the same preview-then-import flow.
+  - **Advanced Filtering**: Search and filter transactions by date, amount, account, category, category group, payee, tag, type, or linked state — the account, category, payee and tag filters are multi-select and match any of the picked values; free-text search spans the description, notes, payee name, and tags. The API's grammar is wider still: an exact `amount`, loan attachment (`loanAccountId` / `excludeAttached`) and recurring state (`recurringId` / `recurring=linked|unlinked`).
+  - **Filter-aware export**: Export exactly what is currently filtered as a flat, spreadsheet-friendly CSV (the same filter grammar the list uses), or a single account's history from the Accounts page.
   - **Compact Layout**: High-density view for managing large volumes of transactions.
 - **Backup & Restore**: Export everything you own as a single JSON bundle, and restore it into a fresh account — portable across FinTrak instances.
-- **Account Synchronization**: Track multiple bank accounts, credit cards, and wallets.
-- **Category & Payee Management**: Organize your spending with grouped categories and tracked payees.
-- **Smart Rules Engine**: Automate categorization by creating rules based on transaction descriptions or payees.
+- **Accounts**: Track multiple bank accounts, credit cards, wallets and loans, each with a bank, color, currency and an optional billing day; one account is the default, used to pre-fill the account filter on the Dashboard and the Transactions list.
+- **Account Types**: Shared reference data (`bank`, `credit_card`, `loan`) whose positive-transaction convention defines how an account's running balance is computed. Administrators can add custom types (e.g. `wallet`) for every user; the built-in types are immutable.
+- **Category & Payee Management**: Organize spending with grouped categories — the four base groups plus your own custom groups — and tracked payees. Categories and groups are flat; deleting a category uncategorizes its transactions and removes the rules that pointed at it.
+- **Tags**: Free-text tags on a transaction, first-class in the UI: filter the list by tag, browse the vocabulary with usage counts, rename a tag across the whole history, and bulk add/remove one across a selection.
+- **Smart Rules Engine**: Priority-ordered condition/action rules. A rule matches a description pattern (`contains`, `starts_with`, `exact`) plus optional ANDed conditions (account, category, payee, amount range, type, date window, linked/recurring state) and can set the category and payee and add tags or append a note. A live preview reports how many currently-uncategorized transactions a new or edited rule would change before it is saved, and one click applies the rules to everything uncategorized.
 - **Transaction Linking**:
   - **Transfers**: Link matching transactions between your own accounts to avoid double-counting.
   - **Cashback & Refunds**: Link refunds or cashback to their original purchases.
@@ -31,10 +37,13 @@
   - **Circular Money**: The Money Flow page reports the account-to-account cycles the Sankey has to net
     away or break to stay acyclic, plus the one-directional flows with no counterpart link — the
     diagnostics for spotting money bouncing between accounts or a half-entered transfer.
-- **Loan / EMI Accounts**: Track loans with no transactions of their own — EMI payments stay on your bank/credit-card accounts and are attached to the loan via a bulk "Link to Loan" action. One transaction can be attached to at most one loan account. Loan accounts show the total repaid, and each loan can carry an optional **amortization schedule** (principal, annual rate, tenure, first installment date) that generates the EMI table — every installment split into principal and interest, with the paid ones matched to the attached EMI payments, plus interest paid and outstanding principal.
+- **Loan / EMI Accounts**: Track loans with no transactions of their own — EMI payments stay on your bank/credit-card accounts and are attached to the loan via a bulk "Link to Loan" action. One transaction can be attached to at most one loan account. Loan accounts show the total repaid, and each loan can carry an optional **amortization schedule** (principal, optional processing fee, annual rate, tenure, first installment date, optional disbursal date) that generates the EMI table — every installment split into principal and interest, with the paid ones matched to the attached EMI payments, plus interest paid and outstanding principal. A processing fee is recorded for reference without touching the table, so the EMI and every installment amortize the full principal — a lender that finances its charges instead has them entered in the principal; when the disbursal date makes the first period a broken month (disbursed on the 20th, first EMI on the 5th) that period is charged its actual days over a 30-day month and the EMI is re-solved so the loan still clears in the full tenure, keeping every installment level; and a **balance transfer** settles one loan at its outstanding principal and moves that amount onto another loan, which recasts its remaining installments over the larger balance.
 - **Recurring & Subscriptions**: Define repeating charges and income (rent, salary, subscriptions) with a frequency/interval. FinTrak forecasts the upcoming occurrences and suggests matching transactions, which you confirm with an explicit link. A series is defined by a list of account/amount entries, each with its own start and optional end date (a price rise, card switch, or a discontinuation-then-resume is a new entry rather than a rewrite); entries must not overlap, gaps are allowed, and the subscription's overall period is derived from them. Matching uses the entry whose date range covers each transaction. Linked transactions carry a recurring badge on the Transactions page, where a bulk "Link to subscription" action can attach or detach them. A dashboard card summarizes the monthly recurring totals and the next upcoming charges. Repeating series are **never** created or linked automatically.
+- **Link Suggestions**: Confidence-scored, read-only link candidates — transfer pairs (the same amount within a few days, across different accounts) and cashback/refund credits matched to their likely originating purchase — offered for one-click confirmation in the terminal client; the web UI links manually, and nothing is ever linked automatically.
 - **Close Accounts**: Mark an account closed and its transactions become immutable — no manual add/edit/remove, no bulk action (categorize, payee, billing cycle, tags, delete), no tag rename and no rule re-run can rewrite them; linking stays possible.
-- **Bulk Operations**: Categorize, update payees, delete, or link multiple transactions to a loan or a recurring subscription at once.
+- **Bulk Operations**: Apply a category, payee, billing cycle or tag add/remove to a selection, delete many at once, or attach/detach the whole selection to a loan account or a recurring series.
+- **Command Palette**: Ctrl/Cmd-K jumps to any page, opens the right record dialog, applies rules to uncategorized transactions, or toggles the theme.
+- **Admin Console**: An admin-only Settings card curates the shared global catalog of groups and categories, showing the category and transaction usage counts needed before editing or retiring one.
 
 ---
 
@@ -47,15 +56,32 @@
 - **Database**: PostgreSQL with [pgx](https://github.com/jackc/pgx)
 - **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate)
 - **Configuration**: godotenv
+- **Auth**: stateless JWT (access + refresh) in httpOnly cookies
+- **Money**: integer minor units (`internal/money.Amount`, an `int64` of cents) — no `float64` arithmetic anywhere
 
 ### Frontend
 
 - **Library**: React 19 + TypeScript (Vite, bun)
-- **Styling**: **Tailwind CSS 4**
+- **Styling**: **Tailwind CSS 4** with semantic theme tokens (light/dark + 6 accent themes)
+- **UI primitives**: [shadcn/ui](https://ui.shadcn.com/) on Radix (see `components.json`)
 - **Icons**: Lucide React
 - **Charts**: Recharts
+- **Tables**: TanStack Table + TanStack Virtual (for smooth scrolling in long lists)
 - **Routing**: React Router 7
-- **Virtualization**: TanStack Virtual (for smooth scrolling in long lists)
+- **Toasts**: sonner · **Command palette**: cmdk · **CSV**: PapaParse
+- **Tests**: Vitest + Testing Library under jsdom
+
+### Statement parser (`statement_parser/`)
+
+- **Language**: Python 3.14, managed with [uv](https://docs.astral.sh/uv/)
+- **App**: Flask (gunicorn in the image) with `pdfplumber` for text extraction and `pypdf` for decrypting password-protected PDFs
+- **Design**: a registry of per-bank extractors (`register_extractor`) selectable per upload, exposed by the service and surfaced to clients at `GET /api/v1/statements/extractors`
+
+### Terminal client (`tui/`)
+
+- **Language**: Go 1.27, a separate module (`github.com/fintrak/tui`)
+- **Framework**: Bubble Tea + Bubbles/Lip Gloss, with [wish](https://github.com/charmbracelet/wish) for the optional SSH door
+- **Tests**: stdlib `testing` plus a route-parity suite against `backend/openapi.yaml`
 
 ---
 
@@ -67,7 +93,8 @@
 
 ### Quick Start with Docker
 
-The easiest way to get FinTrak running is using Docker Compose:
+The easiest way to get FinTrak running is `make dev` (a thin wrapper over the
+Compose file below), or Docker Compose directly:
 
 1.  **Clone the repository**:
     ```bash
@@ -76,12 +103,34 @@ The easiest way to get FinTrak running is using Docker Compose:
     ```
 2.  **Start the services**:
     ```bash
-    docker compose up -d
+    make dev            # or: docker compose up -d
     ```
+    This starts PostgreSQL, the statement parser, the backend, the frontend, Adminer and pgAdmin. Two further services are opt-in profiles: the dozzle log viewer (`docker compose --profile debug up -d`) and the terminal client's SSH door (`docker compose --profile tui up -d`, then `ssh -p 2222 localhost`).
 3.  **Access the application**:
     - **Frontend**: [http://localhost:3000](http://localhost:3000)
     - **API Server**: [http://localhost:8080/api/v1](http://localhost:8080/api/v1)
-    - **Database Admin (Adminer)**: [http://localhost:8081](http://localhost:8081)
+    - **Statement parser** (internal to the backend in production): [http://localhost:5000](http://localhost:5000)
+    - **Database Admin**: Adminer at [http://localhost:8081](http://localhost:8081), pgAdmin at [http://localhost:8082](http://localhost:8082)
+    - **Log viewer** (debug profile only): [http://localhost:8083](http://localhost:8083)
+
+Stop the stack with `make dev-down` (`docker compose down`).
+
+### Development commands
+
+`make help` lists everything. The targets below are the ones CI mirrors — its jobs run the same commands inline, and `make release` runs the full gate:
+
+```bash
+make test                   # backend unit tests (no database needed)
+make test-cover-check       # backend tests + the 85% coverage floor
+make test-integration       # backend integration tests (Docker + testcontainers)
+make test-parser            # statement parser tests (uv/unittest)
+make test-tui               # terminal client tests
+make test-tui-cover-check   # TUI tests + its 20% coverage floor
+make vet / make vet-tui     # go vet
+make build-backend / make build-frontend / make build-tui
+make openapi-check          # every registered route is in backend/openapi.yaml
+make release VERSION=v1.2.3 # test, tag, and push a release (master only)
+```
 
 ### Production Deployment
 
@@ -94,6 +143,8 @@ docker compose -f docker-compose.prod.yml up -d
 # Using an existing/external database
 docker compose -f docker-compose.prod-no-db.yml up -d
 ```
+
+`make prod` / `make prod-no-db` / `make prod-down` wrap those three commands (they preflight the Compose config first, so unset secrets or image variables fail before anything is created).
 
 `APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, `LOG_LEVEL`, `LOG_BODY_LIMIT`, and `TRUSTED_PROXIES` are optional (log level defaults to `info` in production; body logging is off unless `LOG_BODY_LIMIT` is positive). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
 
@@ -179,23 +230,40 @@ ssh -p 2222 localhost
 
 ```text
 .
-├── backend          # Go API Server
-│   ├── config       # Configuration Loader
-│   ├── db           # Database Connection & Migrations
-│   ├── handlers     # API Request Handlers
-│   ├── models       # Database Schemas & Types
-│   └── main.go      # Application Entry point
-├── tui              # Go terminal client (Bubble Tea), local or served over SSH
-├── frontend         # React + TypeScript + Vite Application (bun)
+├── backend              # Go API server
+│   ├── auth             # JWT minting/validation, session cookies, middleware
+│   ├── config           # Configuration loader (godotenv)
+│   ├── db               # Connection, migrations, every-boot seeders
+│   │   └── migrations   # NNNNNN_*.up.sql / .down.sql
+│   ├── handlers         # HTTP handlers, one file per resource (+ tests)
+│   ├── internal         # money, validation, logger, ratelimit, crypto
+│   ├── models           # Every model/type (models.go)
+│   ├── cmd/covercheck   # Coverage-floor enforcement used by CI
+│   ├── openapi.yaml     # Machine-readable API spec (route-parity tested)
+│   └── main.go          # Entry point + setupRouter (all route registration)
+├── frontend             # React + TypeScript + Vite SPA (bun)
 │   ├── src
-│   │   ├── api      # API Client Calls
-│   │   ├── components # UI Components
-│   │   ├── context  # State Management (Settings, etc.)
-│   │   └── utils    # Helper Functions
-│   └── index.html
-├── .env.example       # Template for environment variables
-├── docker-compose.yml # Local development orchestration
-├── docker-compose.prod.yml     # Production (with bundled database)
+│   │   ├── api          # The single API client (client.ts)
+│   │   ├── components   # PascalCase feature dirs (<Feature>/<Feature>.tsx)
+│   │   │   └── ui       # shadcn/ui primitives
+│   │   ├── context      # Auth, Theme, Settings, DomainData providers
+│   │   ├── lib          # Shared helpers (cn, tables, categories, intents)
+│   │   ├── utils        # Formatters and small display helpers
+│   │   └── types.ts     # API models
+│   └── Dockerfile       # Build + nginx runtime (reverse-proxies /api/v1)
+├── statement_parser     # Standalone Python PDF statement parser (own module)
+├── tui                  # Go terminal client (Bubble Tea), local or over SSH
+├── scripts              # release.sh / release.ps1 guardrails
+├── .github/workflows    # CI: tests, coverage upload, validate gate, GHCR publish
+├── Makefile             # dev / test / vet / build / openapi / release targets
+├── codecov.yml          # Per-flag coverage targets (backend 85, frontend 75, parser 90, tui 21)
+├── AGENTS.md            # Repo conventions for contributors and coding agents
+├── FLOWCHART.md         # Architecture, transaction lifecycle, ER diagram
+├── IDEAS.md             # Feature backlog
+├── LICENSE              # AGPL-3.0
+├── .env.example         # Template for environment variables
+├── docker-compose.yml            # Local development orchestration
+├── docker-compose.prod.yml       # Production (with bundled database)
 └── docker-compose.prod-no-db.yml # Production (external database)
 ```
 
@@ -203,29 +271,40 @@ ssh -p 2222 localhost
 
 ## 📡 API Overview
 
-The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI spec lives in [`backend/openapi.yaml`](backend/openapi.yaml) and is also served at `GET /api/v1/openapi.yaml`. A backend test fails whenever a registered route is missing from the spec (or the spec advertises a route that no longer exists), so the contract cannot silently drift; run `make openapi-check` to verify locally.
+The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI spec lives in [`backend/openapi.yaml`](backend/openapi.yaml) and is also served at `GET /api/v1/openapi.yaml`. A backend test fails whenever a registered route is missing from the spec (or the spec advertises a route that no longer exists), so the contract cannot silently drift; run `make openapi-check` to verify locally. Every operation the spec defines is described below.
 
 - `POST /auth/register`: Create an account (sets the session cookie). Body: `{ email, password, setupToken? }`. Emails are stored lowercase. Regular registrations get the `user` role. An email listed in `ADMIN_EMAILS` is a reserved identity: registering it grants `admin` only when `setupToken` matches the `ADMIN_SETUP_TOKEN` environment variable, otherwise the request is refused (403) — an unverified registrant can neither self-promote nor squat the address. This is the **only** path to the `admin` role: existing accounts are never promoted automatically, so an operator must grant it deliberately (self-register the admin email with the setup token, or update `users.role` directly).
 - `POST /auth/login`: Sign in (sets the session cookie). Body: `{ email, password }`.
 - `POST /auth/logout`: Clear the session cookie.
 - `GET /auth/me`: Return the authenticated user for the current session cookie. The frontend calls it on mount to rehydrate auth state.
-- `GET /accounts`: List all financial accounts. Accounts carry an `isDefault` flag and an optional `billingDay` (1-31, clamped to the month length; `null` when unset); the single default account (per user) is used to pre-fill account filters across the app (except the import screen).
+- `GET /accounts`: List all financial accounts, newest first, each with the running balance implied by its account type (loan accounts show the total repaid on the loan). Accounts carry an `isDefault` flag and an optional `billingDay` (1-31, clamped to the month length; `null` when unset); the single default account (per user) pre-fills the account filter on the Dashboard and the Transactions list.
 - `GET /accounts/:id/billing-cycles`: List the billing cycles for an account with a `billingDay` set, auto-generating any missing cycles first (one per month, ending on the account's `billingDay`; changing the day regenerates the cycles). Each cycle carries `{ id, accountId, startDate, endDate, label, totalOutstanding, transactionCount }` where `totalOutstanding` is the account's running balance at the cycle's end date — all debits minus all credits (purchases, payments, refunds, cashbacks) posted up to that date. Accounts without a billing day return an empty list — cycles are never generated for them.
 - `GET /accounts/:id/export`: Stream one account's transactions as a CSV attachment (`Date, Description, Amount, Type, Tags, Notes`), scoped to the authenticated user.
-- `GET /export`: Download a complete, versioned JSON backup of everything the authenticated user owns — accounts, category groups and categories (including referenced global categories), payees, billing cycles, transactions, links, loan attachments, recurring series/terms/attachments, rules and non-secret settings. The Paperless API token and password hash are never included. Each record keeps its original id as an in-bundle reference.
+- `POST /accounts`: Create an account. Body: `{ name, accountTypeId, bank?, currency? (default INR), color?, billingDay? (1-31), isDefault? }`. Marking it the default clears the flag on the user's other accounts, and the account-linked payee (the counterpart used when linking transfers) is created or renamed to match the account name. Returns `201` with the account.
+- `PUT /accounts/:id`: Edit an account. Omitted fields keep their current value, `isDefault` and `closed` are pointers so they change only when sent, `billingDay: null` clears it, and the account-linked payee is renamed to match. `closed: true` freezes the account, `false` reopens it.
+- `DELETE /accounts/:id`: Delete an account along with its transactions (and their links) and its account-linked payee. Returns `{ message, transactionsDeleted }` so the UI can report what was removed.
+- `GET /account-types`: List the shared account types (`bank`, `credit_card`, `loan`, plus admin-created ones). Each carries `positiveTxnType`, the convention that defines how its accounts' running balance is computed.
+- `POST /account-types` / `PUT /account-types/:id` / `DELETE /account-types/:id`: Admin-only. Create a custom type (`{ id, name, positiveTxnType: "credit"|"debit" }`; the id must be a lowercase slug and may not reuse a built-in id), edit one (empty fields keep their current value, built-in types are immutable), or delete one that no account still uses.
+- `GET /export`: Download a complete, versioned JSON backup of everything the authenticated user owns — accounts, category groups and categories (including referenced global categories), payees, billing cycles, transactions, links, loan attachments, loan schedules, loan balance transfers, recurring series/terms/attachments, rules and non-secret settings. The Paperless API token and password hash are never included. Each record keeps its original id as an in-bundle reference.
 - `POST /import`: Restore a bundle produced by `GET /export`. The whole restore runs in a single transaction and is all-or-nothing; it is refused with 409 when the authenticated user already has accounts (merging a foreign bundle into existing data is ambiguous). Every row is inserted with a freshly minted id and every reference (account, category, payee, billing cycle, transaction) is remapped, so a bundle is portable across users and FinTrak instances. Global category references are matched to the target instance's global categories by name. Returns per-resource row counts plus any `warnings` for rows skipped due to a missing reference.
-- `GET /transactions`: List transactions with support for search and filters. `search` is a case-insensitive substring match across the description, notes, payee name, and tags. Category filtering accepts a category id (`categoryId`), the sentinel `categoryId=uncategorized` for transactions without a category, or a category group (`groupId=<group id>`, matching every category in the group; base group slugs like `expense` and custom group ids both work). When a single `accountId` is filtered, synthetic (non-persisted) summary rows are appended for any account with a `billingDay` set (regardless of account type): a `Total outstanding` row at the end of every billing cycle that has attached transactions (the account's running balance at that date — all debits minus all credits) plus a final row for the current in-progress cycle (the running balance up to the requested range end). Accounts without a billing day return only their raw transactions. Summary rows have `isSummary: true` and are interleaved by date. Each transaction also carries `billingCycleId` / `billingCycleLabel` when attached to a cycle, and `recurringSeriesId` / `recurringSeriesName` when linked to a recurring subscription. Pass `recurringId=<series id>` to list only the transactions linked to one series, or `recurring=linked|unlinked` to filter by linkage.
+- `GET /transactions`: List transactions with support for search and filters. `search` is a case-insensitive substring match across the description, notes, payee name, and tags. Category filtering accepts a category id (`categoryId`), the sentinel `categoryId=uncategorized` for transactions without a category, or a category group (`groupId=<group id>`, matching every category in the group; base group slugs like `expense` and custom group ids both work). The account, category, payee and tag filters each take a comma-separated list and match a transaction satisfying any entry (`accountId=a,b`, `categoryId=c1,uncategorized`, `payeeId=p1,none`, `tags=trip,work`); a group and a category picked together are OR-ed into one category filter, and so are an account's transactions and a loan account's attached EMI payments (`loanAccountId`). When a single `accountId` is filtered, synthetic (non-persisted) summary rows are appended for any account with a `billingDay` set (regardless of account type): a `Total outstanding` row at the end of every billing cycle that has attached transactions (the account's running balance at that date — all debits minus all credits) plus a final row for the current in-progress cycle (the running balance up to the requested range end). Accounts without a billing day return only their raw transactions. Summary rows have `isSummary: true` and are interleaved by date. Each transaction also carries `billingCycleId` / `billingCycleLabel` when attached to a cycle, and `recurringSeriesId` / `recurringSeriesName` when linked to a recurring subscription. Pass `recurringId=<series id>` to list only the transactions linked to one series, or `recurring=linked|unlinked` to filter by linkage.
 - `POST /transactions`: Create a single transaction manually. Body: `{ accountId, date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", categoryId?, payeeId?, tags?, notes?, billingCycleId? }`. The account must belong to the authenticated user; when `categoryId` is omitted the transaction is auto-categorized from rules. For accounts with a `billingDay` set the transaction is attached to the billing cycle matching its date by default (the suggested default); pass `billingCycleId` to attach it to a specific cycle instead. Returns `{ id }`.
+- `PATCH /transactions/:id` / `DELETE /transactions/:id`: Partially update or delete one transaction. Only fields present in the request change, and an explicit `null` on `categoryId` / `payeeId` / `billingCycleId` clears that column; every referenced account, category, payee or cycle must belong to the user. Transactions on a closed account are immutable, so a request that touches one matches nothing and is answered 404.
 - `POST /transactions/import`: Import transactions in bulk. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit", payeeId?}], duplicateAction?: "skip"|"keep", billingCycleId?, paperlessDocumentIds?: number[] }`. With `duplicateAction: "skip"` rows that match an existing transaction (same date, amount, type, description) or repeat in the batch are dropped atomically; the response reports `{ imported, duplicates, total }`. For accounts with a `billingDay` set, pass `billingCycleId` to attach every imported transaction to that cycle (overriding the date-based default). `paperlessDocumentIds` is the Paperless-ngx "tag on import" mechanism: when present and a `paperlessTag` label is configured, the documents are tagged asynchronously (best-effort, after the import commits) — it is supplied by the Paperless import flow, not the manual CSV import.
 - `POST /transactions/validate`: Read-only duplicate check. Body: `{ accountId, transactions: [{date: "YYYY-MM-DD", description, amount, type: "debit"|"credit"}] }`. Returns `{ total, existingCount, missingCount, results: [{index, exists, date, description, amount, type}] }` where `exists` is true when a transaction with the same date, amount, type, and description is already stored in the account. Uses the same fingerprint matching as the import endpoint (so results agree with what `duplicateAction: "skip"` would drop) but writes nothing.
 - `POST /transactions/bulk-loan`: Attach/detach transactions as EMI payments. Body: `{ transactionIds, loanAccountId? }`. With `loanAccountId` set, the transactions are attached to that Loan / EMI account (400 if the target is not a loan account, 404 if it is not found, 409 if any transaction is already linked to a loan account — detach first); each attached transaction's payee is set to the loan account's linked payee, so EMI payments read as paid to the loan. With `loanAccountId` omitted/null the transactions are detached from whatever loan account they were attached to (payees are left unchanged). One transaction can be attached to at most one loan account (a UNIQUE constraint on the attachment). Closing an account does not affect linking.
-- `GET /accounts/{id}/loan-schedule` / `PUT /accounts/{id}/loan-schedule` / `DELETE /accounts/{id}/loan-schedule`: Read, create/replace, or remove a Loan / EMI account's optional amortization schedule. `PUT` takes `{ principal, annualRateBps, tenureMonths, startDate }` (the rate in basis points, `950` = 9.50% p.a., `0` allowed) and answers with the generated table; `GET` answers with `schedule: null` when the loan has none. Every installment carries its principal/interest split, remaining balance, and the linked EMI transaction that covers it (payments are matched in date order, the way a lender numbers installments); the totals include `interestPaid` and `outstandingPrincipal`.
+- `GET /accounts/:id/loan-schedule` / `PUT /accounts/:id/loan-schedule` / `DELETE /accounts/:id/loan-schedule`: Read, create/replace, or remove a Loan / EMI account's optional amortization schedule. `PUT` takes `{ principal, processingFee?, annualRateBps, tenureMonths, startDate, disbursalDate? }` (the rate in basis points, `950` = 9.50% p.a., `0` allowed) and answers with the generated table; `GET` answers with `schedule: null` when the loan has none. The fee is recorded for reference only — it never changes the EMI or the table, which amortize `principal` in full — and `disbursalDate` (before `startDate`) makes a first period that is not a whole month a stub: that period is charged its actual days over a 30-day month and the EMI is solved so the loan still clears in the full tenure, so the installments stay level. The EMI is quoted rounded up to the whole rupee, the way a lender quotes it, and the final installment clears the surplus. Every installment carries its principal/interest split, remaining balance, the linked EMI transaction that covers it (payments are matched in date order, the way a lender numbers installments) and whether a balance transfer recast or cancelled it; the totals include `interestPaid`, `outstandingPrincipal`, `transfers` and `settledOn`.
+- `POST /accounts/:id/loan-transfer` / `DELETE /accounts/:id/loan-transfer/:transferId`: Move a loan's remaining principal onto another loan, or undo that. `POST` takes `{ toLoanAccountId, transferDate, targetAnnualRateBps?, targetTenureMonths?, targetStartDate? }` — the amount is never supplied by the caller, it is the source's `outstandingPrincipal` — settles the source (its unpaid installments come back `cancelled`, with nothing outstanding) and recasts the target's installments still due after the transfer date over the balance it absorbed (`recast: true`, with a new EMI). The three `target*` fields are required only when the target loan has no schedule yet, where the transferred amount starts one, and are ignored when it already has a schedule (400 for a source with no schedule, nothing outstanding, a closed/non-loan target, a target with no installment due after the transfer date, or a source already settled by a transfer — 409 on a concurrent double-transfer). Both loans' tables are derived from the recorded transfer, so `DELETE` reverts both — and removes the target's schedule too when the transfer is what created it.
 - `POST /transactions/bulk-categorize` / `POST /transactions/bulk-payee` / `POST /transactions/bulk-billing-cycle` / `POST /transactions/bulk-tags` / `POST /transactions/bulk-delete`: Apply one category, payee, billing cycle, tag add/remove, or deletion to many of the user's transactions at once. Transactions on closed accounts are skipped (immutable except linking). The same freeze applies to the global `POST /tags/rename` and to `POST /rules/apply`, so a closed account's history cannot be rewritten through a tag rename or a rule re-run.
+- `GET /transactions/export`: Stream the current filter as a CSV attachment (`Date, Description, Amount, Type, Tags, Notes`). It honors the identical query grammar as `GET /transactions`, so it is a flat report over whatever the caller has filtered to — unlike the JSON backup.
 - `POST /statements/parse`: Upload a statement PDF (`file` multipart field, optional `password`, optional `extractor` / `date_format`) to extract transactions. The backend forwards the file to the standalone statement-parser service and returns normalized `{ transactions, summary, pageCount, transactionCount, validationErrors }` ready for preview and import. `validationErrors` carries the parser's per-page reconciliation warnings (a page's rebuilt subtotal did not match the printed one); it is empty when the statement reconciled, and a non-empty list means the extracted rows are suspect — the import preview surfaces it before anything is written. Uploads are capped at 20 MB and rejected with 413 before the multipart body is read. Concurrent forwards are capped server-side (429 when saturated).
+- `GET /statements/extractors`: Proxy the parser service's extractor registry so the client can offer a dropdown of the statement parsers it can run.
 - `GET /paperless/settings` / `PUT /paperless/settings`: Read/update the user's Paperless-ngx integration settings (`{ paperlessUrl, paperlessToken, paperlessTag }`), stored per-user against the `users` row. The Paperless import UI is hidden until both `paperlessUrl` and `paperlessToken` are set. `paperlessTag` is an optional label applied to successfully imported documents.
 - `GET /paperless/documents`: Proxy the user's Paperless-ngx document list (`?pageSize`, default 25, max 100) so statements can be picked manually. Correspondent, document type, and tag names are resolved from Paperless's lookup endpoints.
 - `GET /paperless/documents/:id/file`: Stream a document's original file (e.g. a PDF) for in-browser preview/download.
 - `POST /paperless/import`: Pull a document's original file from the user's Paperless-ngx (`POST { documentId, extractor?, password?, dateFormat? }`), feed it through the statement parser, and return the same normalized result as `/statements/parse` for preview and import. This endpoint only parses — the caller previews the result and then imports via `POST /transactions/import`; pass that document's id in `paperlessDocumentIds` to apply the `paperlessTag` label after the import commits.
+- `GET /rules` / `POST /rules` / `PUT /rules/:id` / `DELETE /rules/:id`: List (highest priority first, joined with the category/payee/account/filter names), create, edit, or delete a rule. Body: `{ pattern, matchType?: "contains"|"starts_with"|"exact" (default contains), categoryId, payeeId?, priority?, addTags?, notes?, accountId?, filterCategoryId?, filterPayeeId?, minAmount?, maxAmount?, txnType?, dateFrom?, dateTo?, isLinked?, isRecurring? }` — every referenced record must be the user's own.
+- `POST /rules/preview`: Report how many currently-uncategorized transactions a hypothetical rule (or rule edit) would categorize, writing nothing. It builds the same predicate `POST /rules/apply` uses, so the preview and a real apply agree by construction.
 - `POST /rules/apply`: Manually trigger categorization rules against the user's uncategorized transactions, applying the highest-priority matching rule's category, payee, tags and note. Transactions on closed accounts are skipped, so re-running rules never rewrites a frozen account's history.
 - `GET /recurring`: List the user's recurring series with joined account/category/payee names and derived `nextDueDate`, `monthlyAmount` (normalized to an estimated monthly cost), and `attachedCount`.
 - `POST /recurring` / `PUT /recurring/:id` / `DELETE /recurring/:id`: Create, partially update, or delete a recurring series. Body: `{ name, type: "debit"|"credit", frequency: "daily"|"weekly"|"monthly"|"yearly", interval?, categoryId?, payeeId?, active?, notes?, ranges? }`, where `ranges` is a list of `{ startDate, endDate?, amount, accountId }` entries (or supply a single `startDate` + `accountId` + `amount`). Each entry covers `[startDate, endDate)` (an omitted end is open-ended); entries must not overlap but may leave gaps, so a subscription can be discontinued and resumed. The series' own `startDate`/`endDate` are derived from the entries. A series is a template only — no transaction is ever created from it.
@@ -239,6 +318,12 @@ The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI sp
 - `POST /recurring/attach` / `POST /recurring/detach`: Link transactions to a series, or unlink them. Body: `{ seriesId, transactionIds }` for attach (400 if the series/txns are not found, 409 if any transaction is already linked to a series — one transaction belongs to at most one series, mirroring loan attachments) and `{ transactionIds }` for detach. Both are explicit user actions.
 - `GET /dashboard/summary`: Retrieve aggregated data for charts. Supports optional `dateFrom`/`dateTo`/`accountId` filters. Pass `groupBy=billing_cycle` with an `accountId` that has a `billingDay` set to frame the entire dashboard around statement periods: the income/expense/transaction totals span the last `cycles` cycles (default 12, max 60), `billingCycleTrend` (one entry per cycle, keyed by label) replaces `monthlyTrend`, the category breakdowns cover the same window, `currentCycle` describes the in-progress period, and recent transactions are the most recent ones within that window. Date-range filters are ignored in this mode.
 - `GET /dashboard/money-flow`: Build the money-flow graph for the Money Flow page — money sources (income categories) → accounts → spending categories → payees — over optional `dateFrom`/`dateTo`/`accountId` filters. Returns `{ nodes, links, totalIncome, totalExpense, linkSummary }`, where each node carries `{ id, name, kind, color, group?, total }` (`kind` is `income`/`account`/`category`/`payee`) and each link is `{ source, target, value }` keyed by node id. The income, category, and payee stages are capped at `limit` nodes (default 12, max 30) with the remainder collapsed into an `Other` node; category nodes are colored by their base group. The graph is acyclic, so `linkSummary` (`[{ type, count, total }]`, per transfer/cashback/refund/bill_payment) reports the user's linked pairs separately instead of drawing account-to-account edges.
+- `GET /dashboard/money-flow/timeline`: Per-period income/expense/net for the Money Flow timeline strip — calendar months by default, or the account's statement periods with `groupBy=billing_cycle` (requires a single account with a billing day) — over the same optional `dateFrom`/`dateTo`/`accountId` filters.
+- `GET /dashboard/cash-flow-calendar`: Per-day income, expense and net for the GitHub-style heatmap over an optional `dateFrom`/`dateTo`/`accountId`. When a single account is supplied the response also carries that account's billing-cycle boundaries and the synthetic summary rows the transaction list shows, so they can be overlaid on the calendar.
+- `GET /links`: List the user's links, optionally filtered by `type` and/or `txnId`, newest first, with both sides joined in (date, description, amount, type, account name).
+- `POST /links` / `DELETE /links/:id`: Link two of the user's transactions (`{ type: "transfer"|"cashback"|"refund"|"bill_payment", fromTxnId, toTxnId, notes? }`) or remove one. A `transfer` re-categorizes both transactions as `Transfer` and swaps their payees to the counterpart account's linked payee; deleting a transfer clears that derived category/payee again, but only on transactions no remaining link still references. Non-transfer links never touched category/payee, so deleting them leaves the user's own categorization intact.
+- `POST /links/bulk` / `POST /links/bulk-delete`: The same create/delete semantics for many links at once (bulk create skips exact duplicates and applies the transfer re-categorization) and returns how many links were written.
+- `GET /links/transfer-suggestions` / `GET /links/cashback-suggestions`: Read-only link candidates, each with a confidence score, `page`/`limit`-paginated (default 50, max 100) newest first. Transfers are debit/credit pairs of the same amount within ±3 days across different accounts that are not already linked; cashbacks pair a reward/refund credit with up to three prior debits on the same account (within 90 days) as the likely originating purchase.
 - `GET /links/cycles`: Circular-money report for an optional `dateFrom`/`dateTo`/`accountId` window. Returns the account-to-account cycles the money-flow Sankey has to net away (kind `reciprocal`) or break (kind `cycle`) to stay acyclic — with the participants in flow order, each leg's gross flow and link-type breakdown, and `net`, the amount that actually circulates the loop — plus `oneSidedFlows`: directed account flows whose counterpart link is missing (a one-way bill payment looks exactly like a half-entered transfer).
 - `GET /groups`: List the category groups visible to the user — the four immutable base groups (`income`, `expense`, `transfer`, `cashback`) plus the user's own custom groups.
 - `POST /groups`: Create a user-owned custom group. Body: `{ id, name, icon?, color? }`.
@@ -247,6 +332,10 @@ The backend exposes a RESTful API under `/api/v1`. A machine-readable OpenAPI sp
 - `POST /categories`: Create a user-owned category in a group they may use (a base/global group or one of their own). Body: `{ name, icon?, color?, groupId }`.
 - `PUT /categories/:id`: Edit a user's own category (name, icon, color, group).
 - `DELETE /categories/:id`: Delete a user's category. In the same transaction its transactions are uncategorized (`category_id` cleared to NULL) and any rules pointing at it are removed. Returns `{ clearedTransactions, deletedRules }`.
+- `GET /payees` / `POST /payees` / `PUT /payees/:id` / `DELETE /payees/:id`: List (alphabetically), create, rename/re-link, or delete tracked payees. Body: `{ name, accountId? }`; a referenced account must be the user's (400) and a duplicate name is rejected (409).
+- `GET /tags`: The user's tag vocabulary as `{ data: [{ name, count }] }` — every distinct tag with the number of transactions carrying it, most-used first. Tags are derived from `transactions.tags`; there is no tag table.
+- `POST /tags/rename`: Rewrite one tag to another across every transaction (`{ from, to }`), collapsing any duplicates the rename creates. Transactions on closed accounts are skipped.
+- `GET /admin/catalog`: The shared global catalog for the admin console — the global groups and global categories, each with the usage counts an admin needs before editing or retiring it (categories per group, transactions per category). Admin-only.
 - `POST /admin/groups` / `POST /admin/categories` / `PUT /admin/categories/:id` / `DELETE /admin/categories/:id`: Admin-only management of global groups and global categories shared by every user (requires the `admin` role).
 
 All endpoints require authentication except the public ones: `/health`, `/openapi.yaml`, and the auth endpoints (`/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`). The login/register endpoints deliver an httpOnly, `SameSite=Lax` access-token cookie (`fintrak_token`, 15 minutes) plus a long-lived refresh-token cookie (`fintrak_refresh`, 30 days, scoped to `/api/v1/auth`). The browser sends both automatically, so neither token is exposed to JavaScript. A bearer `Authorization: Bearer <access-token>` header is still accepted (used by internal tooling/tests). Set the signing secret via the `JWT_SECRET` environment variable (a dev default is used when unset).

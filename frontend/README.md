@@ -22,8 +22,9 @@ Verification before a PR is `bun run build` + `bun run test` + `bun run typechec
 ## API base URL and same-origin authentication
 
 All API calls go through the single client at `src/api/client.ts`. The base URL
-is `import.meta.env.VITE_API_URL`, defaulting to `http://localhost:8080/api/v1`
-in dev and `/api/v1` (same-origin) in the production image.
+is `import.meta.env.VITE_API_URL`, defaulting to `/api/v1` (same-origin) — in
+development the Vite dev server proxies `/api` to `http://localhost:8080`, and
+the production image's nginx proxies `/api/v1` to the backend.
 
 In the Docker/nginx deployment the frontend reverse-proxies `/api/v1` to the
 backend, and authentication uses an httpOnly, `SameSite=Lax` session cookie.

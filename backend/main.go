@@ -205,6 +205,12 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accounts.GET("/:id/loan-schedule", srv.GetLoanSchedule)
 		accounts.PUT("/:id/loan-schedule", srv.UpsertLoanSchedule)
 		accounts.DELETE("/:id/loan-schedule", srv.DeleteLoanSchedule)
+		// Balance transfer between two loan accounts: the source is settled at
+		// its outstanding principal and the target absorbs that amount, which
+		// recasts its remaining installments. Deleting the transfer reverts
+		// both loans, since every derived figure comes from the transfer row.
+		accounts.POST("/:id/loan-transfer", srv.TransferLoanBalance)
+		accounts.DELETE("/:id/loan-transfer/:transferId", srv.DeleteLoanTransfer)
 
 		// Account Types (mutations are admin-only; the type list is shared
 		// reference data that affects balance semantics for every user)

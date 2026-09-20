@@ -1,17 +1,23 @@
+import { useMemo } from "react";
 import { Search, Folder, Tag } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import AccountSelect from "@/components/AccountSelect/AccountSelect";
-import type { CategorySection } from "../../lib/categories";
+import MultiSelect, {
+  type MultiSelectGroup,
+} from "@/components/ui/multi-select";
+import { UNCATEGORIZED, type CategorySection } from "../../lib/categories";
+import { groupAccountsByType } from "../../utils/accountGroups";
 import type { Account, Payee, TagCount } from "../../types";
-import { PAGE_SIZE_OPTIONS } from "./transactionConstants";
+import {
+  PAGE_SIZE_OPTIONS,
+  parseFilterList,
+} from "./transactionConstants";
 
 interface TransactionFiltersProps {
   compactLayout: boolean;
@@ -30,7 +36,9 @@ interface TransactionFiltersProps {
 }
 
 // Search + filter controls above the transactions table, plus the rows-per-page
-// picker floated to the right.
+// picker floated to the right. The account, category, payee, and tag filters
+// are multi-select: each holds a comma-separated list of ids (or tag names) and
+// the API matches a transaction satisfying any entry.
 export default function TransactionFilters({
   compactLayout,
   filters,
@@ -48,6 +56,92 @@ export default function TransactionFilters({
 }: TransactionFiltersProps) {
   const triggerHeight = compactLayout ? "h-8" : "h-10";
 
+  const accountGroups = useMemo<MultiSelectGroup[]>(
+    () =>
+      groupAccountsByType(accounts).map((group) => ({
+        label: group.typeName,
+        options: group.accounts.map((a) => ({
+          value: a.id,
+          triggerLabel: a.name,
+          label: (
+            <span className={a.closed ? "text-muted-foreground" : undefined}>
+              {a.name}
+            </span>
+          ),
+        })),
+      })),
+    [accounts],
+  );
+
+  // One dropdown holds groups and their categories: picking a group filters by
+  // the whole group, picking a category filters by that category.
+  const categoryGroups = useMemo<MultiSelectGroup[]>(
+    () => [
+      {
+        options: [
+          {
+            value: UNCATEGORIZED,
+            triggerLabel: "Uncategorized",
+            label: <span className="font-semibold">Uncategorized</span>,
+          },
+        ],
+      },
+      ...categorySections.map((section) => ({
+        options: [
+          {
+            value: section.group.id,
+            triggerLabel: section.group.name,
+            label: (
+              <span className="flex items-center gap-2 font-semibold">
+                <Folder size={12} className="text-muted-foreground" />
+                {section.group.name}
+              </span>
+            ),
+          },
+          ...section.items.map((c) => ({
+            value: c.id,
+            triggerLabel: c.name,
+            label: c.name,
+            inset: true,
+          })),
+        ],
+      })),
+    ],
+    [categorySections],
+  );
+
+  const payeeGroups = useMemo<MultiSelectGroup[]>(
+    () => [
+      {
+        options: payees.map((p) => ({
+          value: p.id,
+          triggerLabel: p.name,
+          label: p.name,
+        })),
+      },
+    ],
+    [payees],
+  );
+
+  const tagGroups = useMemo<MultiSelectGroup[]>(
+    () => [
+      {
+        options: tags.map((t) => ({
+          value: t.name,
+          triggerLabel: t.name,
+          label: (
+            <span className="flex items-center gap-2">
+              <Tag size={12} className="text-muted-foreground" />
+              {t.name}
+              <span className="text-muted-foreground">({t.count})</span>
+            </span>
+          ),
+        })),
+      },
+    ],
+    [tags],
+  );
+
   return (
     <>
       <div className={`relative w-full ${compactLayout ? "mb-3" : "mb-5"}`}>
@@ -63,100 +157,52 @@ export default function TransactionFilters({
       <div
         className={`flex flex-wrap items-center ${compactLayout ? "gap-2 mb-3" : "gap-3 mb-5"}`}
       >
-        <AccountSelect
-          accounts={accounts}
-          value={String(filters.accountId || "all")}
-          onValueChange={(v) => onFilterChange("accountId", v === "all" ? "" : v)}
+        <MultiSelect
+          values={parseFilterList(filters.accountId)}
+          onValuesChange={(values) =>
+            onFilterChange("accountId", values.join(","))
+          }
+          groups={accountGroups}
           placeholder="All Accounts"
           ariaLabel="Filter by account"
           triggerClassName={`${triggerHeight} bg-background`}
-          extraItems={<SelectItem value="all">All Accounts</SelectItem>}
         />
-        <Select
-          value={String(filters.groupId || filters.categoryId || "all")}
-          onValueChange={(v) => {
-            if (v === "all") {
-              onFilterChange("categoryId", "");
-              onFilterChange("groupId", "");
-            } else if (groupIds.has(v)) {
-              onFilterChange("categoryId", "");
-              onFilterChange("groupId", v);
-            } else {
-              onFilterChange("groupId", "");
-              onFilterChange("categoryId", v);
-            }
+        <MultiSelect
+          values={[
+            ...parseFilterList(filters.categoryId),
+            ...parseFilterList(filters.groupId),
+          ]}
+          onValuesChange={(values) => {
+            // The API takes groups and categories in two parameters, and
+            // matches any of them, so a selection is split by kind.
+            const selectedGroups = values.filter((v) => groupIds.has(v));
+            const selectedCategories = values.filter((v) => !groupIds.has(v));
+            onFilterChange("categoryId", selectedCategories.join(","));
+            onFilterChange("groupId", selectedGroups.join(","));
           }}
-        >
-          <SelectTrigger
-            aria-label="Filter by category"
-            className={`${triggerHeight} bg-background`}
-          >
-            <SelectValue placeholder="All Categories" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Categories</SelectItem>
-            <SelectItem value="uncategorized" className="font-semibold">
-              Uncategorized
-            </SelectItem>
-            {categorySections.map((s) => (
-              <SelectGroup key={s.group.id}>
-                <SelectItem value={s.group.id} className="font-semibold">
-                  <span className="flex items-center gap-2">
-                    <Folder size={12} className="text-muted-foreground" />
-                    {s.group.name}
-                  </span>
-                </SelectItem>
-                {s.items.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={String(filters.payeeId || "all")}
-          onValueChange={(v) => onFilterChange("payeeId", v === "all" ? "" : v)}
-        >
-          <SelectTrigger
-            aria-label="Filter by payee"
-            className={`${triggerHeight} bg-background`}
-          >
-            <SelectValue placeholder="All Payees" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Payees</SelectItem>
-            {payees.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={String(filters.tags || "all")}
-          onValueChange={(v) => onFilterChange("tags", v === "all" ? "" : v)}
-        >
-          <SelectTrigger
-            aria-label="Filter by tag"
-            className={`${triggerHeight} bg-background`}
-          >
-            <SelectValue placeholder="All Tags" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Tags</SelectItem>
-            {tags.map((t) => (
-              <SelectItem key={t.name} value={t.name}>
-                <span className="flex items-center gap-2">
-                  <Tag size={12} className="text-muted-foreground" />
-                  {t.name}
-                  <span className="text-muted-foreground">({t.count})</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          groups={categoryGroups}
+          placeholder="All Categories"
+          ariaLabel="Filter by category"
+          triggerClassName={`${triggerHeight} bg-background`}
+        />
+        <MultiSelect
+          values={parseFilterList(filters.payeeId)}
+          onValuesChange={(values) =>
+            onFilterChange("payeeId", values.join(","))
+          }
+          groups={payeeGroups}
+          placeholder="All Payees"
+          ariaLabel="Filter by payee"
+          triggerClassName={`${triggerHeight} bg-background`}
+        />
+        <MultiSelect
+          values={parseFilterList(filters.tags)}
+          onValuesChange={(values) => onFilterChange("tags", values.join(","))}
+          groups={tagGroups}
+          placeholder="All Tags"
+          ariaLabel="Filter by tag"
+          triggerClassName={`${triggerHeight} bg-background`}
+        />
         <Select
           value={String(filters.type || "all")}
           onValueChange={(v) => onFilterChange("type", v === "all" ? "" : v)}

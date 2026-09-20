@@ -1100,7 +1100,8 @@ func TestGetTransactionsGroupFilter(t *testing.T) {
 
 // TestGetTransactionsCombinedFiltersShareArgs pins the QUAL-6 invariant: the
 // count query and the page query receive the identical filter args, so the
-// reported total always matches what the page can return.
+// reported total always matches what the page can return. The account
+// dimension comes first, so its loanAccountId arg precedes the category one.
 func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.GET("/transactions", srv.GetTransactions)
@@ -1108,7 +1109,7 @@ func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
 	userID := testUserID()
 	loanID := uuid.New()
 
-	filterArgs := []any{userID, "expense", "2024-01-01", "debit", loanID.String()}
+	filterArgs := []any{userID, loanID.String(), "expense", "2024-01-01", "debit"}
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id").
 		WithArgs(filterArgs...).
@@ -1125,6 +1126,149 @@ func TestGetTransactionsCombinedFiltersShareArgs(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsAccountFilterList pins the comma-separated accountId
+// grammar the multi-select filter writes: every selected account travels in one
+// parameter and the predicate matches a transaction in any of them. Two
+// accounts also mean no summary rows are computed.
+func TestGetTransactionsAccountFilterList(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	first, second := uuid.New(), uuid.New()
+	txnID := uuid.New()
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id = \\$1 AND \\(t.account_id = \\$2 OR t.account_id = \\$3\\)").
+		WithArgs(userID, first.String(), second.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+
+	rows := txnListRow(txnID, first, now, "Coffee", 250.5, "debit", nil, nil, "", nil, "", now, "Savings", "", "", "", false, nil, "", nil, "")
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, first.String(), second.String(), 50, 0).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET",
+		"/transactions?accountId="+first.String()+","+second.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var res struct {
+		Data []models.Transaction `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 1)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsAccountFilterListMixedLoan pins the account dimension: a
+// selection mixing plain and loan accounts narrows to the plain accounts'
+// transactions OR the loan accounts' attached EMI payments.
+func TestGetTransactionsAccountFilterListMixedLoan(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	plain, loan := uuid.New(), uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id = \\$1 AND \\(t.account_id = \\$2 OR EXISTS \\(SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = \\$3\\)\\)").
+		WithArgs(userID, plain.String(), loan.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, plain.String(), loan.String(), 50, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+
+	req, _ := http.NewRequest("GET",
+		"/transactions?accountId="+plain.String()+"&loanAccountId="+loan.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsCategoryFilterList pins the category dimension: groups and
+// categories are picked in one control, so both parameters feed a single OR-ed
+// predicate and the uncategorized sentinel joins it without an arg.
+func TestGetTransactionsCategoryFilterList(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	catID, groupID := uuid.New(), uuid.New()
+	txnID := uuid.New()
+	accountID := uuid.New()
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id = \\$1 AND \\(t.category_id IS NULL OR t.category_id = \\$2 OR EXISTS \\(SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = \\$3\\)\\)").
+		WithArgs(userID, catID.String(), groupID.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+
+	rows := txnListRow(txnID, accountID, now, "Coffee", 250.5, "debit", &catID, nil, "", nil, "", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, catID.String(), groupID.String(), 50, 0).
+		WillReturnRows(rows)
+
+	req, _ := http.NewRequest("GET",
+		"/transactions?categoryId=uncategorized,"+catID.String()+"&groupId="+groupID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var res struct {
+		Data []models.Transaction `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 1)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsPayeeFilterList pins the payee dimension: the none
+// sentinel and concrete payees share one OR-ed predicate.
+func TestGetTransactionsPayeeFilterList(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	userID := testUserID()
+	payeeID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.user_id = \\$1 AND \\(t.payee_id IS NULL OR t.payee_id = \\$2\\)").
+		WithArgs(userID, payeeID.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+		WithArgs(userID, payeeID.String(), 50, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+
+	req, _ := http.NewRequest("GET", "/transactions?payeeId=none,"+payeeID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetTransactionsAccountFilterListRejectsMalformed pins that a malformed id
+// anywhere in the list is a 400, not a database error.
+func TestGetTransactionsAccountFilterListRejectsMalformed(t *testing.T) {
+	r, srv, _ := newTransactionTestRouter(t)
+	r.GET("/transactions", srv.GetTransactions)
+
+	req, _ := http.NewRequest("GET",
+		"/transactions?accountId="+uuid.New().String()+",not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid accountId")
 }
 
 func TestCreateTransaction(t *testing.T) {

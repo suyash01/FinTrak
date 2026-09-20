@@ -35,10 +35,13 @@ type Accounts struct {
 
 	// detailAccount, cyclesAccount and scheduleAccount record which account
 	// asked for the data now in flight, so a slow response opens the overlay for
-	// that account even if the cursor has moved meanwhile.
+	// that account even if the cursor has moved meanwhile. transferAccount is
+	// the loan that gave a balance away, whose recast table is shown once the
+	// transfer reports back.
 	detailAccount   api.Account
 	cyclesAccount   api.Account
 	scheduleAccount api.Account
+	transferAccount api.Account
 
 	// deletedTransactions carries DeleteAccount's count back from the mutation
 	// goroutine: the number only exists once the call has returned, and a
@@ -63,6 +66,7 @@ type accountsKeys struct {
 	Loan       key.Binding
 	SetLoan    key.Binding
 	DeleteLoan key.Binding
+	Transfer   key.Binding
 }
 
 func newAccountsKeys() accountsKeys {
@@ -77,6 +81,7 @@ func newAccountsKeys() accountsKeys {
 		Loan:       key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "loan schedule")),
 		SetLoan:    key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "set schedule")),
 		DeleteLoan: key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "delete schedule")),
+		Transfer:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "transfer balance")),
 	}
 }
 
@@ -106,6 +111,7 @@ func (a *Accounts) Keys() []key.Binding {
 	return []key.Binding{
 		a.keys.Refresh, a.keys.New, a.keys.Edit, a.keys.Delete, a.keys.Detail,
 		a.keys.Cycles, a.keys.Export, a.keys.Loan, a.keys.SetLoan, a.keys.DeleteLoan,
+		a.keys.Transfer,
 	}
 }
 
@@ -196,6 +202,11 @@ func (a *Accounts) afterMutation(tag string) tea.Cmd {
 	case "accounts.schedule.save":
 		// Show the table the API generated from the accepted terms.
 		return a.loadSchedule(a.scheduleAccount)
+	case "accounts.transfer":
+		// The transfer regenerated both loans' tables; the source's shows the
+		// cancelled installments and the transfer row, and the balances the
+		// list prints moved with it.
+		return tea.Batch(a.reload(), a.loadSchedule(a.transferAccount))
 	case "accounts.delete":
 		a.ctx.Notify(LevelSuccess, "%s", a.deletionNote())
 	}
@@ -238,6 +249,11 @@ func (a *Accounts) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case keyMatches(a.keys.DeleteLoan, msg):
 		if account, ok := a.current(); ok {
 			a.confirmDeleteSchedule(account)
+		}
+		return nil
+	case keyMatches(a.keys.Transfer, msg):
+		if account, ok := a.current(); ok {
+			a.openTransferForm(account)
 		}
 		return nil
 	}
@@ -533,8 +549,9 @@ func (a *Accounts) loadSchedule(account api.Account) tea.Cmd {
 }
 
 // openScheduleForm sets or replaces the loan's terms. The API generates the
-// amortization table from them, so the form collects principal, rate, tenure
-// and start date and nothing else.
+// amortization table from them, so the form collects principal, the processing
+// fee withheld from it, rate, tenure and the start and disbursal dates, and
+// nothing else.
 func (a *Accounts) openScheduleForm(account api.Account) {
 	if account.AccountTypeID != "loan" {
 		a.ctx.Notify(LevelError, "%s is not a loan/EMI account", account.Name)
@@ -543,8 +560,12 @@ func (a *Accounts) openScheduleForm(account api.Account) {
 	a.scheduleAccount = account
 	principal := AmountField("Principal", "")
 	principal.Validate = accountPositiveAmount
+	fee := AmountField("Processing fee", "")
+	fee.Validate = accountFee
+	fee.Help = "deducted from the principal before amortization; blank means no fee"
 	fields := []Field{
 		principal,
+		fee,
 		{
 			Label: "Annual rate (bps)", Kind: FieldText, Value: "", Width: 8,
 			Validate: requiredInt, Help: "basis points: 950 = 9.50%",
@@ -554,6 +575,10 @@ func (a *Accounts) openScheduleForm(account api.Account) {
 			Validate: accountTenure, Help: "whole months, 1-600",
 		},
 		{Label: "Start date", Kind: FieldText, Value: nowDate(), Width: 14, Validate: requiredDate},
+		{
+			Label: "Disbursal date", Kind: FieldText, Value: "", Width: 14,
+			Validate: optionalDate, Help: "YYYY-MM-DD; blank bills the first period as a whole month",
+		},
 	}
 	a.ctx.Open(NewForm("accounts.schedule.save", "Loan terms · "+account.Name, fields, func(f *Form) tea.Cmd {
 		amount, err := api.ParseAmount(f.Value("Principal"))
@@ -563,11 +588,18 @@ func (a *Accounts) openScheduleForm(account api.Account) {
 			f.SetError(err)
 			return nil
 		}
+		fee, err := accountOptionalAmount(f.Value("Processing fee"))
+		if err != nil {
+			f.SetError(err)
+			return nil
+		}
 		req := api.LoanScheduleRequest{
 			Principal:     amount,
+			ProcessingFee: fee,
 			AnnualRateBps: f.IntValue("Annual rate (bps)"),
 			TenureMonths:  f.IntValue("Tenure (months)"),
 			StartDate:     f.Value("Start date"),
+			DisbursalDate: strings.TrimSpace(f.Value("Disbursal date")),
 		}
 		return act("accounts.schedule.save", "loan schedule saved", true, func(ctx context.Context) error {
 			_, err := a.ctx.Client.SetLoanSchedule(ctx, account.ID, req)
@@ -591,6 +623,94 @@ func (a *Accounts) confirmDeleteSchedule(account api.Account) {
 			return err
 		})
 	}).WithDetail("The account and its transactions are untouched; only the terms are forgotten."))
+}
+
+// openTransferForm moves the cursor loan's remaining principal to another loan:
+// the source is settled at its outstanding balance on the transfer date and the
+// target's remaining installments are recast over that amount. The date
+// defaults to today, which is when the source's balance is measured.
+//
+// The target terms are only used when the target has no schedule of its own —
+// one that has a schedule recasts it — so they are checked against the target's
+// fetched schedule when the transfer is submitted rather than guessed here.
+func (a *Accounts) openTransferForm(source api.Account) {
+	if source.AccountTypeID != "loan" {
+		a.ctx.Notify(LevelError, "%s is not a loan/EMI account", source.Name)
+		return
+	}
+	targets := a.transferTargets(source)
+	if len(targets) == 0 {
+		a.ctx.Notify(LevelError, "no other loan/EMI account to transfer the balance to")
+		return
+	}
+	fields := []Field{
+		SelectField("Target account", targets[0].Value, targets, true),
+		{Label: "Transfer date", Kind: FieldText, Value: nowDate(), Width: 14, Validate: requiredDate},
+		{
+			Label: "Target rate (bps)", Kind: FieldText, Value: "", Width: 8,
+			Validate: positiveInt, Help: "only when the target has no schedule: 950 = 9.50%",
+		},
+		{
+			Label: "Target tenure (months)", Kind: FieldText, Value: "", Width: 8,
+			Validate: optionalTenure, Help: "only when the target has no schedule: 1-600",
+		},
+		{
+			Label: "Target start date", Kind: FieldText, Value: "", Width: 14,
+			Validate: optionalDate, Help: "the target's first installment date; only without a schedule",
+		},
+	}
+	a.transferAccount = source
+	sourceID := source.ID
+	a.ctx.Open(NewForm("accounts.transfer", "Balance transfer · "+source.Name, fields, func(f *Form) tea.Cmd {
+		// The terms are read here, on the event loop: the lookup below runs off
+		// it, where the form must not be touched.
+		rateText := strings.TrimSpace(f.Value("Target rate (bps)"))
+		tenureText := strings.TrimSpace(f.Value("Target tenure (months)"))
+		startDate := strings.TrimSpace(f.Value("Target start date"))
+		rate := f.IntValue("Target rate (bps)")
+		tenure := f.IntValue("Target tenure (months)")
+		req := api.LoanTransferRequest{
+			ToLoanAccountID: f.Value("Target account"),
+			TransferDate:    f.Value("Transfer date"),
+		}
+		return act("accounts.transfer", "balance transferred", true, func(ctx context.Context) error {
+			// The target's own schedule decides whether its terms are used at
+			// all: the API recasts a table that exists and ignores them, and
+			// requires them when there is nothing to recast.
+			detail, err := a.ctx.Client.LoanSchedule(ctx, req.ToLoanAccountID)
+			if err != nil {
+				return err
+			}
+			if detail.Schedule == nil {
+				if rateText == "" || tenureText == "" || startDate == "" {
+					return errText("the target loan has no schedule — give its rate, tenure and first installment date")
+				}
+				req.TargetAnnualRateBps = api.Int(rate)
+				req.TargetTenureMonths = api.Int(tenure)
+				req.TargetStartDate = startDate
+			}
+			_, err = a.ctx.Client.TransferLoanBalance(ctx, sourceID, req)
+			return err
+		})
+	}))
+}
+
+// transferTargets lists the accounts a balance transfer may name: every other
+// Loan / EMI account, because a loan cannot absorb its own balance. A closed one
+// is offered but marked, since the API refuses to put new debt on it.
+func (a *Accounts) transferTargets(source api.Account) []Option {
+	options := make([]Option, 0, len(a.ctx.Ref.Accounts))
+	for _, account := range a.ctx.Ref.Accounts {
+		if account.ID == source.ID || account.AccountTypeID != "loan" {
+			continue
+		}
+		label := account.Name
+		if account.Closed {
+			label += " · closed"
+		}
+		options = append(options, Option{Value: account.ID, Label: label})
+	}
+	return options
 }
 
 // accountCurrency accepts a blank currency (the API stores INR) or a
@@ -652,6 +772,31 @@ func accountPositiveAmount(value string) error {
 	return nil
 }
 
+// accountFee validates the processing fee, which is optional: a blank field is
+// a loan without a fee. The API refuses a negative fee and one that is not
+// below the principal; only the sign can be judged here.
+func accountFee(value string) error {
+	_, err := accountOptionalAmount(value)
+	return err
+}
+
+// accountOptionalAmount parses an optional amount, where blank means "none"
+// rather than a missing value.
+func accountOptionalAmount(value string) (api.Amount, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	amount, err := api.ParseAmount(value)
+	if err != nil {
+		return "", err
+	}
+	if amount.IsNegative() {
+		return "", errText("expected an amount of zero or more")
+	}
+	return amount, nil
+}
+
 // accountTenure accepts the 1-600 month range the loan terms allow.
 func accountTenure(value string) error {
 	if err := requiredInt(value); err != nil {
@@ -662,6 +807,15 @@ func accountTenure(value string) error {
 		return errText("expected a tenure between 1 and 600 months")
 	}
 	return nil
+}
+
+// optionalTenure accepts a blank tenure — the form asks for one only when the
+// target loan has no schedule to recast — or the range the terms allow.
+func optionalTenure(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return accountTenure(value)
 }
 
 // accountExportName derives a default CSV filename from the account name. Only
@@ -736,15 +890,18 @@ func accountsCyclesText(account api.Account, cycles []api.BillingCycle) string {
 func accountsLoanScheduleText(detail api.LoanScheduleDetail) string {
 	if detail.Schedule == nil {
 		return "This loan has no schedule yet.\n\n" +
-			"The terms (principal, annual rate, tenure and start date) are stored per\n" +
-			"loan and the API generates the amortization table from them."
+			"The terms (principal, processing fee, annual rate, tenure, start and\n" +
+			"disbursal dates) are stored per loan and the API generates the\n" +
+			"amortization table from them."
 	}
 	schedule := detail.Schedule
 	var b strings.Builder
 	fmt.Fprintf(&b, "Principal          %s\n", schedule.Principal.Display())
+	fmt.Fprintf(&b, "Processing fee     %s (reference only)\n", schedule.ProcessingFee.Display())
 	fmt.Fprintf(&b, "Annual rate        %d bps\n", schedule.AnnualRateBps)
 	fmt.Fprintf(&b, "Tenure             %s\n", pluralise(schedule.TenureMonths, "month", "months"))
 	fmt.Fprintf(&b, "Start date         %s\n", formatDate(schedule.StartDate))
+	fmt.Fprintf(&b, "Disbursal date     %s\n", formatDate(schedule.DisbursalDate))
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "EMI                %s\n", detail.EMI.Display())
 	fmt.Fprintf(&b, "Total interest     %s\n", detail.TotalInterest.Display())
@@ -755,22 +912,62 @@ func accountsLoanScheduleText(detail api.LoanScheduleDetail) string {
 	fmt.Fprintf(&b, "Outstanding        %s\n", detail.OutstandingPrincipal.Display())
 	fmt.Fprintf(&b, "Next due           %s\n", formatDatePtr(detail.NextDueDate))
 	fmt.Fprintf(&b, "Completed          %t\n", detail.Completed)
+	fmt.Fprintf(&b, "Settled on         %s\n", formatDatePtr(detail.SettledOn))
+	b.WriteString("\n")
+	b.WriteString(accountsTransfersText(detail))
 	b.WriteString("\nInstallments\n")
 	if len(detail.Entries) == 0 {
 		b.WriteString("  none\n")
 		return b.String()
 	}
-	b.WriteString("    #  due         amount         principal      interest       balance        paid\n")
+	b.WriteString("    #  due         amount         principal      interest       balance        state\n")
 	for _, entry := range detail.Entries {
-		paid := "no"
-		if entry.Paid {
-			paid = "yes"
-		}
 		fmt.Fprintf(&b, "  %3d  %-10s  %-13s  %-13s  %-13s  %-13s  %s\n",
 			entry.Number, formatDate(entry.DueDate), entry.Amount.Display(), entry.Principal.Display(),
-			entry.Interest.Display(), entry.Balance.Display(), paid)
+			entry.Interest.Display(), entry.Balance.Display(), loanEntryState(entry))
 	}
 	return b.String()
+}
+
+// accountsTransfersText renders the balance transfers a loan took part in from
+// its own point of view: "out" is one that settled this loan, "in" one whose
+// amount it absorbed. The counterparty is the other side of the transfer.
+func accountsTransfersText(detail api.LoanScheduleDetail) string {
+	var b strings.Builder
+	b.WriteString("Transfers\n")
+	if len(detail.Transfers) == 0 {
+		b.WriteString("  none\n")
+		return b.String()
+	}
+	loanID := detail.Schedule.LoanAccountID
+	b.WriteString("  dir  date        counterparty                    amount\n")
+	for _, transfer := range detail.Transfers {
+		direction, counterparty := "in ", defaultTo(transfer.FromLoanAccountName, transfer.FromLoanAccountID)
+		if transfer.FromLoanAccountID == loanID {
+			direction, counterparty = "out", defaultTo(transfer.ToLoanAccountName, transfer.ToLoanAccountID)
+		}
+		fmt.Fprintf(&b, "  %s  %-10s  %-28s  %s\n",
+			direction, formatDate(transfer.TransferDate), truncate(counterparty, 28), transfer.Amount.Display())
+	}
+	return b.String()
+}
+
+// loanEntryState names an installment's state. A transfer-voided installment is
+// cancelled and can no longer be paid; a recast one was regenerated over a
+// transferred balance, and either can also be covered by a payment.
+func loanEntryState(entry api.LoanScheduleEntry) string {
+	if entry.Cancelled {
+		return "cancelled"
+	}
+	switch {
+	case entry.Recast && entry.Paid:
+		return "recast · paid"
+	case entry.Recast:
+		return "recast"
+	case entry.Paid:
+		return "paid"
+	}
+	return "due"
 }
 
 // headerLine summarises the list: how many accounts there are, how many are
@@ -811,7 +1008,7 @@ func (a *Accounts) detailLine(width int) string {
 	}
 	parts = append(parts, "colour "+defaultTo(account.Color, "—"))
 	if account.AccountTypeID == "loan" {
-		parts = append(parts, "loan/EMI — l for the schedule")
+		parts = append(parts, "loan/EMI — l for the schedule, t to transfer")
 	}
 	return a.ctx.Theme.Subtle.Render(truncate(strings.Join(parts, " · "), width))
 }
@@ -823,6 +1020,6 @@ func (a *Accounts) View(width, height int) string {
 	if detail := a.detailLine(width); detail != "" {
 		parts = append(parts, detail)
 	}
-	parts = append(parts, "n new · e edit · d delete · enter detail · b cycles · x export · l loan schedule")
+	parts = append(parts, "n new · e edit · d delete · enter detail · b cycles · x export · l loan schedule · t transfer")
 	return trimToBox(strings.Join(parts, "\n"), width, height)
 }

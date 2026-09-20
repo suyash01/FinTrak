@@ -970,11 +970,11 @@ func TestIntegrationLoanSchedule(t *testing.T) {
 	}, http.StatusOK, &saved)
 
 	require.NotNil(t, saved.Schedule)
-	require.Equal(t, money.FromFloat(88.85), saved.EMI)
+	require.Equal(t, money.FromFloat(89), saved.EMI)
 	require.Len(t, saved.Entries, 12)
 	require.Equal(t, "2024-04-01", saved.Entries[0].DueDate.Format("2006-01-02"))
 	require.Equal(t, money.FromFloat(10), saved.Entries[0].Interest)
-	require.Equal(t, money.FromFloat(78.85), saved.Entries[0].Principal)
+	require.Equal(t, money.FromFloat(79), saved.Entries[0].Principal)
 	require.Equal(t, money.FromFloat(1000), saved.OutstandingPrincipal)
 	require.NotNil(t, saved.NextDueDate)
 
@@ -997,8 +997,8 @@ func TestIntegrationLoanSchedule(t *testing.T) {
 	require.Equal(t, emi1, *progress.Entries[0].TransactionID)
 	require.Equal(t, money.FromFloat(167.70), progress.PaidAmount) // 88.85*2 - 10
 	require.Equal(t, money.FromFloat(19.21), progress.InterestPaid)
-	require.Equal(t, money.FromFloat(158.49), progress.PrincipalPaid)
-	require.Equal(t, money.FromFloat(841.51), progress.OutstandingPrincipal)
+	require.Equal(t, money.FromFloat(158.79), progress.PrincipalPaid)
+	require.Equal(t, money.FromFloat(841.21), progress.OutstandingPrincipal)
 	require.False(t, progress.Completed)
 
 	// The schedule survives a backup round trip.
@@ -1012,6 +1012,117 @@ func TestIntegrationLoanSchedule(t *testing.T) {
 	var removed models.LoanScheduleDetail
 	a.call(http.MethodGet, "/api/v1/accounts/"+loan.ID.String()+"/loan-schedule", nil, http.StatusOK, &removed)
 	require.Nil(t, removed.Schedule)
+}
+
+// TestIntegrationLoanFeeStubAndTransfer covers the three loan-account
+// behaviors end to end against PostgreSQL: a processing fee recorded for
+// reference without touching the table, a first period that is not a whole month
+// billed with day-count interest, and a balance transfer that settles one loan
+// while recasting the other (including starting the target's schedule when it
+// had none).
+func TestIntegrationLoanFeeStubAndTransfer(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("loantransfer@example.com")
+	bank := a.createAccount("Bank", "bank", nil)
+	source := a.createAccount("Old Loan", "loan", nil)
+	target := a.createAccount("New Loan", "loan", nil)
+
+	// 1,000.00 sanctioned at 12% over 12 months, a 50.00 processing fee, and a
+	// disbursal on 2024-02-20 against a first installment on 2024-04-05: a
+	// broken 45-day period.
+	var terms models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+source.ID.String()+"/loan-schedule", map[string]any{
+		"principal":     1000,
+		"processingFee": 50,
+		"annualRateBps": 1200,
+		"tenureMonths":  12,
+		"startDate":     "2024-04-05",
+		"disbursalDate": "2024-02-20",
+	}, http.StatusOK, &terms)
+
+	// The fee is stored for reference and never amortized: the table repays the
+	// whole 1,000.00. The 45-day first period is charged 45/30 of a month's
+	// interest and solved into the EMI, so all twelve installments stay level.
+	require.Equal(t, money.FromFloat(50), terms.Schedule.ProcessingFee)
+	require.Equal(t, money.FromFloat(1000), terms.OutstandingPrincipal)
+	require.Equal(t, money.FromFloat(90), terms.EMI)
+	require.Equal(t, money.FromFloat(15), terms.Entries[0].Interest) // 45 days prorated over a 30-day month
+	require.Equal(t, money.FromFloat(9.25), terms.Entries[1].Interest)
+	require.Equal(t, "2024-04-05", terms.Entries[0].DueDate.Format("2006-01-02"))
+	require.False(t, terms.Entries[0].Recast)
+
+	// Two installments paid leaves 844.25 of principal.
+	emi1 := a.createTransaction(bank.ID, nil, "2024-04-05", "EMI Apr", 90, "debit")
+	emi2 := a.createTransaction(bank.ID, nil, "2024-05-05", "EMI May", 90, "debit")
+	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{emi1, emi2},
+		"loanAccountId":  source.ID,
+	}, http.StatusOK, nil)
+
+	var paid models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+source.ID.String()+"/loan-schedule", nil, http.StatusOK, &paid)
+	require.Equal(t, 2, paid.PaidInstallments)
+	require.Equal(t, money.FromFloat(844.25), paid.OutstandingPrincipal)
+
+	// The target has no terms yet, so the transfer starts its schedule from the
+	// amount that moves — which must be counted once, not twice.
+	var moved models.LoanTransferResult
+	a.call(http.MethodPost, "/api/v1/accounts/"+source.ID.String()+"/loan-transfer", map[string]any{
+		"toLoanAccountId":     target.ID,
+		"transferDate":        "2024-06-01",
+		"targetAnnualRateBps": 900,
+		"targetTenureMonths":  24,
+		"targetStartDate":     "2024-07-01",
+	}, http.StatusOK, &moved)
+
+	require.Equal(t, money.FromFloat(844.25), moved.Transfer.Amount)
+	require.Equal(t, target.ID, moved.Transfer.ToLoanAccountID)
+	require.Equal(t, money.FromFloat(844.25), moved.Target.Schedule.Principal)
+	require.Equal(t, money.FromFloat(844.25), moved.Target.OutstandingPrincipal)
+	require.Equal(t, money.FromFloat(39), moved.Target.EMI)
+	require.Len(t, moved.Target.Entries, 24)
+	require.False(t, moved.Target.Entries[0].Recast)
+
+	// The source is settled: its paid installments stand, the rest are void, and
+	// nothing is outstanding.
+	require.NotNil(t, moved.Source.SettledOn)
+	require.True(t, moved.Source.Completed)
+	require.Zero(t, moved.Source.OutstandingPrincipal)
+	require.Nil(t, moved.Source.NextDueDate)
+	require.True(t, moved.Source.Entries[1].Paid)
+	require.False(t, moved.Source.Entries[1].Cancelled)
+	require.True(t, moved.Source.Entries[2].Cancelled)
+	require.Len(t, moved.Source.Transfers, 1)
+
+	// The source has nothing left to move, so a second transfer is refused.
+	a.call(http.MethodPost, "/api/v1/accounts/"+source.ID.String()+"/loan-transfer", map[string]any{
+		"toLoanAccountId": target.ID,
+		"transferDate":    "2024-07-01",
+	}, http.StatusBadRequest, nil)
+
+	// Undoing the transfer reverts both sides, including the schedule it opened.
+	a.call(http.MethodDelete,
+		"/api/v1/accounts/"+source.ID.String()+"/loan-transfer/"+moved.Transfer.ID.String(), nil, http.StatusOK, nil)
+
+	var reverted models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+source.ID.String()+"/loan-schedule", nil, http.StatusOK, &reverted)
+	require.Nil(t, reverted.SettledOn)
+	require.False(t, reverted.Completed)
+	require.Equal(t, money.FromFloat(844.25), reverted.OutstandingPrincipal)
+	require.False(t, reverted.Entries[2].Cancelled)
+	require.NotNil(t, reverted.NextDueDate)
+
+	var targetAfter models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+target.ID.String()+"/loan-schedule", nil, http.StatusOK, &targetAfter)
+	require.Nil(t, targetAfter.Schedule)
+
+	// And the transfer row itself is gone.
+	var bundle models.BackupBundle
+	a.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+	require.Empty(t, bundle.LoanTransfers)
+	require.Len(t, bundle.LoanSchedules, 1)
+	require.Equal(t, money.FromFloat(50), bundle.LoanSchedules[0].ProcessingFee)
+	require.Equal(t, "2024-02-20", bundle.LoanSchedules[0].DisbursalDate)
 }
 
 // TestIntegrationRuleApplyRunsAgainstPostgres covers R-1: appendRulePredicate
