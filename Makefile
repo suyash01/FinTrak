@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-tui vet vet-tui build-backend build-frontend build-tui openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-tui test-tui-cover test-tui-cover-check vet vet-tui build-backend build-frontend build-tui openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -19,6 +19,8 @@ help:
 	@echo "  make test-integration   Run backend integration tests (Docker + testcontainers)"
 	@echo "  make test-parser        Run statement parser tests"
 	@echo "  make test-tui           Run TUI tests"
+	@echo "  make test-tui-cover     Run TUI tests with a coverage profile"
+	@echo "  make test-tui-cover-check  Run TUI tests and enforce the coverage floor"
 	@echo "  make vet                Run go vet on backend"
 	@echo "  make vet-tui            Run go vet on the TUI"
 	@echo "  make build-backend      Verify backend compiles"
@@ -76,6 +78,16 @@ vet-tui:
 
 test-tui:
 	cd tui && go test ./...
+
+test-tui-cover:
+	cd tui && go test -covermode=atomic -coverprofile=coverage.out ./...
+
+# The floor is enforced by the backend's covercheck (stdlib-only), the same tool
+# and the same 20% baseline the CI job uses. Ratchet the number up as screen
+# tests land.
+test-tui-cover-check:
+	cd tui && go test -covermode=atomic -coverprofile=coverage.out ./...
+	cd backend && go run ./cmd/covercheck -profile ../tui/coverage.out -min 20
 
 build-frontend:
 	cd frontend && bun run build

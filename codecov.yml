@@ -1,7 +1,8 @@
 # Codecov configuration.
-# Backend, frontend, and statement parser upload separately with flags so each
-# part of the monorepo reports its own coverage. carryforward keeps the last
-# known coverage when a job uploads nothing for a commit (e.g. a backend-only PR).
+# Backend, frontend, statement parser, and TUI client upload separately with
+# flags so each part of the monorepo reports its own coverage. carryforward keeps
+# the last known coverage when a job uploads nothing for a commit (e.g. a
+# backend-only PR).
 coverage:
   status:
     project:
@@ -23,6 +24,14 @@ coverage:
         threshold: 1%
         flags:
           - parser
+      tui:
+        # The render-heavy screens in internal/ui are barely covered, so the
+        # floor sits just above the current baseline. Ratchet it up as screen
+        # tests land; `make test-tui-cover-check` enforces the same number.
+        target: 21%
+        threshold: 1%
+        flags:
+          - tui
     patch:
       default:
         target: auto
@@ -50,4 +59,8 @@ flags:
   parser:
     paths:
       - statement_parser/
+    carryforward: true
+  tui:
+    paths:
+      - tui/
     carryforward: true
