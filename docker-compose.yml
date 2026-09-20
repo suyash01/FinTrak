@@ -3,6 +3,11 @@
 # The optional log viewer (dozzle) mounts the Docker socket, so it is behind
 # the "debug" profile and is not started by default:
 #   docker compose --profile debug up -d
+#
+# The terminal client's SSH door is also opt-in (it exposes an extra port and
+# accepts logins, so it should be started deliberately):
+#   docker compose --profile tui up -d
+#   ssh -p 2222 localhost
 
 services:
   db:
@@ -98,6 +103,30 @@ services:
     networks:
       - backend-net
 
+  # Terminal client served over SSH. Opt-in via the "tui" profile: it publishes
+  # an extra port and accepts authentication. The host key lives on a volume so
+  # it survives restarts (a regenerated key makes clients refuse the host).
+  tui:
+    container_name: tui
+    profiles:
+      - tui
+    build:
+      context: ./tui
+    ports:
+      - "2222:2222"
+    environment:
+      - FINTRAK_API_URL=http://backend:8080/api/v1
+      - FINTRAK_SSH_AUTH=password
+      # - FINTRAK_SSH_AUTHORIZED_KEYS=/home/appuser/.config/fintrak-tui/authorized_keys
+    volumes:
+      - tui_config:/home/appuser/.config/fintrak-tui
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - backend-net
+
   dozzle:
     container_name: dozzle
     image: amir20/dozzle:latest
@@ -116,3 +145,4 @@ networks:
 volumes:
   pgdata:
   dozzle_data:
+  tui_config:

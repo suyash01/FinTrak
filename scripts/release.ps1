@@ -66,7 +66,19 @@ try {
     Pop-Location
 }
 
-# 6. Tag and push (triggers the publish workflow)
+# 6. TUI: vet and tests (mirrors the CI gate)
+Push-Location "$repoRoot\tui"
+try {
+    go vet ./...
+    if ($LASTEXITCODE -ne 0) { throw "go vet (tui) failed" }
+
+    go test ./...
+    if ($LASTEXITCODE -ne 0) { throw "TUI tests failed" }
+} finally {
+    Pop-Location
+}
+
+# 7. Tag and push (triggers the publish workflow)
 git tag -a $Version -m "Release $Version"
 if ($LASTEXITCODE -ne 0) { throw "Failed to create tag $Version" }
 

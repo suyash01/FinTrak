@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser vet build-backend build-frontend openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-tui vet vet-tui build-backend build-frontend build-tui openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -18,9 +18,12 @@ help:
 	@echo "  make test-cover-check   Run backend tests and enforce the coverage floor"
 	@echo "  make test-integration   Run backend integration tests (Docker + testcontainers)"
 	@echo "  make test-parser        Run statement parser tests"
+	@echo "  make test-tui           Run TUI tests"
 	@echo "  make vet                Run go vet on backend"
+	@echo "  make vet-tui            Run go vet on the TUI"
 	@echo "  make build-backend      Verify backend compiles"
 	@echo "  make build-frontend     Build frontend production bundle"
+	@echo "  make build-tui          Verify the TUI compiles"
 	@echo "  make openapi-check      Verify openapi.yaml covers every registered route"
 	@echo "  make release VERSION=v1.2.3  Test, tag, and push a release"
 
@@ -64,6 +67,15 @@ vet:
 
 build-backend:
 	cd backend && go build ./...
+
+build-tui:
+	cd tui && go build ./...
+
+vet-tui:
+	cd tui && go vet ./...
+
+test-tui:
+	cd tui && go test ./...
 
 build-frontend:
 	cd frontend && bun run build

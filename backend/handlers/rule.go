@@ -137,10 +137,17 @@ func (srv *Server) CreateRule(c *gin.Context) {
 
 	var rule models.Rule
 	err := srv.db.QueryRow(c,
+		// Every SELECT-list parameter is cast to its column type. Without the
+		// casts the statement depends on the server inferring the types of
+		// parameters that appear in no other typed context, and over the extended
+		// protocol that inference fails ("could not determine data type of
+		// parameter $5"), so creating a rule answered 500.
 		`INSERT INTO rules (user_id, pattern, match_type, category_id, payee_id, priority,
 		     account_id, filter_category_id, filter_payee_id, min_amount, max_amount, txn_type,
 		     date_from, date_to, is_linked, is_recurring, add_tags, notes)
-		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+		 SELECT $1::uuid, $2::text, $3::text, $4::uuid, $5::uuid, $6::int, $7::uuid, $8::uuid, $9::uuid,
+		        $10::bigint, $11::bigint, $12::text, $13::date, $14::date, $15::boolean, $16::boolean,
+		        $17::text[], $18::text
 		 WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))
 		   AND ($5::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $5 AND p.user_id = $1))
 		   AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = $7 AND a.user_id = $1))

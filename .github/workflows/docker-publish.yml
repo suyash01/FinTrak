@@ -165,11 +165,52 @@ jobs:
           flags: parser
           fail_ci_if_error: false
 
+  test-tui:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: tui/go.sum
+      - name: Verify go.mod is tidy
+        run: |
+          cd tui
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Run go vet
+        run: |
+          cd tui
+          go vet ./...
+      - name: Run tests
+        run: |
+          cd tui
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Upload tui coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tui-coverage
+          path: tui/coverage.out
+          if-no-files-found: ignore
+      - name: Upload tui coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./tui/coverage.out
+          flags: tui
+          fail_ci_if_error: false
+
   # Single aggregate validation gate. Every publish job depends on this so a
   # tagged release can never push one component's image while another
   # component's tests (or the backend integration suite) are still red.
   validate:
-    needs: [test-backend, test-backend-integration, test-frontend, test-parser]
+    needs: [test-backend, test-backend-integration, test-frontend, test-parser, test-tui]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any validation job did not succeed
@@ -194,6 +235,8 @@ jobs:
             context: ./frontend
           - name: statement-parser
             context: ./statement_parser
+          - name: tui
+            context: ./tui
     steps:
       - uses: actions/checkout@v7
 

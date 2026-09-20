@@ -142,6 +142,36 @@ Paperless-ngx API tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY`. Ciph
 
 If a token cannot be decrypted after rotation, the Paperless integration surfaces an error and the token must be re-entered; no other data is affected.
 
+### Terminal client (`tui/`)
+
+A keyboard-driven terminal client lives in `tui/` (Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea)). It is a pure client of the same REST API — no extra endpoint, no schema change — so it covers what the web frontend covers: filtered transaction search, inline create/edit/delete, multi-select bulk actions, statement and Paperless imports, CSV/JSON exports and restore, the dashboard, the money-flow graph with its timeline, the cash-flow calendar, and the recurring/loan tooling.
+
+```bash
+cd tui
+go run .                                        # default API http://localhost:8080/api/v1
+go run . -api https://fintrak.example.com/api/v1
+```
+
+It can also *be* the server: `-ssh` serves the TUI over SSH, one session per connection.
+
+```bash
+go run . -ssh -ssh-addr :2222 -ssh-auth password
+ssh -p 2222 localhost          # username = FinTrak email, password = FinTrak password
+```
+
+With `-ssh-auth password` (the default) the SSH credentials are exchanged for an API session during authentication, so the session opens already signed in. `-ssh-auth key` instead accepts a public key listed in `-ssh-authorized-keys`; a key only opens the door, so the TUI then shows its own sign-in screen, because a public key cannot be traded for an API session. `any` accepts both. The host key (default `<config dir>/fintrak-tui/ssh_host_ed25519_key`) is generated on first start and must be kept stable — a regenerated key makes every client refuse the host.
+
+The door is deliberately narrow: port, agent and reverse forwarding, subsystems such as `sftp`, and any other channel request are refused; sessions are capped (`-ssh-max-sessions`), authentication is throttled per remote address (`-ssh-auth-per-minute`), and idle/absolute timeouts apply. Because every session reaches the API from the door's address, it shares that address's rate-limit bucket (the backend keys auth throttling per-IP *and* per-account); the local per-address limiter stops one client from spending that shared budget. Run `go run . -h` for every flag and its `FINTRAK_*` environment equivalent — the container image is configured entirely through them.
+
+The terminal signs in with the account credentials for the same reason it works at all: a non-browser client cannot read the browser's httpOnly session cookie, so it captures the two tokens from the `Set-Cookie` headers instead and refreshes them on a 401.
+
+In the dev stack the door is opt-in (it publishes a port and accepts logins):
+
+```bash
+docker compose --profile tui up -d
+ssh -p 2222 localhost
+```
+
 ---
 
 ## 📂 Project Structure
@@ -154,6 +184,7 @@ If a token cannot be decrypted after rotation, the Paperless integration surface
 │   ├── handlers     # API Request Handlers
 │   ├── models       # Database Schemas & Types
 │   └── main.go      # Application Entry point
+├── tui              # Go terminal client (Bubble Tea), local or served over SSH
 ├── frontend         # React + TypeScript + Vite Application (bun)
 │   ├── src
 │   │   ├── api      # API Client Calls
