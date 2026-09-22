@@ -1063,9 +1063,12 @@ func TestIntegrationLoanFeeStubAndTransfer(t *testing.T) {
 	a.call(http.MethodGet, "/api/v1/accounts/"+source.ID.String()+"/loan-schedule", nil, http.StatusOK, &paid)
 	require.Equal(t, 2, paid.PaidInstallments)
 	require.Equal(t, money.FromFloat(844.25), paid.OutstandingPrincipal)
+	require.NotNil(t, paid.LastPaidDate)
+	require.Equal(t, "2024-05-05", paid.LastPaidDate.Format("2006-01-02"))
 
 	// The target has no terms yet, so the transfer starts its schedule from the
-	// amount that moves — which must be counted once, not twice.
+	// payoff that moves — which must be counted once, not twice. The payoff is
+	// the 844.25 still owed plus the 27 days of interest since the May EMI.
 	var moved models.LoanTransferResult
 	a.call(http.MethodPost, "/api/v1/accounts/"+source.ID.String()+"/loan-transfer", map[string]any{
 		"toLoanAccountId":     target.ID,
@@ -1075,10 +1078,12 @@ func TestIntegrationLoanFeeStubAndTransfer(t *testing.T) {
 		"targetStartDate":     "2024-07-01",
 	}, http.StatusOK, &moved)
 
-	require.Equal(t, money.FromFloat(844.25), moved.Transfer.Amount)
+	require.Equal(t, money.FromFloat(851.85), moved.Transfer.Amount)
+	require.Equal(t, money.FromFloat(844.25), moved.Transfer.Principal)
+	require.Equal(t, money.FromFloat(7.60), moved.Transfer.AccruedInterest)
 	require.Equal(t, target.ID, moved.Transfer.ToLoanAccountID)
-	require.Equal(t, money.FromFloat(844.25), moved.Target.Schedule.Principal)
-	require.Equal(t, money.FromFloat(844.25), moved.Target.OutstandingPrincipal)
+	require.Equal(t, money.FromFloat(851.85), moved.Target.Schedule.Principal)
+	require.Equal(t, money.FromFloat(851.85), moved.Target.OutstandingPrincipal)
 	require.Equal(t, money.FromFloat(39), moved.Target.EMI)
 	require.Len(t, moved.Target.Entries, 24)
 	require.False(t, moved.Target.Entries[0].Recast)
@@ -1123,6 +1128,138 @@ func TestIntegrationLoanFeeStubAndTransfer(t *testing.T) {
 	require.Len(t, bundle.LoanSchedules, 1)
 	require.Equal(t, money.FromFloat(50), bundle.LoanSchedules[0].ProcessingFee)
 	require.Equal(t, "2024-02-20", bundle.LoanSchedules[0].DisbursalDate)
+}
+
+// TestIntegrationLoanTakeoverAndDisbursement covers the refinance shape end to
+// end against PostgreSQL: a new loan takes the old loan's balance out of its own
+// disbursement (leaving its amortization alone), and the disbursement is then
+// reconciled against the bank credit that actually arrived.
+func TestIntegrationLoanTakeoverAndDisbursement(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("takeover@example.com")
+	bank := a.createAccount("Bank", "bank", nil)
+	oldLoan := a.createAccount("Old Loan", "loan", nil)
+	newLoan := a.createAccount("New Loan", "loan", nil)
+
+	// The old loan: 1,000.00 at 12% over 12 months.
+	var oldTerms models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+oldLoan.ID.String()+"/loan-schedule", map[string]any{
+		"principal": 1000, "annualRateBps": 1200, "tenureMonths": 12, "startDate": "2024-04-01",
+	}, http.StatusOK, &oldTerms)
+	require.Equal(t, money.FromFloat(89), oldTerms.EMI)
+
+	// The new loan has its own principal: 3,000.00 at 9% over 24 months.
+	var newTerms models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-schedule", map[string]any{
+		"principal": 3000, "annualRateBps": 900, "tenureMonths": 24, "startDate": "2024-04-01",
+	}, http.StatusOK, &newTerms)
+	require.Equal(t, money.FromFloat(138), newTerms.EMI)
+	require.NotNil(t, newTerms.Disbursement)
+	require.Equal(t, money.FromFloat(3000), newTerms.Disbursement.Net)
+
+	// Two EMIs paid on the old loan leaves 841.21.
+	emi1 := a.createTransaction(bank.ID, nil, "2024-04-01", "EMI Apr", 89, "debit")
+	emi2 := a.createTransaction(bank.ID, nil, "2024-05-01", "EMI May", 89, "debit")
+	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{emi1, emi2},
+		"loanAccountId":  oldLoan.ID,
+	}, http.StatusOK, nil)
+
+	// A payoff quote for the same date answers the same amount, because the
+	// quote and the transfer share one computation.
+	var quoted models.LoanPayoff
+	a.call(http.MethodGet, "/api/v1/accounts/"+oldLoan.ID.String()+"/loan-payoff?date=2024-06-01", nil, http.StatusOK, &quoted)
+	require.Equal(t, money.FromFloat(849.90), quoted.Payoff)
+	require.Equal(t, money.FromFloat(841.21), quoted.OutstandingPrincipal)
+	require.Equal(t, money.FromFloat(8.69), quoted.AccruedInterest)
+	require.Equal(t, 31, quoted.Days)
+	require.Equal(t, "2024-05-01", quoted.FromDate.Format("2006-01-02"))
+
+	// The takeover settles the old loan out of the new one's disbursement.
+	var moved models.LoanTransferResult
+	a.call(http.MethodPost, "/api/v1/accounts/"+oldLoan.ID.String()+"/loan-transfer", map[string]any{
+		"toLoanAccountId": newLoan.ID,
+		"transferDate":    "2024-06-01",
+		"mode":            "takeover",
+	}, http.StatusOK, &moved)
+
+	require.Equal(t, models.LoanTransferTakeover, moved.Transfer.Mode)
+	// 841.21 of principal plus the 31 days of interest since the May EMI.
+	require.Equal(t, money.FromFloat(849.90), moved.Transfer.Amount)
+	require.Equal(t, money.FromFloat(841.21), moved.Transfer.Principal)
+	require.Equal(t, money.FromFloat(8.69), moved.Transfer.AccruedInterest)
+	// The old loan is settled exactly as before.
+	require.NotNil(t, moved.Source.SettledOn)
+	require.True(t, moved.Source.Completed)
+	require.Zero(t, moved.Source.OutstandingPrincipal)
+	// The new loan's own table is untouched.
+	require.Equal(t, money.FromFloat(3000), moved.Target.Schedule.Principal)
+	require.Equal(t, money.FromFloat(138), moved.Target.EMI)
+	require.Equal(t, money.FromFloat(3000), moved.Target.OutstandingPrincipal)
+	require.False(t, moved.Target.Entries[0].Recast)
+	// But it released 841.21 less.
+	require.NotNil(t, moved.Target.Disbursement)
+	require.Equal(t, money.FromFloat(849.90), moved.Target.Disbursement.PaidOut)
+	require.Equal(t, money.FromFloat(2150.10), moved.Target.Disbursement.Net)
+
+	// The bank credit that actually arrived reconciles with it.
+	credit := a.createTransaction(bank.ID, nil, "2024-06-02", "New Loan disbursement", 2150.10, "credit")
+	var verified models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-disbursement",
+		map[string]any{"transactionId": credit}, http.StatusOK, &verified)
+	require.NotNil(t, verified.Disbursement)
+	require.True(t, verified.Disbursement.Verified)
+	require.Zero(t, verified.Disbursement.Difference)
+	require.NotNil(t, verified.Disbursement.CreditTransactionID)
+	require.Equal(t, credit, *verified.Disbursement.CreditTransactionID)
+
+	// A credit that does not match is reported, not rejected.
+	short := a.createTransaction(bank.ID, nil, "2024-06-03", "Short credit", 2000, "credit")
+	var mismatch models.LoanScheduleDetail
+	a.call(http.MethodPut, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-disbursement",
+		map[string]any{"transactionId": short}, http.StatusOK, &mismatch)
+	require.False(t, mismatch.Disbursement.Verified)
+	require.Equal(t, money.FromFloat(-150.10), mismatch.Disbursement.Difference)
+
+	// The credit that released a loan is not a repayment: it cannot be attached
+	// as an EMI payment.
+	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{short},
+		"loanAccountId":  newLoan.ID,
+	}, http.StatusConflict, nil)
+
+	// Undoing the takeover puts the disbursement back and un-settles the source,
+	// leaving the new loan's own terms alone.
+	a.call(http.MethodDelete,
+		"/api/v1/accounts/"+oldLoan.ID.String()+"/loan-transfer/"+moved.Transfer.ID.String(), nil, http.StatusOK, nil)
+
+	var reverted models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-schedule", nil, http.StatusOK, &reverted)
+	require.NotNil(t, reverted.Schedule)
+	require.Equal(t, money.FromFloat(3000), reverted.Schedule.Principal)
+	require.Zero(t, reverted.Disbursement.PaidOut)
+	require.Equal(t, money.FromFloat(3000), reverted.Disbursement.Net)
+	// The linked credit now over-reports the disbursement, which is the point.
+	require.False(t, reverted.Disbursement.Verified)
+	require.Equal(t, money.FromFloat(-1000), reverted.Disbursement.Difference)
+
+	var sourceAfter models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+oldLoan.ID.String()+"/loan-schedule", nil, http.StatusOK, &sourceAfter)
+	require.Nil(t, sourceAfter.SettledOn)
+	require.Equal(t, money.FromFloat(841.21), sourceAfter.OutstandingPrincipal)
+
+	// Unlinking forgets the credit, and is idempotent.
+	a.call(http.MethodDelete, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-disbursement", nil, http.StatusOK, nil)
+	var unlinked models.LoanScheduleDetail
+	a.call(http.MethodGet, "/api/v1/accounts/"+newLoan.ID.String()+"/loan-schedule", nil, http.StatusOK, &unlinked)
+	require.Nil(t, unlinked.Disbursement.CreditTransactionID)
+	require.False(t, unlinked.Disbursement.Verified)
+
+	var bundle models.BackupBundle
+	a.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+	require.Len(t, bundle.LoanSchedules, 2)
+	require.Empty(t, bundle.LoanTransfers)
+	require.Empty(t, bundle.LoanDisbursements)
 }
 
 // TestIntegrationRuleApplyRunsAgainstPostgres covers R-1: appendRulePredicate

@@ -7,8 +7,14 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import LoanScheduleDialog from "./LoanScheduleDialog";
-import { formatCurrency } from "../../utils/formatters";
-import type { Account, LoanScheduleDetail } from "../../types";
+import { formatCurrency, formatDate } from "../../utils/formatters";
+import type {
+  Account,
+  LoanDisbursement,
+  LoanPayoff,
+  LoanScheduleDetail,
+  Transaction,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -22,8 +28,13 @@ if (!Element.prototype.scrollIntoView) {
 const { apiMock, toastMock, domainMock } = vi.hoisted(() => ({
   apiMock: {
     getLoanSchedule: vi.fn(),
+    getLoanPayoff: vi.fn(),
     saveLoanSchedule: vi.fn(),
     deleteLoanSchedule: vi.fn(),
+    linkLoanDisbursement: vi.fn(),
+    unlinkLoanDisbursement: vi.fn(),
+    getTransactions: vi.fn(),
+    bulkLoan: vi.fn(),
     transferLoanBalance: vi.fn(),
     deleteLoanTransfer: vi.fn(),
   },
@@ -60,6 +71,59 @@ const accounts: Account[] = [
   { ...account, id: "loan-3", name: "Closed Loan", closed: true },
   { ...account, id: "bank-1", name: "Savings", accountTypeId: "bank" },
 ];
+
+function disbursement(
+  overrides: Partial<LoanDisbursement> = {},
+): LoanDisbursement {
+  return {
+    sanctioned: 1000,
+    processingFee: 50,
+    paidOut: 0,
+    net: 950,
+    creditTransactionId: "credit-1",
+    creditAmount: 950,
+    verified: true,
+    difference: 0,
+    ...overrides,
+  };
+}
+
+function credit(
+  id: string,
+  accountId: string,
+  accountName: string,
+): Transaction {
+  return {
+    id,
+    accountId,
+    accountName,
+    date: "2024-03-28T00:00:00Z",
+    description: "Loan credit",
+    amount: 950,
+    type: "credit",
+  };
+}
+
+// The dialog initials the transfer form to today and quotes the payoff for that
+// date, so the fixtures and the assertions share the same value.
+const TODAY = new Date().toISOString().slice(0, 10);
+
+// The payoff the API quotes for a transfer date: the outstanding principal plus
+// the interest accrued since the last EMI payment, i.e. what a balance transfer
+// settles. The figures come from the lender's own statement, so the tests never
+// have to add them up.
+function payoff(overrides: Partial<LoanPayoff> = {}): LoanPayoff {
+  return {
+    loanAccountName: "Car Loan",
+    asOf: TODAY,
+    fromDate: "2024-04-01",
+    days: 75,
+    outstandingPrincipal: 1956632.46,
+    accruedInterest: 26292.25,
+    payoff: 1982924.71,
+    ...overrides,
+  };
+}
 
 function detail(overrides: Partial<LoanScheduleDetail> = {}): LoanScheduleDetail {
   const schedule = {
@@ -112,6 +176,7 @@ function detail(overrides: Partial<LoanScheduleDetail> = {}): LoanScheduleDetail
     transfers: [],
     nextDueDate: "2024-05-01T00:00:00Z",
     completed: false,
+    disbursement: disbursement(),
     ...overrides,
   };
 }
@@ -125,6 +190,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   domainMock.useDomainData.mockReturnValue({ accounts });
   apiMock.getLoanSchedule.mockResolvedValue(detail());
+  apiMock.getLoanPayoff.mockResolvedValue(payoff());
+  apiMock.getTransactions.mockResolvedValue({
+    data: [],
+    total: 0,
+    page: 1,
+    pages: 0,
+  });
 });
 
 describe("LoanScheduleDialog", () => {
@@ -133,7 +205,9 @@ describe("LoanScheduleDialog", () => {
 
     expect(await screen.findByText("Car Loan — Amortization")).toBeInTheDocument();
     expect(screen.getByText("Outstanding principal")).toBeInTheDocument();
-    expect(screen.getByText("Processing fee")).toBeInTheDocument();
+    // The summary and the disbursement breakdown both report the fee.
+    expect(screen.getAllByText("Processing fee")).toHaveLength(2);
+    expect(screen.getByText("Net released")).toBeInTheDocument();
     expect(screen.getByText("Interest paid")).toBeInTheDocument();
     expect(screen.getByText("1 of 12 installments paid")).toBeInTheDocument();
 
@@ -144,6 +218,35 @@ describe("LoanScheduleDialog", () => {
     expect(screen.getByText("Paid")).toBeInTheDocument();
     // The EMI shows in the summary and on both installments.
     expect(screen.getAllByText(formatCurrency(88.85))).toHaveLength(3);
+  });
+
+  it("unlinks the payment covering an installment and reloads the schedule", async () => {
+    const user = userEvent.setup();
+    apiMock.bulkLoan.mockResolvedValue(null);
+    renderDialog();
+
+    // Only the installment that carries a payment can have it detached; the
+    // tooltip spells out that the later matches shift up.
+    const unlink = await screen.findAllByRole("button", {
+      name: "Unlink the payment covering this installment",
+    });
+    expect(unlink).toHaveLength(1);
+    expect(unlink[0].getAttribute("title")).toContain(
+      "the later matches shift up",
+    );
+
+    await user.click(unlink[0]);
+
+    await waitFor(() =>
+      expect(apiMock.bulkLoan).toHaveBeenCalledWith({
+        transactionIds: ["t1"],
+        loanAccountId: null,
+      }),
+    );
+    expect(toastMock.success).toHaveBeenCalledWith(
+      "Payment unlinked from this loan",
+    );
+    await waitFor(() => expect(apiMock.getLoanSchedule).toHaveBeenCalledTimes(2));
   });
 
   it("shows the terms form when the loan has no schedule yet", async () => {
@@ -303,7 +406,10 @@ describe("LoanScheduleDialog", () => {
             toLoanAccountId: "loan-2",
             toLoanAccountName: "Home Loan",
             amount: 431.15,
+            principal: 422,
+            accruedInterest: 9.15,
             transferDate: "2024-06-15T00:00:00Z",
+            mode: "recast",
             createdAt: "2024-06-15T00:00:00Z",
           },
         ],
@@ -312,15 +418,25 @@ describe("LoanScheduleDialog", () => {
     renderDialog();
 
     // The processing fee is shown for reference and the totals come from the
-    // payload; the fee itself is never amortized into them.
-    expect(await screen.findByText("Processing fee")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(50))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(66.19))).toBeInTheDocument();
+    // payload; the fee itself is never amortized into them. It shows in the
+    // summary and in the disbursement breakdown.
+    expect(
+      await screen.findByText(formatCurrency(66.19)),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Processing fee")).toHaveLength(2);
+    expect(screen.getAllByText(formatCurrency(50))).toHaveLength(2);
     // The cancelled installment is voided by the transfer; the recast one was
     // regenerated by it.
     expect(screen.getByText("Settled")).toBeInTheDocument();
     expect(screen.getByText("Recast")).toBeInTheDocument();
     expect(screen.getByText(/Settled by balance transfer on 15 Jun 2024/)).toBeInTheDocument();
+    // The transfer reconciles with the lender: the amount it settled is shown
+    // alongside the principal and the interest the payoff carried.
+    expect(
+      screen.getByText(
+        `${formatCurrency(422)} principal · ${formatCurrency(9.15)} accrued interest`,
+      ),
+    ).toBeInTheDocument();
     // A settled loan cannot be transferred again, and the out-transfer can be
     // undone.
     expect(
@@ -343,7 +459,10 @@ describe("LoanScheduleDialog", () => {
             toLoanAccountId: "loan-2",
             toLoanAccountName: "Home Loan",
             amount: 500,
+            principal: 480,
+            accruedInterest: 20,
             transferDate: "2024-06-15T00:00:00Z",
+            mode: "recast",
             createdAt: "2024-06-15T00:00:00Z",
           },
         ],
@@ -386,6 +505,12 @@ describe("LoanScheduleDialog", () => {
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("option", { name: "Home Loan" }));
 
+    // A target without a schedule opens one from the amount, so it takes terms
+    // and no mode.
+    expect(
+      screen.queryByRole("combobox", { name: "Transfer mode" }),
+    ).not.toBeInTheDocument();
+
     fireEvent.change(screen.getByLabelText("Transfer date"), {
       target: { value: "2024-06-15" },
     });
@@ -422,8 +547,13 @@ describe("LoanScheduleDialog", () => {
     await user.click(
       await screen.findByRole("button", { name: /Transfer balance/ }),
     );
-    // The amount that will move is this loan's outstanding principal.
-    expect(screen.getByText("Amount to transfer")).toBeInTheDocument();
+    // The amount that will move is the API's quoted payoff on the transfer
+    // date — principal plus accrued interest, never just the outstanding
+    // principal, and never arithmetic done here.
+    expect(screen.queryByText("Amount to transfer")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(formatCurrency(1982924.71)),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox"));
     await user.click(await screen.findByRole("option", { name: "Home Loan" }));
@@ -435,6 +565,11 @@ describe("LoanScheduleDialog", () => {
     expect(
       screen.queryByLabelText("First installment date"),
     ).not.toBeInTheDocument();
+    // A target with a schedule takes a mode, defaulting to absorbing the
+    // balance into its remaining installments.
+    expect(
+      screen.getByRole("combobox", { name: "Transfer mode" }),
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Transfer date"), {
       target: { value: "2024-06-15" },
@@ -445,8 +580,343 @@ describe("LoanScheduleDialog", () => {
       expect(apiMock.transferLoanBalance).toHaveBeenCalledWith("loan-1", {
         toLoanAccountId: "loan-2",
         transferDate: "2024-06-15",
+        mode: "recast",
       }),
     );
+  });
+
+  it("shows the quoted payoff breakdown for the transfer date", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Transfer balance/ }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.getLoanPayoff).toHaveBeenCalledWith("loan-1", TODAY),
+    );
+    // Principal, accrued interest and the payoff all come from the quote; the
+    // dialog never does money arithmetic of its own.
+    expect(screen.getByText("Payoff")).toBeInTheDocument();
+    expect(
+      await screen.findByText(formatCurrency(1982924.71)),
+    ).toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(1956632.46))).toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(26292.25))).toBeInTheDocument();
+    // The accrual names the day it runs from and how many days it covers.
+    expect(
+      screen.getByText(
+        new RegExp(`over 75 days from ${formatDate("2024-04-01")}`),
+      ),
+    ).toHaveTextContent(
+      `${formatCurrency(26292.25)} of interest accrued over 75 days`,
+    );
+  });
+
+  it("re-quotes the payoff when the transfer date changes", async () => {
+    const user = userEvent.setup();
+    apiMock.getLoanPayoff
+      .mockResolvedValueOnce(payoff())
+      .mockResolvedValueOnce(
+        payoff({
+          asOf: "2024-06-15",
+          outstandingPrincipal: 900000,
+          accruedInterest: 30000,
+          payoff: 930000,
+        }),
+      );
+    renderDialog();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Transfer balance/ }),
+    );
+    expect(
+      await screen.findByText(formatCurrency(1982924.71)),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Transfer date"), {
+      target: { value: "2024-06-15" },
+    });
+
+    await waitFor(() =>
+      expect(apiMock.getLoanPayoff).toHaveBeenLastCalledWith(
+        "loan-1",
+        "2024-06-15",
+      ),
+    );
+    // The displayed amount follows the date, because the payoff is a function
+    // of it.
+    expect(await screen.findByText(formatCurrency(930000))).toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(900000))).toBeInTheDocument();
+    expect(
+      screen.queryByText(formatCurrency(1982924.71)),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the form usable while the quote is in flight and after it fails", async () => {
+    const user = userEvent.setup();
+    let rejectQuote: (err: Error) => void = () => {};
+    apiMock.getLoanPayoff.mockImplementation(
+      () =>
+        new Promise<LoanPayoff>((_resolve, reject) => {
+          rejectQuote = reject;
+        }),
+    );
+    renderDialog();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Transfer balance/ }),
+    );
+
+    expect(await screen.findByText("Quoting the payoff…")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Confirm transfer" }),
+    ).toBeEnabled();
+
+    // A quote that cannot be produced is reported, but it does not gate the
+    // transfer: the endpoint settles the loan at the payoff itself.
+    rejectQuote(new Error("This loan has no amortization schedule"));
+    expect(
+      await screen.findByText(/No payoff quote for this date/),
+    ).toBeInTheDocument();
+    expect(toastMock.error).toHaveBeenCalledWith(
+      "This loan has no amortization schedule",
+    );
+    expect(
+      screen.getByRole("button", { name: "Confirm transfer" }),
+    ).toBeEnabled();
+  });
+
+  it("shows Matched when the linked credit equals the net disbursement", async () => {
+    renderDialog();
+
+    expect(await screen.findByText("Net released")).toBeInTheDocument();
+    // The net and the linked credit are both shown, and they agree.
+    expect(screen.getAllByText(formatCurrency(950))).toHaveLength(2);
+    expect(screen.getByText("Bank credit")).toBeInTheDocument();
+    expect(screen.getByText("Matched")).toBeInTheDocument();
+    expect(screen.queryByText(/Off by/)).not.toBeInTheDocument();
+  });
+
+  it("shows the difference when the linked credit does not match", async () => {
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        disbursement: disbursement({
+          creditAmount: 900,
+          verified: false,
+          difference: -50,
+        }),
+      }),
+    );
+    renderDialog();
+
+    expect(await screen.findByText(/Off by/)).toHaveTextContent(
+      `Off by ${formatCurrency(50)}`,
+    );
+    expect(screen.queryByText("Matched")).not.toBeInTheDocument();
+  });
+
+  it("links a credit found by net amount and by the widened window", async () => {
+    const user = userEvent.setup();
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        disbursement: disbursement({
+          creditTransactionId: undefined,
+          creditAmount: undefined,
+          verified: false,
+          difference: 0,
+        }),
+      }),
+    );
+    apiMock.getTransactions.mockResolvedValue({
+      data: [
+        credit("c-savings", "bank-1", "Savings"),
+        credit("c-loan", "loan-2", "Home Loan"),
+      ],
+      total: 2,
+      page: 1,
+      pages: 1,
+    });
+    apiMock.linkLoanDisbursement.mockResolvedValue(detail());
+    renderDialog();
+
+    // The exact net amount is searched with no date bounds; the window falls
+    // back to 240 days before the first installment, because this schedule has
+    // no disbursal date and the money is released before the EMIs start.
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalledTimes(2));
+    expect(apiMock.getTransactions).toHaveBeenNthCalledWith(1, {
+      type: "credit",
+      amount: 950,
+      limit: 100,
+    });
+    expect(apiMock.getTransactions).toHaveBeenNthCalledWith(2, {
+      type: "credit",
+      dateFrom: "2023-08-05",
+      dateTo: "2024-05-16",
+      limit: 100,
+    });
+
+    const picker = await screen.findByRole("combobox", {
+      name: "Link a bank credit",
+    });
+    await waitFor(() => expect(picker).toBeEnabled());
+    await user.click(picker);
+    // A credit sitting on another loan can never have funded this one, and the
+    // two queries return the same credit only once.
+    expect(
+      screen.queryByRole("option", { name: /Home Loan/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("option", { name: /Savings/ }),
+    ).toHaveLength(1);
+    await user.click(await screen.findByRole("option", { name: /Savings/ }));
+
+    await waitFor(() =>
+      expect(apiMock.linkLoanDisbursement).toHaveBeenCalledWith("loan-1", {
+        transactionId: "c-savings",
+      }),
+    );
+    expect(await screen.findByText("Matched")).toBeInTheDocument();
+  });
+
+  it("anchors the window on the disbursal date when the loan has one", async () => {
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        schedule: {
+          ...detail().schedule!,
+          disbursalDate: "2024-03-01T00:00:00Z",
+        },
+        disbursement: disbursement({ creditTransactionId: undefined }),
+      }),
+    );
+    renderDialog();
+
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalledTimes(2));
+    expect(apiMock.getTransactions).toHaveBeenNthCalledWith(2, {
+      type: "credit",
+      dateFrom: "2024-01-16",
+      dateTo: "2024-04-15",
+      limit: 100,
+    });
+  });
+
+  it("shows a credit already linked to another loan but does not offer it", async () => {
+    const user = userEvent.setup();
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        disbursement: disbursement({
+          creditTransactionId: undefined,
+          creditAmount: undefined,
+          verified: false,
+          difference: 0,
+        }),
+      }),
+    );
+    apiMock.getTransactions.mockResolvedValue({
+      data: [
+        {
+          ...credit("c-attached", "bank-1", "Savings"),
+          loanAccountId: "loan-2",
+          loanAccountName: "Home Loan",
+        },
+      ],
+      total: 1,
+      page: 1,
+      pages: 1,
+    });
+    renderDialog();
+
+    const picker = await screen.findByRole("combobox", {
+      name: "Link a bank credit",
+    });
+    await waitFor(() => expect(picker).toBeEnabled());
+    await user.click(picker);
+
+    // The record is visible, labelled with why it cannot be linked, and the
+    // API's 409 is never triggered.
+    const option = await screen.findByRole("option", {
+      name: /already linked to Home Loan/,
+    });
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(option);
+    expect(apiMock.linkLoanDisbursement).not.toHaveBeenCalled();
+  });
+
+  it("explains the empty state with the window it searched", async () => {
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        disbursement: disbursement({
+          creditTransactionId: undefined,
+          creditAmount: undefined,
+          verified: false,
+          difference: 0,
+        }),
+      }),
+    );
+    renderDialog();
+
+    expect(await screen.findByText(/No credit of/)).toHaveTextContent(
+      `No credit of ${formatCurrency(950)} between ${formatDate("2023-08-05")} and ` +
+        `${formatDate("2024-05-16")}. Import the bank statement covering the ` +
+        `disbursement, or set this loan's disbursal date.`,
+    );
+  });
+
+  it("posts a takeover without target terms when the target has a schedule", async () => {
+    const user = userEvent.setup();
+    apiMock.getLoanSchedule
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(
+        detail({
+          disbursement: disbursement({
+            sanctioned: 5000,
+            processingFee: 0,
+            net: 5000,
+            creditAmount: 5000,
+          }),
+        }),
+      );
+    apiMock.transferLoanBalance.mockResolvedValue({});
+    // The takeover pays the quoted payoff out of the target's disbursement.
+    apiMock.getLoanPayoff.mockResolvedValue(
+      payoff({
+        outstandingPrincipal: 921.15,
+        accruedInterest: 78.85,
+        payoff: 1000,
+      }),
+    );
+    renderDialog();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Transfer balance/ }),
+    );
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Home Loan" }));
+
+    await user.click(screen.getByRole("combobox", { name: "Transfer mode" }));
+    await user.click(await screen.findByRole("option", { name: /Take over/ }));
+
+    // A takeover shows what the target released and what is left of it once
+    // the source's payoff has been paid out.
+    expect(screen.getByText("Target net disbursement")).toBeInTheDocument();
+    expect(screen.getByText(formatCurrency(5000 - 1000))).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Transfer date"), {
+      target: { value: "2024-06-15" },
+    });
+    await user.click(screen.getByRole("button", { name: "Confirm transfer" }));
+
+    await waitFor(() =>
+      expect(apiMock.transferLoanBalance).toHaveBeenCalledWith("loan-1", {
+        toLoanAccountId: "loan-2",
+        transferDate: "2024-06-15",
+        mode: "takeover",
+      }),
+    );
+    expect(
+      screen.queryByLabelText("Annual interest rate (%)"),
+    ).not.toBeInTheDocument();
   });
 
   it("removes the schedule", async () => {

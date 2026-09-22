@@ -143,6 +143,21 @@ func (srv *Server) BulkLinkLoan(c *gin.Context) {
 		return
 	}
 
+	// The credit that released a loan is money received, not a repayment:
+	// attaching it as an EMI payment would count it against the loan's progress.
+	var isDisbursement int
+	if err := srv.db.QueryRow(c,
+		"SELECT COUNT(*) FROM loan_disbursements WHERE transaction_id = ANY($1) AND user_id = $2",
+		req.TransactionIDs, userID).Scan(&isDisbursement); err != nil {
+		slog.Error("BulkLinkLoan (checking disbursement credits)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if isDisbursement > 0 {
+		validation.RespondError(c, "one or more transactions are a loan's disbursement credit and cannot be attached as EMI payments", http.StatusConflict)
+		return
+	}
+
 	// The write (attachment rows + payee sync) is atomic so a failure never
 	// leaves transactions half-linked.
 	var attached int64
@@ -384,9 +399,12 @@ func (srv *Server) TransferLoanBalance(c *gin.Context) {
 		validation.RespondError(c, "this loan is already settled by a balance transfer", http.StatusBadRequest)
 		return
 	}
-	amount := source.OutstandingPrincipal
+	// What moves is the payoff, not just the principal: settling mid-period also
+	// clears the interest accrued since the source's last EMI payment.
+	quote := loanPayoffFor(source, transferDate)
+	amount := quote.Payoff
 	if amount <= 0 {
-		validation.RespondError(c, "the source loan has no outstanding principal to transfer", http.StatusBadRequest)
+		validation.RespondError(c, "the source loan has nothing left to transfer on that date", http.StatusBadRequest)
 		return
 	}
 
@@ -423,25 +441,61 @@ func (srv *Server) TransferLoanBalance(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// What the transfer does to the target: an explicit mode, or the automatic
+	// one — recast an existing table, or start one when the target has no terms
+	// of its own.
+	mode := req.Mode
+	if mode == "" {
+		mode = models.LoanTransferRecast
+		if target.Schedule == nil {
+			mode = models.LoanTransferOpens
+		}
+	}
+
 	var targetTerms *loanTerms
-	if target.Schedule == nil {
+	switch mode {
+	case models.LoanTransferOpens:
+		if target.Schedule != nil {
+			validation.RespondError(c, "the target loan already has a schedule — recast it or take the balance over instead", http.StatusBadRequest)
+			return
+		}
 		terms, err := transferTargetTerms(req, amount)
 		if err != nil {
 			validation.RespondError(c, err.Error(), http.StatusBadRequest)
 			return
 		}
 		targetTerms = terms
-	} else if !hasInstallmentsAfter(target.Entries, transferDate) {
-		// The balance has to land on an installment that is still owed, which
-		// is what forces the recast; a target whose remaining dues are already
-		// paid (or already cancelled) has nowhere to put it.
-		validation.RespondError(c, "the target loan has no unpaid installment due after the transfer date", http.StatusBadRequest)
+	case models.LoanTransferRecast:
+		if target.Schedule == nil {
+			validation.RespondError(c, "the target loan has no schedule to recast — set its terms first", http.StatusBadRequest)
+			return
+		}
+		if !hasInstallmentsAfter(target.Entries, transferDate) {
+			// The balance has to land on an installment that is still owed,
+			// which is what forces the recast; a target whose remaining dues are
+			// already paid (or already cancelled) has nowhere to put it.
+			validation.RespondError(c, "the target loan has no unpaid installment due after the transfer date", http.StatusBadRequest)
+			return
+		}
+	case models.LoanTransferTakeover:
+		if target.Schedule == nil {
+			validation.RespondError(c, "the target loan has no schedule to take the balance out of — set its terms first", http.StatusBadRequest)
+			return
+		}
+		// A takeover pays the source out of the target's own proceeds, so the
+		// target has to have released at least that much.
+		if target.Disbursement == nil || target.Disbursement.Net < amount {
+			validation.RespondError(c, "the target loan's net disbursement cannot cover the transferred balance", http.StatusBadRequest)
+			return
+		}
+	default:
+		validation.RespondError(c, "mode must be recast, opens or takeover", http.StatusBadRequest)
 		return
 	}
 
 	// The write is one transaction: the transfer row, plus the target's schedule
-	// when it had none. Both tables are derived from the row, so an interrupted
-	// request cannot leave one side moved and the other not.
+	// when the transfer opens it. Both tables are derived from the row, so an
+	// interrupted request cannot leave one side moved and the other not.
 	var transfer models.LoanPrincipalTransfer
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		transfer = models.LoanPrincipalTransfer{
@@ -451,15 +505,17 @@ func (srv *Server) TransferLoanBalance(c *gin.Context) {
 			ToLoanAccountID:     req.ToLoanAccountID,
 			ToLoanAccountName:   targetName,
 			Amount:              amount,
+			Principal:           quote.OutstandingPrincipal,
+			AccruedInterest:     quote.AccruedInterest,
 			TransferDate:        transferDate,
-			RecastsTarget:       targetTerms == nil,
+			Mode:                mode,
 		}
 		if err := tx.QueryRow(c,
-			`INSERT INTO loan_transfers (id, user_id, from_loan_account_id, to_loan_account_id, amount, transfer_date, recasts_target)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`INSERT INTO loan_transfers (id, user_id, from_loan_account_id, to_loan_account_id, amount, principal, transfer_date, mode)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			 RETURNING created_at`,
-			transfer.ID, userID, sourceID, req.ToLoanAccountID, amount, transferDate,
-			transfer.RecastsTarget).Scan(&transfer.CreatedAt); err != nil {
+			transfer.ID, userID, sourceID, req.ToLoanAccountID, amount, quote.OutstandingPrincipal,
+			transferDate, transfer.Mode).Scan(&transfer.CreatedAt); err != nil {
 			return err
 		}
 		if targetTerms == nil {
@@ -549,15 +605,15 @@ func hasInstallmentsAfter(entries []models.LoanScheduleEntry, date time.Time) bo
 }
 
 // DeleteLoanTransfer removes a recorded balance transfer, which reverts both
-// loans: the target's recast installments and the source's cancelled ones are
-// all derived from the row, so nothing else has to be undone.
+// loans: the target's recast installments, the source's cancelled ones, and the
+// target's disbursement are all derived from the row, so nothing else has to be
+// undone.
 //
-// One thing is not derived: when the transfer created the target's schedule
-// (the target had no terms of its own), that schedule is deleted too — it holds
-// the moved amount as its principal, so leaving it behind would keep the
-// balance on a loan the transfer invented. A schedule the target already had is
-// left alone. Both writes are one transaction so the two loans can never revert
-// half way.
+// One thing is not derived: when the transfer opened the target's schedule (the
+// target had no terms of its own), that schedule is deleted too — it holds the
+// moved amount as its principal, so leaving it behind would keep the balance on
+// a loan the transfer invented. A schedule the target already had is left alone.
+// Both writes are one transaction so the two loans can never revert half way.
 //
 // The route names the transfer's source account, so a delete cannot be aimed at
 // the same transfer through an unrelated account. It is idempotent, reporting
@@ -578,11 +634,11 @@ func (srv *Server) DeleteLoanTransfer(c *gin.Context) {
 	deleted := int64(0)
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		var targetID uuid.UUID
-		var recastsTarget bool
+		var mode string
 		err := tx.QueryRow(c,
 			`DELETE FROM loan_transfers WHERE id = $1 AND from_loan_account_id = $2 AND user_id = $3
-			 RETURNING to_loan_account_id, recasts_target`,
-			transferID, accountID, userID).Scan(&targetID, &recastsTarget)
+			 RETURNING to_loan_account_id, mode`,
+			transferID, accountID, userID).Scan(&targetID, &mode)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -590,7 +646,7 @@ func (srv *Server) DeleteLoanTransfer(c *gin.Context) {
 			return err
 		}
 		deleted = 1
-		if recastsTarget {
+		if mode != models.LoanTransferOpens {
 			return nil
 		}
 		_, err = tx.Exec(c,
@@ -603,6 +659,198 @@ func (srv *Server) DeleteLoanTransfer(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, models.DeleteLoanTransferResult{Deleted: deleted})
+}
+
+// LinkLoanDisbursement records the bank credit that released a loan, so the
+// disbursement the schedule implies (sanctioned principal less the lender's fee
+// and less any takeover it funded) can be reconciled against what actually
+// arrived. The comparison is reported, never enforced: a loan whose money
+// arrived in a different amount is exactly what the user needs to see.
+//
+// The credit must be money received on one of the user's own accounts, and it
+// cannot be a transaction that is already an EMI payment or another loan's
+// disbursement. Linking a second credit to the same loan replaces the first.
+func (srv *Server) LinkLoanDisbursement(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	var req models.LoanDisbursementRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		validation.RespondBindError(c, err)
+		return
+	}
+	userID := auth.GetUserID(c)
+	name, ok := srv.loanAccountGuard(c, userID, accountID)
+	if !ok {
+		return
+	}
+
+	// The breakdown this reconciles is derived from the schedule, so there has
+	// to be one.
+	var hasSchedule bool
+	if err := srv.db.QueryRow(c,
+		"SELECT EXISTS (SELECT 1 FROM loan_schedules WHERE loan_account_id = $1 AND user_id = $2)",
+		accountID, userID).Scan(&hasSchedule); err != nil {
+		slog.Error("LinkLoanDisbursement (schedule check)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !hasSchedule {
+		validation.RespondError(c, "the loan has no amortization schedule — set its terms first", http.StatusBadRequest)
+		return
+	}
+
+	var txnOwner uuid.UUID
+	var txnType, accountType string
+	err = srv.db.QueryRow(c,
+		`SELECT t.user_id, t.type, a.account_type_id
+		 FROM transactions t
+		 JOIN accounts a ON a.id = t.account_id
+		 WHERE t.id = $1`,
+		req.TransactionID).Scan(&txnOwner, &txnType, &accountType)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		validation.RespondError(c, "transaction not found", http.StatusNotFound)
+		return
+	case err != nil:
+		slog.Error("LinkLoanDisbursement (transaction)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	case txnOwner != userID:
+		validation.RespondError(c, "forbidden", http.StatusForbidden)
+		return
+	case accountType == loanAccountTypeID:
+		validation.RespondError(c, "a loan account holds no transactions, so it cannot be the disbursement credit", http.StatusBadRequest)
+		return
+	case txnType != "credit":
+		validation.RespondError(c, "the disbursement is money received, so the credit must be a credit transaction", http.StatusBadRequest)
+		return
+	}
+
+	// A transaction is either an EMI payment or a loan's disbursement, never
+	// both: counting the money that released the loan as a repayment would
+	// corrupt the progress figures.
+	var attached int
+	if err := srv.db.QueryRow(c,
+		"SELECT COUNT(*) FROM loan_attachments WHERE transaction_id = $1 AND user_id = $2",
+		req.TransactionID, userID).Scan(&attached); err != nil {
+		slog.Error("LinkLoanDisbursement (attachment check)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if attached > 0 {
+		validation.RespondError(c, "that transaction is already an EMI payment on a loan", http.StatusConflict)
+		return
+	}
+
+	var linkedTo uuid.UUID
+	err = srv.db.QueryRow(c,
+		"SELECT loan_account_id FROM loan_disbursements WHERE transaction_id = $1 AND user_id = $2",
+		req.TransactionID, userID).Scan(&linkedTo)
+	switch {
+	case err == nil && linkedTo != accountID:
+		validation.RespondError(c, "that transaction is already the disbursement credit of another loan", http.StatusConflict)
+		return
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		slog.Error("LinkLoanDisbursement (disbursement check)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := srv.db.Exec(c,
+		`INSERT INTO loan_disbursements (loan_account_id, transaction_id, user_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, loan_account_id) DO UPDATE
+		 SET transaction_id = EXCLUDED.transaction_id`,
+		accountID, req.TransactionID, userID); err != nil {
+		// Race guard: a concurrent link of the same transaction.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			validation.RespondError(c, "that transaction is already linked to a loan", http.StatusConflict)
+			return
+		}
+		slog.Error("LinkLoanDisbursement", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	detail, err := srv.loadLoanScheduleDetail(c, userID, accountID)
+	if err != nil {
+		slog.Error("LinkLoanDisbursement (reload)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	detail.LoanAccountName = name
+	c.JSON(http.StatusOK, detail)
+}
+
+// GetLoanPayoff quotes what settling a loan on a date costs: the principal it
+// still owes plus the interest accrued since its last EMI payment. It is the
+// figure a balance transfer moves, and the number a lender's payoff quote should
+// match — which is why the quote and the transfer share one computation.
+//
+// The date is required rather than defaulted to today, so the same request
+// always answers the same thing.
+func (srv *Server) GetLoanPayoff(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	asOf, err := parseRecurringDate(c.Query("date"))
+	if err != nil {
+		validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+	userID := auth.GetUserID(c)
+	name, ok := srv.loanAccountGuard(c, userID, accountID)
+	if !ok {
+		return
+	}
+
+	detail, err := srv.loadLoanScheduleDetail(c, userID, accountID)
+	if err != nil {
+		slog.Error("GetLoanPayoff", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if detail.Schedule == nil {
+		validation.RespondError(c, "the loan has no amortization schedule — set its terms first", http.StatusBadRequest)
+		return
+	}
+	if detail.SettledOn != nil {
+		validation.RespondError(c, "this loan is already settled by a balance transfer", http.StatusBadRequest)
+		return
+	}
+
+	quote := loanPayoffFor(detail, asOf)
+	quote.LoanAccountName = name
+	c.JSON(http.StatusOK, quote)
+}
+
+// UnlinkLoanDisbursement forgets which credit released the loan. Idempotent:
+// unlinking a loan that has none reports `deleted: 0`.
+func (srv *Server) UnlinkLoanDisbursement(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		validation.RespondError(c, "invalid id", http.StatusBadRequest)
+		return
+	}
+	userID := auth.GetUserID(c)
+	if _, ok := srv.loanAccountGuard(c, userID, accountID); !ok {
+		return
+	}
+
+	res, err := srv.db.Exec(c,
+		"DELETE FROM loan_disbursements WHERE loan_account_id = $1 AND user_id = $2", accountID, userID)
+	if err != nil {
+		slog.Error("UnlinkLoanDisbursement", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, models.DeleteLoanDisbursementResult{Deleted: res.RowsAffected()})
 }
 
 // loanAccountGuard resolves the loan account named by the route, writing the
@@ -674,23 +922,39 @@ func (srv *Server) loadLoanScheduleDetail(ctx context.Context, userID, loanAccou
 		firstDueDate:  sched.StartDate,
 		disbursalDate: sched.DisbursalDate,
 	}
-	// A transfer into this loan recasts it from its date on; a transfer out of
-	// it settled it. The unique constraint on the source loan allows at most one
-	// of the latter, so the last one read is the only one.
+	// A transfer into this loan either recasts it from its date on or takes cash
+	// out of its disbursement; a transfer out of it settled it. The unique
+	// constraint on the source loan allows at most one of the latter, so the last
+	// one read is the only one.
 	var adjustments []principalAdjustment
+	var paidOut money.Amount
 	for _, t := range transfers {
-		if t.ToLoanAccountID == loanAccountID {
-			// A transfer that opened this loan's schedule already is its
-			// principal; only one that recast an existing table adds to the
-			// balance it is still repaying.
-			if t.RecastsTarget {
-				adjustments = append(adjustments, principalAdjustment{date: t.TransferDate, amount: t.Amount})
-			}
-			continue
+		switch {
+		case t.ToLoanAccountID != loanAccountID:
+			settledOn := t.TransferDate
+			detail.SettledOn = &settledOn
+		case t.Mode == models.LoanTransferRecast:
+			adjustments = append(adjustments, principalAdjustment{date: t.TransferDate, amount: t.Amount})
+		case t.Mode == models.LoanTransferTakeover:
+			// The target's own table stands: the amount is cash it paid out of
+			// its disbursement to settle the source loan.
+			paidOut += t.Amount
 		}
-		settledOn := t.TransferDate
-		detail.SettledOn = &settledOn
+		// LoanTransferOpens needs nothing here: the amount already is this
+		// loan's principal.
 	}
+
+	// What the loan released, and the bank credit it is reconciled against.
+	disbursement := &models.LoanDisbursement{
+		Sanctioned:    sched.Principal,
+		ProcessingFee: sched.ProcessingFee,
+		PaidOut:       paidOut,
+	}
+	disbursement.Net = disbursement.Sanctioned - disbursement.ProcessingFee - disbursement.PaidOut
+	if err := srv.loadLoanDisbursementCredit(ctx, userID, loanAccountID, disbursement); err != nil {
+		return detail, err
+	}
+	detail.Disbursement = disbursement
 
 	emi, entries := loanAmortization(terms, adjustments)
 	detail.EMI = emi
@@ -717,6 +981,10 @@ func (srv *Server) loadLoanScheduleDetail(ctx context.Context, userID, loanAccou
 		txnID := p.id
 		next.Paid = true
 		next.TransactionID = &txnID
+		// Interest is cleared when an installment is paid, not when it falls
+		// due, so the last payment date is what a later settlement accrues from.
+		paidOn := dateOnly(p.date)
+		detail.LastPaidDate = &paidOn
 	}
 
 	// A transfer settles everything the borrower had not yet repaid, so the
@@ -782,7 +1050,7 @@ func nextUnpaidEntry(entries []models.LoanScheduleEntry) *models.LoanScheduleEnt
 func (srv *Server) loadLoanTransfers(ctx context.Context, userID, loanAccountID uuid.UUID) ([]models.LoanPrincipalTransfer, error) {
 	rows, err := srv.db.Query(ctx,
 		`SELECT t.id, t.from_loan_account_id, fa.name, t.to_loan_account_id, ta.name,
-		        t.amount, t.transfer_date, t.recasts_target, t.created_at
+		        t.amount, t.principal, t.transfer_date, t.mode, t.created_at
 		 FROM loan_transfers t
 		 JOIN accounts fa ON fa.id = t.from_loan_account_id
 		 JOIN accounts ta ON ta.id = t.to_loan_account_id
@@ -801,13 +1069,42 @@ func (srv *Server) loadLoanTransfers(ctx context.Context, userID, loanAccountID 
 	for rows.Next() {
 		var t models.LoanPrincipalTransfer
 		if err := rows.Scan(&t.ID, &t.FromLoanAccountID, &t.FromLoanAccountName,
-			&t.ToLoanAccountID, &t.ToLoanAccountName, &t.Amount, &t.TransferDate,
-			&t.RecastsTarget, &t.CreatedAt); err != nil {
+			&t.ToLoanAccountID, &t.ToLoanAccountName, &t.Amount, &t.Principal,
+			&t.TransferDate, &t.Mode, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		// The interest is what the payoff added on top of the principal, so it is
+		// derived rather than stored a second time.
+		t.AccruedInterest = t.Amount - t.Principal
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// loadLoanDisbursementCredit attaches the bank credit linked to the loan, if
+// any, and reconciles it against the disbursement the schedule implies: a
+// mismatch is what the verification is for, so it is reported rather than
+// rejected.
+func (srv *Server) loadLoanDisbursementCredit(ctx context.Context, userID, loanAccountID uuid.UUID, disbursement *models.LoanDisbursement) error {
+	var creditID uuid.UUID
+	var creditAmount money.Amount
+	err := srv.db.QueryRow(ctx,
+		`SELECT d.transaction_id, t.amount
+		 FROM loan_disbursements d
+		 JOIN transactions t ON t.id = d.transaction_id
+		 WHERE d.loan_account_id = $1 AND d.user_id = $2`,
+		loanAccountID, userID).Scan(&creditID, &creditAmount)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	disbursement.CreditTransactionID = &creditID
+	disbursement.CreditAmount = &creditAmount
+	disbursement.Difference = creditAmount - disbursement.Net
+	disbursement.Verified = creditAmount == disbursement.Net
+	return nil
 }
 
 // loanPayment is one EMI transaction attached to a loan, in the order it counts
@@ -815,6 +1112,7 @@ func (srv *Server) loadLoanTransfers(ctx context.Context, userID, loanAccountID 
 type loanPayment struct {
 	id     uuid.UUID
 	amount money.Amount
+	date   time.Time
 	credit bool
 }
 
@@ -824,7 +1122,7 @@ type loanPayment struct {
 // single now()).
 func (srv *Server) loadLoanPayments(ctx context.Context, userID, loanAccountID uuid.UUID) ([]loanPayment, error) {
 	rows, err := srv.db.Query(ctx,
-		`SELECT t.id, t.amount, t.type
+		`SELECT t.id, t.amount, t.date, t.type
 		 FROM loan_attachments la
 		 JOIN transactions t ON t.id = la.transaction_id
 		 WHERE la.loan_account_id = $1 AND la.user_id = $2
@@ -839,7 +1137,7 @@ func (srv *Server) loadLoanPayments(ctx context.Context, userID, loanAccountID u
 	for rows.Next() {
 		var p loanPayment
 		var txnType string
-		if err := rows.Scan(&p.id, &p.amount, &txnType); err != nil {
+		if err := rows.Scan(&p.id, &p.amount, &p.date, &txnType); err != nil {
 			return nil, err
 		}
 		p.credit = txnType == "credit"
@@ -915,7 +1213,7 @@ func loanAmortization(terms loanTerms, adjustments []principalAdjustment) (money
 		// interest. Keeping the whole-month EMI instead would leave the
 		// difference to pile up into the final installment.
 		emi = loanEMIWithStub(remaining, monthlyRate, terms.tenureMonths,
-			stubInterest(remaining, terms.annualRateBps, stubDays))
+			brokenPeriodInterest(remaining, terms.annualRateBps, stubDays))
 	}
 	emi = rupeeCeil(emi)
 
@@ -941,13 +1239,13 @@ func loanAmortization(terms loanTerms, adjustments []principalAdjustment) (money
 				// The recast covers the broken first period too, so it is solved
 				// the same way the original table was.
 				emi = rupeeCeil(loanEMIWithStub(remaining, monthlyRate, terms.tenureMonths,
-					stubInterest(remaining, terms.annualRateBps, stubDays)))
+					brokenPeriodInterest(remaining, terms.annualRateBps, stubDays)))
 			}
 		}
 
 		var interest money.Amount
 		if i == 1 && stub {
-			interest = stubInterest(remaining, terms.annualRateBps, stubDays)
+			interest = brokenPeriodInterest(remaining, terms.annualRateBps, stubDays)
 		} else {
 			interest = money.Amount(math.Round(float64(remaining) * monthlyRate))
 		}
@@ -979,6 +1277,46 @@ func loanAmortization(terms loanTerms, adjustments []principalAdjustment) (money
 	return emi, entries
 }
 
+// loanPayoffFor derives a loan's settlement quote: what it still owes in
+// principal plus the interest accrued since its last EMI payment, prorated the
+// way a broken period is. The transfer endpoint moves exactly this amount, so a
+// quote and the transfer it precedes can never disagree.
+func loanPayoffFor(detail models.LoanScheduleDetail, asOf time.Time) models.LoanPayoff {
+	asOfDate := dateOnly(asOf)
+	quote := models.LoanPayoff{
+		AsOf:                 asOfDate,
+		OutstandingPrincipal: detail.OutstandingPrincipal,
+		FromDate:             payoffAnchor(detail, asOfDate),
+	}
+	if !quote.FromDate.Before(quote.AsOf) || detail.Schedule == nil {
+		// Nothing has accrued: a settlement before the last payment date (or one
+		// with no terms to prorate by) moves principal only.
+		quote.Payoff = quote.OutstandingPrincipal
+		return quote
+	}
+	quote.Days = int(quote.AsOf.Sub(quote.FromDate).Hours() / 24)
+	quote.AccruedInterest = brokenPeriodInterest(quote.OutstandingPrincipal, detail.Schedule.AnnualRateBps, quote.Days)
+	quote.Payoff = quote.OutstandingPrincipal + quote.AccruedInterest
+	return quote
+}
+
+// payoffAnchor is the date settlement interest accrues from: the last EMI
+// payment's date, or — before anything is paid — when the money was released.
+// With no disbursal date and nothing paid, the first period is assumed to start
+// the month before the first installment, the same assumption the table makes.
+func payoffAnchor(detail models.LoanScheduleDetail, asOf time.Time) time.Time {
+	if detail.LastPaidDate != nil {
+		return dateOnly(*detail.LastPaidDate)
+	}
+	if detail.Schedule == nil {
+		return asOf
+	}
+	if detail.Schedule.DisbursalDate != nil {
+		return dateOnly(*detail.Schedule.DisbursalDate)
+	}
+	return addMonthsAnchored(dateOnly(detail.Schedule.StartDate), -1)
+}
+
 // firstPeriodStub reports the length in days of a loan's first period — the
 // disbursal date to the first installment date — and whether that period is a
 // broken month. A missing disbursal date, a period that is exactly one anchored
@@ -995,11 +1333,12 @@ func firstPeriodStub(disbursal *time.Time, firstDue time.Time) (int, bool) {
 	return int(firstDue.Sub(d).Hours() / 24), true
 }
 
-// stubInterest is the interest for a first period that is not a whole month.
-// Lenders prorate it by the actual days over a 30-day month, which is the same
-// as the annual rate over a 360-day year and is consistent with the monthly rate
-// the rest of the table is built on.
-func stubInterest(balance money.Amount, annualRateBps, days int) money.Amount {
+// brokenPeriodInterest is the interest for a period that is not a whole month —
+// a loan's broken first period, or the days between a settlement and the last
+// EMI payment it follows. Lenders prorate it by the actual days over a 30-day
+// month, which is the same as the annual rate over a 360-day year and is
+// consistent with the monthly rate the rest of the table is built on.
+func brokenPeriodInterest(balance money.Amount, annualRateBps, days int) money.Amount {
 	monthly := float64(balance) * float64(annualRateBps) / 120000.0
 	return money.Amount(math.Round(monthly * float64(days) / 30.0))
 }

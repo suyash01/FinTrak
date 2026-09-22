@@ -710,9 +710,9 @@ func TestGetTransferSuggestionsScanErrorIsSkipped(t *testing.T) {
 	r, srv, mock := newLinkTestRouter(t)
 	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
-		mock.ExpectQuery("SELECT d.id, d.account_id").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
+	mock.ExpectQuery("SELECT d.id, d.account_id").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/links/transfer-suggestions", nil))

@@ -57,9 +57,9 @@ func TestBulkUpdateTags(t *testing.T) {
 	// pgxmock collapses whitespace on both sides, so the statement is pinned
 	// here in its single-line form, closed-account guard included.
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) " +
-			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') " +
-			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND " + wantClosedAccountGuard)).
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) "+
+			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
+			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), []string{"trip"}, []string{"draft"}, []uuid.UUID{id1, id2}).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
@@ -86,9 +86,9 @@ func TestBulkUpdateTagsSkipsClosedAccounts(t *testing.T) {
 
 	closedID := uuid.New()
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) " +
-			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') " +
-			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND " + wantClosedAccountGuard)).
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) "+
+			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
+			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), []string{"trip"}, []string{}, []uuid.UUID{closedID}).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
@@ -146,9 +146,9 @@ func TestRenameTag(t *testing.T) {
 	r.POST("/tags/rename", srv.RenameTag)
 
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) " +
-			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped " +
-			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND " + wantClosedAccountGuard)).
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) "+
+			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped "+
+			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), "old", "new").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 4))
 
@@ -171,9 +171,9 @@ func TestRenameTagSkipsClosedAccounts(t *testing.T) {
 	r.POST("/tags/rename", srv.RenameTag)
 
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) " +
-			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped " +
-			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND " + wantClosedAccountGuard)).
+		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT new_tag ORDER BY new_tag) "+
+			"FROM ( SELECT CASE WHEN x = $2 THEN $3 ELSE x END AS new_tag FROM unnest(tags) AS x ) mapped "+
+			"), '{}') WHERE user_id = $1 AND $2 = ANY(tags) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), "old", "new").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 

@@ -76,6 +76,7 @@ describe("api method surface", () => {
     { name: "bulkDeleteTransactions", call: () => api.bulkDeleteTransactions({} as any), url: "/transactions/bulk-delete", method: "POST" },
     { name: "bulkLoan", call: () => api.bulkLoan({} as any), url: "/transactions/bulk-loan", method: "POST" },
     { name: "getLoanSchedule", call: () => api.getLoanSchedule("a1"), url: "/accounts/a1/loan-schedule", method: "GET" },
+    { name: "getLoanPayoff", call: () => api.getLoanPayoff("a1", "2024-06-15"), url: "/accounts/a1/loan-payoff?date=2024-06-15", method: "GET" },
     { name: "saveLoanSchedule", call: () => api.saveLoanSchedule("a1", { principal: 1000, processingFee: 0, disbursalDate: "", annualRateBps: 0, tenureMonths: 12, startDate: "2024-01-01" }), url: "/accounts/a1/loan-schedule", method: "PUT" },
     { name: "deleteLoanSchedule", call: () => api.deleteLoanSchedule("a1"), url: "/accounts/a1/loan-schedule", method: "DELETE" },
     { name: "transferLoanBalance", call: () => api.transferLoanBalance("a1", { toLoanAccountId: "a2", transferDate: "2024-06-15" }), url: "/accounts/a1/loan-transfer", method: "POST" },

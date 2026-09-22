@@ -96,7 +96,9 @@ func routeCases() []routeCase {
 	settings := `{"paperlessUrl":"","hasToken":false,"paperlessTag":"","pageSize":null}`
 	sugg := `{"data":[],"page":1,"limit":50,"hasMore":false}`
 	dataList := `{"data":[]}`
-	schedule := `{"schedule":null,"entries":[]}`
+	schedule := `{"schedule":null,"lastPaidDate":"2026-01-05T00:00:00Z","entries":[]}`
+	payoff := `{"loanAccountName":"Car loan","asOf":"2026-02-01T00:00:00Z","fromDate":"2026-01-05T00:00:00Z",` +
+		`"days":27,"outstandingPrincipal":1956632.46,"accruedInterest":26292.25,"payoff":1982924.71}`
 
 	return []routeCase{
 		// System.
@@ -153,8 +155,15 @@ func routeCases() []routeCase {
 			}},
 		{name: "loan schedule delete", method: "DELETE", path: "/accounts/:id/loan-schedule", body: `{"deleted":1}`,
 			call: func(ctx context.Context, c *Client) error { _, err := c.DeleteLoanSchedule(ctx, idAcct); return err }},
+		{name: "loan payoff", method: "GET", path: "/accounts/:id/loan-payoff", body: payoff,
+			query: map[string]string{"date": "2026-02-01"},
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.LoanPayoff(ctx, idAcct, "2026-02-01")
+				return err
+			}},
 		{name: "loan balance transfer", method: "POST", path: "/accounts/:id/loan-transfer",
 			body: `{"transfer":{"id":"tr1","fromLoanAccountId":"acct-1","toLoanAccountId":"acct-2","amount":1000.00,` +
+				`"principal":900.00,"accruedInterest":100.00,` +
 				`"transferDate":"2026-01-05T00:00:00Z","createdAt":"2026-01-05T00:00:00Z"},"source":` + schedule + `,"target":` + schedule + `}`,
 			call: func(ctx context.Context, c *Client) error {
 				_, err := c.TransferLoanBalance(ctx, idAcct, LoanTransferRequest{
@@ -166,6 +175,17 @@ func routeCases() []routeCase {
 			params: map[string]string{"id": idAcct, "transferId": "tr1"}, body: `{"deleted":1}`,
 			call: func(ctx context.Context, c *Client) error {
 				_, err := c.DeleteLoanTransfer(ctx, idAcct, "tr1")
+				return err
+			}},
+		{name: "loan disbursement link", method: "PUT", path: "/accounts/:id/loan-disbursement", body: schedule,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.LinkLoanDisbursement(ctx, idAcct, idTxn)
+				return err
+			}},
+		{name: "loan disbursement unlink", method: "DELETE", path: "/accounts/:id/loan-disbursement",
+			body: `{"deleted":1}`,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.UnlinkLoanDisbursement(ctx, idAcct)
 				return err
 			}},
 		{name: "list account types", method: "GET", path: "/account-types", body: `[]`,

@@ -211,6 +211,12 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		// both loans, since every derived figure comes from the transfer row.
 		accounts.POST("/:id/loan-transfer", srv.TransferLoanBalance)
 		accounts.DELETE("/:id/loan-transfer/:transferId", srv.DeleteLoanTransfer)
+		// The bank credit that released the loan, reconciled against the
+		// disbursement the schedule implies.
+		// What settling the loan on a date costs, which is what a transfer moves.
+		accounts.GET("/:id/loan-payoff", srv.GetLoanPayoff)
+		accounts.PUT("/:id/loan-disbursement", srv.LinkLoanDisbursement)
+		accounts.DELETE("/:id/loan-disbursement", srv.UnlinkLoanDisbursement)
 
 		// Account Types (mutations are admin-only; the type list is shared
 		// reference data that affects balance semantics for every user)

@@ -526,12 +526,17 @@ paths:
         those installments come back marked `recast`. The source's unpaid
         installments come back marked `cancelled`, with nothing outstanding.
 
-        The amount is not a request field — it is what the source still owes,
-        the figure its own detail reports as `outstandingPrincipal`. A target
-        loan that has no schedule yet has nothing to recast, so the transferred
-        amount starts one from `targetAnnualRateBps`, `targetTenureMonths` and
-        `targetStartDate`, all three of which are then required; when the target
-        already has a schedule they are ignored.
+        The amount is not a request field — it is the source's payoff, the
+        figure `GET /accounts/{id}/loan-payoff` quotes for the same date: the
+        principal it still owes plus the interest accrued since its last EMI
+        payment. `mode`
+        decides what the target does with it: `recast` (the default for a target
+        that has a schedule) adds it to the installments the target still owes,
+        `takeover` leaves the target's own table alone and pays the source out of
+        the target's disbursement — which has to cover it — and `opens` (the
+        default when the target has no schedule) starts the target's schedule
+        from the amount using `targetAnnualRateBps`, `targetTenureMonths` and
+        `targetStartDate`, all three of which are then required.
 
         Every derived figure on both loans comes from the recorded transfer, so
         `DELETE /accounts/{id}/loan-transfer/{transferId}` reverts both — and
@@ -616,6 +621,143 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/loan-payoff:
+    get:
+      tags:
+        - Accounts
+      summary: Quote what settling a loan on a date costs
+      description: >-
+        The principal the loan still owes plus the interest accrued since its
+        last EMI payment — the figure a lender's payoff quote should match, and
+        exactly the amount a balance transfer moves (the two share one
+        computation, so a quote and the transfer it precedes cannot disagree).
+        Interest accrues from the last EMI *payment* date, since paying an
+        installment is what clears it, falling back to the disbursal date — or
+        the month before the first installment — when nothing has been paid yet.
+        The date is required rather than defaulted to today, so the same request
+        always answers the same thing. 400 for a loan with no schedule or one
+        already settled by a transfer.
+      operationId: getLoanPayoff
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            format: date
+          description: The date to quote for (YYYY-MM-DD).
+      responses:
+        "200":
+          description: The settlement quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanPayoff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /accounts/{id}/loan-disbursement:
+    put:
+      tags:
+        - Accounts
+      summary: Link the bank credit that released a loan
+      description: >-
+        Record the transaction that actually released the loan, so the
+        disbursement its schedule implies — the sanctioned principal less the
+        processing fee and less any balance-transfer takeover it funded — can be
+        reconciled against what arrived. The comparison is reported on the loan
+        (`disbursement.verified` and `difference`), never enforced: a mismatch is
+        the thing the user needs to see.
+
+        The credit must be a credit transaction on one of the caller's own
+        accounts, and it cannot already be an EMI payment or another loan's
+        disbursement. Linking a second credit to the same loan replaces the
+        first.
+      operationId: linkLoanDisbursement
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoanDisbursementRequest"
+      responses:
+        "200":
+          description: The loan detail with the linked credit reconciled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanScheduleDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The transaction is already an EMI payment or another loan's disbursement credit
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags:
+        - Accounts
+      summary: Unlink a loan's disbursement credit
+      description: >-
+        Forget which credit released the loan. Idempotent: reports `deleted: 0`
+        when the loan has none.
+      operationId: unlinkLoanDisbursement
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Loan / EMI account ID
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteLoanDisbursementResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4090,6 +4232,20 @@ components:
           description: >-
             Set when a balance transfer settled this loan: its unpaid
             installments are cancelled and nothing is outstanding.
+        disbursement:
+          allOf:
+            - $ref: "#/components/schemas/LoanDisbursement"
+          description: >-
+            What the loan released and the bank credit it is reconciled
+            against; absent when the loan has no schedule.
+        lastPaidDate:
+          type: string
+          format: date
+          nullable: true
+          description: >-
+            The date of the payment covering the highest covered installment:
+            what a settlement's interest accrues from. Absent until an
+            installment is paid.
         paidInstallments:
           type: integer
         paidAmount:
@@ -4135,9 +4291,24 @@ components:
           type: string
         amount:
           type: number
+          description: >-
+            The payoff that moved: principal plus the interest accrued since the
+            source's last EMI payment.
+        principal:
+          type: number
+          description: The part of the amount that was principal.
+        accruedInterest:
+          type: number
+          description: >-
+            The part of the amount that was interest accrued since the last EMI
+            payment.
         transferDate:
           type: string
           format: date
+        mode:
+          type: string
+          enum: [recast, opens, takeover]
+          description: What the transfer did to the target loan.
         createdAt:
           type: string
           format: date-time
@@ -4156,6 +4327,17 @@ components:
           type: string
           format: date
           description: Effective date (YYYY-MM-DD).
+        mode:
+          type: string
+          enum: [recast, opens, takeover]
+          description: >-
+            What the transfer does to the target. `recast` adds the amount to the
+            target's installments still due after the transfer date, so its debt
+            grows; `takeover` leaves the target's own table alone and records the
+            amount as paid out of its disbursement, so the cash it released is
+            smaller; `opens` starts the target's schedule from the amount, for a
+            target that has no terms of its own. Absent means `recast` when the
+            target has a schedule and `opens` when it has none.
         targetAnnualRateBps:
           type: integer
           nullable: true
@@ -4195,6 +4377,86 @@ components:
         deleted:
           type: integer
           description: 1 when a transfer was removed, 0 when none matched.
+
+    LoanPayoff:
+      type: object
+      description: >-
+        What settling a loan on a date costs: the principal still owed plus the
+        interest accrued since the last EMI payment.
+      properties:
+        loanAccountName:
+          type: string
+        asOf:
+          type: string
+          format: date
+          description: The date quoted for.
+        fromDate:
+          type: string
+          format: date
+          description: The last EMI payment the accrual runs from.
+        days:
+          type: integer
+          description: Days between fromDate and asOf.
+        outstandingPrincipal:
+          type: number
+        accruedInterest:
+          type: number
+        payoff:
+          type: number
+          description: outstandingPrincipal + accruedInterest.
+
+    LoanDisbursement:
+      type: object
+      description: >-
+        What a loan actually released, and the bank credit it is reconciled
+        against.
+      properties:
+        sanctioned:
+          type: number
+          description: The schedule's principal.
+        processingFee:
+          type: number
+        paidOut:
+          type: number
+          description: Takeovers this loan funded, paid out of its disbursement.
+        net:
+          type: number
+          description: >-
+            sanctioned - processingFee - paidOut: the cash the borrower should
+            have received.
+        creditTransactionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The linked bank credit; absent until one is linked.
+        creditAmount:
+          type: number
+          nullable: true
+        verified:
+          type: boolean
+          description: A credit is linked and its amount equals net.
+        difference:
+          type: number
+          description: >-
+            creditAmount - net, so a positive value means more money arrived than
+            the schedule implies.
+
+    LoanDisbursementRequest:
+      type: object
+      required:
+        - transactionId
+      properties:
+        transactionId:
+          type: string
+          format: uuid
+          description: The bank credit that released the loan.
+
+    DeleteLoanDisbursementResult:
+      type: object
+      properties:
+        deleted:
+          type: integer
+          description: 1 when a link was removed, 0 when none matched.
 
     BulkDeleteTransactionsRequest:
       type: object
@@ -5633,6 +5895,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BackupLoanTransfer"
+        loanDisbursements:
+          type: array
+          items:
+            $ref: "#/components/schemas/BackupLoanDisbursement"
         recurringSeries:
           type: array
           items:
@@ -5907,16 +6173,37 @@ components:
           format: uuid
         amount:
           type: integer
-          description: Minor units (cents).
+          description: Minor units (cents); the payoff that moved.
+        principal:
+          type: integer
+          description: Minor units (cents); the part of the amount that was principal.
         transferDate:
           type: string
           format: date
-        recastsTarget:
-          type: boolean
-          description: >-
-            False when the transfer created the target loan's schedule, so the
-            amount is that schedule's principal rather than a balance added to
-            an existing one.
+        mode:
+          type: string
+          enum: [recast, opens, takeover]
+          description: What the transfer did to the target loan.
+        createdAt:
+          type: string
+          format: date-time
+
+    BackupLoanDisbursement:
+      type: object
+      required: [id, loanAccountId, transactionId]
+      description: >-
+        The bank credit that released a loan, so a restored loan still
+        reconciles its disbursement against the same transaction.
+      properties:
+        id:
+          type: string
+          format: uuid
+        loanAccountId:
+          type: string
+          format: uuid
+        transactionId:
+          type: string
+          format: uuid
         createdAt:
           type: string
           format: date-time
@@ -6049,6 +6336,8 @@ components:
         loanSchedules:
           type: integer
         loanTransfers:
+          type: integer
+        loanDisbursements:
           type: integer
         recurringSeries:
           type: integer

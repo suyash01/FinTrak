@@ -13,6 +13,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -140,6 +141,7 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 		LoanAttachments:      []models.BackupLoanAttachment{},
 		LoanSchedules:        []models.BackupLoanSchedule{},
 		LoanTransfers:        []models.BackupLoanTransfer{},
+		LoanDisbursements:    []models.BackupLoanDisbursement{},
 		RecurringSeries:      []models.BackupRecurringSeries{},
 		RecurringTerms:       []models.BackupRecurringTerm{},
 		RecurringAttachments: []models.BackupRecurringAttachment{},
@@ -319,13 +321,13 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 	// Balance transfers. Both loans' amortization tables are derived from these
 	// rows, so a bundle without them would restore the pre-transfer balances.
 	if err := exportUserRows(ctx, pool,
-		`SELECT id, from_loan_account_id, to_loan_account_id, amount, transfer_date, recasts_target, created_at
+		`SELECT id, from_loan_account_id, to_loan_account_id, amount, principal, transfer_date, mode, created_at
 		 FROM loan_transfers WHERE user_id = $1 ORDER BY created_at`,
 		[]any{userID}, func(rows pgx.Rows) error {
 			var t models.BackupLoanTransfer
 			var date time.Time
 			if err := rows.Scan(&t.ID, &t.FromLoanAccountID, &t.ToLoanAccountID, &t.Amount,
-				&date, &t.RecastsTarget, &t.CreatedAt); err != nil {
+				&t.Principal, &date, &t.Mode, &t.CreatedAt); err != nil {
 				return err
 			}
 			t.TransferDate = date.Format("2006-01-02")
@@ -333,6 +335,21 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 			return nil
 		}); err != nil {
 		return nil, fmt.Errorf("export loan transfers: %w", err)
+	}
+
+	// The bank credit each loan's disbursement is reconciled against.
+	if err := exportUserRows(ctx, pool,
+		`SELECT id, loan_account_id, transaction_id, created_at
+		 FROM loan_disbursements WHERE user_id = $1 ORDER BY created_at`,
+		[]any{userID}, func(rows pgx.Rows) error {
+			var d models.BackupLoanDisbursement
+			if err := rows.Scan(&d.ID, &d.LoanAccountID, &d.TransactionID, &d.CreatedAt); err != nil {
+				return err
+			}
+			b.LoanDisbursements = append(b.LoanDisbursements, d)
+			return nil
+		}); err != nil {
+		return nil, fmt.Errorf("export loan disbursements: %w", err)
 	}
 
 	if err := exportUserRows(ctx, pool,
@@ -624,8 +641,23 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			return err
 		}
 		loanTransferRows = append(loanTransferRows, []any{
-			uuid.New(), userID, fromID, toID, t.Amount, date, t.RecastsTarget,
-			nonZeroTime(t.CreatedAt),
+			uuid.New(), userID, fromID, toID, t.Amount, backupTransferPrincipal(t.Principal, t.Amount),
+			date, backupTransferMode(t.Mode), nonZeroTime(t.CreatedAt),
+		})
+	}
+
+	// Disbursement credits. Both the loan and the transaction must be in the
+	// bundle: the link is what reconciles them, so half of it is useless.
+	disbursementRows := make([][]any, 0, len(b.LoanDisbursements))
+	for _, d := range b.LoanDisbursements {
+		accountID, okAccount := accountMap[d.LoanAccountID]
+		txnID, okTxn := txnMap[d.TransactionID]
+		if !okAccount || !okTxn {
+			addBackupWarning(res, "skipped loan disbursement: its account or transaction is not in the backup")
+			continue
+		}
+		disbursementRows = append(disbursementRows, []any{
+			uuid.New(), userID, accountID, txnID, nonZeroTime(d.CreatedAt),
 		})
 	}
 
@@ -720,7 +752,8 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		{"links", []string{"id", "user_id", "type", "from_txn_id", "to_txn_id", "notes", "created_at"}, linkRows, &res.Links},
 		{"loan_attachments", []string{"id", "user_id", "loan_account_id", "transaction_id", "created_at"}, loanRows, &res.LoanAttachments},
 		{"loan_schedules", []string{"id", "user_id", "loan_account_id", "principal", "processing_fee", "annual_rate_bps", "tenure_months", "start_date", "disbursal_date", "created_at", "updated_at"}, loanScheduleRows, &res.LoanSchedules},
-		{"loan_transfers", []string{"id", "user_id", "from_loan_account_id", "to_loan_account_id", "amount", "transfer_date", "recasts_target", "created_at"}, loanTransferRows, &res.LoanTransfers},
+		{"loan_transfers", []string{"id", "user_id", "from_loan_account_id", "to_loan_account_id", "amount", "principal", "transfer_date", "mode", "created_at"}, loanTransferRows, &res.LoanTransfers},
+		{"loan_disbursements", []string{"id", "user_id", "loan_account_id", "transaction_id", "created_at"}, disbursementRows, &res.LoanDisbursements},
 		{"recurring_series", []string{"id", "user_id", "name", "description", "type", "frequency", "interval", "category_id", "payee_id", "active", "notes", "created_at", "updated_at"}, seriesRows, &res.RecurringSeries},
 		{"recurring_series_terms", []string{"id", "user_id", "series_id", "start_date", "end_date", "amount", "account_id", "created_at"}, termRows, &res.RecurringTerms},
 		{"recurring_attachments", []string{"id", "user_id", "series_id", "transaction_id", "created_at"}, recurringRows, &res.RecurringAttachments},
@@ -838,6 +871,26 @@ func findCategoryID(ctx context.Context, tx pgx.Tx, userID uuid.UUID, cat models
 		return uuid.Nil, false, err
 	}
 	return id, true, nil
+}
+
+// backupTransferPrincipal defaults the principal a bundle's transfer moved. A
+// bundle written before payoffs carried a split moved principal only, so its
+// whole amount was principal.
+func backupTransferPrincipal(principal, amount money.Amount) money.Amount {
+	if principal <= 0 || principal > amount {
+		return amount
+	}
+	return principal
+}
+
+// backupTransferMode defaults a bundle's transfer mode. A bundle written before
+// modes existed described a recast, which is what an empty mode means.
+func backupTransferMode(mode string) string {
+	switch mode {
+	case models.LoanTransferRecast, models.LoanTransferOpens, models.LoanTransferTakeover:
+		return mode
+	}
+	return models.LoanTransferRecast
 }
 
 // insertBackupRows inserts rows with multi-row VALUES statements, chunked to

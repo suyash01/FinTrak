@@ -32,6 +32,8 @@ import type {
   ImportTransactionsRequest,
   Link,
   LinkCycleReport,
+  LoanDisbursementRequest,
+  LoanPayoff,
   LoanScheduleDetail,
   LoanScheduleRequest,
   LoanTransferRequest,
@@ -476,6 +478,12 @@ const api = {
   // schedule: null when the loan has no schedule yet.
   getLoanSchedule: (accountId: string): Promise<LoanScheduleDetail> =>
     request(`/accounts/${accountId}/loan-schedule`),
+  // What settling this loan on `date` ("YYYY-MM-DD") costs: its outstanding
+  // principal plus the interest accrued since its last EMI payment. The
+  // transfer endpoint runs the identical computation, so a preview and the
+  // transfer it precedes cannot disagree.
+  getLoanPayoff: (accountId: string, date: string): Promise<LoanPayoff> =>
+    request(`/accounts/${accountId}/loan-payoff?date=${date}`),
   saveLoanSchedule: (
     accountId: string,
     data: LoanScheduleRequest,
@@ -486,9 +494,21 @@ const api = {
     }),
   deleteLoanSchedule: (accountId: string): Promise<{ deleted: number }> =>
     request(`/accounts/${accountId}/loan-schedule`, { method: "DELETE" }),
+  // The bank credit that released this loan. Linking replaces any previous
+  // credit; both endpoints answer with the refreshed schedule detail.
+  linkLoanDisbursement: (
+    accountId: string,
+    data: LoanDisbursementRequest,
+  ): Promise<LoanScheduleDetail> =>
+    request(`/accounts/${accountId}/loan-disbursement`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  unlinkLoanDisbursement: (accountId: string): Promise<{ deleted: number }> =>
+    request(`/accounts/${accountId}/loan-disbursement`, { method: "DELETE" }),
   // Balance transfer: settles `accountId` at its outstanding balance and
-  // recasts the target loan's remaining installments. The target terms are
-  // required only when the target loan has no schedule yet.
+  // reshapes the target loan by `mode` (recast / opens / takeover). The target
+  // terms are required only when the target loan has no schedule yet.
   transferLoanBalance: (
     accountId: string,
     data: LoanTransferRequest,

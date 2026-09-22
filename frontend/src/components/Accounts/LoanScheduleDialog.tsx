@@ -6,6 +6,7 @@ import {
   Pencil,
   Trash2,
   Undo2,
+  Unlink,
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../../api/client";
@@ -14,8 +15,12 @@ import { useDomainData } from "../../context/DomainDataContext";
 import { useSettings } from "../../context/SettingsContext";
 import type {
   Account,
+  LoanPayoff,
+  LoanSchedule,
   LoanScheduleDetail,
+  LoanTransferMode,
   LoanTransferRequest,
+  Transaction,
 } from "../../types";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +94,38 @@ function toForm(detail: LoanScheduleDetail): ScheduleForm {
   };
 }
 
+// A bank credit never lands long after the disbursal it funded, so candidates
+// are windowed ±45 days around the disbursal date. When that date is unknown
+// the anchor is the first installment, and the money was released months before
+// the first EMI fell due, so the window reaches further back.
+const CREDIT_WINDOW_DAYS = 45;
+const DISBURSEMENT_LOOKBACK_DAYS = 240;
+// Both candidate queries are capped; the dialog ranks whatever comes back, so
+// pulling the whole page of matches beats paging through them.
+const CREDIT_QUERY_LIMIT = 100;
+
+function shiftDays(iso: string, days: number): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function creditWindow(schedule: LoanSchedule): {
+  dateFrom: string;
+  dateTo: string;
+} {
+  const anchor = schedule.disbursalDate || schedule.startDate;
+  return {
+    dateFrom: shiftDays(
+      anchor,
+      schedule.disbursalDate
+        ? -CREDIT_WINDOW_DAYS
+        : -DISBURSEMENT_LOOKBACK_DAYS,
+    ),
+    dateTo: shiftDays(anchor, CREDIT_WINDOW_DAYS),
+  };
+}
+
 // The balance-transfer form. Target terms are only collected when the chosen
 // target loan has no schedule of its own yet.
 interface TransferForm {
@@ -107,6 +144,7 @@ export default function LoanScheduleDialog({
   onClose,
 }: LoanScheduleDialogProps) {
   const { compactLayout } = useSettings();
+  const { accounts } = useDomainData();
   const [detail, setDetail] = useState<LoanScheduleDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -114,6 +152,8 @@ export default function LoanScheduleDialog({
   const [form, setForm] = useState<ScheduleForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [credits, setCredits] = useState<Transaction[]>([]);
+  const [loadingCredits, setLoadingCredits] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,6 +173,66 @@ export default function LoanScheduleDialog({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const schedule = detail?.schedule ?? null;
+  const disbursement = detail?.disbursement;
+  // The span both candidate queries cover, named in the empty state so the
+  // user knows where the picker looked.
+  const creditRange = useMemo(
+    () => (schedule ? creditWindow(schedule) : null),
+    [schedule],
+  );
+
+  // Candidate bank credits for the loan's disbursement: an exact-amount match
+  // finds the credit wherever it landed, and the date window catches one whose
+  // amount drifted from the net released. Fetched once the schedule and its net
+  // are known and no credit is linked yet. A credit sitting on a loan account
+  // can never have funded another loan, so those are dropped.
+  const loadCredits = useCallback(async () => {
+    if (!schedule || !disbursement) return;
+    const net = disbursement.net;
+    const { dateFrom, dateTo } = creditWindow(schedule);
+    setLoadingCredits(true);
+    try {
+      const [byAmount, byWindow] = await Promise.all([
+        api.getTransactions({
+          type: "credit",
+          amount: net,
+          limit: CREDIT_QUERY_LIMIT,
+        }),
+        api.getTransactions({
+          type: "credit",
+          dateFrom,
+          dateTo,
+          limit: CREDIT_QUERY_LIMIT,
+        }),
+      ]);
+      const loanIds = new Set(
+        accounts.filter((a) => a.accountTypeId === "loan").map((a) => a.id),
+      );
+      const byId = new Map<string, Transaction>();
+      for (const t of [...byAmount.data, ...byWindow.data]) {
+        if (loanIds.has(t.accountId)) continue;
+        byId.set(t.id, t);
+      }
+      // The credit that released the net amount comes first, then the rest by
+      // how far off they are; ties break on the most recent credit.
+      setCredits(
+        [...byId.values()].sort((a, b) => {
+          const delta = Math.abs(a.amount - net) - Math.abs(b.amount - net);
+          return delta !== 0 ? delta : b.date.localeCompare(a.date);
+        }),
+      );
+    } catch (err) {
+      toast.error((err as Error).message || "Failed to load candidate credits");
+    } finally {
+      setLoadingCredits(false);
+    }
+  }, [schedule, disbursement, accounts]);
+
+  useEffect(() => {
+    if (disbursement && !disbursement.creditTransactionId) void loadCredits();
+  }, [disbursement, loadCredits]);
 
   const handleSave = async () => {
     const principal = Number(form.principal);
@@ -213,7 +313,52 @@ export default function LoanScheduleDialog({
     }
   };
 
-  const schedule = detail?.schedule ?? null;
+  const handleLinkCredit = async (transactionId: string) => {
+    setSaving(true);
+    try {
+      const res = await api.linkLoanDisbursement(account.id, { transactionId });
+      setDetail(res);
+      setForm(toForm(res));
+      toast.success("Disbursement credit linked");
+    } catch (err) {
+      toast.error((err as Error).message || "Failed to link the disbursement credit");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUnlinkCredit = async () => {
+    setSaving(true);
+    try {
+      await api.unlinkLoanDisbursement(account.id);
+      toast.success("Disbursement credit unlinked");
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message || "Failed to unlink the disbursement credit");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Detaching an EMI payment from the loan. Payments cover installments in
+  // order, so removing one shifts every later installment's match up by one —
+  // that is the existing semantics, which the reload below makes visible.
+  const handleUnlinkPayment = async (transactionId: string) => {
+    setSaving(true);
+    try {
+      await api.bulkLoan({
+        transactionIds: [transactionId],
+        loanAccountId: null,
+      });
+      toast.success("Payment unlinked from this loan");
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message || "Failed to unlink the payment");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
   // The transfer that settled this loan is the last one leaving this account,
   // since transfers are returned in date order.
@@ -373,6 +518,114 @@ export default function LoanScheduleDialog({
               )}
             </div>
 
+            {disbursement && (
+              <div className="space-y-2">
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Disbursement
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <SummaryStat
+                    label="Sanctioned"
+                    value={formatCurrency(disbursement.sanctioned)}
+                  />
+                  <SummaryStat
+                    label="Processing fee"
+                    value={formatCurrency(disbursement.processingFee)}
+                  />
+                  <SummaryStat
+                    label="Paid out"
+                    value={formatCurrency(disbursement.paidOut)}
+                  />
+                  <SummaryStat
+                    label="Net released"
+                    value={formatCurrency(disbursement.net)}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border px-3 py-2 text-xs">
+                  {disbursement.creditTransactionId ? (
+                    <>
+                      <span className="text-muted-foreground">Bank credit</span>
+                      <span className="text-sm font-medium text-foreground">
+                        {formatCurrency(disbursement.creditAmount ?? 0)}
+                      </span>
+                      {disbursement.verified ? (
+                        <Badge variant="secondary" className="text-primary">
+                          <Check size={12} className="mr-1" />
+                          Matched
+                        </Badge>
+                      ) : (
+                        <span className="text-destructive">
+                          Off by{" "}
+                          {formatCurrency(Math.abs(disbursement.difference))}
+                        </span>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="Unlink this credit"
+                        aria-label="Unlink this credit"
+                        onClick={() => void handleUnlinkCredit()}
+                        disabled={saving}
+                      >
+                        <Unlink size={14} />
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-muted-foreground">
+                        No bank credit is linked against this loan yet.
+                      </span>
+                      <Select
+                        value=""
+                        onValueChange={(v) => void handleLinkCredit(v)}
+                        disabled={loadingCredits || saving}
+                      >
+                        <SelectTrigger
+                          className="h-8 w-auto min-w-56"
+                          aria-label="Link a bank credit"
+                        >
+                          <SelectValue
+                            placeholder={
+                              loadingCredits
+                                ? "Loading credits…"
+                                : "Link a bank credit"
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {credits.map((t) => (
+                            // A credit already attached to a loan is shown so
+                            // the user can see the record exists, but the API
+                            // rejects linking it (409), so it is not offered.
+                            <SelectItem
+                              key={t.id}
+                              value={t.id}
+                              disabled={Boolean(t.loanAccountId)}
+                            >
+                              {formatCurrency(t.amount)} · {formatDate(t.date)} ·{" "}
+                              {t.accountName}
+                              {t.loanAccountId
+                                ? ` — already linked to ${t.loanAccountName ?? "another loan"}`
+                                : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {!loadingCredits && credits.length === 0 && creditRange && (
+                        <span className="text-muted-foreground">
+                          No credit of {formatCurrency(disbursement.net)} between{" "}
+                          {formatDate(creditRange.dateFrom)} and{" "}
+                          {formatDate(creditRange.dateTo)}. Import the bank
+                          statement covering the disbursement, or set this
+                          loan's disbursal date.
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="max-h-80 overflow-y-auto rounded-md border border-border">
               <Table>
                 <TableHeader>
@@ -399,6 +652,9 @@ export default function LoanScheduleDialog({
                     // legible.
                     const dim = e.cancelled;
                     const struck = dim ? "line-through" : undefined;
+                    // The payment the schedule matched to this installment, if
+                    // any; only then can the match be detached.
+                    const paymentId = e.paid ? e.transactionId : undefined;
                     return (
                       <TableRow
                         key={e.number}
@@ -448,6 +704,18 @@ export default function LoanScheduleDialog({
                                 <Check size={12} className="mr-1" />
                                 Paid
                               </Badge>
+                            )}
+                            {paymentId && (
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                title="Unlink the payment covering this installment — payments match installments in order, so the later matches shift up"
+                                aria-label="Unlink the payment covering this installment"
+                                onClick={() => void handleUnlinkPayment(paymentId)}
+                                disabled={saving}
+                              >
+                                <Unlink size={14} />
+                              </Button>
                             )}
                             {e.recast && (
                               <Badge
@@ -504,6 +772,10 @@ export default function LoanScheduleDialog({
                         <div className="flex shrink-0 items-center gap-3">
                           <span className="text-sm font-medium">
                             {formatCurrency(t.amount)}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatCurrency(t.principal)} principal ·{" "}
+                            {formatCurrency(t.accruedInterest)} accrued interest
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {formatDate(t.transferDate)}
@@ -586,7 +858,6 @@ export default function LoanScheduleDialog({
       {transferOpen && (
         <TransferBalanceDialog
           account={account}
-          outstandingPrincipal={detail?.outstandingPrincipal ?? 0}
           onClose={() => setTransferOpen(false)}
           onTransferred={() => {
             setTransferOpen(false);
@@ -600,17 +871,19 @@ export default function LoanScheduleDialog({
 
 interface TransferBalanceDialogProps {
   account: Account;
-  outstandingPrincipal: number;
   onClose: () => void;
   onTransferred: () => void;
 }
 
-// TransferBalanceDialog settles this loan at its outstanding principal on the
-// transfer date and recasts the chosen target loan's remaining installments to
-// absorb it. A target with no schedule of its own needs its terms supplied.
+// TransferBalanceDialog settles this loan at its payoff on the transfer date —
+// its outstanding principal plus the interest accrued since the last EMI
+// payment, quoted by the API for the chosen date — and reshapes the chosen
+// target loan. A target with a schedule either absorbs the amount into its
+// remaining installments (recast) or pays it out of its own disbursement
+// (takeover); a target with no schedule needs its terms supplied so the
+// transfer can open one.
 function TransferBalanceDialog({
   account,
-  outstandingPrincipal,
   onClose,
   onTransferred,
 }: TransferBalanceDialogProps) {
@@ -622,9 +895,18 @@ function TransferBalanceDialog({
     targetTenureMonths: "",
     targetStartDate: "",
   }));
-  const [targetNeedsTerms, setTargetNeedsTerms] = useState(false);
+  const [targetDetail, setTargetDetail] = useState<LoanScheduleDetail | null>(
+    null,
+  );
+  const [mode, setMode] = useState<LoanTransferMode>("recast");
   const [loadingTarget, setLoadingTarget] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // The payoff quoted for the chosen transfer date. Every figure shown comes
+  // from this quote — nothing about the amount is computed here — and a failed
+  // quote is reported without disabling the form, since the transfer endpoint
+  // runs the same computation server-side.
+  const [payoff, setPayoff] = useState<LoanPayoff | null>(null);
+  const [loadingPayoff, setLoadingPayoff] = useState(false);
 
   const targets = useMemo(
     () =>
@@ -634,14 +916,49 @@ function TransferBalanceDialog({
     [accounts, account.id],
   );
 
+  // A target without a schedule is not yet a loan being repaid, so it opens one
+  // from the transferred amount and takes no mode.
+  const targetNeedsTerms = targetDetail !== null && targetDetail.schedule === null;
+  const targetSchedule = targetDetail?.schedule ?? null;
+
+  // Re-quote whenever the transfer date moves, so the amount the dialog shows
+  // is the one the transfer will settle for. A response for a superseded date
+  // is dropped.
+  useEffect(() => {
+    const date = form.transferDate;
+    if (!date) {
+      setPayoff(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingPayoff(true);
+    api
+      .getLoanPayoff(account.id, date)
+      .then((res) => {
+        if (!cancelled) setPayoff(res);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setPayoff(null);
+        toast.error(err.message || "Failed to quote the payoff for this date");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPayoff(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [account.id, form.transferDate]);
+
   const handleTargetChange = async (targetId: string) => {
     setForm((f) => ({ ...f, targetId }));
-    setTargetNeedsTerms(false);
+    setTargetDetail(null);
+    setMode("recast");
     if (!targetId) return;
     setLoadingTarget(true);
     try {
       const res = await api.getLoanSchedule(targetId);
-      setTargetNeedsTerms(res.schedule === null);
+      setTargetDetail(res);
     } catch (err) {
       toast.error(
         (err as Error).message || "Failed to load the target loan schedule",
@@ -685,12 +1002,20 @@ function TransferBalanceDialog({
       payload.targetAnnualRateBps = Math.round(ratePercent * 100);
       payload.targetTenureMonths = tenure;
       payload.targetStartDate = form.targetStartDate;
+    } else if (targetSchedule) {
+      payload.mode = mode;
     }
 
     setSubmitting(true);
     try {
       await api.transferLoanBalance(account.id, payload);
-      toast.success("Balance transferred; both loans updated");
+      toast.success(
+        targetNeedsTerms
+          ? "Balance transferred; the target's schedule was opened"
+          : mode === "takeover"
+            ? "Balance settled out of the target's disbursement"
+            : "Balance absorbed by the target's remaining installments",
+      );
       onTransferred();
     } catch (err) {
       toast.error((err as Error).message || "Failed to transfer the balance");
@@ -705,8 +1030,9 @@ function TransferBalanceDialog({
         <DialogHeader>
           <DialogTitle>Transfer balance</DialogTitle>
           <DialogDescription>
-            Settle {account.name} at its outstanding principal and recast the
-            target loan's remaining installments to absorb it.
+            Settle {account.name} at its payoff on the transfer date — its
+            outstanding principal plus the interest accrued since its last EMI
+            payment — and reshape the target loan to take it on.
           </DialogDescription>
         </DialogHeader>
 
@@ -748,10 +1074,91 @@ function TransferBalanceDialog({
             />
           </div>
 
-          <SummaryStat
-            label="Amount to transfer"
-            value={formatCurrency(outstandingPrincipal)}
-          />
+          <div className="space-y-2">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Payoff on the transfer date
+            </div>
+            {loadingPayoff ? (
+              <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">
+                <Spinner className="size-4 text-primary" />
+                Quoting the payoff…
+              </div>
+            ) : payoff ? (
+              <div className="space-y-1.5">
+                <div className="grid grid-cols-3 gap-3">
+                  <SummaryStat
+                    label="Principal"
+                    value={formatCurrency(payoff.outstandingPrincipal)}
+                  />
+                  <SummaryStat
+                    label="Accrued interest"
+                    value={formatCurrency(payoff.accruedInterest)}
+                  />
+                  <SummaryStat
+                    label="Payoff"
+                    value={formatCurrency(payoff.payoff)}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {formatCurrency(payoff.payoff)} moves: the principal plus{" "}
+                  {formatCurrency(payoff.accruedInterest)} of interest accrued
+                  over {payoff.days} {payoff.days === 1 ? "day" : "days"} from{" "}
+                  {formatDate(payoff.fromDate)} to {formatDate(payoff.asOf)}.
+                </p>
+              </div>
+            ) : form.transferDate ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                No payoff quote for this date. The transfer still settles this
+                loan at its payoff on the transfer date.
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Pick a transfer date to quote the payoff.
+              </p>
+            )}
+          </div>
+
+          {targetSchedule && (
+            <div className="space-y-1.5">
+              <Label htmlFor="transfer-mode">Transfer mode</Label>
+              <Select
+                value={mode}
+                onValueChange={(v) => setMode(v as LoanTransferMode)}
+              >
+                <SelectTrigger
+                  id="transfer-mode"
+                  aria-label="Transfer mode"
+                  className="w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="recast">
+                    Absorb the balance (recast)
+                  </SelectItem>
+                  <SelectItem value="takeover">
+                    Take over (settle it out of the target's disbursement)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {mode === "takeover" && targetDetail?.disbursement && (
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <SummaryStat
+                    label="Target net disbursement"
+                    value={formatCurrency(targetDetail.disbursement.net)}
+                  />
+                  {payoff && (
+                    <SummaryStat
+                      label="Left after takeover"
+                      value={formatCurrency(
+                        targetDetail.disbursement.net - payoff.payoff,
+                      )}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {targetNeedsTerms && (
             <div className="grid grid-cols-2 gap-4">

@@ -115,8 +115,13 @@ func TestExportUserData(t *testing.T) {
 
 	mock.ExpectQuery("FROM loan_transfers WHERE user_id").
 		WithArgs(userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "from_loan_account_id", "to_loan_account_id", "amount", "transfer_date", "recasts_target", "created_at"}).
-			AddRow(uuid.New(), loanID, uuid.New(), int64(40000), now, true, now))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "from_loan_account_id", "to_loan_account_id", "amount", "principal", "transfer_date", "mode", "created_at"}).
+			AddRow(uuid.New(), loanID, uuid.New(), int64(40000), int64(39000), now, "recast", now))
+
+	mock.ExpectQuery("FROM loan_disbursements WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "loan_account_id", "transaction_id", "created_at"}).
+			AddRow(uuid.New(), loanID, txnID, now))
 
 	mock.ExpectQuery("FROM recurring_series WHERE user_id").
 		WithArgs(userID).
@@ -170,7 +175,12 @@ func TestExportUserData(t *testing.T) {
 	// they travel with the bundle.
 	require.Len(t, bundle.LoanTransfers, 1)
 	assert.Equal(t, int64(40000), int64(bundle.LoanTransfers[0].Amount))
-	assert.True(t, bundle.LoanTransfers[0].RecastsTarget)
+	assert.Equal(t, "recast", bundle.LoanTransfers[0].Mode)
+	// The payoff's split travels with it, so a restore keeps the interest apart
+	// from the principal.
+	assert.Equal(t, int64(39000), int64(bundle.LoanTransfers[0].Principal))
+	require.Len(t, bundle.LoanDisbursements, 1)
+	assert.Equal(t, txnID, bundle.LoanDisbursements[0].TransactionID)
 	require.Len(t, bundle.RecurringSeries, 1)
 	require.Len(t, bundle.RecurringTerms, 1)
 	require.Len(t, bundle.Rules, 1)
@@ -450,7 +460,8 @@ func TestImportUserDataFullBundle(t *testing.T) {
 	mock.ExpectExec("INSERT INTO links ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO loan_attachments ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO loan_schedules ").WithArgs(anyArgs(11)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec("INSERT INTO loan_transfers ").WithArgs(anyArgs(8)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO loan_transfers ").WithArgs(anyArgs(9)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO loan_disbursements ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO recurring_series ").WithArgs(anyArgs(13)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO recurring_series_terms ").WithArgs(anyArgs(8)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO recurring_attachments ").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -485,7 +496,11 @@ func TestImportUserDataFullBundle(t *testing.T) {
 		}},
 		LoanTransfers: []models.BackupLoanTransfer{{
 			ID: uuid.New(), FromLoanAccountID: loanID, ToLoanAccountID: accountID,
-			Amount: money.FromFloat(400), TransferDate: "2024-03-01", RecastsTarget: true,
+			Amount: money.FromFloat(400), Principal: money.FromFloat(380),
+			TransferDate: "2024-03-01", Mode: models.LoanTransferTakeover,
+		}},
+		LoanDisbursements: []models.BackupLoanDisbursement{{
+			ID: uuid.New(), LoanAccountID: loanID, TransactionID: txn1,
 		}},
 		RecurringSeries: []models.BackupRecurringSeries{{
 			ID: seriesID, Name: "Rent",
@@ -514,6 +529,7 @@ func TestImportUserDataFullBundle(t *testing.T) {
 	assert.Equal(t, 2, result.Transactions)
 	assert.Equal(t, 1, result.Links)
 	assert.Equal(t, 1, result.LoanAttachments)
+	assert.Equal(t, 1, result.LoanDisbursements)
 	assert.Equal(t, 1, result.RecurringSeries)
 	assert.Equal(t, 1, result.RecurringTerms)
 	assert.Equal(t, 1, result.RecurringAttachments)

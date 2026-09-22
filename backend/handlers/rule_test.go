@@ -142,13 +142,13 @@ func TestApplyRules(t *testing.T) {
 	// never categorized by a rule run.
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
+		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
 		WithArgs(userID, cat1, "%Zomato%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET category_id = $2, payee_id = $3 WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($4) ESCAPE '\'`)).
+		"UPDATE transactions SET category_id = $2, payee_id = $3 WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($4) ESCAPE '\'`)).
 		WithArgs(userID, cat2, payeeID, "Netflix%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
@@ -192,8 +192,8 @@ func TestApplyRulesSkipsClosedAccounts(t *testing.T) {
 	// UPDATE matches nothing.
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
+		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
 		WithArgs(userID, catID, "%Zomato%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectCommit()
@@ -232,13 +232,13 @@ func TestApplyRulesFailureRollsBack(t *testing.T) {
 	// First rule's UPDATE succeeds, the second fails...
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
+		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
 		WithArgs(userID, cat1, "%Zomato%").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 5))
 	mock.ExpectExec(regexp.QuoteMeta(
-		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
+		"UPDATE transactions SET category_id = $2 WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($3) ESCAPE '\'`)).
 		WithArgs(userID, cat1, "%Netflix%").
 		WillReturnError(pgx.ErrTxClosed)
 	// ...so the transaction is rolled back (never committed): the apply is
@@ -314,8 +314,8 @@ func TestPreviewRule(t *testing.T) {
 	// uncategorized guard, same closed-account guard, same rule predicate — so
 	// the count cannot overstate what a real apply would update.
 	mock.ExpectQuery(regexp.QuoteMeta(
-		"SELECT COUNT(*) FROM transactions WHERE user_id = $1 AND category_id IS NULL AND " +
-			wantClosedAccountGuard + ` AND LOWER(description) LIKE LOWER($2) ESCAPE '\' AND account_id = $3`)).
+		"SELECT COUNT(*) FROM transactions WHERE user_id = $1 AND category_id IS NULL AND "+
+			wantClosedAccountGuard+` AND LOWER(description) LIKE LOWER($2) ESCAPE '\' AND account_id = $3`)).
 		WithArgs(testUserID(), "zomato%", acctID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(4))
 

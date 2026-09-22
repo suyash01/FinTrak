@@ -47,6 +47,9 @@ func TestBulkLinkLoanAttach(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	// The write is transactional: insert attachments, sync payees, commit.
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO loan_attachments").
@@ -94,6 +97,9 @@ func TestBulkLinkLoanAttachWithoutPayee(t *testing.T) {
 		WithArgs(loanID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "loan"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	// A loan whose linked payee was deleted still attaches; payees are
@@ -376,6 +382,9 @@ func TestBulkLinkLoanInsertUniqueViolationRace(t *testing.T) {
 		WithArgs(loanID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "loan"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	mock.ExpectBegin()

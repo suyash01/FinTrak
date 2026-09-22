@@ -37,6 +37,9 @@ func newLoanScheduleTestRouter(srv *Server) *gin.Engine {
 	r.DELETE("/accounts/:id/loan-schedule", srv.DeleteLoanSchedule)
 	r.POST("/accounts/:id/loan-transfer", srv.TransferLoanBalance)
 	r.DELETE("/accounts/:id/loan-transfer/:transferId", srv.DeleteLoanTransfer)
+	r.GET("/accounts/:id/loan-payoff", srv.GetLoanPayoff)
+	r.PUT("/accounts/:id/loan-disbursement", srv.LinkLoanDisbursement)
+	r.DELETE("/accounts/:id/loan-disbursement", srv.UnlinkLoanDisbursement)
 	return r
 }
 
@@ -47,7 +50,7 @@ var loanScheduleCols = []string{"id", "loan_account_id", "principal", "processin
 	"tenure_months", "start_date", "disbursal_date", "created_at", "updated_at"}
 
 var loanTransferCols = []string{"id", "from_loan_account_id", "from_name", "to_loan_account_id", "to_name",
-	"amount", "transfer_date", "recasts_target", "created_at"}
+	"amount", "principal", "transfer_date", "mode", "created_at"}
 
 // expectNoLoanTransfers matches the transfers read of a loan that took part in
 // none, which every detail load performs.
@@ -377,11 +380,12 @@ func TestGetLoanScheduleWithProgress(t *testing.T) {
 		[]any{scheduleID, accountID, money.FromFloat(1000), money.FromFloat(0), 1200, 12,
 			time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC), nil, created, created})
 	expectNoLoanTransfers(mock, accountID, userID)
+	expectLoanDisbursementCredit(mock, accountID, userID)
 	mock.ExpectQuery("FROM loan_attachments").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "type"}).
-			AddRow(paidTxn, money.FromFloat(88.85), "debit").
-			AddRow(refundTxn, money.FromFloat(10), "credit"))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "date", "type"}).
+			AddRow(paidTxn, money.FromFloat(88.85), created, "debit").
+			AddRow(refundTxn, money.FromFloat(10), created, "credit"))
 
 	req, _ := http.NewRequest(http.MethodGet, "/accounts/"+accountID.String()+"/loan-schedule", nil)
 	w := httptest.NewRecorder()
@@ -536,9 +540,10 @@ func TestUpsertLoanScheduleStoresAndReturnsTable(t *testing.T) {
 	expectLoanScheduleRows(mock, accountID, userID,
 		[]any{uuid.New(), accountID, money.FromFloat(1000), money.FromFloat(50), 1200, 12, start, nil, created, created})
 	expectNoLoanTransfers(mock, accountID, userID)
+	expectLoanDisbursementCredit(mock, accountID, userID)
 	mock.ExpectQuery("FROM loan_attachments").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "type"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "date", "type"}))
 
 	body := map[string]any{
 		"principal":     1000,

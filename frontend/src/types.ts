@@ -680,9 +680,34 @@ export interface LoanScheduleEntry {
   transactionId?: string;
 }
 
-// A principal balance transfer: the source loan was settled at `amount` on
-// `transferDate` and the target loan's remaining installments were recast to
-// absorb it.
+// How a balance transfer reshapes the target loan. `recast` raises the
+// target's still-due installments to absorb the amount; `opens` starts the
+// target's schedule from the amount; `takeover` leaves the target's own
+// schedule alone and pays the amount out of the target's disbursement.
+export type LoanTransferMode = "recast" | "opens" | "takeover";
+
+// What a loan actually released: its sanctioned principal less the processing
+// fee and the takeovers it funded, reconciled against the linked bank credit
+// that released it. `net` is the cash the loan paid out.
+export interface LoanDisbursement {
+  sanctioned: number;
+  processingFee: number;
+  paidOut: number;
+  net: number;
+  creditTransactionId?: string;
+  creditAmount?: number;
+  verified: boolean;
+  difference: number;
+}
+
+export interface LoanDisbursementRequest {
+  transactionId: string;
+}
+
+// A principal balance transfer: the source loan was settled on `transferDate`
+// at its payoff and the target loan was reshaped by `mode`. The payoff is the
+// outstanding `principal` plus the `accruedInterest` that ran from the source's
+// last EMI payment up to the transfer date, so `amount` is their sum.
 export interface LoanPrincipalTransfer {
   id: string;
   fromLoanAccountId: string;
@@ -690,8 +715,29 @@ export interface LoanPrincipalTransfer {
   toLoanAccountId: string;
   toLoanAccountName?: string;
   amount: number;
+  principal: number;
+  accruedInterest: number;
   transferDate: string;
+  mode: LoanTransferMode;
   createdAt: string;
+}
+
+// What settling a loan on a date costs: its outstanding principal plus the
+// interest accrued since the last EMI payment. Both the quote and the transfer
+// endpoint run the identical computation, so a preview and the transfer it
+// precedes can never disagree.
+export interface LoanPayoff {
+  loanAccountName?: string;
+  // The date quoted for.
+  asOf: string;
+  // The last EMI payment date the accrual runs from.
+  fromDate: string;
+  // Whole days between `fromDate` and `asOf`.
+  days: number;
+  outstandingPrincipal: number;
+  accruedInterest: number;
+  // outstandingPrincipal + accruedInterest: what a transfer moves.
+  payoff: number;
 }
 
 export interface LoanScheduleDetail {
@@ -711,8 +757,14 @@ export interface LoanScheduleDetail {
   transfers: LoanPrincipalTransfer[];
   // Date on which a transfer settled this loan; absent otherwise.
   settledOn?: string;
+  // Date of the payment covering the highest covered installment. A payoff
+  // quote accrues interest from here; absent when no payment is attached yet.
+  lastPaidDate?: string;
   nextDueDate?: string;
   completed: boolean;
+  // Absent when the loan has no schedule. What it released, reconciled against
+  // the bank credit the user linked.
+  disbursement?: LoanDisbursement;
 }
 
 export interface LoanScheduleRequest {
@@ -729,6 +781,9 @@ export interface LoanTransferRequest {
   toLoanAccountId: string;
   // "YYYY-MM-DD".
   transferDate: string;
+  // How the target loan absorbs the amount. Omitted (or empty) means `recast`
+  // when the target already has a schedule, `opens` when it does not.
+  mode?: LoanTransferMode;
   // Target amortization terms, required only when the target loan has no
   // schedule yet.
   targetAnnualRateBps?: number | null;

@@ -87,11 +87,21 @@ func (c *Client) DeleteLoanSchedule(ctx context.Context, accountID string) (Dele
 	return do[DeleteLoanScheduleResult](ctx, c, del("/accounts/"+pathEscape(accountID)+"/loan-schedule"))
 }
 
-// TransferLoanBalance moves a loan's remaining principal to another loan: the
-// source is settled at its outstanding principal on the transfer date and the
-// target's remaining installments are recast over the larger amount. A target
-// with no schedule of its own is started from the request's target terms, which
-// the API requires in that case and ignores otherwise.
+// LoanPayoff quotes what settling a loan costs on a date: its outstanding
+// principal plus the interest accrued from the loan's last EMI payment to that
+// date. The date is required, as is a loan that has a schedule and has not
+// already been settled by a transfer — anything else answers 400, which the
+// caller surfaces rather than posting the transfer.
+func (c *Client) LoanPayoff(ctx context.Context, accountID, date string) (LoanPayoff, error) {
+	return do[LoanPayoff](ctx, c, get("/accounts/"+pathEscape(accountID)+"/loan-payoff").addQuery("date", date))
+}
+
+// TransferLoanBalance moves a loan's remaining balance to another loan: the
+// source is settled at its payoff on the transfer date — outstanding principal
+// plus the interest accrued since its last EMI payment, which LoanPayoff quotes
+// — and the target's remaining installments are recast over the larger amount. A
+// target with no schedule of its own is started from the request's target terms,
+// which the API requires in that case and ignores otherwise.
 func (c *Client) TransferLoanBalance(ctx context.Context, sourceAccountID string, req LoanTransferRequest) (LoanTransferResult, error) {
 	return do[LoanTransferResult](ctx, c, post("/accounts/"+pathEscape(sourceAccountID)+"/loan-transfer").withJSON(req))
 }
@@ -103,4 +113,21 @@ func (c *Client) TransferLoanBalance(ctx context.Context, sourceAccountID string
 // and reports 0 when nothing matched.
 func (c *Client) DeleteLoanTransfer(ctx context.Context, sourceAccountID, transferID string) (DeleteLoanTransferResult, error) {
 	return do[DeleteLoanTransferResult](ctx, c, del("/accounts/"+pathEscape(sourceAccountID)+"/loan-transfer/"+pathEscape(transferID)))
+}
+
+// LinkLoanDisbursement links the bank credit that released the loan and returns
+// the refreshed detail, so the caller can render the reconciliation without a
+// second request. Re-linking replaces the previous credit. The transaction must
+// be a credit on a non-loan account that is not already an EMI payment or
+// another loan's disbursement credit.
+func (c *Client) LinkLoanDisbursement(ctx context.Context, accountID, transactionID string) (LoanScheduleDetail, error) {
+	req := LinkLoanDisbursementRequest{TransactionID: transactionID}
+	return do[LoanScheduleDetail](ctx, c, put("/accounts/"+pathEscape(accountID)+"/loan-disbursement").withJSON(req))
+}
+
+// UnlinkLoanDisbursement removes the loan's linked credit, reporting whether one
+// was there. The endpoint is idempotent, and the loan, its schedule and the
+// transaction are untouched.
+func (c *Client) UnlinkLoanDisbursement(ctx context.Context, accountID string) (DeleteLoanDisbursementResult, error) {
+	return do[DeleteLoanDisbursementResult](ctx, c, del("/accounts/"+pathEscape(accountID)+"/loan-disbursement"))
 }

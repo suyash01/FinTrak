@@ -30,16 +30,29 @@ func transferScheduleRow(id, accountID uuid.UUID) []any {
 		transferStart, nil, transferStart, transferStart}
 }
 
-// transferRowJSON is a loan_transfers row as the loader reads it.
-func transferRowJSON(id, fromID, toID uuid.UUID, amount money.Amount, date time.Time, recasts bool) []any {
-	return []any{id, fromID, "Car Loan", toID, "Home Loan", amount, date, recasts, date}
+// transferRowJSON is a loan_transfers row as the loader reads it. The principal
+// is the part of the amount that was principal rather than accrued interest.
+func transferRowJSON(id, fromID, toID uuid.UUID, amount, principal money.Amount, date time.Time, mode string) []any {
+	return []any{id, fromID, "Car Loan", toID, "Home Loan", amount, principal, date, mode, date}
+}
+
+// transferSecondPayment is when the source fixture's second EMI was paid: the
+// date a later settlement accrues interest from.
+var transferSecondPayment = time.Date(2024, 2, 10, 0, 0, 0, 0, time.UTC)
+
+// expectLoanScheduleRowsFor matches a loan's own schedule row with the given
+// principal and rate, so a takeover target can have terms of its own.
+func expectLoanScheduleRowsFor(mock pgxmock.PgxPoolIface, accountID, userID any, principal money.Amount, bps, months int) {
+	expectLoanScheduleRows(mock, accountID, userID,
+		[]any{uuid.New(), accountID, principal, money.FromFloat(0), bps, months,
+			transferStart, nil, transferStart, transferStart})
 }
 
 // expectLoanPayments matches the attached-EMI read of a loan, oldest first.
 func expectLoanPayments(mock pgxmock.PgxPoolIface, accountID, userID any, rows ...[]any) {
 	mock.ExpectQuery("FROM loan_attachments").
 		WithArgs(accountID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "type"}).AddRows(rows...))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "amount", "date", "type"}).AddRows(rows...))
 }
 
 // The whole point of the feature: the source's unpaid installments are void and
@@ -59,15 +72,17 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 	transferDate := time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)
 
 	// The source has paid its first two installments, so 1,009.05 is left of its
-	// 1,200.00 principal.
+	// 1,200.00 principal, plus the interest accrued since the second was paid
+	// (2024-02-10 to the 2024-03-15 transfer date).
 	mock.ExpectQuery("SELECT name, account_type_id FROM accounts").
 		WithArgs(sourceID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id"}).AddRow("Car Loan", "loan"))
 	expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
 	expectNoLoanTransfers(mock, sourceID, userID)
+	expectLoanDisbursementCredit(mock, sourceID, userID)
 	expectLoanPayments(mock, sourceID, userID,
-		[]any{paidTxn1, money.FromFloat(107), "debit"},
-		[]any{paidTxn2, money.FromFloat(107), "debit"})
+		[]any{paidTxn1, money.FromFloat(107), transferStart, "debit"},
+		[]any{paidTxn2, money.FromFloat(107), transferSecondPayment, "debit"})
 
 	// The target is an open loan account of the caller's.
 	mock.ExpectQuery("SELECT user_id, name, account_type_id, closed FROM accounts").
@@ -76,6 +91,7 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 			AddRow(userID, "Home Loan", "loan", false))
 	expectLoanScheduleRows(mock, targetID, userID, transferScheduleRow(uuid.New(), targetID))
 	expectNoLoanTransfers(mock, targetID, userID)
+	expectLoanDisbursementCredit(mock, targetID, userID)
 	expectLoanPayments(mock, targetID, userID)
 
 	// The transfer row is the only write; the target already had a schedule.
@@ -83,7 +99,7 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 	// pinned.
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO loan_transfers").
-		WithArgs(pgxmock.AnyArg(), userID, sourceID, targetID, money.FromFloat(1009.05), transferDate, true).
+		WithArgs(pgxmock.AnyArg(), userID, sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferRecast).
 		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(transferDate))
 	mock.ExpectCommit()
 
@@ -93,15 +109,17 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 	mock.ExpectQuery("FROM loan_transfers").
 		WithArgs(sourceID, userID).
 		WillReturnRows(pgxmock.NewRows(loanTransferCols).
-			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1009.05), transferDate, true)...))
+			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferRecast)...))
+	expectLoanDisbursementCredit(mock, sourceID, userID)
 	expectLoanPayments(mock, sourceID, userID,
-		[]any{paidTxn1, money.FromFloat(107), "debit"},
-		[]any{paidTxn2, money.FromFloat(107), "debit"})
+		[]any{paidTxn1, money.FromFloat(107), transferStart, "debit"},
+		[]any{paidTxn2, money.FromFloat(107), transferSecondPayment, "debit"})
 	expectLoanScheduleRows(mock, targetID, userID, transferScheduleRow(uuid.New(), targetID))
 	mock.ExpectQuery("FROM loan_transfers").
 		WithArgs(targetID, userID).
 		WillReturnRows(pgxmock.NewRows(loanTransferCols).
-			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1009.05), transferDate, true)...))
+			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferRecast)...))
+	expectLoanDisbursementCredit(mock, targetID, userID)
 	expectLoanPayments(mock, targetID, userID)
 
 	body := map[string]any{"toLoanAccountId": targetID.String(), "transferDate": "2024-03-15"}
@@ -113,7 +131,9 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 
 	var res models.LoanTransferResult
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
-	assert.Equal(t, money.FromFloat(1009.05), res.Transfer.Amount)
+	assert.Equal(t, money.FromFloat(1020.49), res.Transfer.Amount)
+	assert.Equal(t, money.FromFloat(1009.05), res.Transfer.Principal)
+	assert.Equal(t, money.FromFloat(11.44), res.Transfer.AccruedInterest)
 	assert.Equal(t, sourceID, res.Transfer.FromLoanAccountID)
 	assert.Equal(t, targetID, res.Transfer.ToLoanAccountID)
 	assert.Equal(t, "Home Loan", res.Transfer.ToLoanAccountName)
@@ -131,10 +151,11 @@ func TestTransferLoanBalanceRecastsTargetAndSettlesSource(t *testing.T) {
 	assert.Nil(t, res.Source.Entries[2].TransactionID)
 
 	// Target: the installments still due are recast over 1,200.00 plus the
-	// 1,009.05 that moved in, so its EMI rises above the 107.00 it started at.
+	// 1,020.49 payoff that moved in, so its EMI rises above the 107.00 it started
+	// at.
 	assert.Nil(t, res.Target.SettledOn)
 	assert.Equal(t, money.FromFloat(1200), res.Target.Schedule.Principal)
-	assert.Equal(t, money.FromFloat(2209.05), res.Target.OutstandingPrincipal)
+	assert.Equal(t, money.FromFloat(2220.49), res.Target.OutstandingPrincipal)
 	require.Len(t, res.Target.Entries, 12)
 	assert.False(t, res.Target.Entries[0].Recast)
 	assert.True(t, res.Target.Entries[3].Recast)
@@ -162,6 +183,7 @@ func TestTransferLoanBalanceCreatesTargetScheduleWhenTargetHasNone(t *testing.T)
 		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id"}).AddRow("Car Loan", "loan"))
 	expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
 	expectNoLoanTransfers(mock, sourceID, userID)
+	expectLoanDisbursementCredit(mock, sourceID, userID)
 	expectLoanPayments(mock, sourceID, userID)
 
 	mock.ExpectQuery("SELECT user_id, name, account_type_id, closed FROM accounts").
@@ -177,10 +199,10 @@ func TestTransferLoanBalanceCreatesTargetScheduleWhenTargetHasNone(t *testing.T)
 	// principal is the amount that moved in.
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO loan_transfers").
-		WithArgs(pgxmock.AnyArg(), userID, sourceID, targetID, money.FromFloat(1200), transferDate, false).
+		WithArgs(pgxmock.AnyArg(), userID, sourceID, targetID, money.FromFloat(1269.60), money.FromFloat(1200), transferDate, models.LoanTransferOpens).
 		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(transferDate))
 	mock.ExpectExec("INSERT INTO loan_schedules").
-		WithArgs(targetID, userID, money.FromFloat(1200), 900, 24, time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)).
+		WithArgs(targetID, userID, money.FromFloat(1269.60), 900, 24, time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
@@ -188,15 +210,17 @@ func TestTransferLoanBalanceCreatesTargetScheduleWhenTargetHasNone(t *testing.T)
 	mock.ExpectQuery("FROM loan_transfers").
 		WithArgs(sourceID, userID).
 		WillReturnRows(pgxmock.NewRows(loanTransferCols).
-			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1200), transferDate, false)...))
+			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1269.60), money.FromFloat(1200), transferDate, models.LoanTransferOpens)...))
+	expectLoanDisbursementCredit(mock, sourceID, userID)
 	expectLoanPayments(mock, sourceID, userID)
 	expectLoanScheduleRows(mock, targetID, userID,
-		[]any{uuid.New(), targetID, money.FromFloat(1200), money.FromFloat(0), 900, 24,
+		[]any{uuid.New(), targetID, money.FromFloat(1269.60), money.FromFloat(0), 900, 24,
 			time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC), nil, transferDate, transferDate})
 	mock.ExpectQuery("FROM loan_transfers").
 		WithArgs(targetID, userID).
 		WillReturnRows(pgxmock.NewRows(loanTransferCols).
-			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1200), transferDate, false)...))
+			AddRow(transferRowJSON(transferID, sourceID, targetID, money.FromFloat(1269.60), money.FromFloat(1200), transferDate, models.LoanTransferOpens)...))
+	expectLoanDisbursementCredit(mock, targetID, userID)
 	expectLoanPayments(mock, targetID, userID)
 
 	body := map[string]any{
@@ -215,11 +239,11 @@ func TestTransferLoanBalanceCreatesTargetScheduleWhenTargetHasNone(t *testing.T)
 	var res models.LoanTransferResult
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	// The target amortizes the transferred balance exactly once.
-	assert.Equal(t, money.FromFloat(1200), res.Target.Schedule.Principal)
-	assert.Equal(t, money.FromFloat(1200), res.Target.OutstandingPrincipal)
+	assert.Equal(t, money.FromFloat(1269.60), res.Target.Schedule.Principal)
+	assert.Equal(t, money.FromFloat(1269.60), res.Target.OutstandingPrincipal)
 	require.Len(t, res.Target.Entries, 24)
 	assert.False(t, res.Target.Entries[0].Recast)
-	assert.Equal(t, money.FromFloat(55), res.Target.Entries[0].Amount)
+	assert.Equal(t, money.FromFloat(58), res.Target.Entries[0].Amount)
 	assert.True(t, res.Source.Completed)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -239,14 +263,15 @@ func TestTransferLoanBalanceRejections(t *testing.T) {
 		expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
 		transfers := pgxmock.NewRows(loanTransferCols)
 		if settled {
-			transfers.AddRow(transferRowJSON(uuid.New(), sourceID, targetID, money.FromFloat(1009.81),
-				time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC), true)...)
+			transfers.AddRow(transferRowJSON(uuid.New(), sourceID, targetID, money.FromFloat(1009.81), money.FromFloat(1009.81),
+				time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC), models.LoanTransferRecast)...)
 		}
 		mock.ExpectQuery("FROM loan_transfers").WithArgs(sourceID, userID).WillReturnRows(transfers)
-		payments := pgxmock.NewRows([]string{"id", "amount", "type"})
+		payments := pgxmock.NewRows([]string{"id", "amount", "date", "type"})
 		for range paid {
-			payments.AddRow(uuid.New(), money.FromFloat(107), "debit")
+			payments.AddRow(uuid.New(), money.FromFloat(107), transferStart, "debit")
 		}
+		expectLoanDisbursementCredit(mock, sourceID, userID)
 		mock.ExpectQuery("FROM loan_attachments").WithArgs(sourceID, userID).WillReturnRows(payments)
 	}
 
@@ -291,7 +316,7 @@ func TestTransferLoanBalanceRejections(t *testing.T) {
 			setup: func(mock pgxmock.PgxPoolIface) {
 				sourceFixture(mock, 12, false)
 			},
-			want: "no outstanding principal",
+			want: "nothing left to transfer",
 			code: http.StatusBadRequest,
 		},
 		{
@@ -356,14 +381,69 @@ func TestTransferLoanBalanceRejections(t *testing.T) {
 				targetFixture(mock, "loan", false)
 				expectLoanScheduleRows(mock, targetID, userID, transferScheduleRow(uuid.New(), targetID))
 				expectNoLoanTransfers(mock, targetID, userID)
+				expectLoanDisbursementCredit(mock, targetID, userID)
 				// Every installment of the target is already paid.
-				rows := pgxmock.NewRows([]string{"id", "amount", "type"})
+				rows := pgxmock.NewRows([]string{"id", "amount", "date", "type"})
 				for range 12 {
-					rows.AddRow(uuid.New(), money.FromFloat(107), "debit")
+					rows.AddRow(uuid.New(), money.FromFloat(107), transferStart, "debit")
 				}
 				mock.ExpectQuery("FROM loan_attachments").WithArgs(targetID, userID).WillReturnRows(rows)
 			},
 			want: "no unpaid installment due after the transfer date",
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "takeover of a target with no schedule",
+			body: map[string]any{"toLoanAccountId": targetID.String(), "transferDate": "2024-03-15", "mode": "takeover"},
+			setup: func(mock pgxmock.PgxPoolIface) {
+				sourceFixture(mock, 2, false)
+				targetFixture(mock, "loan", false)
+				mock.ExpectQuery("FROM loan_schedules").WithArgs(targetID, userID).WillReturnError(pgx.ErrNoRows)
+			},
+			want: "no schedule to take the balance out of",
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "takeover larger than the target's net disbursement",
+			body: map[string]any{"toLoanAccountId": targetID.String(), "transferDate": "2024-03-15", "mode": "takeover"},
+			setup: func(mock pgxmock.PgxPoolIface) {
+				sourceFixture(mock, 2, false)
+				targetFixture(mock, "loan", false)
+				// A 500.00 loan cannot settle a 1,009.05 balance.
+				expectLoanScheduleRowsFor(mock, targetID, userID, money.FromFloat(500), 900, 24)
+				expectNoLoanTransfers(mock, targetID, userID)
+				expectLoanDisbursementCredit(mock, targetID, userID)
+				expectLoanPayments(mock, targetID, userID)
+			},
+			want: "cannot cover the transferred balance",
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "opens a target that already has a schedule",
+			body: map[string]any{"toLoanAccountId": targetID.String(), "transferDate": "2024-03-15", "mode": "opens"},
+			setup: func(mock pgxmock.PgxPoolIface) {
+				sourceFixture(mock, 2, false)
+				targetFixture(mock, "loan", false)
+				expectLoanScheduleRowsFor(mock, targetID, userID, money.FromFloat(3000), 900, 24)
+				expectNoLoanTransfers(mock, targetID, userID)
+				expectLoanDisbursementCredit(mock, targetID, userID)
+				expectLoanPayments(mock, targetID, userID)
+			},
+			want: "already has a schedule",
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "unknown mode",
+			body: map[string]any{"toLoanAccountId": targetID.String(), "transferDate": "2024-03-15", "mode": "absorb"},
+			setup: func(mock pgxmock.PgxPoolIface) {
+				sourceFixture(mock, 2, false)
+				targetFixture(mock, "loan", false)
+				expectLoanScheduleRowsFor(mock, targetID, userID, money.FromFloat(3000), 900, 24)
+				expectNoLoanTransfers(mock, targetID, userID)
+				expectLoanDisbursementCredit(mock, targetID, userID)
+				expectLoanPayments(mock, targetID, userID)
+			},
+			want: "mode must be recast, opens or takeover",
 			code: http.StatusBadRequest,
 		},
 		{
@@ -412,6 +492,104 @@ func TestTransferLoanBalanceRejections(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+// A takeover is what a refinance does: the target keeps amortizing its own
+// principal, and the balance it settles comes out of the cash it released.
+func TestTransferLoanBalanceTakeoverLeavesTargetTableAlone(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	srv := newTestServer(mock)
+	r := newLoanScheduleTestRouter(srv)
+
+	userID := testUserID()
+	sourceID, targetID := uuid.New(), uuid.New()
+	paidTxn1, paidTxn2 := uuid.New(), uuid.New()
+	transferDate := time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	// The source has paid its first two installments, leaving 1,009.05.
+	mock.ExpectQuery("SELECT name, account_type_id FROM accounts").
+		WithArgs(sourceID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id"}).AddRow("Car Loan", "loan"))
+	expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
+	expectNoLoanTransfers(mock, sourceID, userID)
+	expectLoanDisbursementCredit(mock, sourceID, userID)
+	expectLoanPayments(mock, sourceID, userID,
+		[]any{paidTxn1, money.FromFloat(107), transferStart, "debit"},
+		[]any{paidTxn2, money.FromFloat(107), transferSecondPayment, "debit"})
+
+	// The target is a loan of its own: 3,000.00 at 9% over 24 months.
+	mock.ExpectQuery("SELECT user_id, name, account_type_id, closed FROM accounts").
+		WithArgs(targetID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "name", "account_type_id", "closed"}).
+			AddRow(userID, "Home Loan", "loan", false))
+	expectLoanScheduleRowsFor(mock, targetID, userID, money.FromFloat(3000), 900, 24)
+	expectNoLoanTransfers(mock, targetID, userID)
+	expectLoanDisbursementCredit(mock, targetID, userID)
+	expectLoanPayments(mock, targetID, userID)
+
+	// The transfer is recorded as a takeover, and nothing else is written.
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO loan_transfers").
+		WithArgs(pgxmock.AnyArg(), userID, sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferTakeover).
+		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(transferDate))
+	mock.ExpectCommit()
+
+	expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
+	mock.ExpectQuery("FROM loan_transfers").
+		WithArgs(sourceID, userID).
+		WillReturnRows(pgxmock.NewRows(loanTransferCols).
+			AddRow(transferRowJSON(uuid.New(), sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferTakeover)...))
+	expectLoanDisbursementCredit(mock, sourceID, userID)
+	expectLoanPayments(mock, sourceID, userID,
+		[]any{paidTxn1, money.FromFloat(107), transferStart, "debit"},
+		[]any{paidTxn2, money.FromFloat(107), transferSecondPayment, "debit"})
+	expectLoanScheduleRowsFor(mock, targetID, userID, money.FromFloat(3000), 900, 24)
+	mock.ExpectQuery("FROM loan_transfers").
+		WithArgs(targetID, userID).
+		WillReturnRows(pgxmock.NewRows(loanTransferCols).
+			AddRow(transferRowJSON(uuid.New(), sourceID, targetID, money.FromFloat(1020.49), money.FromFloat(1009.05), transferDate, models.LoanTransferTakeover)...))
+	expectLoanDisbursementCredit(mock, targetID, userID)
+	expectLoanPayments(mock, targetID, userID)
+
+	body := map[string]any{
+		"toLoanAccountId": targetID.String(),
+		"transferDate":    "2024-03-15",
+		"mode":            "takeover",
+	}
+	req := jsonRequest(t, http.MethodPost, "/accounts/"+sourceID.String()+"/loan-transfer", body)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var res models.LoanTransferResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, models.LoanTransferTakeover, res.Transfer.Mode)
+
+	// The source is settled exactly as a recast transfer would settle it.
+	require.NotNil(t, res.Source.SettledOn)
+	assert.Zero(t, res.Source.OutstandingPrincipal)
+	assert.True(t, res.Source.Completed)
+
+	// The target's table is untouched: still 3,000.00 over 24 months at 138.00,
+	// with nothing recast and its own debt unchanged.
+	require.NotNil(t, res.Target.Schedule)
+	assert.Equal(t, money.FromFloat(3000), res.Target.Schedule.Principal)
+	assert.Equal(t, money.FromFloat(138), res.Target.EMI)
+	assert.Equal(t, money.FromFloat(138), res.Target.Entries[0].Amount)
+	assert.Equal(t, money.FromFloat(115.50), res.Target.Entries[0].Principal)
+	assert.Equal(t, money.FromFloat(2884.50), res.Target.Entries[0].Balance)
+	assert.False(t, res.Target.Entries[0].Recast)
+	assert.Equal(t, money.FromFloat(3000), res.Target.OutstandingPrincipal)
+
+	// But it released 1,009.05 less: that is the takeover.
+	require.NotNil(t, res.Target.Disbursement)
+	assert.Equal(t, money.FromFloat(3000), res.Target.Disbursement.Sanctioned)
+	assert.Equal(t, money.FromFloat(1020.49), res.Target.Disbursement.PaidOut)
+	assert.Equal(t, money.FromFloat(1979.51), res.Target.Disbursement.Net)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // A malformed id or date never reaches the database.
@@ -463,6 +641,7 @@ func TestTransferLoanBalanceSettledConcurrently(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"name", "account_type_id"}).AddRow("Car Loan", "loan"))
 	expectLoanScheduleRows(mock, sourceID, userID, transferScheduleRow(uuid.New(), sourceID))
 	expectNoLoanTransfers(mock, sourceID, userID)
+	expectLoanDisbursementCredit(mock, sourceID, userID)
 	expectLoanPayments(mock, sourceID, userID)
 
 	mock.ExpectQuery("SELECT user_id, name, account_type_id, closed FROM accounts").
@@ -471,11 +650,12 @@ func TestTransferLoanBalanceSettledConcurrently(t *testing.T) {
 			AddRow(userID, "Home Loan", "loan", false))
 	expectLoanScheduleRows(mock, targetID, userID, transferScheduleRow(uuid.New(), targetID))
 	expectNoLoanTransfers(mock, targetID, userID)
+	expectLoanDisbursementCredit(mock, targetID, userID)
 	expectLoanPayments(mock, targetID, userID)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO loan_transfers").
-		WithArgs(anyArgs(7)...).
+		WithArgs(anyArgs(8)...).
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
 	mock.ExpectRollback()
 
@@ -501,7 +681,7 @@ func TestDeleteLoanTransfer(t *testing.T) {
 		mock.ExpectBegin()
 		mock.ExpectQuery("DELETE FROM loan_transfers").
 			WithArgs(transferID, sourceID, testUserID()).
-			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "recasts_target"}).AddRow(targetID, true))
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode"}).AddRow(targetID, models.LoanTransferRecast))
 		mock.ExpectCommit()
 
 		req, _ := http.NewRequest(http.MethodDelete,
@@ -525,7 +705,7 @@ func TestDeleteLoanTransfer(t *testing.T) {
 		mock.ExpectBegin()
 		mock.ExpectQuery("DELETE FROM loan_transfers").
 			WithArgs(transferID, sourceID, testUserID()).
-			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "recasts_target"}).AddRow(targetID, false))
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode"}).AddRow(targetID, models.LoanTransferOpens))
 		mock.ExpectExec("DELETE FROM loan_schedules").
 			WithArgs(targetID, testUserID()).
 			WillReturnResult(pgxmock.NewResult("DELETE", 1))

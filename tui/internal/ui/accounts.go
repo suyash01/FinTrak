@@ -3,7 +3,9 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -37,11 +39,14 @@ type Accounts struct {
 	// asked for the data now in flight, so a slow response opens the overlay for
 	// that account even if the cursor has moved meanwhile. transferAccount is
 	// the loan that gave a balance away, whose recast table is shown once the
-	// transfer reports back.
-	detailAccount   api.Account
-	cyclesAccount   api.Account
-	scheduleAccount api.Account
-	transferAccount api.Account
+	// transfer reports back. disbursementAccount is the loan whose linked credit
+	// the last fetch was about, so the picker and its link use that account even
+	// if the cursor has moved.
+	detailAccount       api.Account
+	cyclesAccount       api.Account
+	scheduleAccount     api.Account
+	transferAccount     api.Account
+	disbursementAccount api.Account
 
 	// deletedTransactions carries DeleteAccount's count back from the mutation
 	// goroutine: the number only exists once the call has returned, and a
@@ -67,6 +72,7 @@ type accountsKeys struct {
 	SetLoan    key.Binding
 	DeleteLoan key.Binding
 	Transfer   key.Binding
+	Credit     key.Binding
 }
 
 func newAccountsKeys() accountsKeys {
@@ -82,6 +88,7 @@ func newAccountsKeys() accountsKeys {
 		SetLoan:    key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "set schedule")),
 		DeleteLoan: key.NewBinding(key.WithKeys("X"), key.WithHelp("X", "delete schedule")),
 		Transfer:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "transfer balance")),
+		Credit:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "disbursement credit")),
 	}
 }
 
@@ -111,7 +118,7 @@ func (a *Accounts) Keys() []key.Binding {
 	return []key.Binding{
 		a.keys.Refresh, a.keys.New, a.keys.Edit, a.keys.Delete, a.keys.Detail,
 		a.keys.Cycles, a.keys.Export, a.keys.Loan, a.keys.SetLoan, a.keys.DeleteLoan,
-		a.keys.Transfer,
+		a.keys.Transfer, a.keys.Credit,
 	}
 }
 
@@ -157,21 +164,38 @@ func (a *Accounts) Update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case loaded[api.LoanScheduleDetail]:
-		if m.tag != "accounts.schedule" {
+		switch m.tag {
+		case "accounts.schedule":
+			if m.err != nil {
+				a.ctx.Notify(LevelError, "%s", m.err)
+				return nil
+			}
+			a.showSchedule(defaultTo(m.data.LoanAccountName, a.scheduleAccount.Name), m.data)
+		case "accounts.disbursement":
+			if m.err != nil {
+				a.ctx.Notify(LevelError, "%s", m.err)
+				return nil
+			}
+			return a.actOnDisbursement(m.data)
+		case "accounts.disbursement.link":
+			if m.err != nil {
+				a.ctx.Notify(LevelError, "%s", m.err)
+				return nil
+			}
+			a.ctx.Notify(LevelSuccess, "disbursement credit linked")
+			a.showSchedule(defaultTo(m.data.LoanAccountName, a.disbursementAccount.Name), m.data)
+		}
+		return nil
+
+	case loaded[creditCandidates]:
+		if m.tag != "accounts.disbursement.credits" {
 			break
 		}
 		if m.err != nil {
 			a.ctx.Notify(LevelError, "%s", m.err)
 			return nil
 		}
-		title := "Loan schedule · " + defaultTo(m.data.LoanAccountName, a.scheduleAccount.Name)
-		modal := NewInfo(title, accountsLoanScheduleText(m.data))
-		if m.data.Schedule == nil {
-			// The API answers 200 with a null schedule for a loan that has no
-			// terms yet, so this is a normal state, not a failure.
-			modal = modal.WithFooter("close with esc, then press L to set the terms")
-		}
-		a.ctx.Open(modal)
+		a.openCreditPicker(m.data)
 		return nil
 
 	case done:
@@ -196,8 +220,9 @@ func (a *Accounts) Update(msg tea.Msg) tea.Cmd {
 // visible screen, which this one may not be when the mutation completes.
 func (a *Accounts) afterMutation(tag string) tea.Cmd {
 	switch tag {
-	case "accounts.export", "accounts.schedule.delete":
-		// Neither touched an account: the listing on screen is still accurate.
+	case "accounts.export", "accounts.schedule.delete", "accounts.disbursement.unlink":
+		// None of them touched an account: the listing on screen is still
+		// accurate.
 		return nil
 	case "accounts.schedule.save":
 		// Show the table the API generated from the accepted terms.
@@ -256,6 +281,8 @@ func (a *Accounts) handleKey(msg tea.KeyMsg) tea.Cmd {
 			a.openTransferForm(account)
 		}
 		return nil
+	case keyMatches(a.keys.Credit, msg):
+		return a.openDisbursementCredit()
 	}
 
 	switch msg.String() {
@@ -548,6 +575,271 @@ func (a *Accounts) loadSchedule(account api.Account) tea.Cmd {
 	})
 }
 
+// showSchedule opens the amortization overlay for a fetched detail. A null
+// schedule is the API's normal answer for a loan without terms, so the footer
+// points at the key that sets them rather than looking like a failure.
+func (a *Accounts) showSchedule(name string, detail api.LoanScheduleDetail) {
+	modal := NewInfo("Loan schedule · "+name, accountsLoanScheduleText(detail))
+	if detail.Schedule == nil {
+		modal = modal.WithFooter("close with esc, then press L to set the terms")
+	}
+	a.ctx.Open(modal)
+}
+
+// disbursementCreditWindow is how far either side of the loan's disbursal day a
+// candidate credit may be dated. A bank releases the money on or within a few
+// days of the recorded date, but the exact day drifts with weekends and how the
+// statement was entered.
+const disbursementCreditWindow = 45
+
+// disbursementCreditLead is how far before the anchor the window reaches when
+// the loan carries no disbursal date. The first installment is then the anchor,
+// and the money left the lender months earlier: the EMIs start only once the
+// borrower has it.
+const disbursementCreditLead = 240
+
+// disbursementCreditLimit caps each of the two candidate queries. It is the page
+// the picker reads in full; the amount query, not a larger page, is what finds a
+// credit the window misses.
+const disbursementCreditLimit = 100
+
+// openDisbursementCredit links the bank credit that released the cursor loan, or
+// unlinks the one already linked. The loan must be a Loan/EMI account with a
+// schedule — without terms there is no disbursement to reconcile — so the
+// schedule is fetched first and the link it carries decides which way the key
+// acts.
+func (a *Accounts) openDisbursementCredit() tea.Cmd {
+	account, ok := a.current()
+	if !ok {
+		return nil
+	}
+	if account.AccountTypeID != "loan" {
+		a.ctx.Notify(LevelError, "%s is not a loan/EMI account", account.Name)
+		return nil
+	}
+	a.disbursementAccount = account
+	return load("accounts.disbursement", func(ctx context.Context) (api.LoanScheduleDetail, error) {
+		return a.ctx.Client.LoanSchedule(ctx, account.ID)
+	})
+}
+
+// actOnDisbursement decides what the credit key does with the fetched schedule:
+// a loan already reconciled against a credit is offered the unlink, otherwise
+// the credits that could be it — found by exact amount and by date window — are
+// fetched for the picker.
+func (a *Accounts) actOnDisbursement(detail api.LoanScheduleDetail) tea.Cmd {
+	name := a.disbursementAccount.Name
+	if detail.Schedule == nil {
+		a.ctx.Notify(LevelError, "%s has no schedule, so it has no disbursement to reconcile", name)
+		return nil
+	}
+	if detail.Disbursement == nil {
+		// The API only omits the disbursement alongside a null schedule, so a
+		// schedule without one is a response the TUI cannot reconcile against.
+		a.ctx.Notify(LevelError, "%s's schedule carries no disbursement to reconcile", name)
+		return nil
+	}
+	if detail.Disbursement.CreditTransactionID != "" {
+		a.confirmUnlinkDisbursement(a.disbursementAccount)
+		return nil
+	}
+	return a.loadCreditCandidates(detail)
+}
+
+// creditCandidates is the merged, ranked candidate list together with the net it
+// was ranked against, so an empty result can be reported as the amount that
+// matched nothing.
+type creditCandidates struct {
+	Net     api.Amount
+	Credits []api.Transaction
+}
+
+// creditCandidateQueries builds the two searches whose union is the candidate
+// list. The amount query finds the exact credit wherever it is dated — the net of
+// the disbursement is the strongest signal there is — and the window query
+// covers a credit the amount misses because the bank posted a rounded figure or
+// split the release. An attached credit is deliberately not excluded: the
+// transaction the user filed as an EMI payment before this link existed is
+// usually the very one being looked for, so it has to stay visible.
+func creditCandidateQueries(detail api.LoanScheduleDetail) []api.TransactionFilter {
+	schedule := detail.Schedule
+	anchor := schedule.DisbursalDate
+	from := anchor.AddDate(0, 0, -disbursementCreditWindow)
+	if anchor.IsZero() {
+		// Without a disbursal date the first installment stands in for it, and
+		// the window reaches further back: the disbursement predates the first
+		// installment by months, not days.
+		anchor = schedule.StartDate
+		from = anchor.AddDate(0, 0, -disbursementCreditLead)
+	}
+	return []api.TransactionFilter{
+		{
+			Type:   "credit",
+			Amount: detail.Disbursement.Net.String(),
+			Limit:  disbursementCreditLimit,
+		},
+		{
+			Type:     "credit",
+			DateFrom: from.Format(api.DateLayout),
+			DateTo:   anchor.AddDate(0, 0, disbursementCreditWindow).Format(api.DateLayout),
+			Limit:    disbursementCreditLimit,
+		},
+	}
+}
+
+// loadCreditCandidates fetches both searches and reduces them to the picker's
+// list. Both are sent even though either could answer alone: the window knows
+// where a credit is likely to be, the amount knows it is the right one, and a
+// credit found by both arrives once.
+func (a *Accounts) loadCreditCandidates(detail api.LoanScheduleDetail) tea.Cmd {
+	filters := creditCandidateQueries(detail)
+	return load("accounts.disbursement.credits", func(ctx context.Context) (creditCandidates, error) {
+		found := creditCandidates{Net: detail.Disbursement.Net}
+		for _, filter := range filters {
+			page, err := a.ctx.Client.ListTransactions(ctx, filter)
+			if err != nil {
+				return creditCandidates{}, err
+			}
+			found.Credits = append(found.Credits, page.Data...)
+		}
+		found.Credits = a.rankCreditCandidates(found.Credits, found.Net)
+		return found, nil
+	})
+}
+
+// rankCreditCandidates drops the duplicates the two queries share and the
+// credits that cannot be a disbursement — money received is never held on a loan
+// account, which is what the API's own link check refuses — then orders the rest
+// by how close their amount is to the net and, among equals, newest first.
+func (a *Accounts) rankCreditCandidates(credits []api.Transaction, net api.Amount) []api.Transaction {
+	ranked := make([]api.Transaction, 0, len(credits))
+	seen := make(map[string]bool, len(credits))
+	for _, credit := range credits {
+		if seen[credit.ID] {
+			continue
+		}
+		seen[credit.ID] = true
+		if source, ok := a.ctx.Ref.Account(credit.AccountID); ok && source.AccountTypeID == "loan" {
+			continue
+		}
+		ranked = append(ranked, credit)
+	}
+	netValue := net.Float64()
+	sort.SliceStable(ranked, func(i, j int) bool {
+		left := math.Abs(ranked[i].Amount.Float64() - netValue)
+		right := math.Abs(ranked[j].Amount.Float64() - netValue)
+		if left != right {
+			return left < right
+		}
+		return ranked[i].Date.After(ranked[j].Date)
+	})
+	return ranked
+}
+
+// creditLoanLink names the loan a candidate credit is already attached to. The
+// response carries the loan's name; its id is the fallback.
+func creditLoanLink(credit api.Transaction) (string, bool) {
+	if credit.LoanAccountID == nil || *credit.LoanAccountID == "" {
+		return "", false
+	}
+	return defaultTo(credit.LoanAccountName, *credit.LoanAccountID), true
+}
+
+// creditPicker is the candidate list with the rows that must not be chosen. A
+// credit already attached to another loan cannot be linked — the API answers 409
+// — so enter on one reports that instead of posting the link; the record stays
+// listed, which is the point of showing it. The picker itself has no disabled
+// rows, so the key is vetted here, before the picker can commit it.
+type creditPicker struct {
+	*Picker
+	// attached maps a candidate's id to the loan already holding it.
+	attached map[string]string
+	// refuse reports why the highlighted attached candidate cannot be linked.
+	refuse func(loan string)
+}
+
+// Update implements Modal. Enter is inspected before the picker sees it, so a
+// refused row is never committed and the list stays open to pick another.
+func (c *creditPicker) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+		if loan, ok := c.highlighted(); ok {
+			c.refuse(loan)
+			return nil
+		}
+	}
+	return c.Picker.Update(msg)
+}
+
+// highlighted names the loan holding the highlighted row, when that row is one
+// of the attached candidates.
+func (c *creditPicker) highlighted() (string, bool) {
+	rows := c.rows()
+	if c.cursor < 0 || c.cursor >= len(rows) {
+		return "", false
+	}
+	index := rows[c.cursor].option
+	if index < 0 {
+		return "", false
+	}
+	loan, ok := c.attached[c.options[index].Value]
+	return loan, ok
+}
+
+// openCreditPicker offers the candidate credits for the loan's disbursement. The
+// label carries the three facts that identify a bank credit — day, description
+// and account — because two disbursements of the same loan look alike by amount
+// alone. A credit already attached to a loan is shown and labelled rather than
+// filtered out: it is usually the transaction the user filed as an EMI payment
+// before this link existed, so hiding it left the right record invisible.
+func (a *Accounts) openCreditPicker(candidates creditCandidates) {
+	account := a.disbursementAccount
+	options := make([]Option, 0, len(candidates.Credits))
+	attached := make(map[string]string, len(candidates.Credits))
+	for _, credit := range candidates.Credits {
+		label := fmt.Sprintf("%s  %-36s  %s  %s", formatDate(credit.Date),
+			truncate(defaultTo(credit.Description, credit.Payee), 36),
+			signedAmount(credit.Amount, credit.Type), defaultTo(credit.AccountName, credit.AccountID))
+		if loan, ok := creditLoanLink(credit); ok {
+			label += "  · already linked to " + loan
+			attached[credit.ID] = loan
+		}
+		options = append(options, Option{Value: credit.ID, Label: label})
+	}
+	if len(options) == 0 {
+		a.ctx.Notify(LevelInfo,
+			"no credit matches %s's disbursement of %s — import the statement period covering the disbursement, or set the loan's disbursal date",
+			account.Name, candidates.Net.Display())
+		return
+	}
+	picker := &creditPicker{
+		Picker:   NewPicker("Disbursement credit · "+account.Name, options, "", false, ""),
+		attached: attached,
+		refuse: func(loan string) {
+			a.ctx.Notify(LevelError,
+				"that credit is already attached to %s, so the API refuses to link it — detach it from that loan first", loan)
+		},
+	}
+	picker.OnSelect = func(transactionID string) tea.Cmd {
+		return load("accounts.disbursement.link", func(ctx context.Context) (api.LoanScheduleDetail, error) {
+			return a.ctx.Client.LinkLoanDisbursement(ctx, account.ID, transactionID)
+		})
+	}
+	a.ctx.Open(picker)
+}
+
+// confirmUnlinkDisbursement asks before detaching the linked credit. The link is
+// only a reconciliation, so removing it leaves the loan and the transaction
+// alone.
+func (a *Accounts) confirmUnlinkDisbursement(account api.Account) {
+	body := fmt.Sprintf("Unlink the bank credit reconciled against %q?", account.Name)
+	a.ctx.Open(NewConfirm("Unlink disbursement credit", body, false, func() tea.Cmd {
+		return act("accounts.disbursement.unlink", "disbursement credit unlinked", false, func(ctx context.Context) error {
+			_, err := a.ctx.Client.UnlinkLoanDisbursement(ctx, account.ID)
+			return err
+		})
+	}).WithDetail("The loan, its schedule and the transaction are untouched; only the link is forgotten."))
+}
+
 // openScheduleForm sets or replaces the loan's terms. The API generates the
 // amortization table from them, so the form collects principal, the processing
 // fee withheld from it, rate, tenure and the start and disbursal dates, and
@@ -625,14 +917,20 @@ func (a *Accounts) confirmDeleteSchedule(account api.Account) {
 	}).WithDetail("The account and its transactions are untouched; only the terms are forgotten."))
 }
 
-// openTransferForm moves the cursor loan's remaining principal to another loan:
-// the source is settled at its outstanding balance on the transfer date and the
-// target's remaining installments are recast over that amount. The date
-// defaults to today, which is when the source's balance is measured.
+// openTransferForm moves the cursor loan's remaining balance to another loan.
+// The mode decides how the target takes the amount on: the automatic choice
+// (blank) recasts a target that has a schedule and starts one for a target that
+// does not, recast raises a scheduled target's remaining installments, and
+// takeover records the amount as paid out of the target's own disbursement and
+// leaves its schedule alone. The date defaults to today, which is when the
+// source's balance is measured.
 //
-// The target terms are only used when the target has no schedule of its own —
-// one that has a schedule recasts it — so they are checked against the target's
-// fetched schedule when the transfer is submitted rather than guessed here.
+// The target terms are only used when the target has no schedule of its own, so
+// they are checked against the target's fetched schedule when the transfer is
+// submitted rather than guessed here. What the transfer settles the source at is
+// quoted for the same date before anything is posted, because the payoff is the
+// principal plus the interest accrued since the last EMI payment and only the
+// API computes that.
 func (a *Accounts) openTransferForm(source api.Account) {
 	if source.AccountTypeID != "loan" {
 		a.ctx.Notify(LevelError, "%s is not a loan/EMI account", source.Name)
@@ -643,8 +941,12 @@ func (a *Accounts) openTransferForm(source api.Account) {
 		a.ctx.Notify(LevelError, "no other loan/EMI account to transfer the balance to")
 		return
 	}
+	mode := SelectField("Mode", "", transferModes(), false)
+	mode.ClearLabel = "automatic"
+	mode.Help = "takeover leaves the target's own schedule alone"
 	fields := []Field{
 		SelectField("Target account", targets[0].Value, targets, true),
+		mode,
 		{Label: "Transfer date", Kind: FieldText, Value: nowDate(), Width: 14, Validate: requiredDate},
 		{
 			Label: "Target rate (bps)", Kind: FieldText, Value: "", Width: 8,
@@ -672,27 +974,79 @@ func (a *Accounts) openTransferForm(source api.Account) {
 		req := api.LoanTransferRequest{
 			ToLoanAccountID: f.Value("Target account"),
 			TransferDate:    f.Value("Transfer date"),
+			Mode:            f.Value("Mode"),
 		}
-		return act("accounts.transfer", "balance transferred", true, func(ctx context.Context) error {
-			// The target's own schedule decides whether its terms are used at
-			// all: the API recasts a table that exists and ignores them, and
-			// requires them when there is nothing to recast.
+		return transferAct("accounts.transfer", func(ctx context.Context) (api.LoanPayoff, error) {
+			// The target's own schedule decides both what the mode may be and
+			// whether its terms are used at all: recast and takeover rewrite a
+			// table that exists, the automatic mode recasts one and starts an
+			// absent one from the terms, and a mode that needs a schedule is
+			// refused here rather than left to the API's 400.
 			detail, err := a.ctx.Client.LoanSchedule(ctx, req.ToLoanAccountID)
 			if err != nil {
-				return err
+				return api.LoanPayoff{}, err
 			}
 			if detail.Schedule == nil {
+				switch req.Mode {
+				case "recast":
+					return api.LoanPayoff{}, errText("recast raises the target's installments, which needs it to have a schedule")
+				case "takeover":
+					return api.LoanPayoff{}, errText("takeover is paid out of the target's disbursement, which needs it to have a schedule")
+				}
 				if rateText == "" || tenureText == "" || startDate == "" {
-					return errText("the target loan has no schedule — give its rate, tenure and first installment date")
+					return api.LoanPayoff{}, errText("the target loan has no schedule — give its rate, tenure and first installment date")
 				}
 				req.TargetAnnualRateBps = api.Int(rate)
 				req.TargetTenureMonths = api.Int(tenure)
 				req.TargetStartDate = startDate
 			}
-			_, err = a.ctx.Client.TransferLoanBalance(ctx, sourceID, req)
-			return err
-		})
+			// The quote is the payoff the transfer settles the source at, so it
+			// is taken for the transfer's own date first: when it fails there is
+			// nothing honest to report afterwards, and the transfer is not
+			// attempted at all.
+			payoff, err := a.ctx.Client.LoanPayoff(ctx, sourceID, req.TransferDate)
+			if err != nil {
+				return api.LoanPayoff{}, err
+			}
+			if _, err := a.ctx.Client.TransferLoanBalance(ctx, sourceID, req); err != nil {
+				return api.LoanPayoff{}, err
+			}
+			return payoff, nil
+		}, transferSettledNote)
 	}))
+}
+
+// transferAct runs a balance transfer that is quoted first, so the note can
+// report what actually moved. The shared act helper fixes its note before the
+// call runs, and the payoff — the principal plus the interest accrued since the
+// last EMI payment — only comes back from the quote the API computes for the
+// transfer's date.
+func transferAct(tag string, fn func(context.Context) (api.LoanPayoff, error), note func(api.LoanPayoff) string) tea.Cmd {
+	return func() tea.Msg {
+		payoff, err := fn(context.Background())
+		if err != nil {
+			return done{tag: tag, err: err}
+		}
+		return done{tag: tag, note: note(payoff), invalidate: true}
+	}
+}
+
+// transferSettledNote reports what a balance transfer settled, in the server's
+// own figures: the payoff and the principal and accrued interest it is made of.
+func transferSettledNote(payoff api.LoanPayoff) string {
+	return fmt.Sprintf("settled %s (principal %s + interest %s)",
+		payoff.Payoff.Display(), payoff.OutstandingPrincipal.Display(), payoff.AccruedInterest.Display())
+}
+
+// transferModes are the ways a balance transfer may be absorbed that the form
+// offers explicitly. The empty value stays the API's automatic choice — recast a
+// target that has a schedule, start one for a target that does not — and is what
+// the select shows until the user picks one.
+func transferModes() []Option {
+	return []Option{
+		{Value: "recast", Label: "recast — the target's remaining installments absorb it"},
+		{Value: "takeover", Label: "takeover — paid out of the target's disbursement"},
+	}
 }
 
 // transferTargets lists the accounts a balance transfer may name: every other
@@ -903,6 +1257,8 @@ func accountsLoanScheduleText(detail api.LoanScheduleDetail) string {
 	fmt.Fprintf(&b, "Start date         %s\n", formatDate(schedule.StartDate))
 	fmt.Fprintf(&b, "Disbursal date     %s\n", formatDate(schedule.DisbursalDate))
 	b.WriteString("\n")
+	b.WriteString(accountsDisbursementText(detail.Disbursement))
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "EMI                %s\n", detail.EMI.Display())
 	fmt.Fprintf(&b, "Total interest     %s\n", detail.TotalInterest.Display())
 	fmt.Fprintf(&b, "Total payable      %s\n", detail.TotalPayable.Display())
@@ -929,9 +1285,43 @@ func accountsLoanScheduleText(detail api.LoanScheduleDetail) string {
 	return b.String()
 }
 
+// accountsDisbursementText renders what the loan actually released and how that
+// reconciles against the bank credit linked to it. The figures are the server's
+// — the net is the sanctioned principal less the fee and the takeovers the loan
+// funded — and the difference is the linked credit against that net, so the
+// overlay never recomputes money.
+func accountsDisbursementText(disbursement *api.LoanDisbursement) string {
+	var b strings.Builder
+	b.WriteString("Disbursement\n")
+	if disbursement == nil {
+		b.WriteString("none\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "Sanctioned         %s\n", disbursement.Sanctioned.Display())
+	fmt.Fprintf(&b, "Processing fee     %s\n", disbursement.ProcessingFee.Display())
+	fmt.Fprintf(&b, "Paid out           %s\n", disbursement.PaidOut.Display())
+	fmt.Fprintf(&b, "Net released       %s\n", disbursement.Net.Display())
+	switch {
+	case disbursement.CreditTransactionID == "":
+		b.WriteString("Linked credit      none — press c to link the credit that released this loan\n")
+	case disbursement.Verified:
+		fmt.Fprintf(&b, "Linked credit      %s — matches the net\n", disbursement.CreditAmount.Display())
+	default:
+		fmt.Fprintf(&b, "Linked credit      %s — differs by %s\n",
+			disbursement.CreditAmount.Display(), disbursement.Difference.Display())
+	}
+	return b.String()
+}
+
 // accountsTransfersText renders the balance transfers a loan took part in from
 // its own point of view: "out" is one that settled this loan, "in" one whose
-// amount it absorbed. The counterparty is the other side of the transfer.
+// amount it was given. The counterparty is the other side of the transfer, and
+// the mode says how the receiving loan took the amount on — recast (its
+// installments absorbed it), opens (it started a schedule) or takeover (it was
+// paid out of that loan's own disbursement, leaving its schedule alone). The
+// amount each one moved is the payoff it settled, so the breakdown behind it is
+// shown beside it; the server computed both, as the transfer row has no
+// arithmetic done on it here.
 func accountsTransfersText(detail api.LoanScheduleDetail) string {
 	var b strings.Builder
 	b.WriteString("Transfers\n")
@@ -940,14 +1330,16 @@ func accountsTransfersText(detail api.LoanScheduleDetail) string {
 		return b.String()
 	}
 	loanID := detail.Schedule.LoanAccountID
-	b.WriteString("  dir  date        counterparty                    amount\n")
+	b.WriteString("  dir  date        counterparty                  mode       amount          breakdown\n")
 	for _, transfer := range detail.Transfers {
 		direction, counterparty := "in ", defaultTo(transfer.FromLoanAccountName, transfer.FromLoanAccountID)
 		if transfer.FromLoanAccountID == loanID {
 			direction, counterparty = "out", defaultTo(transfer.ToLoanAccountName, transfer.ToLoanAccountID)
 		}
-		fmt.Fprintf(&b, "  %s  %-10s  %-28s  %s\n",
-			direction, formatDate(transfer.TransferDate), truncate(counterparty, 28), transfer.Amount.Display())
+		fmt.Fprintf(&b, "  %s  %-10s  %-28s  %-9s  %-14s  (principal %s · interest %s)\n",
+			direction, formatDate(transfer.TransferDate), truncate(counterparty, 28),
+			defaultTo(transfer.Mode, "—"), transfer.Amount.Display(),
+			transfer.Principal.Display(), transfer.AccruedInterest.Display())
 	}
 	return b.String()
 }
@@ -1008,7 +1400,7 @@ func (a *Accounts) detailLine(width int) string {
 	}
 	parts = append(parts, "colour "+defaultTo(account.Color, "—"))
 	if account.AccountTypeID == "loan" {
-		parts = append(parts, "loan/EMI — l for the schedule, t to transfer")
+		parts = append(parts, "loan/EMI — l for the schedule, t to transfer, c for the disbursement credit")
 	}
 	return a.ctx.Theme.Subtle.Render(truncate(strings.Join(parts, " · "), width))
 }
@@ -1020,6 +1412,6 @@ func (a *Accounts) View(width, height int) string {
 	if detail := a.detailLine(width); detail != "" {
 		parts = append(parts, detail)
 	}
-	parts = append(parts, "n new · e edit · d delete · enter detail · b cycles · x export · l loan schedule · t transfer")
+	parts = append(parts, "n new · e edit · d delete · enter detail · b cycles · x export · l loan schedule · t transfer · c disbursement credit")
 	return trimToBox(strings.Join(parts, "\n"), width, height)
 }
