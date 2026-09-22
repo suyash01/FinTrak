@@ -40,6 +40,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  PERIOD_CURRENT_FY,
+  PERIOD_CUSTOM,
+  PERIOD_LAST_12_MONTHS,
+  PERIOD_VALUES,
+  lastTwelveMonthsRange,
+  periodRange,
+} from "../../lib/dates";
 import type {
   LinkCycleReport,
   MoneyFlowGraph,
@@ -53,15 +61,6 @@ import type {
 
 const ALL_ACCOUNTS = "all";
 
-const PERIOD_LAST_12_MONTHS = "last_12_months";
-const PERIOD_CURRENT_FY = "current_fy";
-const PERIOD_CUSTOM = "custom";
-const PERIOD_VALUES = [
-  PERIOD_LAST_12_MONTHS,
-  PERIOD_CURRENT_FY,
-  PERIOD_CUSTOM,
-];
-
 const NODE_LIMIT_VALUES = ["8", "12", "20"];
 
 const LINK_TYPE_LABELS: Record<string, string> = {
@@ -70,35 +69,6 @@ const LINK_TYPE_LABELS: Record<string, string> = {
   refund: "Refunds",
   bill_payment: "Bill payments",
 };
-
-function toISODate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function lastTwelveMonthsRange(): { dateFrom: string; dateTo: string } {
-  const to = new Date();
-  const from = new Date(to.getFullYear(), to.getMonth() - 12, to.getDate() + 1);
-  return { dateFrom: toISODate(from), dateTo: toISODate(to) };
-}
-
-function currentFinancialYearRange(): { dateFrom: string; dateTo: string } {
-  const now = new Date();
-  const startYear =
-    now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-  return {
-    dateFrom: toISODate(new Date(startYear, 3, 1)),
-    dateTo: toISODate(new Date(startYear + 1, 2, 31)),
-  };
-}
-
-function periodRange(period: string): { dateFrom: string; dateTo: string } {
-  return period === PERIOD_CURRENT_FY
-    ? currentFinancialYearRange()
-    : lastTwelveMonthsRange();
-}
 
 // nodeDrilldownPath maps a money-flow node to the Transactions page filters
 // that reproduce it. Aggregate "Other" nodes have no single underlying id, so

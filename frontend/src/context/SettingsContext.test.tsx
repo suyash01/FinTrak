@@ -82,6 +82,23 @@ describe("SettingsProvider", () => {
     expect(screen.getByTestId("compact").textContent).toBe("false");
     expect(localStorage.getItem("compactLayout")).toBe("false");
   });
+
+  it("keeps the layout in memory when storage refuses the write", async () => {
+    const user = userEvent.setup();
+    renderHarness();
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    await user.click(screen.getByText("toggle"));
+    setItem.mockRestore();
+
+    // The reader tolerates a bad value, so the writer has to tolerate a refused
+    // one: throwing during commit blanks the app for a layout toggle.
+    expect(screen.getByTestId("compact").textContent).toBe("false");
+  });
 });
 
 describe("useSettings", () => {

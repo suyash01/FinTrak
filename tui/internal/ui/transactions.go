@@ -29,6 +29,9 @@ type Transactions struct {
 	rows   []api.Transaction
 	info   api.TransactionPage
 	filter api.TransactionFilter
+	// seq numbers this screen's list requests, so a response can be matched to
+	// the request that asked for it.
+	seq uint64
 
 	selected  map[string]bool
 	searching bool
@@ -128,27 +131,47 @@ func (t *Transactions) CapturesText() bool { return t.searching }
 // Refresh implements Screen.
 func (t *Transactions) Refresh() tea.Cmd { return t.reload() }
 
+// txnPage is one page of the ledger together with the request that asked for it.
+// The request number rides with the response because two loads can overlap — the
+// filter is narrowed while the previous page is still in flight — and a page does
+// not say which query produced it, so the last answer to land would otherwise
+// win even when it is the older one. That left the header, the rows, the paging
+// and the next page request describing different filters.
+type txnPage struct {
+	Page api.TransactionPage
+	seq  uint64
+}
+
 // reload fetches the current page.
 func (t *Transactions) reload() tea.Cmd {
+	t.seq++
+	seq := t.seq
 	filter := t.filter
-	return load("txn.list", func(ctx context.Context) (api.TransactionPage, error) {
-		return t.ctx.Client.ListTransactions(ctx, filter)
+	return load("txn.list", func(ctx context.Context) (txnPage, error) {
+		page, err := t.ctx.Client.ListTransactions(ctx, filter)
+		return txnPage{Page: page, seq: seq}, err
 	})
 }
 
 // Update implements Screen.
 func (t *Transactions) Update(msg tea.Msg) tea.Cmd {
 	switch m := msg.(type) {
-	case loaded[api.TransactionPage]:
+	case loaded[txnPage]:
 		if m.tag != "txn.list" {
 			break
+		}
+		// A response for a superseded request is dropped, error and all: the
+		// rows on screen must belong to the current filter and page, and the
+		// current request reports its own outcome.
+		if m.data.seq != t.seq {
+			return nil
 		}
 		if m.err != nil {
 			t.ctx.Notify(LevelError, "%s", m.err)
 			return nil
 		}
-		t.info = m.data
-		t.rows = m.data.Data
+		t.info = m.data.Page
+		t.rows = m.data.Page.Data
 		t.applyRows()
 		t.pruneSelection()
 		return nil

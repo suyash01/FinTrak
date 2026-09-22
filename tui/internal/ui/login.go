@@ -110,7 +110,13 @@ func (m *LoginModel) Update(msg tea.Msg) tea.Cmd {
 	if loadedUser, ok := msg.(loaded[api.User]); ok && loadedUser.tag == loginTag {
 		if loadedUser.err != nil {
 			m.err = loadedUser.err
-			m.form().SetError(loadedUser.err)
+			// ctrl+r/f2 can switch the mode while the request is in flight, and
+			// only the form that submitted set its in-flight guard. Release both,
+			// not just the one on screen: the sign-in form would otherwise keep
+			// the guard and swallow every later submit until it was closed, which
+			// discards the typed credentials.
+			m.login.SetError(loadedUser.err)
+			m.register.SetError(loadedUser.err)
 			return nil
 		}
 		m.user = loadedUser.data

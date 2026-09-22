@@ -23,7 +23,9 @@ func TestGetTags(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
 	r.GET("/tags", srv.GetTags)
 
-	mock.ExpectQuery("SELECT tag, COUNT").
+	// A row whose tags are SQL NULL (written before the empty-array fix) counts
+	// as carrying no tags rather than dropping the whole lateral row.
+	mock.ExpectQuery(regexp.QuoteMeta("CROSS JOIN LATERAL unnest(COALESCE(t.tags, '{}')) AS tag")).
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"tag", "count"}).
 			AddRow("work", 3).
@@ -58,7 +60,7 @@ func TestBulkUpdateTags(t *testing.T) {
 	// here in its single-line form, closed-account guard included.
 	mock.ExpectExec(regexp.QuoteMeta(
 		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) "+
-			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
+			"FROM unnest(COALESCE(tags, '{}') || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
 			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), []string{"trip"}, []string{"draft"}, []uuid.UUID{id1, id2}).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
@@ -87,7 +89,7 @@ func TestBulkUpdateTagsSkipsClosedAccounts(t *testing.T) {
 	closedID := uuid.New()
 	mock.ExpectExec(regexp.QuoteMeta(
 		"UPDATE transactions SET tags = COALESCE(( SELECT array_agg(DISTINCT x ORDER BY x) "+
-			"FROM unnest(tags || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
+			"FROM unnest(COALESCE(tags, '{}') || $2::text[]) AS x WHERE x <> ALL($3::text[]) ), '{}') "+
 			"WHERE user_id = $1 AND id = ANY($4::uuid[]) AND "+wantClosedAccountGuard)).
 		WithArgs(testUserID(), []string{"trip"}, []string{}, []uuid.UUID{closedID}).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
@@ -200,4 +202,34 @@ func TestRenameTagNoopWhenSame(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"updated":0`)
+}
+
+// A blank operand is not a no-op to report as a success. `binding:"required"`
+// accepts " " and normalizeTags trims it away, so the handler used to return
+// without writing anything at all and Gin answered 200 with an empty body —
+// clients read that as "renamed on 0 transactions" (Go) or threw on the missing
+// JSON (the SPA). It must be a 400, like every other invalid tag input.
+func TestRenameTagRejectsBlankOperands(t *testing.T) {
+	cases := map[string]map[string]string{
+		"blank from": {"from": " ", "to": "new"},
+		"blank to":   {"from": "old", "to": "\t"},
+	}
+
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, srv, mock := newAccountTestRouter(t)
+			r.POST("/tags/rename", srv.RenameTag)
+
+			body, _ := json.Marshal(payload)
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/tags/rename", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "is required")
+			// Rejected before the statement: no rename was attempted.
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }

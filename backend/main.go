@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,12 +32,15 @@ var Version = "0.1.0-alpha"
 
 // HTTP server timeouts. ReadHeaderTimeout is the primary slowloris defense;
 // the others bound body reads, response writes, and idle keep-alive conns.
-// WriteTimeout is generous because statement parsing proxies to an upstream
-// service that can take up to ~60s.
+// WriteTimeout has to outlast the slowest proxied request: statement parsing
+// waits on the Python parser (60s client timeout) and a backup restore writes a
+// whole user graph, and nginx allows both 310s (see the proxy_read_timeout
+// entries in frontend/nginx.conf) — a shorter write timeout here would cut the
+// response off after the backend had already committed the work.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 60 * time.Second
-	writeTimeout      = 120 * time.Second
+	writeTimeout      = 300 * time.Second
 	idleTimeout       = 120 * time.Second
 	shutdownTimeout   = 15 * time.Second
 )
@@ -67,9 +71,16 @@ func main() {
 	// Setup Gin
 	r := setupRouter(cfg)
 
-	// Throttle unauthenticated auth endpoints (per-IP and per-account).
+	// Throttle unauthenticated auth endpoints: a per-IP bucket (the throughput
+	// bound) plus a per-identity failure budget that only ever answers *failed*
+	// credential checks. They are separate limiters because their policies and
+	// their trustworthiness differ — the IP key comes from the connection, the
+	// identity key is attacker-chosen.
 	authLimiter := ratelimit.New(ratelimit.DefaultConfig())
 	handlers.SetAuthRateLimiter(authLimiter)
+
+	authFailureLimiter := ratelimit.New(ratelimit.DefaultFailureConfig())
+	handlers.SetAuthFailureLimiter(authFailureLimiter)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := newServer(addr, r)
@@ -78,6 +89,7 @@ func main() {
 	defer stop()
 
 	go authLimiter.StartJanitor(ctx.Done(), 0)
+	go authFailureLimiter.StartJanitor(ctx.Done(), 0)
 
 	go func() {
 		slog.Info("FinTrak API starting", slog.String("version", Version), slog.String("env", cfg.Env), slog.String("addr", addr))
@@ -139,6 +151,12 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// responses (including proxied Paperless content) so a compromised upstream
 	// can never have the browser sniff or frame it.
 	r.Use(securityHeaders())
+
+	// Cross-site backstop for the GET routes that write. SameSite=Lax is the
+	// primary CSRF defense, but Lax cookies ARE attached to a cross-site
+	// top-level navigation, so an attacker page can still drive a blind,
+	// cookie-authenticated write through `location = '<api>/...'`.
+	r.Use(crossSiteGetGuard())
 
 	// Structured request logging. Emits an access line for every request and,
 	// at debug level (development), captures and logs request/response bodies.
@@ -343,6 +361,45 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	}
 
 	return r
+}
+
+// stateChangingGETs are the GET routes that write. Their handlers materialize
+// billing cycles (INSERT) and back-fill transactions' cycle assignment
+// (UPDATE), or re-seal a legacy Paperless token in place, so "GET is safe" is
+// not true for them. Kept in step with mcp/internal/readonly.SideEffectingGETs,
+// which enumerates the same routes for the MCP guard.
+var stateChangingGETs = map[string]bool{
+	"GET /api/v1/accounts/:id/billing-cycles":   true,
+	"GET /api/v1/accounts/:id/export":           true,
+	"GET /api/v1/transactions":                  true,
+	"GET /api/v1/dashboard/summary":             true,
+	"GET /api/v1/dashboard/money-flow":          true,
+	"GET /api/v1/dashboard/money-flow/timeline": true,
+	"GET /api/v1/dashboard/cash-flow-calendar":  true,
+	"GET /api/v1/paperless/documents":           true,
+}
+
+// crossSiteGetGuard refuses a cross-site request to a GET route that writes.
+// Browsers label every request with Sec-Fetch-Site, and the value `cross-site`
+// is exactly the top-level navigation that carries a SameSite=Lax cookie, so
+// this is the one case SameSite cannot cover on its own.
+//
+// Nothing else is affected: the SPA and the installed PWA are same-origin
+// (`same-origin`), a request on a sibling subdomain is `same-site` and still
+// passes, and non-browser clients (the TUI, the MCP server, curl) send no
+// Sec-Fetch-* header at all, which is allowed. The check is registered for the
+// whole router but only ever fires for the routes above, so it cannot break an
+// unrelated cross-site read.
+func crossSiteGetGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if stateChangingGETs[c.Request.Method+" "+c.FullPath()] &&
+			strings.EqualFold(c.GetHeader("Sec-Fetch-Site"), "cross-site") {
+			validation.RespondError(c, "cross-site request refused", http.StatusForbidden)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 // securityHeaders sets conservative security headers on every response.

@@ -16,6 +16,9 @@ FROM nginxinc/nginx-unprivileged:1.31.5-alpine3.24
 
 COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
 COPY --chown=nginx:nginx nginx.conf /etc/nginx/conf.d/default.conf
+# The shared security-header block every location includes. COPY creates the
+# snippets directory; nginx's own image has no such path.
+COPY --chown=nginx:nginx security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 EXPOSE 8080
 # Use 127.0.0.1 (not localhost): busybox wget may resolve localhost to ::1,

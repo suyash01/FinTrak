@@ -49,6 +49,22 @@ const (
 	requestTimeout   = 60 * time.Second
 	streamTimeout    = 10 * time.Minute
 	maxResponseBytes = 64 << 20
+
+	// importTimeout is the budget for POST /import. A restore decodes a bundle
+	// the route accepts up to 256 MB of and replays it row by row inside one
+	// transaction, so the upload plus the replay routinely outlasts the 60s
+	// JSON default; expiring mid-restore would report a failure for a
+	// transaction the server is still committing (and the retry is refused with
+	// 409 "user already has accounts"). It matches the frontend's import
+	// timeout (320s) and the backend's raised write timeout.
+	importTimeout = 320 * time.Second
+
+	// parseTimeout is the budget for POST /statements/parse. The handler queues
+	// the upload behind its four-way parse semaphore and then waits up to 60s
+	// for the parser service, so a request can legitimately outlive the JSON
+	// default without anything being wrong. It matches the frontend's statement
+	// timeout (90s) and nginx's raised proxy read timeout for the route.
+	parseTimeout = 90 * time.Second
 )
 
 // UserAgent identifies the client to the backend. main sets it to include the
@@ -170,6 +186,12 @@ type request struct {
 	// refresh call can present the refresh token without leaking it elsewhere.
 	cookie string
 
+	// timeout, when non-zero, replaces the 60s JSON default for this call.
+	// Only the endpoints whose work legitimately outlives it (a whole-database
+	// restore, a statement parse waiting on the parser) set it, through
+	// withTimeout.
+	timeout time.Duration
+
 	marshalErr error
 }
 
@@ -186,6 +208,13 @@ func patch(path string) *request {
 // attached and a 401 is reported as-is instead of triggering a refresh.
 func (r *request) withoutAuth() *request {
 	r.noAuth = true
+	return r
+}
+
+// withTimeout gives the request its own deadline in place of the 60s JSON
+// default, for the endpoints whose work legitimately outlives it.
+func (r *request) withTimeout(d time.Duration) *request {
+	r.timeout = d
 	return r
 }
 
@@ -401,7 +430,16 @@ func (c *Client) refreshAccess(ctx context.Context, gen uint64) (uint64, error) 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		c.ClearSession()
+		// Only a rejection ends the session. The backend clears the cookies it
+		// sent when it refuses the refresh (an expired or unknown token) and
+		// answers a transient failure — a role-lookup DB error, a restarting
+		// pooler, a proxy blip — with a plain 5xx that leaves the 30-day
+		// refresh token intact. Dropping it locally there would force a fresh
+		// sign-in for a session the server never rejected, so the tokens stay
+		// and the next 401 retries the refresh.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			c.ClearSession()
+		}
 		return gen, newAPIError(resp, body)
 	}
 	if readErr != nil {
@@ -416,10 +454,16 @@ func (c *Client) refreshAccess(ctx context.Context, gen uint64) (uint64, error) 
 }
 
 // do executes a request and decodes its JSON response into T. An empty body
-// leaves T zeroed, which covers the DELETE endpoints that return nothing.
+// leaves T zeroed, which covers the DELETE endpoints that return nothing. The
+// deadline is the 60s JSON default unless the request carries its own (a
+// restore, a statement parse), in which case the 401 replay shares it.
 func do[T any](ctx context.Context, c *Client, r *request) (T, error) {
 	var zero T
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	timeout := requestTimeout
+	if r.timeout > 0 {
+		timeout = r.timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	resp, err := c.send(ctx, r)

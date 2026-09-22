@@ -40,7 +40,11 @@ type TransactionFilter struct {
 	Uncategorized bool
 	// LoanAccountID filters by loan attachment.
 	LoanAccountID string
-	// ExcludeAttached drops transactions already attached to a loan or series.
+	// ExcludeAttached drops transactions already attached to a loan account.
+	// The backend implements the loan case only — a transaction attached to a
+	// recurring series is still returned — and the parameter is not part of
+	// backend/openapi.yaml, so a caller must not read it as a general
+	// "hide anything already filed" switch.
 	ExcludeAttached bool
 	// RecurringID filters by recurring series; Recurring is "linked" or
 	// "unlinked".
@@ -124,8 +128,10 @@ func (c *Client) DeleteTransaction(ctx context.Context, id string) error {
 }
 
 // ExportTransactionsCSV streams the transactions matching f as CSV into w,
-// honouring the same filters as the list but ignoring paging and sort (the
-// export is always date-descending and truncated at 100 000 rows).
+// honouring the same filters as the list but ignoring paging and sort. The
+// export is always date-descending, and a filter matching more than 100 000
+// rows is refused with 400 ("narrow the filters") rather than truncated, so a
+// downloaded file is never silently partial.
 func (c *Client) ExportTransactionsCSV(ctx context.Context, f TransactionFilter, w io.Writer) (string, error) {
 	return c.download(ctx, f.apply(get("/transactions/export")), w)
 }

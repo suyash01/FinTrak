@@ -1,7 +1,9 @@
 // Package config loads and centralizes the runtime configuration for the
 // backend. Values come from environment variables (optionally seeded from a
-// .env file via godotenv), with safe development defaults and hard failures in
-// production when secrets are missing.
+// .env file via godotenv). Development defaults exist only behind an explicit
+// APP_ENV=development; an unset APP_ENV resolves to production, so a deployment
+// that forgets the variable gets the fail-closed behaviour (mandatory secrets,
+// the strength floor, Secure cookies) rather than the development keys.
 package config
 
 import (
@@ -43,31 +45,119 @@ type Config struct {
 }
 
 const (
-	// envDevelopment and envProduction are the only accepted APP_ENV values. Any
-	// other value stops the process rather than falling back to development:
-	// a typo (APP_ENV=prod, staging, Production) would otherwise run a
-	// production deployment on the built-in development JWT secret and
-	// encryption key, with a non-Secure cookie and body logging enabled.
+	// envDevelopment and envProduction are the only accepted APP_ENV values. An
+	// unset APP_ENV resolves to production (see resolveEnv) and any other value
+	// stops the process rather than falling back to development: a deployment
+	// that forgets the variable, or typos it (APP_ENV=prod, staging,
+	// Production), would otherwise run on the built-in development JWT secret
+	// and encryption key, with a non-Secure cookie, body logging enabled and the
+	// permissive SSRF branch selected.
 	envDevelopment = "development"
 	envProduction  = "production"
 
-	// Development-only fallbacks. Production startup fails unless the real
-	// secrets are provided via the environment.
+	// Development-only fallbacks. They are used only when APP_ENV is explicitly
+	// development and the corresponding variable is unset.
 	defaultJWTSecret   = "dev-secret-change-me-in-production"
 	defaultTokenEncKey = "dev-token-encryption-key-change-me"
+
+	// minSecretLength and minSecretAlphabet are the strength floor for
+	// JWT_SECRET and TOKEN_ENCRYPTION_KEY. A short or repetitive value is
+	// brute-forceable regardless of how well it is kept, and the signing key is
+	// the only thing standing between a deployment and forged admin tokens.
+	minSecretLength   = 32
+	minSecretAlphabet = 8
 )
 
-// resolveEnv validates APP_ENV. Unset means development; an unknown value is a
+// publishedDevSecrets are every development secret value the repository itself
+// publishes, mapped to where it appears. Outside explicit development they are
+// refused outright rather than only the one value that happened to be the code
+// default: the dev compose stack's JWT_SECRET is just as public as the built-in
+// fallback, so a copy-paste deployment that used it would sign tokens any
+// reader of this repository can forge.
+var publishedDevSecrets = map[string]string{
+	defaultJWTSecret:            "the built-in development JWT_SECRET fallback",
+	defaultTokenEncKey:          "the built-in development TOKEN_ENCRYPTION_KEY fallback",
+	"dev-only-secret-change-me": "the JWT_SECRET docker-compose.yml hands the dev stack",
+}
+
+// resolveEnv validates APP_ENV. An unset value resolves to production, which is
+// the fail-closed direction: every development-only behaviour (the fallback
+// secrets, a non-Secure cookie, debug body logging, the permissive SSRF branch)
+// is selected only by an explicit APP_ENV=development. An unknown value is a
 // configuration error, not a default.
 func resolveEnv() (string, error) {
 	switch env := strings.TrimSpace(os.Getenv("APP_ENV")); env {
 	case "":
-		return envDevelopment, nil
+		return envProduction, nil
 	case envDevelopment, envProduction:
 		return env, nil
 	default:
 		return "", fmt.Errorf("APP_ENV must be %q or %q (got %q)", envDevelopment, envProduction, env)
 	}
+}
+
+// resolveSecrets resolves JWT_SECRET and TOKEN_ENCRYPTION_KEY for the resolved
+// environment, returning an error instead of exiting so the policy is testable.
+//
+//   - Explicit development: the values the repository publishes for its dev
+//     stack (publishedDevSecrets, and the fallbacks when the variables are
+//     unset) are allowed, because `make dev` hands the backend exactly one of
+//     them. Any other value must still meet the strength floor.
+//   - Production, including an unset APP_ENV: both must be set, must not be a
+//     value this repository publishes, and must meet the strength floor.
+func resolveSecrets(env string) (jwtSecret, tokenEncryptionKey string, err error) {
+	dev := env == envDevelopment
+	if jwtSecret, err = resolveSecret("JWT_SECRET", defaultJWTSecret, dev); err != nil {
+		return "", "", err
+	}
+	if tokenEncryptionKey, err = resolveSecret("TOKEN_ENCRYPTION_KEY", defaultTokenEncKey, dev); err != nil {
+		return "", "", err
+	}
+	return jwtSecret, tokenEncryptionKey, nil
+}
+
+// resolveSecret resolves one secret. surrounding whitespace is trimmed (a value
+// that is nothing but whitespace counts as unset), which also means the
+// published-value comparison cannot be sidestepped with a stray space.
+func resolveSecret(name, devFallback string, explicitDevelopment bool) (string, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		if !explicitDevelopment {
+			return "", fmt.Errorf("%s must be set when APP_ENV is not %q", name, envDevelopment)
+		}
+		return devFallback, nil
+	}
+	if source, published := publishedDevSecrets[value]; published {
+		if explicitDevelopment {
+			// The documented dev allowlist: `make dev` runs with exactly this
+			// value, and it is only reachable when the environment is
+			// explicitly development.
+			return value, nil
+		}
+		return "", fmt.Errorf("%s must not be %s (%s)", name, value, source)
+	}
+	if err := checkSecretStrength(value); err != nil {
+		return "", fmt.Errorf("%s %w", name, err)
+	}
+	return value, nil
+}
+
+// checkSecretStrength enforces the minimum length and a crude entropy floor: a
+// secret made of fewer than minSecretAlphabet distinct characters is a repeated
+// pattern, not a key. Both checks are cheap and only reject values that cannot
+// plausibly come from a generator (`openssl rand -hex 32`).
+func checkSecretStrength(value string) error {
+	if len(value) < minSecretLength {
+		return fmt.Errorf("must be at least %d characters (generate one with `openssl rand -hex 32`)", minSecretLength)
+	}
+	distinct := make(map[rune]struct{}, len(value))
+	for _, r := range value {
+		distinct[r] = struct{}{}
+	}
+	if len(distinct) < minSecretAlphabet {
+		return fmt.Errorf("looks low-entropy (%d distinct characters); generate one with `openssl rand -hex 32`", len(distinct))
+	}
+	return nil
 }
 
 // Load reads the environment (loading .env first) and returns a fully resolved
@@ -116,26 +206,12 @@ func Load() *Config {
 		}
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		if env == envProduction {
-			log.Fatal("JWT_SECRET must be set when APP_ENV=production")
-		}
-		jwtSecret = defaultJWTSecret
-	}
-	if env == envProduction && jwtSecret == defaultJWTSecret {
-		log.Fatal("JWT_SECRET must not be the built-in development default when APP_ENV=production")
-	}
-
-	tokenEncryptionKey := os.Getenv("TOKEN_ENCRYPTION_KEY")
-	if tokenEncryptionKey == "" {
-		if env == envProduction {
-			log.Fatal("TOKEN_ENCRYPTION_KEY must be set when APP_ENV=production")
-		}
-		tokenEncryptionKey = defaultTokenEncKey
-	}
-	if env == envProduction && tokenEncryptionKey == defaultTokenEncKey {
-		log.Fatal("TOKEN_ENCRYPTION_KEY must not be the built-in development default when APP_ENV=production")
+	// Secrets. The guards are centralized in resolveSecrets so the same policy
+	// (mandatory in production, the published dev values refused, a strength
+	// floor) applies to both.
+	jwtSecret, tokenEncryptionKey, err := resolveSecrets(env)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	rawOrigins := strings.Split(allowedOrigins, ",")

@@ -3,12 +3,16 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
+  useSyncExternalStore,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
 } from "react";
+import { toast } from "sonner";
 import api from "../api/client";
+import { getOfflineSnapshot, subscribeOffline } from "../api/offlineStatus";
 import type {
   Account,
   AccountType,
@@ -27,6 +31,17 @@ export type DomainResource =
   | "groups"
   | "payees"
   | "settings";
+
+// RESOURCE_LABELS names a resource the way the user sees it, for the toast that
+// reports a failed load.
+const RESOURCE_LABELS: Record<DomainResource, string> = {
+  accounts: "Accounts",
+  accountTypes: "Account types",
+  categories: "Categories",
+  groups: "Groups",
+  payees: "Payees",
+  settings: "Settings",
+};
 
 interface DomainDataContextValue {
   accounts: Account[];
@@ -78,10 +93,15 @@ export function DomainDataProvider({ children }: { children: ReactNode }) {
   >({});
 
   const failResource = useCallback((resource: DomainResource, err: unknown) => {
+    const message = (err as Error)?.message || "Failed to load data";
     setErrors((prev) => ({
       ...prev,
-      [resource]: (err as Error)?.message || "Failed to load data",
+      [resource]: message,
     }));
+    // AGENTS.md: errors reach the user through a toast. The message also stays
+    // in `errors` for a page that renders the resource's own state (an empty
+    // payee list must not read as "you have none").
+    toast.error(`${RESOURCE_LABELS[resource]} could not be loaded: ${message}`);
   }, []);
 
   const clearResourceError = useCallback((resource: DomainResource) => {
@@ -186,6 +206,34 @@ export function DomainDataProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [refreshAll]);
+
+  // A reconnect or a completed outbox flush means the server's copy of these
+  // lookups has moved on without this session noticing: an offline boot shows
+  // the last snapshot for the whole session otherwise, and an account's balance
+  // (computed from its transactions on every read) goes stale the moment a
+  // transaction is written anywhere else. The offline layer's store is read
+  // directly rather than through OfflineContext because this provider is mounted
+  // above it in App.tsx.
+  const offline = useSyncExternalStore(subscribeOffline, getOfflineSnapshot);
+  const lastOffline = useRef({
+    online: offline.online,
+    syncedAt: offline.syncedAt,
+  });
+
+  useEffect(() => {
+    const previous = lastOffline.current;
+    const current = { online: offline.online, syncedAt: offline.syncedAt };
+    if (
+      current.online === previous.online &&
+      current.syncedAt === previous.syncedAt
+    ) {
+      return;
+    }
+    lastOffline.current = current;
+    // Losing the connection changes nothing about what the server holds.
+    if (!current.online && current.syncedAt === previous.syncedAt) return;
+    void refreshAll();
+  }, [offline.online, offline.syncedAt, refreshAll]);
 
   return (
     <DomainDataContext.Provider

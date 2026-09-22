@@ -79,4 +79,59 @@ describe("service worker registration", () => {
 
     expect(register).toHaveBeenCalledWith("/sw.js");
   });
+
+  // A tab left open on the previous build asks for a chunk that the deploy
+  // removed; Vite reports it here and the only way out is a reload, which
+  // fetches the new build's shell and chunks.
+  it("reloads when a lazy chunk can no longer be fetched", () => {
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { pathname: "/transactions", href: "", reload },
+    });
+    Object.defineProperty(window.navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+
+    registerServiceWorker();
+    window.dispatchEvent(new Event("vite:preloadError"));
+
+    expect(reload).toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("does not reload for a chunk it cannot fetch offline", () => {
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { pathname: "/transactions", href: "", reload },
+    });
+    Object.defineProperty(window.navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+
+    registerServiceWorker();
+    window.dispatchEvent(new Event("vite:preloadError"));
+
+    // Reloading with no network repeats the same failed import forever instead
+    // of healing anything.
+    expect(reload).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+    Object.defineProperty(window.navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+  });
 });

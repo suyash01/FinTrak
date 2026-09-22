@@ -10,6 +10,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // builtInAccountTypeIDs are seeded by db.SeedAccountTypes and shared by every
@@ -89,6 +90,15 @@ func (srv *Server) CreateAccountType(c *gin.Context) {
 	).Scan(&at.ID, &at.Name, &at.PositiveTxnType)
 
 	if err != nil {
+		// account_types.id is the primary key and req.ID is user-chosen, so
+		// re-using an existing id is a client mistake, not a server fault. The
+		// sibling catalog creates (CreateGroup, CreateGlobalCategory) answer 409
+		// for the same class, and the admin console can only explain a 409.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			validation.RespondError(c, "an account type with this id already exists", http.StatusConflict)
+			return
+		}
 		slog.Error("CreateAccountType", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return

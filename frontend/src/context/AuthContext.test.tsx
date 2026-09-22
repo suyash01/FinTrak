@@ -6,7 +6,7 @@ import { NetworkError } from "../api/errors";
 import { readCached, writeCached } from "../api/offlineCache";
 import { enqueueCreate, getOutboxSnapshot } from "../api/outbox";
 
-const { mockApi, mockStoreUser } = vi.hoisted(() => ({
+const { mockApi, mockStoreUser, stored } = vi.hoisted(() => ({
   mockApi: {
     login: vi.fn(),
     register: vi.fn(),
@@ -14,12 +14,20 @@ const { mockApi, mockStoreUser } = vi.hoisted(() => ({
     me: vi.fn(),
   },
   mockStoreUser: vi.fn(),
+  // The identity the provider clears a departing session's cached ledger by, and
+  // the key a second tab overwrites. It is mirrored into storeUser so the
+  // provider reads back what it wrote.
+  stored: { value: null as { id: number; email: string } | null },
 }));
 
 vi.mock("../api/client", () => ({
   default: mockApi,
-  getStoredUser: () => ({ id: 1, email: "stored@example.com" }),
-  storeUser: mockStoreUser,
+  STORED_USER_KEY: "fintrak_user",
+  getStoredUser: () => stored.value,
+  storeUser: (user: unknown) => {
+    stored.value = user as { id: number; email: string } | null;
+    mockStoreUser(user);
+  },
 }));
 
 function Harness() {
@@ -47,6 +55,8 @@ function renderHarness() {
 
 describe("AuthProvider", () => {
   beforeEach(() => {
+    localStorage.clear();
+    stored.value = { id: 1, email: "stored@example.com" };
     mockApi.login.mockReset();
     mockApi.register.mockReset();
     mockApi.logout.mockReset();
@@ -70,6 +80,7 @@ describe("AuthProvider", () => {
   });
 
   it("clears the session when the cookie is rejected", async () => {
+    writeCached("1", "/accounts", [{ id: "a1" }]);
     mockApi.me.mockRejectedValue(new Error("Unauthorized"));
     renderHarness();
 
@@ -78,6 +89,10 @@ describe("AuthProvider", () => {
     );
     expect(screen.getByTestId("user").textContent).toBe("none");
     expect(mockStoreUser).toHaveBeenCalledWith(null);
+    // The cached reads are namespaced by the id of a user the app has just
+    // forgotten, so nothing could ever read or clear them again: a session that
+    // ends here has to drop them exactly as an explicit logout does.
+    expect(readCached("1", "/accounts")).toBeNull();
   });
 
   it("login calls the API and persists the new session", async () => {
@@ -163,6 +178,25 @@ describe("AuthProvider", () => {
     expect(getOutboxSnapshot("1")).toHaveLength(1);
   });
 
+  it("drops the previous user's ledger when a different user signs in", async () => {
+    const user = userEvent.setup();
+    writeCached("1", "/accounts", [{ id: "a1" }]);
+    mockApi.login.mockResolvedValue({ user: { id: 2, email: "b@c.d" } });
+    renderHarness();
+    await waitFor(() =>
+      expect(screen.getByTestId("init").textContent).toBe("false"),
+    );
+
+    await user.click(screen.getByText("login"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user").textContent).toBe("b@c.d"),
+    );
+    // The cache is namespaced by an id this tab has just stopped being, so it
+    // has to go with the session that owned it.
+    expect(readCached("1", "/accounts")).toBeNull();
+  });
+
   it("logout clears the session and expires the cookie", async () => {
     const user = userEvent.setup();
     renderHarness();
@@ -176,6 +210,65 @@ describe("AuthProvider", () => {
     expect(screen.getByTestId("user").textContent).toBe("none");
     expect(mockStoreUser).toHaveBeenCalledWith(null);
     expect(mockApi.logout).toHaveBeenCalled();
+  });
+});
+
+// jsdom throws "Not implemented: navigation" when reload() is called, so the
+// location is replaced with a plain, inspectable object.
+const locationStub = { pathname: "/transactions", href: "", reload: vi.fn() };
+
+describe("AuthProvider session ownership", () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    localStorage.clear();
+    stored.value = { id: 1, email: "stored@example.com" };
+    mockApi.me.mockResolvedValue({ id: 1, email: "stored@example.com" });
+    mockApi.logout.mockResolvedValue(null);
+    locationStub.reload.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: locationStub,
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  // The session cookie is shared by every tab, so a second tab signing in as
+  // another user silently re-points this tab's identity: it would keep rendering
+  // the previous user's ledger, and serving their offline cache, while the API
+  // layer already reads the new id.
+  it("adopts a session another tab signed in and drops the previous ledger", async () => {
+    writeCached("1", "/accounts", [{ id: "a1" }]);
+    renderHarness();
+    await waitFor(() =>
+      expect(screen.getByTestId("init").textContent).toBe("false"),
+    );
+
+    stored.value = { id: 2, email: "other@example.com" };
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "fintrak_user" }),
+    );
+
+    expect(readCached("1", "/accounts")).toBeNull();
+    expect(locationStub.reload).toHaveBeenCalled();
+  });
+
+  it("ignores a storage change that names the same user", async () => {
+    renderHarness();
+    await waitFor(() =>
+      expect(screen.getByTestId("init").textContent).toBe("false"),
+    );
+
+    stored.value = { id: 1, email: "stored@example.com" };
+    window.dispatchEvent(new StorageEvent("storage", { key: "fintrak_user" }));
+
+    expect(locationStub.reload).not.toHaveBeenCalled();
   });
 });
 

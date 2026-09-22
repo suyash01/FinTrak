@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RecurringFormDialog from "./RecurringFormDialog";
@@ -54,6 +54,42 @@ beforeEach(() => {
   apiMock.createRecurringSeries.mockResolvedValue({ id: "new" });
   apiMock.updateRecurringSeries.mockResolvedValue({ id: "s1" });
   apiMock.getRecurringTerms.mockResolvedValue({ data: [] });
+});
+
+describe("RecurringFormDialog — default entry dates", () => {
+  // A new entry starts on the local day: `toISOString()` is UTC, so east of UTC
+  // (the app's +05:30 target) it would start the series a day early for the
+  // first hours of every local day. The zone is pinned so the assertion holds
+  // on any host.
+  const hostTz = process.env.TZ;
+  beforeEach(() => {
+    process.env.TZ = "Asia/Kolkata";
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env.TZ = hostTz;
+  });
+
+  it("starts a new entry on the local day, not the UTC day", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 02:00 IST on the 16th is 2026-03-15T20:30Z: the UTC day is still the 15th.
+    vi.setSystemTime(new Date("2026-03-15T20:30:00Z"));
+
+    renderDialog(null);
+
+    expect(screen.getByLabelText("Entry 1 start")).toHaveValue("2026-03-16");
+  });
+
+  it("starts an added entry on the local day too", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-03-15T20:30:00Z"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    renderDialog(null);
+    await user.click(screen.getByRole("button", { name: "Add entry" }));
+
+    expect(screen.getByLabelText("Entry 2 start")).toHaveValue("2026-03-16");
+  });
 });
 
 describe("RecurringFormDialog", () => {

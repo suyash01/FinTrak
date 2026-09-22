@@ -70,7 +70,7 @@ from pdfplumber.page import Page
 from pdfplumber.pdf import PDF
 from pypdf import PdfReader
 
-from .limits import ensure_page_limit
+from .limits import close_pdf, ensure_page_limit
 from .money import same_money
 
 #: The masked/right-aligned word blocks pdfplumber.Page.extract_words()
@@ -1097,7 +1097,9 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             page_count=page_count,
         )
     finally:
-        pdf.close()
+        # NOT pdf.close(): it iterates pdf.pages and rebuilds one Page per page,
+        # re-paying the cost ensure_page_limit was called to avoid.
+        close_pdf(pdf)
 
 
 _CSV_FIELDS: List[str] = ["date", "mode", "particulars", "deposit", "withdrawal", "balance", "account_number"]

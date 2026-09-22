@@ -97,6 +97,12 @@ Response (JSON):
 If the PDF is encrypted and no/wrong password is given, the API responds
 `401` with `{"error": "...", "password_required": true}`.
 
+A file that is not recognised as a statement at all (a scan with no text
+layer, or a mis-selected extractor) is answered `422`. A file that *was*
+recognised but produced no importable rows is **not** an error: it is answered
+`200` with an empty `transactions` list and a note in `validation_errors`, so
+the caller can tell the two apart.
+
 ## Command line
 
 ```bash

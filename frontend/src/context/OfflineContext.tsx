@@ -18,7 +18,7 @@ import {
   subscribeOutbox,
   type OutboxEntry,
 } from "../api/outbox";
-import { getOfflineSnapshot, subscribeOffline } from "../api/offlineStatus";
+import { getOfflineSnapshot, markSynced, subscribeOffline } from "../api/offlineStatus";
 import { useAuth } from "./AuthContext";
 
 interface OfflineContextValue {
@@ -44,7 +44,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
 
-  const { online, servedFromCache } = useSyncExternalStore(
+  const { online, servedFromCache, syncedAt } = useSyncExternalStore(
     subscribeOffline,
     getOfflineSnapshot,
   );
@@ -53,7 +53,6 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   );
 
   const [syncing, setSyncing] = useState(false);
-  const [syncedAt, setSyncedAt] = useState(0);
   // A ref, not the state, guards re-entry: it keeps `sync` stable so the
   // reconnect effect cannot re-trigger itself through a changed dependency.
   const syncingRef = useRef(false);
@@ -77,7 +76,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
           options,
         );
         if (outcome.sent > 0) {
-          setSyncedAt(Date.now());
+          markSynced(Date.now());
           toast.success(
             `Synced ${outcome.sent} offline transaction${outcome.sent === 1 ? "" : "s"}`,
           );
@@ -90,6 +89,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
             `${outcome.failed} offline transaction${outcome.failed === 1 ? "" : "s"} was rejected${reason ? `: ${reason}` : ""}`,
           );
         }
+        if (outcome.unsaved > 0) {
+          // The queue could not be rewritten, so an entry the server accepted is
+          // still queued and will be replayed: the user has to know the sync is
+          // stuck rather than watch the pending count never drop.
+          toast.error(
+            "Could not update the offline queue: browser storage is unavailable or full. Nothing was lost — reconnect and sync again.",
+          );
+        }
       } finally {
         syncingRef.current = false;
         setSyncing(false);
@@ -100,7 +107,15 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
 
   const discardFailed = useCallback(() => {
     if (!userId) return;
-    const dropped = discardFailedEntries(userId);
+    let dropped: number;
+    try {
+      dropped = discardFailedEntries(userId);
+    } catch (err) {
+      // The entries are still queued: saying nothing would leave the user
+      // clicking a button that does not do what it says.
+      toast.error((err as Error).message);
+      return;
+    }
     if (dropped > 0) {
       toast.success(
         `Discarded ${dropped} offline transaction${dropped === 1 ? "" : "s"}`,

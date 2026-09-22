@@ -496,7 +496,10 @@ func TestDeleteLinkErrors(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/links/"+uuid.New().String(), nil))
 
-		assert.Equal(t, http.StatusNotFound, w.Code)
+		// A failed lookup is not a missing link: answering 404 told the caller
+		// the link does not exist and hid the failure from any 5xx watcher.
+		// Only pgx.ErrNoRows (TestDeleteLinkNotFound) is a 404.
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 

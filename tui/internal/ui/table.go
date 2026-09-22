@@ -168,36 +168,55 @@ func (t *Table) View(th Theme, width, height int, empty string) string {
 			}
 			line[c] = t.fit(cell.Text, c, widths)
 		}
-		rendered := strings.Join(line, " ")
-		rendered = styleRow(th, t.rows[i], rendered)
-		if i == t.cursor {
-			rendered = th.RowSelected.Render(rendered)
-		}
-		lines = append(lines, rendered)
+		lines = append(lines, styleRow(th, t.rows[i], line, i == t.cursor))
 	}
 	return strings.Join(lines, "\n")
 }
 
-// styleRow applies per-cell roles. The cells have already been padded, so the
-// styling wraps the whole line rather than each cell; roles that need a distinct
-// colour are applied by re-rendering the row, which keeps the padding intact.
-func styleRow(th Theme, row []Cell, rendered string) string {
-	hasNegative, hasPositive := false, false
-	for _, c := range row {
-		switch c.Role {
-		case RoleNegative:
-			hasNegative = true
-		case RolePositive:
-			hasPositive = true
+// styleRow applies each cell's role and, on the cursor row, the selection
+// background. The cells arrive already padded, so a role's escape codes wrap the
+// padded text and cannot shift a column — the rule the dashboard's amount
+// renderer follows. The selection background goes on last, and on the gaps
+// between cells too: applied outside the role colour its reset cannot punch a
+// hole in the highlight, and applied per part it cannot be cleared by the reset
+// that ends the next cell's colour.
+func styleRow(th Theme, row []Cell, cells []string, selected bool) string {
+	parts := make([]string, len(cells))
+	for i, text := range cells {
+		role := RoleText
+		if i < len(row) {
+			role = row[i].Role
 		}
+		parts[i] = applyRole(th, role, text)
 	}
-	switch {
-	case hasNegative:
-		return rendered
-	case hasPositive:
-		return rendered
+	if !selected {
+		return strings.Join(parts, " ")
+	}
+	for i, part := range parts {
+		parts[i] = th.RowSelected.Render(part)
+	}
+	return strings.Join(parts, th.RowSelected.Render(" "))
+}
+
+// applyRole renders one padded cell in the colour its role asks for. RoleText and
+// RoleMoney carry no colour of their own (Money is alignment only), so they render
+// unchanged rather than emitting an empty escape pair around every amount.
+func applyRole(th Theme, role CellRole, text string) string {
+	switch role {
+	case RoleMuted:
+		return th.Subtle.Render(text)
+	case RoleNegative:
+		return th.Negative.Render(text)
+	case RolePositive:
+		return th.Positive.Render(text)
+	case RoleDanger:
+		return th.Error.Render(text)
+	case RoleWarn:
+		return th.WarnText.Render(text)
+	case RoleMoney:
+		return th.Money.Render(text)
 	default:
-		return rendered
+		return text
 	}
 }
 

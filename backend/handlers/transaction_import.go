@@ -48,6 +48,7 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		validation.RespondError(c, "duplicateAction must be 'skip' or 'keep'", http.StatusBadRequest)
 		return
 	}
+	now := time.Now()
 	for i, t := range req.Transactions {
 		if t.Type != "debit" && t.Type != "credit" {
 			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type), http.StatusBadRequest)
@@ -57,8 +58,12 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount), http.StatusBadRequest)
 			return
 		}
-		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
-			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date), http.StatusBadRequest)
+		// The date rule is shared with CreateTransaction: a date the create
+		// path rejects must not enter through an import, because a single
+		// far-past row would make every later read of the account generate a
+		// billing cycle per month in between.
+		if _, msg := validation.CheckTransactionDate(t.Date, now); msg != "" {
+			validation.RespondError(c, fmt.Sprintf("transaction %d: %s", i+1, msg), http.StatusBadRequest)
 			return
 		}
 	}
@@ -208,6 +213,14 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		// If a rule gives no payee, fall back to the payee matched during import.
 		if payeeID == nil && t.PayeeID != nil {
 			payeeID = t.PayeeID
+		}
+
+		// A rule-less row has no tags, and pgx encodes a nil slice as SQL NULL —
+		// which is not "no tags": unnest(NULL) yields no rows, so a later bulk
+		// tag add would silently store nothing. The column defaults to '{}', so
+		// bind that explicitly (the common case: no rule matches an import).
+		if addTags == nil {
+			addTags = []string{}
 		}
 
 		batch.Queue(
@@ -391,6 +404,7 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 		validation.RespondError(c, fmt.Sprintf("too many transactions (max %d per request)", maxImportBatch), http.StatusBadRequest)
 		return
 	}
+	now := time.Now()
 	for i, t := range req.Transactions {
 		if t.Type != "debit" && t.Type != "credit" {
 			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid type '%s' (must be 'debit' or 'credit')", i+1, t.Type), http.StatusBadRequest)
@@ -400,8 +414,10 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid amount %v", i+1, t.Amount), http.StatusBadRequest)
 			return
 		}
-		if _, err := time.Parse("2006-01-02", t.Date); err != nil {
-			validation.RespondError(c, fmt.Sprintf("transaction %d has invalid date '%s' (expected YYYY-MM-DD)", i+1, t.Date), http.StatusBadRequest)
+		// Same shared date rule as ImportTransactions, so the preview agrees
+		// with the import it previews.
+		if _, msg := validation.CheckTransactionDate(t.Date, now); msg != "" {
+			validation.RespondError(c, fmt.Sprintf("transaction %d: %s", i+1, msg), http.StatusBadRequest)
 			return
 		}
 	}

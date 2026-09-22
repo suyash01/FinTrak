@@ -3,11 +3,30 @@ package api
 import "time"
 
 // This file mirrors the wire types in backend/models/models.go. The TUI is a
-// separate module, so the types are transcribed rather than shared; the
-// route-and-shape parity test (spec_parity_test.go) is what keeps the two from
-// drifting. UUIDs are carried as strings and timestamps as time.Time (the
-// backend marshals both in their canonical JSON form); date-only request fields
-// stay strings in "YYYY-MM-DD" form, exactly as the handlers expect.
+// separate module, so the types are transcribed rather than shared. Three
+// tests in spec_parity_test.go keep the transcription honest, and between them
+// they define what is guarded:
+//
+//   - TestRouteTableMatchesTheSpec pins the route surface in both directions:
+//     every operation in backend/openapi.yaml has a compiled client call, and
+//     the client claims no route the spec does not document.
+//   - TestEveryRouteHitsItsDocumentedPath executes each of those calls against
+//     a stub and asserts the method, the path and the complete query set it
+//     produced.
+//   - TestClientTypesMatchTheSpecSchemas compares the json tag of every field
+//     of every struct in this file against the properties of the
+//     components.schemas entry that documents it (exactly, or as a subset for
+//     the request bodies the spec documents with the response schema), so a
+//     mistyped or renamed tag fails the suite instead of decoding as an empty
+//     field. Types the spec documents inline are listed there with the reason
+//     they have no schema to compare against.
+//
+// What none of them check: the Go type of a field (a string tag and an integer
+// schema property still compare equal), nested property shapes beyond the
+// structs declared here, and the wire values themselves. UUIDs are carried as
+// strings and timestamps as time.Time (the backend marshals both in their
+// canonical JSON form); date-only request fields stay strings in "YYYY-MM-DD"
+// form, exactly as the handlers expect.
 
 // DateLayout is the date-only format the API accepts and returns for request
 // fields, bundle records and calendar keys.
@@ -1207,7 +1226,9 @@ type IDResult struct {
 }
 
 // BackupImportResult reports how many rows a restore created and any rows it
-// skipped.
+// skipped. It mirrors models.BackupImportResult field for field: the loan
+// balance transfers and disbursements a bundle carried are counted too, so the
+// restore summary can account for every resource the export writes.
 type BackupImportResult struct {
 	Accounts             int      `json:"accounts"`
 	CategoryGroups       int      `json:"categoryGroups"`
@@ -1218,6 +1239,8 @@ type BackupImportResult struct {
 	Links                int      `json:"links"`
 	LoanAttachments      int      `json:"loanAttachments"`
 	LoanSchedules        int      `json:"loanSchedules"`
+	LoanTransfers        int      `json:"loanTransfers"`
+	LoanDisbursements    int      `json:"loanDisbursements"`
 	RecurringSeries      int      `json:"recurringSeries"`
 	RecurringTerms       int      `json:"recurringTerms"`
 	RecurringAttachments int      `json:"recurringAttachments"`

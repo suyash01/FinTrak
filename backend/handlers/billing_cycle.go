@@ -164,10 +164,13 @@ func ensureBillingCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid.
 	// The back-fill UPDATE scans the account's transactions, so only run it when
 	// an unassigned transaction actually exists. Combined with allCovered this
 	// keeps the steady-state read path to a handful of index lookups instead of
-	// a full scan plus one INSERT per month.
+	// a full scan plus one INSERT per month. A row the user detached on purpose
+	// is not unassigned: it is explicitly excluded, so it cannot keep this
+	// branch alive on its own either.
 	var hasUnassigned bool
 	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = $1 AND user_id = $2 AND billing_cycle_id IS NULL)`,
+		`SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = $1 AND user_id = $2
+		   AND billing_cycle_id IS NULL AND NOT billing_cycle_detached)`,
 		accountID, userID).Scan(&hasUnassigned); err != nil {
 		return err
 	}
@@ -199,12 +202,17 @@ func ensureBillingCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid.
 	// date range contains its transaction date. The cycle is scoped to the
 	// transaction's OWN account and user, so an import can never land on
 	// another account's cycle (which would corrupt that account's totals).
+	//
+	// A row the user detached by hand (billing_cycle_detached) is skipped: NULL
+	// alone cannot tell "never assigned" from "the user chose Unassigned", and
+	// silently re-attaching would undo the correction the user just made.
 	_, err = tx.Exec(ctx,
 		`UPDATE transactions t SET billing_cycle_id = bc.id
 		 FROM billing_cycles bc
 		 WHERE t.account_id = $1 AND t.user_id = $2
 		   AND bc.account_id = t.account_id AND bc.user_id = t.user_id
 		   AND t.billing_cycle_id IS NULL
+		   AND NOT t.billing_cycle_detached
 		   AND t.date >= bc.start_date AND t.date <= bc.end_date`,
 		accountID, userID)
 	return err
@@ -243,9 +251,11 @@ func dropMisalignedCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid
 	}
 
 	// Detach the transactions so the date-based default can re-attach them to
-	// the regenerated cycles, then drop the stale cycles.
+	// the regenerated cycles, then drop the stale cycles. The detach flag is
+	// cleared too: the cycles the user was detaching from no longer exist, so
+	// the re-derived assignment on the new billing day is the only one left.
 	if _, err := tx.Exec(ctx,
-		`UPDATE transactions SET billing_cycle_id = NULL
+		`UPDATE transactions SET billing_cycle_id = NULL, billing_cycle_detached = FALSE
 		 WHERE user_id = $1 AND billing_cycle_id IN (SELECT id FROM billing_cycles WHERE account_id = $2 AND user_id = $1)`,
 		userID, accountID); err != nil {
 		return err
@@ -256,9 +266,21 @@ func dropMisalignedCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid
 	return err
 }
 
+// maxBillingCycleMonths bounds how many cycles a single call may generate. It
+// is a backstop, not the rule: the write edges reject a transaction date outside
+// [1900-01-01, today+1y] (validation.CheckTransactionDate), which is what keeps
+// the span sane. Rows written before that rule existed — or by a future caller
+// that bypasses the handler — must still not be able to turn one read into tens
+// of thousands of INSERTs, so the generator admits at most 50 years of months
+// and keeps the newest ones (the oldest are where a bad year lands, and their
+// transactions simply stay unassigned instead of wedging the account).
+const maxBillingCycleMonths = 600
+
 // billingCycleMonths returns the months for which billing cycles should exist:
 // starting one month before the earliest transaction (so the first partial
-// cycle is covered) and ending with the cycle that contains today.
+// cycle is covered) and ending with the cycle that contains today. The span is
+// clamped to maxBillingCycleMonths, counted back from the last month, so the
+// number of cycles one call can create is bounded regardless of the stored data.
 func billingCycleMonths(earliest, today time.Time, billingDay int) []time.Time {
 	if billingDay <= 0 {
 		billingDay = 1
@@ -267,6 +289,9 @@ func billingCycleMonths(earliest, today time.Time, billingDay int) []time.Time {
 	last := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
 	if today.After(billingDateInMonth(last, billingDay)) {
 		last = last.AddDate(0, 1, 0)
+	}
+	if floor := last.AddDate(0, -(maxBillingCycleMonths - 1), 0); first.Before(floor) {
+		first = floor
 	}
 	months := []time.Time{}
 	for ms := first; !ms.After(last); ms = ms.AddDate(0, 1, 0) {
@@ -313,6 +338,12 @@ func listBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uu
 		if err := rows.Scan(&bc.ID, &bc.StartDate, &bc.EndDate, &bc.Label, &net, &bc.TransactionCount); err != nil {
 			return nil, err
 		}
+		// Every row selected here is filtered by `bc.account_id = $1`, so the
+		// cycle belongs to the queried account: assigning it directly keeps the
+		// contract's accountId populated (models.BillingCycle.AccountID would
+		// otherwise be the nil UUID for every cycle) without selecting a column
+		// that can only ever repeat the argument.
+		bc.AccountID = accountID
 		runningBalance += net
 		bc.TotalOutstanding = runningBalance
 		cycles = append(cycles, bc)

@@ -82,6 +82,27 @@ def _count_pages(pdf: Any, limit: int) -> int:
     return count
 
 
+def close_pdf(pdf: Any) -> None:
+    """Release a pdfplumber document without building a Page for every page.
+
+    `pdfplumber.PDF.close()` is `self.flush_cache(); for page in self.pages:
+    page.close(); ...`, and `pages` is the lazy cached property that constructs
+    a `Page` for every page in the document. Closing that way therefore rebuilds
+    exactly the whole page tree `ensure_page_limit` exists to avoid building —
+    so a rejected bomb (the 5.98 s / ~140 MB file declaring 50 000 pages) paid
+    the full cost on the way out, any time `close()` or `with ... as pdf` ran in
+    the extractor's cleanup. Flush the caches and close the stream instead;
+    every attribute is tolerated as missing so wrappers and test doubles work.
+    """
+    try:
+        pdf.flush_cache()
+    except Exception:
+        pass
+    stream = getattr(pdf, "stream", None)
+    if stream is not None and not getattr(pdf, "stream_is_external", True):
+        stream.close()
+
+
 def declared_page_count(doc: Any) -> Optional[int]:
     """Return the page tree's declared /Count, or None when it does not state
     one (a damaged or unusual file still goes through the bounded walk)."""
@@ -97,6 +118,7 @@ def declared_page_count(doc: Any) -> Optional[int]:
 __all__ = [
     "DEFAULT_MAX_PAGES",
     "PageLimitExceeded",
+    "close_pdf",
     "declared_page_count",
     "ensure_page_limit",
     "max_pages",

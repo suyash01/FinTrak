@@ -361,6 +361,14 @@ func TestGetRecurringSeriesError(t *testing.T) {
 // CreateRecurringSeries
 // ---------------------------------------------------------------------------
 
+// The request bodies below carry *past* dates (2024/2025) rather than the
+// far-future 2099-… literals they used to: every recurring date is bounded by
+// the ledger's window [1900-01-01, today+1y] (validation.CheckTransactionDate,
+// see parseRecurringDate), so a 2099 start date is now rejected as out of range
+// before the handler reaches whatever the test is about — while a past date
+// stays valid however long from now the suite runs. Mock rows, which never pass
+// through the parser, still carry 2099 dates.
+
 func TestCreateRecurringSeries(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	id := uuid.New()
@@ -374,7 +382,7 @@ func TestCreateRecurringSeries(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
-	body := `{"accountId":"` + accountID.String() + `","name":"Rent","amount":500,"type":"debit","frequency":"monthly","startDate":"2099-01-15"}`
+	body := `{"accountId":"` + accountID.String() + `","name":"Rent","amount":500,"type":"debit","frequency":"monthly","startDate":"2025-01-15"}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -402,9 +410,9 @@ func TestCreateRecurringSeriesWithRanges(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
-	body := `{"name":"Rent","type":"debit","frequency":"monthly","startDate":"2099-01-15","ranges":[` +
-		`{"startDate":"2099-01-15","endDate":"2099-06-01","amount":10,"accountId":"` + accountA.String() + `"},` +
-		`{"startDate":"2099-06-01","amount":12,"accountId":"` + accountB.String() + `"}]}`
+	body := `{"name":"Rent","type":"debit","frequency":"monthly","startDate":"2025-01-15","ranges":[` +
+		`{"startDate":"2025-01-15","endDate":"2025-06-01","amount":10,"accountId":"` + accountA.String() + `"},` +
+		`{"startDate":"2025-06-01","amount":12,"accountId":"` + accountB.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -418,8 +426,8 @@ func TestCreateRecurringSeriesRangesSameStart(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	accountA := uuid.New()
 	body := `{"name":"Rent","type":"debit","frequency":"monthly","ranges":[` +
-		`{"startDate":"2099-05-01","amount":10,"accountId":"` + accountA.String() + `"},` +
-		`{"startDate":"2099-05-01","amount":12,"accountId":"` + accountA.String() + `"}]}`
+		`{"startDate":"2025-05-01","amount":10,"accountId":"` + accountA.String() + `"},` +
+		`{"startDate":"2025-05-01","amount":12,"accountId":"` + accountA.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -447,8 +455,8 @@ func TestCreateRecurringSeriesRangesWithGap(t *testing.T) {
 	mock.ExpectCommit()
 
 	body := `{"name":"Rent","type":"debit","frequency":"monthly","ranges":[` +
-		`{"startDate":"2099-06-01","amount":12,"accountId":"` + accountB.String() + `"},` +
-		`{"startDate":"2099-01-15","endDate":"2099-03-01","amount":10,"accountId":"` + accountA.String() + `"}]}`
+		`{"startDate":"2025-06-01","amount":12,"accountId":"` + accountB.String() + `"},` +
+		`{"startDate":"2025-01-15","endDate":"2025-03-01","amount":10,"accountId":"` + accountA.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -464,7 +472,7 @@ func TestCreateRecurringSeriesReferencedNotFound(t *testing.T) {
 	expectQueryAny(mock, "INSERT INTO recurring_series", 10).WillReturnError(pgx.ErrNoRows)
 	mock.ExpectRollback()
 
-	body := `{"accountId":"` + uuid.New().String() + `","name":"Rent","amount":500,"type":"debit","frequency":"monthly","startDate":"2099-01-15"}`
+	body := `{"accountId":"` + uuid.New().String() + `","name":"Rent","amount":500,"type":"debit","frequency":"monthly","startDate":"2025-01-15"}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -476,13 +484,13 @@ func TestCreateRecurringSeriesReferencedNotFound(t *testing.T) {
 
 func TestCreateRecurringSeriesValidation(t *testing.T) {
 	cases := map[string]string{
-		"bad type":      `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"nope","frequency":"monthly","startDate":"2099-01-15"}`,
-		"bad amount":    `{"accountId":"` + uuid.New().String() + `","name":"x","amount":0,"type":"debit","frequency":"monthly","startDate":"2099-01-15"}`,
-		"bad frequency": `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"hourly","startDate":"2099-01-15"}`,
-		"bad interval":  `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","interval":400,"startDate":"2099-01-15"}`,
+		"bad type":      `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"nope","frequency":"monthly","startDate":"2025-01-15"}`,
+		"bad amount":    `{"accountId":"` + uuid.New().String() + `","name":"x","amount":0,"type":"debit","frequency":"monthly","startDate":"2025-01-15"}`,
+		"bad frequency": `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"hourly","startDate":"2025-01-15"}`,
+		"bad interval":  `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","interval":400,"startDate":"2025-01-15"}`,
 		"bad date":      `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","startDate":"not-a-date"}`,
-		"bad end date":  `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","startDate":"2099-01-15","endDate":"2098-01-15"}`,
-		"missing value": `{"name":"x","type":"debit","frequency":"monthly","startDate":"2099-01-15"}`,
+		"bad end date":  `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","startDate":"2025-01-15","endDate":"2024-01-15"}`,
+		"missing value": `{"name":"x","type":"debit","frequency":"monthly","startDate":"2025-01-15"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -495,6 +503,54 @@ func TestCreateRecurringSeriesValidation(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+// Every recurring date is bounded by the ledger's window [1900-01-01, today+1y]
+// (validation.CheckTransactionDate). A series whose earliest range starts in
+// year 0001 — a typo or an OCR'd year — used to make every forecast and
+// suggestion scan the series' whole occurrence bound before answering nothing.
+func TestRecurringDatesOutsideTheLedgerWindow(t *testing.T) {
+	tooEarly := "0001-01-01"
+	tooLate := time.Now().UTC().AddDate(1, 0, 2).Format("2006-01-02")
+
+	t.Run("series start date before the floor", func(t *testing.T) {
+		r, _, mock := recurringTestRouter(t)
+		body := `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","startDate":"` + tooEarly + `"}`
+		req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "out of range")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("series start date beyond the ceiling", func(t *testing.T) {
+		r, _, mock := recurringTestRouter(t)
+		body := `{"accountId":"` + uuid.New().String() + `","name":"x","amount":5,"type":"debit","frequency":"monthly","startDate":"` + tooLate + `"}`
+		req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "out of range")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("term start date before the floor", func(t *testing.T) {
+		r, _, mock := recurringTestRouter(t)
+		body := `{"startDate":"` + tooEarly + `","amount":10,"accountId":"` + uuid.New().String() + `"}`
+		req, _ := http.NewRequest(http.MethodPut, "/recurring/"+uuid.New().String()+"/terms", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "out of range")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -609,8 +665,8 @@ func TestUpdateRecurringSeriesReplacesRanges(t *testing.T) {
 			AddRow(recurringTermRow(uuid.New(), id, start, 1000, accountA)...))
 
 	body := `{"ranges":[` +
-		`{"startDate":"2099-01-15","endDate":"2099-06-01","amount":10,"accountId":"` + accountA.String() + `"},` +
-		`{"startDate":"2099-06-01","amount":12,"accountId":"` + accountB.String() + `"}]}`
+		`{"startDate":"2025-01-15","endDate":"2025-06-01","amount":10,"accountId":"` + accountA.String() + `"},` +
+		`{"startDate":"2025-06-01","amount":12,"accountId":"` + accountB.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -632,8 +688,8 @@ func TestUpdateRecurringSeriesRangesSameStart(t *testing.T) {
 			AddRow(recurringTermRow(uuid.New(), id, start, 1000, accountA)...))
 
 	body := `{"ranges":[` +
-		`{"startDate":"2099-01-15","amount":10,"accountId":"` + accountA.String() + `"},` +
-		`{"startDate":"2099-01-15","amount":12,"accountId":"` + accountA.String() + `"}]}`
+		`{"startDate":"2025-01-15","amount":10,"accountId":"` + accountA.String() + `"},` +
+		`{"startDate":"2025-01-15","amount":12,"accountId":"` + accountA.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -679,22 +735,84 @@ func TestDeleteRecurringSeriesNotFound(t *testing.T) {
 // The forecast and the suggestion filter must agree on whether a transaction
 // covers an occurrence: otherwise the API proposes a link its own forecast
 // reports as unmatched forever.
-func TestRecurringOccurrenceMatchedUsesTheSuggestionTolerance(t *testing.T) {
-	occ := mustDate("2026-03-15")
-	monthly := models.RecurringSeries{Frequency: recurringFreqMonthly, Interval: 1}
-	yearly := models.RecurringSeries{Frequency: recurringFreqYearly, Interval: 1}
+func TestRecurringMatchedOccurrencesUsesTheSuggestionTolerance(t *testing.T) {
+	monthly := models.RecurringSeries{Frequency: recurringFreqMonthly, Interval: 1, StartDate: mustDate("2026-03-15")}
+	yearly := models.RecurringSeries{Frequency: recurringFreqYearly, Interval: 1, StartDate: mustDate("2026-03-15")}
 
-	// Five days off: inside the monthly tolerance (20 days), outside the old
-	// fixed three-day window.
-	assert.True(t, recurringOccurrenceMatched(occ,
-		[]recurringAttachedTxn{{date: mustDate("2026-03-20")}}, recurringMaxDaysOff(monthly)))
+	// Five days off: inside the monthly tolerance (20 days) and attributed to
+	// the occurrence it is nearest to.
+	assert.Contains(t, recurringMatchedOccurrences(monthly,
+		[]recurringAttachedTxn{{date: mustDate("2026-03-20")}}, recurringMaxDaysOff(monthly)),
+		mustDate("2026-03-15").Unix())
 	// A yearly series' tolerance is half its period, so a wider gap still counts.
-	assert.True(t, recurringOccurrenceMatched(occ,
-		[]recurringAttachedTxn{{date: mustDate("2026-05-30")}}, recurringMaxDaysOff(yearly)))
-	// Beyond the tolerance, and with nothing attached, nothing matches.
-	assert.False(t, recurringOccurrenceMatched(occ,
-		[]recurringAttachedTxn{{date: mustDate("2026-04-20")}}, recurringMaxDaysOff(monthly)))
-	assert.False(t, recurringOccurrenceMatched(occ, nil, recurringMaxDaysOff(monthly)))
+	assert.Contains(t, recurringMatchedOccurrences(yearly,
+		[]recurringAttachedTxn{{date: mustDate("2026-05-30")}}, recurringMaxDaysOff(yearly)),
+		mustDate("2026-03-15").Unix())
+	// Beyond the tolerance and with nothing attached, nothing is covered.
+	ended := models.RecurringSeries{Frequency: recurringFreqMonthly, Interval: 1,
+		StartDate: mustDate("2026-01-15"), EndDate: ptrDate("2026-02-15")}
+	assert.Empty(t, recurringMatchedOccurrences(ended,
+		[]recurringAttachedTxn{{date: mustDate("2026-09-01")}}, recurringMaxDaysOff(ended)))
+	assert.Empty(t, recurringMatchedOccurrences(monthly, nil, recurringMaxDaysOff(monthly)))
+}
+
+// One attached payment covers exactly the occurrence it is nearest to. The
+// window alone is wider than half a month (recurringMaxDaysOff floors at 20
+// days), so asking "is this transaction within the window of occ?" per
+// occurrence marked two consecutive months paid by one payment.
+func TestRecurringMatchedOccurrencesAttributesAPaymentToItsNearestOccurrence(t *testing.T) {
+	monthly := models.RecurringSeries{Frequency: recurringFreqMonthly, Interval: 1, StartDate: mustDate("2026-01-15")}
+	// Jan 30 is 15 days after the January occurrence and 16 days before the
+	// February one: inside the window of both.
+	matched := recurringMatchedOccurrences(monthly,
+		[]recurringAttachedTxn{{date: mustDate("2026-01-30")}}, recurringMaxDaysOff(monthly))
+
+	assert.Equal(t, 1, len(matched))
+	assert.Contains(t, matched, mustDate("2026-01-15").Unix())
+	assert.NotContains(t, matched, mustDate("2026-02-15").Unix())
+
+	// Two payments, on either side of an occurrence, still cover two
+	// occurrences — one each.
+	both := recurringMatchedOccurrences(monthly, []recurringAttachedTxn{
+		{date: mustDate("2026-01-30")},
+		{date: mustDate("2026-02-18")},
+	}, recurringMaxDaysOff(monthly))
+	assert.Contains(t, both, mustDate("2026-01-15").Unix())
+	assert.Contains(t, both, mustDate("2026-02-15").Unix())
+	assert.Equal(t, 2, len(both))
+}
+
+// The forecast is what the UI renders a "Matched" badge from, so a single
+// attached payment must not report next month as already covered.
+func TestGetRecurringForecastMarksOnlyTheNearestOccurrenceMatched(t *testing.T) {
+	r, _, mock := recurringTestRouter(t)
+	id := uuid.New()
+	accountID := uuid.New()
+	start := mustDate("2099-01-15")
+
+	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).
+		WillReturnRows(pgxmock.NewRows(recurringSeriesColumnsForTest).
+			AddRow(recurringSeriesRow(id, accountID, "Rent", 50000, recurringFreqMonthly, 1, start, nil)...))
+	expectQueryAny(mock, "SELECT t.date FROM recurring_attachments ra", 2).
+		WillReturnRows(pgxmock.NewRows([]string{"date"}).AddRow(mustDate("2099-01-30")))
+	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
+		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
+			AddRow(recurringTermRow(uuid.New(), id, start, 50000, accountID)...))
+
+	req, _ := http.NewRequest(http.MethodGet, "/recurring/"+id.String()+"/forecast?count=3", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var res struct {
+		Data []models.RecurringForecastItem `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Len(t, res.Data, 3)
+	assert.True(t, res.Data[0].Matched, "January is the occurrence the payment is nearest to")
+	assert.False(t, res.Data[1].Matched, "February is not covered by January's payment")
+	assert.False(t, res.Data[2].Matched)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestGetRecurringForecast(t *testing.T) {
@@ -949,7 +1067,11 @@ func TestGetRecurringTransactions(t *testing.T) {
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).
 		WillReturnRows(pgxmock.NewRows(recurringSeriesColumnsForTest).
 			AddRow(recurringSeriesRow(id, uuid.New(), "Rent", 50000, recurringFreqMonthly, 1, start, nil)...))
-	expectQueryAny(mock, "SELECT t.id, t.account_id, t.date, t.description", 2).
+	// COALESCE keeps a tags value written as NULL (a row from before the
+	// tags-NULL write-edge fix) from serializing as "tags": null where the spec
+	// documents an array — the same clause the transaction/dashboard reads
+	// carry. Pinning it here means a revert to a bare t.tags fails this test.
+	expectQueryAny(mock, "COALESCE\\(t\\.tags, '\\{\\}'\\)", 2).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type", "category_id",
 			"tags", "notes", "payee_id", "payee", "created_at", "account_name",
@@ -1243,7 +1365,7 @@ func TestCreateRecurringTerm(t *testing.T) {
 			AddRow(uuid.New(), id, rangeStart, &rangeEnd, int64(2000), accountID, time.Now()))
 	mock.ExpectCommit()
 
-	body := `{"startDate":"2099-06-01","endDate":"2099-12-31","amount":20,"accountId":"` + accountID.String() + `"}`
+	body := `{"startDate":"2025-06-01","endDate":"2025-12-31","amount":20,"accountId":"` + accountID.String() + `"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1258,9 +1380,9 @@ func TestCreateRecurringTerm(t *testing.T) {
 
 func TestCreateRecurringTermValidation(t *testing.T) {
 	cases := map[string]string{
-		"bad amount":       `{"startDate":"2099-06-01","amount":0,"accountId":"` + uuid.New().String() + `"}`,
+		"bad amount":       `{"startDate":"2025-06-01","amount":0,"accountId":"` + uuid.New().String() + `"}`,
 		"bad date":         `{"startDate":"nope","amount":10,"accountId":"` + uuid.New().String() + `"}`,
-		"end before start": `{"startDate":"2099-06-01","endDate":"2099-01-01","amount":10,"accountId":"` + uuid.New().String() + `"}`,
+		"end before start": `{"startDate":"2025-06-01","endDate":"2024-01-01","amount":10,"accountId":"` + uuid.New().String() + `"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1288,7 +1410,7 @@ func TestCreateRecurringTermOverlap(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
 			AddRow(recurringTermRow(uuid.New(), id, start, 1000, accountID)...))
 
-	body := `{"startDate":"2099-06-01","amount":10,"accountId":"` + accountID.String() + `"}`
+	body := `{"startDate":"2025-06-01","amount":10,"accountId":"` + accountID.String() + `"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1302,7 +1424,7 @@ func TestCreateRecurringTermSeriesNotFound(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnError(pgx.ErrNoRows)
 
-	body := `{"startDate":"2099-06-01","amount":10,"accountId":"` + uuid.New().String() + `"}`
+	body := `{"startDate":"2025-06-01","amount":10,"accountId":"` + uuid.New().String() + `"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+uuid.New().String()+"/terms", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1322,12 +1444,12 @@ func TestCreateRecurringTermAccountNotFound(t *testing.T) {
 			AddRow(recurringSeriesRow(id, accountID, "Rent", 1000, recurringFreqMonthly, 1, start, nil)...))
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
 		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
-			AddRow(recurringTermRowEnd(uuid.New(), id, start, start, 1000, accountID)...))
+			AddRow(recurringTermRowEnd(uuid.New(), id, mustDate("2024-01-01"), mustDate("2025-01-01"), 1000, accountID)...))
 	mock.ExpectBegin()
 	expectQueryAny(mock, "INSERT INTO recurring_series_terms", 6).WillReturnError(pgx.ErrNoRows)
 	mock.ExpectRollback()
 
-	body := `{"startDate":"2099-06-01","amount":10,"accountId":"` + uuid.New().String() + `"}`
+	body := `{"startDate":"2025-06-01","amount":10,"accountId":"` + uuid.New().String() + `"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1350,13 +1472,13 @@ func TestCreateRecurringTermUniqueViolation(t *testing.T) {
 			AddRow(recurringSeriesRow(id, accountID, "Rent", 1000, recurringFreqMonthly, 1, start, nil)...))
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
 		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
-			AddRow(recurringTermRowEnd(uuid.New(), id, start, start, 1000, accountID)...))
+			AddRow(recurringTermRowEnd(uuid.New(), id, mustDate("2024-01-01"), mustDate("2025-01-01"), 1000, accountID)...))
 	mock.ExpectBegin()
 	expectQueryAny(mock, "INSERT INTO recurring_series_terms", 6).
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 	mock.ExpectRollback()
 
-	body := `{"startDate":"2099-06-01","amount":10,"accountId":"` + accountID.String() + `"}`
+	body := `{"startDate":"2025-06-01","amount":10,"accountId":"` + accountID.String() + `"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1383,7 +1505,7 @@ func TestUpdateRecurringTermUniqueViolation(t *testing.T) {
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 	mock.ExpectRollback()
 
-	body := `{"startDate":"2099-06-01","amount":15}`
+	body := `{"startDate":"2025-06-01","amount":15}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms/"+termID.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1412,7 +1534,7 @@ func TestUpdateRecurringTerm(t *testing.T) {
 			AddRow(termID, id, newStart, nil, int64(1500), accountID, time.Now()))
 	mock.ExpectCommit()
 
-	body := `{"startDate":"2099-02-01","amount":15}`
+	body := `{"startDate":"2025-02-01","amount":15}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms/"+termID.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1462,7 +1584,7 @@ func TestUpdateRecurringTermOverlap(t *testing.T) {
 			AddRow(recurringTermRow(term2, id, mustDate("2099-06-01"), 2000, accountID)...))
 
 	// Moving term2 to start inside term1's range overlaps.
-	body := `{"startDate":"2099-02-01"}`
+	body := `{"startDate":"2025-02-01"}`
 	req, _ := http.NewRequest(http.MethodPut, "/recurring/"+id.String()+"/terms/"+term2.String(), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1594,12 +1716,12 @@ func TestCreateRecurringSeriesClosed(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows(recurringSeriesColumnsForTest).
 			AddRow(recurringSeriesRow(id, accountA, "Rent", 1000, recurringFreqMonthly, 1, mustDate("2099-01-15"), ptrDate("2099-12-31"))...))
 	mock.ExpectExec("INSERT INTO recurring_series_terms").
-		WithArgs(id, testUserID(), mustDate("2099-01-15"), ptrDate("2099-12-31"), money.Amount(1000), accountA).
+		WithArgs(id, testUserID(), mustDate("2025-01-15"), ptrDate("2025-12-31"), money.Amount(1000), accountA).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
 	body := `{"name":"Rent","type":"debit","frequency":"monthly","ranges":[` +
-		`{"startDate":"2099-01-15","endDate":"2099-12-31","amount":10,"accountId":"` + accountA.String() + `"}]}`
+		`{"startDate":"2025-01-15","endDate":"2025-12-31","amount":10,"accountId":"` + accountA.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1615,7 +1737,7 @@ func TestCreateRecurringSeriesRangeEndBeforeStart(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	accountA := uuid.New()
 	body := `{"name":"Rent","type":"debit","frequency":"monthly","ranges":[` +
-		`{"startDate":"2099-06-01","endDate":"2099-01-01","amount":10,"accountId":"` + accountA.String() + `"}]}`
+		`{"startDate":"2025-06-01","endDate":"2024-01-01","amount":10,"accountId":"` + accountA.String() + `"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "/recurring", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

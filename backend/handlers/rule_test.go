@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/fintrak/backend/internal/money"
@@ -437,6 +438,11 @@ func TestGetRules(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// Every rule write now normalizes addTags through normalizeTags before it
+// reaches SQL (see CreateRule/UpdateRule), so a request that sends no tags
+// binds an empty text[] rather than a nil slice: `[]string{}` below replaced
+// the `([]string)(nil)` these expectations used to assert, which was the NULL
+// the column's `DEFAULT '{}'` was never meant to hold.
 func TestCreateRule(t *testing.T) {
 	r, srv, mock := newRuleTestRouter(t)
 	r.POST("/rules", srv.CreateRule)
@@ -457,7 +463,7 @@ func TestCreateRule(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO rules").
 		WithArgs(userID, "Swiggy", "contains", catID, &payeeID, 5,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Swiggy", "contains", catID, &payeeID, 5))
 
@@ -494,7 +500,7 @@ func TestCreateRuleDefaultsMatchType(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO rules").
 		WithArgs(userID, "Rent", "contains", catID, (*uuid.UUID)(nil), 0,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Rent", "contains", catID, nil, 0))
 
@@ -589,7 +595,7 @@ func TestUpdateRule(t *testing.T) {
 	mock.ExpectQuery("UPDATE rules SET pattern").
 		WithArgs("Netflix", "starts_with", catID, (*uuid.UUID)(nil), 3,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, userID).
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "", ruleID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, "Netflix", "starts_with", catID, nil, 3))
 
@@ -631,6 +637,107 @@ func TestUpdateRuleRequiresPattern(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The UPDATE's ownership predicate tests the action category unconditionally,
+// so a body that omits categoryId used to leave the zero UUID in the statement,
+// match no rows and answer 404 "rule not found" — telling the caller the rule
+// does not exist when the request was simply invalid.
+func TestUpdateRuleRequiresCategoryID(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
+
+	body, _ := json.Marshal(models.UpdateRuleRequest{
+		Pattern:   "Netflix",
+		MatchType: "contains",
+	})
+	req, _ := http.NewRequest("PUT", "/rules/"+uuid.New().String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "categoryId is required")
+	// Rejected before the statement, so nothing was written.
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A rule's action tags are mass-applied by ApplyRules onto every matching
+// transaction, so they obey the same 50-rune cap as every other tag write edge
+// instead of storing a tag GetTags would never let the user type.
+func TestCreateRuleRejectsOverLongAddTag(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    "Swiggy",
+		CategoryID: uuid.New(),
+		AddTags:    []string{strings.Repeat("x", maxTagLength+1)},
+	})
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "tag exceeds the maximum length")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateRuleRejectsOverLongAddTag(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
+
+	body, _ := json.Marshal(models.UpdateRuleRequest{
+		Pattern:    "Netflix",
+		CategoryID: uuid.New(),
+		AddTags:    []string{strings.Repeat("x", maxTagLength+1)},
+	})
+	req, _ := http.NewRequest("PUT", "/rules/"+uuid.New().String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "tag exceeds the maximum length")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A pattern longer than rules.pattern VARCHAR(500) is a malformed request, not
+// a server fault: the binding tag answers 400 instead of letting PostgreSQL
+// raise 22001, which the handler can only report as a 500.
+func TestCreateRuleRejectsOverLongPattern(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.POST("/rules", srv.CreateRule)
+
+	body, _ := json.Marshal(models.CreateRuleRequest{
+		Pattern:    strings.Repeat("x", 501),
+		CategoryID: uuid.New(),
+	})
+	req, _ := http.NewRequest("POST", "/rules", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateRuleRejectsOverLongPattern(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
+
+	body, _ := json.Marshal(models.UpdateRuleRequest{
+		Pattern:    strings.Repeat("x", 501),
+		CategoryID: uuid.New(),
+	})
+	req, _ := http.NewRequest("PUT", "/rules/"+uuid.New().String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpdateRuleNotFound(t *testing.T) {
 	r, srv, mock := newRuleTestRouter(t)
 	r.PUT("/rules/:id", srv.UpdateRule)
@@ -646,7 +753,7 @@ func TestUpdateRuleNotFound(t *testing.T) {
 	mock.ExpectQuery("UPDATE rules SET pattern").
 		WithArgs("Netflix", "contains", catID, (*uuid.UUID)(nil), 0,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, testUserID()).
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "", ruleID, testUserID()).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -690,7 +797,7 @@ func TestCreateRuleCategoryNotOwned(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO rules").
 		WithArgs(userID, "Swiggy", "contains", otherCatID, (*uuid.UUID)(nil), 5,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -722,7 +829,7 @@ func TestCreateRulePayeeNotOwned(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO rules").
 		WithArgs(userID, "Swiggy", "contains", catID, &otherPayeeID, 5,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "").
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -754,7 +861,7 @@ func TestUpdateRuleCategoryNotOwned(t *testing.T) {
 	mock.ExpectQuery("UPDATE rules SET pattern").
 		WithArgs("Netflix", "starts_with", otherCatID, (*uuid.UUID)(nil), 3,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "", ruleID, userID).
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "", ruleID, userID).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -785,7 +892,7 @@ func TestCreateRuleWithGlobalCategory(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE EXISTS (SELECT 1 FROM categories c WHERE c.id = $4 AND (c.user_id = $1 OR c.user_id IS NULL))")).
 		WithArgs(userID, reqBody.Pattern, "contains", globalCatID, (*uuid.UUID)(nil), 10,
 			(*uuid.UUID)(nil), (*uuid.UUID)(nil), (*uuid.UUID)(nil), (*money.Amount)(nil), (*money.Amount)(nil), nil,
-			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), ([]string)(nil), "").
+			(*string)(nil), (*string)(nil), (*bool)(nil), (*bool)(nil), []string{}, "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "pattern", "match_type", "category_id", "payee_id", "priority"}).
 			AddRow(ruleID, reqBody.Pattern, "contains", globalCatID, nil, 10))
 

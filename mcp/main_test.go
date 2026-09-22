@@ -72,6 +72,27 @@ func (s *apiStub) seen() ([]string, []string) {
 	return append([]string(nil), s.requests...), append([]string(nil), s.cookies...)
 }
 
+// syncBuffer is a bytes.Buffer a test can read while a child process is still
+// writing to it. os/exec copies the child's stderr from its own goroutine, and
+// the failure paths below read the log before cmd.Wait() joins that copier, so
+// an unguarded buffer would race exactly when the smoke test is already failing.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestBinaryServesReadOnlyToolsOverStdio is the end-to-end proof for the
 // command: it starts the real binary, speaks MCP to it over stdin/stdout,
 // checks the advertised tool surface is read-only, and calls one tool through
@@ -89,7 +110,7 @@ func TestBinaryServesReadOnlyToolsOverStdio(t *testing.T) {
 		"FINTRAK_EMAIL=a@b.c",
 		"FINTRAK_PASSWORD=hunter2hunter2",
 	)
-	var logs bytes.Buffer
+	var logs syncBuffer
 	cmd.Stderr = &logs
 
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "smoke", Version: "test"}, nil).
@@ -106,9 +127,21 @@ func TestBinaryServesReadOnlyToolsOverStdio(t *testing.T) {
 	if len(listed.Tools) != len(mcpserver.Tools()) {
 		t.Errorf("the binary advertises %d tools, want %d", len(listed.Tools), len(mcpserver.Tools()))
 	}
+	// The read-only hint is derived from the registry's side-effect
+	// declarations, so a tool that performs a write-on-GET must be advertised
+	// as not-read-only: a client that auto-approves read-only calls acts on
+	// this bit.
+	sideEffects := make(map[string]string, len(mcpserver.Tools()))
+	for _, tool := range mcpserver.Tools() {
+		sideEffects[tool.Name] = tool.SideEffect
+	}
 	for _, tool := range listed.Tools {
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("tool %q is not annotated read-only", tool.Name)
+		if tool.Annotations == nil {
+			t.Errorf("tool %q carries no annotations", tool.Name)
+			continue
+		}
+		if want := sideEffects[tool.Name] == ""; tool.Annotations.ReadOnlyHint != want {
+			t.Errorf("tool %q has readOnlyHint=%v, want %v", tool.Name, tool.Annotations.ReadOnlyHint, want)
 		}
 	}
 

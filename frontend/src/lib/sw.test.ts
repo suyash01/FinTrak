@@ -14,8 +14,23 @@ const SOURCE = readFileSync(
 );
 
 const ORIGIN = "http://localhost";
-const SHELL_CACHE = "fintrak-v1-shell";
-const ASSET_CACHE = "fintrak-v1-assets";
+
+// The cache names are derived from the worker's VERSION rather than re-declared
+// here: bumping VERSION is the documented release step for invalidating an
+// installed app's caches, and a copy of the names in this file would turn that
+// step into a false failure against a worker that is in fact correct.
+const VERSION = /const VERSION = "([^"]+)"/.exec(SOURCE)?.[1];
+if (!VERSION) throw new Error("sw.js no longer declares VERSION");
+const SHELL_CACHE = `${VERSION}-shell`;
+const ASSET_CACHE = `${VERSION}-assets`;
+
+// A copy of the worker source with a different VERSION, so a deploy can be
+// simulated without editing the file under test.
+function sourceWithVersion(version: string): string {
+  const patched = SOURCE.replace(/const VERSION = "[^"]+"/, `const VERSION = "${version}"`);
+  if (patched === SOURCE) throw new Error("sw.js no longer declares VERSION");
+  return patched;
+}
 
 // Cache Storage normalizes every key to an absolute URL, and the worker runs
 // against Node's URL rather than jsdom's (whose base is the document URL), so
@@ -52,7 +67,10 @@ class FakeResponse {
 interface WorkerHarness {
   /** cache name → stored entries (absolute URL → body). */
   caches: Map<string, Map<string, string>>;
+  /** how many times the worker itself fetched the shell document. */
+  shellFetches: () => number;
   install(): Promise<unknown>;
+  activate(): Promise<unknown>;
   navigate(path: string): Promise<FakeResponse | undefined>;
   asset(path: string): Promise<FakeResponse | undefined>;
 }
@@ -61,10 +79,13 @@ interface WorkerHarness {
 // the browser has two: `fetch` is what the worker itself calls, while `fill` is
 // what the Cache API reaches when it stores a URL (cache.add), which works even
 // when the worker's own fetches are failing.
-function loadWorker(network: {
-  fetch: (url: string) => Promise<FakeResponse>;
-  fill: (url: string) => Promise<FakeResponse>;
-}): WorkerHarness {
+function loadWorker(
+  network: {
+    fetch: (url: string) => Promise<FakeResponse>;
+    fill: (url: string) => Promise<FakeResponse>;
+  },
+  source: string = SOURCE,
+): WorkerHarness {
   const stores = new Map<string, Map<string, string>>();
   const listeners = new Map<string, (event: Record<string, unknown>) => void>();
 
@@ -100,6 +121,8 @@ function loadWorker(network: {
     delete: (name: string) => Promise.resolve(stores.delete(name)),
   };
 
+  let shellFetches = 0;
+
   const self = {
     location: { origin: ORIGIN },
     addEventListener: (type: string, handler: (event: never) => void) => {
@@ -109,10 +132,13 @@ function loadWorker(network: {
     clients: { claim: () => Promise.resolve() },
   };
 
-  new Function("self", "caches", "fetch", "URL", "Response", SOURCE)(
+  new Function("self", "caches", "fetch", "URL", "Response", source)(
     self,
     caches,
-    network.fetch,
+    (url: string) => {
+      if (url === "/index.html") shellFetches += 1;
+      return network.fetch(url);
+    },
     NodeURL,
     FakeResponse,
   );
@@ -136,7 +162,9 @@ function loadWorker(network: {
 
   return {
     caches: stores,
+    shellFetches: () => shellFetches,
     install: () => dispatch("install", {}),
+    activate: () => dispatch("activate", {}),
     navigate: (path) =>
       dispatch("fetch", {
         method: "GET",
@@ -158,15 +186,18 @@ describe("offline shell worker", () => {
   const respond = (url: string) =>
     new FakeResponse(url === "/index.html" ? HTML : `bundle ${url}`);
 
-  function boot() {
+  function boot(source: string = SOURCE) {
     let online = true;
-    const worker = loadWorker({
-      fetch: (url) =>
-        online
-          ? Promise.resolve(respond(url))
-          : Promise.reject(new TypeError("Failed to fetch")),
-      fill: (url) => Promise.resolve(respond(url)),
-    });
+    const worker = loadWorker(
+      {
+        fetch: (url) =>
+          online
+            ? Promise.resolve(respond(url))
+            : Promise.reject(new TypeError("Failed to fetch")),
+        fill: (url) => Promise.resolve(respond(url)),
+      },
+      source,
+    );
     return {
       worker,
       goOffline: () => {
@@ -191,6 +222,40 @@ describe("offline shell worker", () => {
     const shellKeys = [...(worker.caches.get(SHELL_CACHE) ?? new Map()).keys()];
     expect(shellKeys).toContain(absolute("/index.html"));
     expect(shellKeys.some((key) => key.includes("/assets/"))).toBe(false);
+  });
+
+  // The shell document names the bundles, so the cached shell and the bundle
+  // list have to come from the same response: a second read can land after a
+  // deploy and pair one build's shell with another build's chunks.
+  it("reads the shell document once, for both the shell and the bundle list", async () => {
+    const { worker } = boot();
+
+    await worker.install();
+
+    expect(worker.shellFetches()).toBe(1);
+  });
+
+  // Keeping the generation before the current one is what lets a tab left open
+  // on the previous build load the rest of its route chunks: those requests are
+  // answered by cacheFirst from that build's asset cache.
+  it("keeps the previous build's caches and drops older generations", async () => {
+    const { worker } = boot(sourceWithVersion("fintrak-v3"));
+    for (const name of [
+      "fintrak-v3-assets",
+      "fintrak-v2-assets",
+      "fintrak-v1-assets",
+      "fintrak-v1-shell",
+      "workbox-precache",
+    ]) {
+      worker.caches.set(name, new Map<string, string>());
+    }
+
+    await worker.activate();
+
+    expect([...worker.caches.keys()]).toEqual([
+      "fintrak-v3-assets",
+      "fintrak-v2-assets",
+    ]);
   });
 
   it("boots the shell and its bundles from cache with no network", async () => {

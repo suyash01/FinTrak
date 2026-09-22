@@ -29,7 +29,7 @@ from typing import Any, List, Optional
 import pdfplumber
 from pypdf import PdfReader
 
-from .limits import ensure_page_limit
+from .limits import close_pdf, ensure_page_limit
 
 
 # A transaction line looks like:
@@ -137,7 +137,12 @@ def extract_transactions(path: str, password: Optional[str] = None) -> dict[str,
     transactions: List[Transaction] = []
     full_text_parts: List[str] = []
 
-    with pdfplumber.open(path, password=password) as pdf:
+    # Opened explicitly rather than with `with ... as pdf:`: pdfplumber's
+    # __exit__ calls PDF.close(), which iterates pdf.pages and rebuilds one Page
+    # per page — so the page-limit rejection below would still materialize the
+    # whole tree it just refused to parse. close_pdf() avoids that.
+    pdf = pdfplumber.open(path, password=password)
+    try:
         page_count = ensure_page_limit(pdf)
         for page in pdf.pages:
             text = page.extract_text() or ""
@@ -146,6 +151,8 @@ def extract_transactions(path: str, password: Optional[str] = None) -> dict[str,
                 txn = _parse_line(line)
                 if txn:
                     transactions.append(txn)
+    finally:
+        close_pdf(pdf)
 
     full_text = "\n".join(full_text_parts)
     summary = _extract_summary(full_text)

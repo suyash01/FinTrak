@@ -197,7 +197,7 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 
 	// Recent transactions
 	recentQuery := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type,
-					t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
+					t.category_id, COALESCE(t.tags, '{}') as tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
 					a.name as account_name,
 					COALESCE(c.name, '') as category_name,
 					COALESCE(c.icon, '') as category_icon,
@@ -476,7 +476,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	// Recent transactions across the displayed cycle window (so the list is
 	// non-empty even while the current in-progress cycle has no activity yet).
 	recentQuery := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type,
-					t.category_id, t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
+					t.category_id, COALESCE(t.tags, '{}') as tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at,
 					a.name as account_name,
 					COALESCE(c.name, '') as category_name,
 					COALESCE(c.icon, '') as category_icon,

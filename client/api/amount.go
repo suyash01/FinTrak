@@ -16,8 +16,11 @@ import (
 // treats an amount as opaque text: it never does arithmetic on one and never
 // reformats a value it received, because every total it displays was already
 // computed server-side. ParseAmount is the single entry point for user input
-// and mirrors money.Parse's grammar exactly (optional sign, at most two
-// fractional digits), so the TUI rejects precisely what the API would reject.
+// and mirrors money.Parse's grammar (one optional leading sign, a digit on both
+// sides of the point when one is present, at most two fractional digits, and a
+// magnitude no larger than money.MaxMinorUnits), so a form cannot submit an
+// amount the API would refuse — including the shapes that are typos rather than
+// numbers ("--1", ".5", "5.").
 type Amount string
 
 // String returns the amount as carried on the wire (e.g. "1250.50").
@@ -87,15 +90,27 @@ func (a Amount) Float64() float64 {
 	return f
 }
 
+// maxAmountMinorUnits mirrors money.MaxMinorUnits (1<<62 minor units): the
+// largest amount the API accepts, because whole*100 must stay inside int64 on
+// the backend and the float64 JSON boundary must still round-trip the value.
+// ParseAmount rejects anything above it here rather than sending a value the
+// API answers with a 400.
+const maxAmountMinorUnits = 1 << 62
+
 // ParseAmount validates and canonicalizes user input into a wire amount. It
-// accepts an optional sign and at most two fractional digits, matching the
-// backend's money.Parse; the result is always rendered with two decimals so
-// what the user typed and what the API stores agree.
+// accepts an optional sign, requires a digit on both sides of the point when a
+// fraction is present, allows at most two fractional digits and bounds the
+// magnitude at maxAmountMinorUnits — the same rules money.Parse enforces in
+// backend/internal/money/money.go — so the API cannot be handed an amount it
+// would reject. The result is always rendered with two decimals so what the
+// user typed and what the API stores agree.
 func ParseAmount(s string) (Amount, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
 		return "", fmt.Errorf("amount is required")
 	}
+	s = raw
+
 	neg := false
 	switch s[0] {
 	case '-':
@@ -103,34 +118,75 @@ func ParseAmount(s string) (Amount, error) {
 	case '+':
 		s = s[1:]
 	}
-	if s == "" {
+
+	wholeText, fracText, hasFrac := strings.Cut(s, ".")
+	// An absent part is not a zero: "." and "-" carry no digits at all, and
+	// ".5"/"5." are typos, not amounts. money.Parse rejects all four, so
+	// accepting them here would let the form submit a value the API refuses.
+	if wholeText == "" {
 		return "", fmt.Errorf("invalid amount")
 	}
-	whole, frac, hasFrac := strings.Cut(s, ".")
-	if whole == "" {
-		whole = "0"
-	}
-	if _, err := strconv.ParseUint(whole, 10, 63); err != nil {
+	// The integer part is digits only: the sign was already consumed above, so
+	// anything else here is a second sign ("--1", "+-1"), which the API also
+	// rejects (money.Parse allows a sign only as the first character). Naming
+	// the typo here keeps the form from sending a request that can only fail.
+	if !digitsOnly(wholeText) {
 		return "", fmt.Errorf("invalid amount")
 	}
+	whole, err := strconv.ParseInt(wholeText, 10, 64)
+	if err != nil {
+		// Only an overflow reaches here; the digits are digits.
+		return "", fmt.Errorf("invalid amount")
+	}
+
+	var frac int64
 	if hasFrac {
-		if len(frac) > 2 {
+		if fracText == "" {
+			return "", fmt.Errorf("invalid amount")
+		}
+		if len(fracText) > 2 {
 			return "", fmt.Errorf("at most two decimal places")
 		}
-		for len(frac) < 2 {
-			frac += "0"
+		for len(fracText) < 2 {
+			fracText += "0"
+		}
+		frac, err = strconv.ParseInt(fracText, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid amount")
 		}
 	} else {
-		frac = "00"
+		fracText = "00"
 	}
-	if _, err := strconv.ParseUint(frac, 10, 16); err != nil {
-		return "", fmt.Errorf("invalid amount")
+
+	// Checked before it is rendered: above the bound whole*100 would overflow
+	// int64 on the backend, which refuses the amount, and the float64 JSON
+	// boundary could not carry it either.
+	if whole > (maxAmountMinorUnits-frac)/100 {
+		return "", fmt.Errorf("amount is out of range")
 	}
-	out := whole + "." + frac
+
+	// Rendered from the parsed digits rather than from the input: a leading
+	// zero run ("007") is not a valid JSON number, so it would make the request
+	// body unparseable even though the API accepts the value itself.
+	out := strconv.FormatInt(whole, 10) + "." + fracText
 	if neg && out != "0.00" {
 		out = "-" + out
 	}
 	return Amount(out), nil
+}
+
+// digitsOnly reports whether s is a non-empty run of ASCII digits, i.e. an
+// integer part that carries no sign of its own.
+func digitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range s {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // UnmarshalJSON keeps the raw decimal text. The wire value is a JSON number

@@ -94,7 +94,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
 import pdfplumber
 from pypdf import PdfReader
 
-from .limits import ensure_page_limit
+from .limits import close_pdf, ensure_page_limit
 from .money import same_money
 
 
@@ -222,6 +222,13 @@ _COL_TOL = 2.0
 # looks like an amount. Without this bound the classification was by right edge
 # alone, so a narration or reference token such as "NEFT 1,000.00" was booked as
 # a withdrawal — inventing a debit and losing the row's real deposit.
+#
+# It is ALWAYS the template's divider, never the "Withdrawal" header's x0: that
+# header is right-aligned to the column (368.4-405.7 in the transcribed page-2
+# geometry), so its left edge sits ~40pt (≈11 characters) inside the column and
+# using it as the bound dropped every amount wider than 405.7 - 368.4 ≈ 43pt —
+# e.g. "1,00,00,000.00" — turning a real ~₹1 crore debit into a 0.00 "Credit"
+# row that the importable filter then deleted with no error of its own.
 _FALLBACK_AMOUNT_MIN_X0 = 328.9
 
 # Money tokens are right-aligned, so a wide amount may start a little left of
@@ -342,19 +349,6 @@ def _find_header_edges(lines: List[List[Word]]) -> Tuple[float, float, float]:
     return wd, dep, bal
 
 
-def _find_amount_min_x0(lines: List[List[Word]]) -> float:
-    """Return the left edge of the first money column: the Withdrawal header's
-    own left edge when the header line is present, otherwise the template's
-    divider."""
-    for line in lines:
-        texts = [w["text"] for w in line]
-        if "Particulars" in texts and "Withdrawal" in texts:
-            for word in line:
-                if word["text"] == "Withdrawal":
-                    return word["x0"]
-    return _FALLBACK_AMOUNT_MIN_X0
-
-
 def _is_amount(word: Word) -> bool:
     return bool(_AMOUNT_RE.match(word["text"]))
 
@@ -377,7 +371,7 @@ def _parse_page(
     """
     lines: List[List[Word]] = _group_lines(page_words)
     wd_right, dep_right, bal_right = _find_header_edges(lines)
-    amount_min_x0 = _find_amount_min_x0(lines)
+    amount_min_x0 = _FALLBACK_AMOUNT_MIN_X0
 
     rows: List[Transaction] = []
     cur: Optional[Transaction] = None
@@ -698,7 +692,9 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             page_count=page_count,
         )
     finally:
-        pdf.close()
+        # NOT pdf.close(): it iterates pdf.pages and rebuilds one Page per page,
+        # re-paying the cost ensure_page_limit was called to avoid.
+        close_pdf(pdf)
 
 
 _CSV_FIELDS: List[str] = ["date", "description", "amount", "type"]

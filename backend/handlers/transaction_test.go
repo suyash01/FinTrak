@@ -124,7 +124,10 @@ func TestUpdateTransactionSetsBillingCycle(t *testing.T) {
 	cycleID := uuid.New()
 	userID := testUserID()
 
-	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+	// Naming a cycle is an assignment, not a detach: the row is attached and
+	// the "user detached this" flag is cleared, so a later date/account move
+	// can re-derive the assignment again.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET billing_cycle_id = $1, billing_cycle_detached = FALSE WHERE id = $2 AND user_id = $3")).
 		WithArgs(cycleID, txnID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -154,7 +157,11 @@ func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
 	txnID := uuid.New()
 	userID := testUserID()
 
-	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+	// An explicit null is the user detaching the transaction from its cycle
+	// ("Unassigned"). The flag is what makes that stick: NULL alone is also
+	// what a never-assigned row looks like, so the date-based back-fill would
+	// otherwise re-attach the row on the very next read.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET billing_cycle_id = $1, billing_cycle_detached = TRUE WHERE id = $2 AND user_id = $3")).
 		WithArgs(nil, txnID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -171,8 +178,9 @@ func TestUpdateTransactionClearsBillingCycle(t *testing.T) {
 // Moving a transaction to another account must not leave it attached to the
 // old account's cycle: cycles belong to one account, and the billing-cycle
 // rollups aggregate by cycle id without rechecking the account, so a stale
-// cycle would pollute the old cycle's net. Naming no cycle binds no parameter,
-// so the id/user placeholders after it stay where they were.
+// cycle would pollute the old cycle's net. Clearing the assignment (and the
+// detach flag, so the next read re-derives it) binds no parameter beyond the
+// account, so the id/user placeholders after it stay where they were.
 func TestUpdateTransactionAccountMoveClearsBillingCycle(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.PATCH("/transactions/:id", srv.UpdateTransaction)
@@ -181,11 +189,63 @@ func TestUpdateTransactionAccountMoveClearsBillingCycle(t *testing.T) {
 	txnID := uuid.New()
 	accountID := uuid.New()
 
-	mock.ExpectExec("UPDATE transactions SET account_id = \\$1, billing_cycle_id = NULL WHERE id = \\$2 AND user_id = \\$3").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET account_id = $1, billing_cycle_id = NULL, billing_cycle_detached = FALSE WHERE id = $2 AND user_id = $3")).
 		WithArgs(accountID, txnID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	body, _ := json.Marshal(map[string]interface{}{"accountId": accountID})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Moving a transaction to another DATE has the same effect as moving it to
+// another account: the cycle it is attached to covers its old date, and the
+// rollups aggregate by cycle id without rechecking the date range, so leaving
+// it attached would count it in a period whose start/end dates exclude it and
+// would corrupt that cycle's net, count and every later TotalOutstanding
+// (which is the cumulative sum of the cycle nets). Clearing the assignment lets
+// the next read re-derive the cycle from the new date.
+func TestUpdateTransactionDateMoveClearsBillingCycle(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
+
+	userID := testUserID()
+	txnID := uuid.New()
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET date = $1, billing_cycle_id = NULL, billing_cycle_detached = FALSE WHERE id = $2 AND user_id = $3")).
+		WithArgs("2024-02-20", txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(map[string]interface{}{"date": "2024-02-20"})
+	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An explicitly named cycle still wins over the date-move rule: the caller is
+// attaching the row to the cycle it wants, so nothing is cleared.
+func TestUpdateTransactionDateMoveKeepsExplicitCycle(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
+
+	userID := testUserID()
+	txnID := uuid.New()
+	cycleID := uuid.New()
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET date = $1, billing_cycle_id = $2, billing_cycle_detached = FALSE WHERE id = $3 AND user_id = $4")).
+		WithArgs("2024-02-20", cycleID, txnID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body, _ := json.Marshal(map[string]interface{}{"date": "2024-02-20", "billingCycleId": cycleID})
 	req, _ := http.NewRequest("PATCH", "/transactions/"+txnID.String(), bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -222,7 +282,7 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string{}, "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -300,7 +360,7 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string{}, "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -765,9 +825,10 @@ func TestGetTransactions(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
-	// Main query.
+	// Main query. The tags column is coalesced so a row written before the
+	// empty-array fix (SQL NULL) still serializes as an array, not null.
 	rows := txnListRow(txnID, accountID, now, "Coffee", 250.5, "debit", nil, []string{"food"}, "", nil, "Starbucks", now, "Savings", "Food", "🍔", "#ff0000", false, nil, "", nil, "")
-	mock.ExpectQuery("SELECT t.id, t.account_id, t.date").
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(t.tags, '{}') as tags")).
 		WithArgs(userID, 50, 0).
 		WillReturnRows(rows)
 
@@ -1427,9 +1488,11 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 		WillReturnRows(ruleEntryRows().
 			AddRow("Zomato", "contains", catID, nil, nil, nil, nil, nil, nil, "", nil, nil, nil, nil, []string{}, ""))
 
-	// Insert with auto-categorized category (no payee from rules).
+	// Insert with auto-categorized category (no payee from rules). Tags come
+	// from the request plus any rule action; with neither, the row must store
+	// '{}' rather than NULL (a NULL row silently swallows bulk tag adds).
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), ([]string)(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), []string{}, "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1502,7 +1565,7 @@ func TestCreateTransactionStoresClientKey(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(ruleEntryRows())
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string(nil), "", &key).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string{}, "", &key).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 	mock.ExpectCommit()
 
@@ -1547,7 +1610,7 @@ func TestCreateTransactionClientKeyRace(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(ruleEntryRows())
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string(nil), "", &key).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string{}, "", &key).
 		WillReturnError(&pgconn.PgError{Code: "23505", ConstraintName: "transactions_user_client_key"})
 	// The handler rolls the failed write back before looking the winner up; the
 	// second rollback is the deferred one that runs as the handler returns.
@@ -1623,6 +1686,112 @@ func TestCreateTransactionValidation(t *testing.T) {
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+// A transaction date outside the ledger's window is refused before any write.
+// Billing cycles are generated one per month between the account's earliest
+// transaction and today, so a single typo'd or OCR'd year (1024, 0001) would
+// otherwise make every later read of that account generate tens of thousands of
+// cycles — and never finish inside the client's timeout.
+func TestCreateTransactionRejectsOutOfRangeDate(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	accountID := uuid.New()
+	for _, date := range []string{"1024-01-01", "1899-12-31", "2200-01-01"} {
+		t.Run(date, func(t *testing.T) {
+			body, _ := json.Marshal(models.CreateTransactionRequest{
+				AccountID: accountID, Date: date, Description: "X", Amount: money.FromFloat(1), Type: "debit",
+			})
+			req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "date out of range (1900-01-01 to ")
+		})
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The same rule guards the PATCH path: a date the create path refuses must not
+// reach the table through an update.
+func TestUpdateTransactionRejectsOutOfRangeDate(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.PATCH("/transactions/:id", srv.UpdateTransaction)
+
+	for _, date := range []string{"1024-01-01", "1899-12-31", "2200-01-01"} {
+		t.Run(date, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{"date": date})
+			req, _ := http.NewRequest("PATCH", "/transactions/"+uuid.New().String(), bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "date out of range (1900-01-01 to ")
+		})
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The import and preview paths share CreateTransaction's rule (they used to
+// accept any well-formed date, including 0001-01-01), so a bad row is refused
+// by both, with the row it came from named in the message.
+func TestImportAndValidateRejectOutOfRangeDate(t *testing.T) {
+	tests := []struct {
+		name string
+		post func(r *gin.Engine, body []byte) *httptest.ResponseRecorder
+	}{
+		{name: "import", post: postImport},
+		{name: "validate", post: postValidate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _, mock := newImportTestRouter(t)
+			if tt.name == "validate" {
+				r, _, mock = newValidateTestRouter(t)
+			}
+
+			body, _ := json.Marshal(map[string]any{
+				"accountId": uuid.New().String(),
+				"transactions": []map[string]any{
+					{"date": "2024-01-15", "description": "ok", "amount": 1, "type": "debit"},
+					{"date": "1024-01-01", "description": "typo", "amount": 1, "type": "debit"},
+				},
+			})
+			w := tt.post(r, body)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "transaction 2: date out of range (1900-01-01 to ")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// An amount that cannot be represented as int64 cents is refused at the bind
+// boundary rather than stored: the old parser accepted it and wrapped the value
+// to math.MinInt64, whose JSON serialization is not even a valid number, so
+// every later response containing that row failed to marshal.
+func TestCreateTransactionRejectsOutOfRangeAmount(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	accountID := uuid.New()
+	for _, body := range []string{
+		`{"accountId":"` + accountID.String() + `","date":"2024-01-15","description":"X","amount":"1e30","type":"debit"}`,
+		`{"accountId":"` + accountID.String() + `","date":"2024-01-15","description":"X","amount":"NaN","type":"debit"}`,
+		`{"accountId":"` + accountID.String() + `","date":"2024-01-15","description":"X","amount":1e308,"type":"debit"}`,
+	} {
+		req, _ := http.NewRequest("POST", "/transactions", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "payload %s", body)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestCreateTransactionAccountNotFound(t *testing.T) {
@@ -1778,7 +1947,10 @@ func TestBulkUpdateBillingCycle(t *testing.T) {
 		BillingCycleID: cycleID,
 	}
 
-	mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+	// The assignment carries the closed-account guard and clears the detach
+	// flag ("Unassigned") the row may carry, so the next date/account move can
+	// re-derive the cycle again.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET billing_cycle_id = $1, billing_cycle_detached = FALSE WHERE id = ANY($2) AND user_id = $3")).
 		WithArgs(cycleID, txnIDs, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
@@ -1970,7 +2142,7 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string{}, "", (*string)(nil)).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -2007,7 +2179,7 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string{}, "", (*string)(nil)).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -2128,9 +2300,46 @@ func TestImportTransactionsBillingCycleNotOwned(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestImportTransactionsPayeeNotOwned(t *testing.T) {
+// An imported row that matches no rule carries no tags, and it must be stored
+// as the EMPTY ARRAY, not SQL NULL: pgx encodes a nil slice as NULL, unnest(NULL)
+// yields no rows, and the bulk "add tag" statement rebuilds the array from
+// unnest(tags || $add) — so a NULL-tagged row reports a successful tag add and
+// stores nothing. Rule-less rows are the common case for a statement import.
+func TestImportTransactionsBindsEmptyTagsArray(t *testing.T) {
 	r, _, mock := newImportTestRouter(t)
 
+	accountID := uuid.New()
+	userID := testUserID()
+	txnID := uuid.New()
+
+	// The account lookup and the rule load happen before the write transaction.
+	mock.ExpectQuery("SELECT user_id, billing_day").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
+	// No rules match, so the row keeps no category, payee, tags or notes.
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
+		WithArgs(userID).
+		WillReturnRows(ruleEntryRows())
+	mock.ExpectBegin()
+	mock.ExpectBatch().
+		ExpectQuery("INSERT INTO transactions").
+		WithArgs(accountID, userID, "2024-01-15", "X", money.FromFloat(1), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string{}, "").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(models.ImportRequest{
+		AccountID:    accountID,
+		Transactions: []models.ImportTransaction{{Date: "2024-01-15", Description: "X", Amount: money.FromFloat(1), Type: "debit"}},
+	})
+	w := postImport(r, body)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"imported":1`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestImportTransactionsPayeeNotOwned(t *testing.T) {
+	r, _, mock := newImportTestRouter(t)
 	accountID := uuid.New()
 	userID := testUserID()
 	payeeID := uuid.New()
@@ -2358,7 +2567,7 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 	// the matcher pins the exact predicate so a future revert to a
 	// user-only check fails this test.
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))")).
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &globalCatID, (*uuid.UUID)(nil), []string{}, "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()

@@ -496,6 +496,8 @@ func settingsRestoreReport(path string, r api.BackupImportResult) string {
 		{"Links", r.Links},
 		{"Loan attachments", r.LoanAttachments},
 		{"Loan schedules", r.LoanSchedules},
+		{"Loan transfers", r.LoanTransfers},
+		{"Loan disbursements", r.LoanDisbursements},
 		{"Recurring series", r.RecurringSeries},
 		{"Recurring terms", r.RecurringTerms},
 		{"Recurring attachments", r.RecurringAttachments},

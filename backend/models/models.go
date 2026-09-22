@@ -346,12 +346,17 @@ type AuthResponse struct {
 }
 
 // CreateAccountRequest is the body for POST /api/v1/accounts.
+//
+// Every text field carries the width of the column it lands in (name 255, bank
+// 100, currency 3, color 7). Without the tag an over-long value reaches
+// PostgreSQL and raises 22001, which the handlers can only report as a 500
+// "internal server error" — a malformed request answered as a server fault.
 type CreateAccountRequest struct {
 	Name          string `json:"name" binding:"required,max=255"`
 	AccountTypeID string `json:"accountTypeId" binding:"required"`
-	Bank          string `json:"bank"`
-	Currency      string `json:"currency"`
-	Color         string `json:"color"`
+	Bank          string `json:"bank" binding:"max=100"`
+	Currency      string `json:"currency" binding:"max=3"`
+	Color         string `json:"color" binding:"max=7"`
 	IsDefault     bool   `json:"isDefault"`
 	// BillingDay is the day of the month on which billing cycles end (1-31).
 	// Optional: when set, summary rows are generated for the account regardless
@@ -367,9 +372,9 @@ type CreateAccountRequest struct {
 type UpdateAccountRequest struct {
 	Name          string `json:"name" binding:"max=255"`
 	AccountTypeID string `json:"accountTypeId"`
-	Bank          string `json:"bank"`
-	Currency      string `json:"currency"`
-	Color         string `json:"color"`
+	Bank          string `json:"bank" binding:"omitempty,max=100"`
+	Currency      string `json:"currency" binding:"omitempty,max=3"`
+	Color         string `json:"color" binding:"omitempty,max=7"`
 	IsDefault     *bool  `json:"isDefault"`
 	// Closed marks the account closed (true) or reopens it (false). Absent
 	// leaves the current value untouched.
@@ -381,19 +386,22 @@ type UpdateAccountRequest struct {
 	BillingDay OptionalInt `json:"billingDay"`
 }
 
-// CreateCategoryRequest is the body for POST /api/v1/categories.
+// CreateCategoryRequest is the body for POST /api/v1/categories. Icon and Color
+// carry their column widths (50 and 7) so an over-long value is a 400 field
+// error instead of the 22001 the column would raise, which the handler can only
+// report as a 500.
 type CreateCategoryRequest struct {
 	Name    string `json:"name" binding:"required,max=100"`
-	Icon    string `json:"icon"`
-	Color   string `json:"color"`
+	Icon    string `json:"icon" binding:"max=50"`
+	Color   string `json:"color" binding:"max=7"`
 	GroupID string `json:"groupId" binding:"required"`
 }
 
 // UpdateCategoryRequest is the body for PUT /api/v1/categories/:id.
 type UpdateCategoryRequest struct {
 	Name    string `json:"name" binding:"max=100"`
-	Icon    string `json:"icon"`
-	Color   string `json:"color"`
+	Icon    string `json:"icon" binding:"omitempty,max=50"`
+	Color   string `json:"color" binding:"omitempty,max=7"`
 	GroupID string `json:"groupId"`
 }
 
@@ -404,19 +412,21 @@ type DeleteCategoryResult struct {
 	DeletedRules        int `json:"deletedRules"`
 }
 
-// CreateCategoryGroupRequest is the body for POST /api/v1/groups.
+// CreateCategoryGroupRequest is the body for POST /api/v1/groups. Icon and Color
+// carry their column widths (50 and 7); the id is bounded by the slug pattern in
+// the handler.
 type CreateCategoryGroupRequest struct {
 	ID    string `json:"id" binding:"required"`
 	Name  string `json:"name" binding:"required,max=100"`
-	Icon  string `json:"icon"`
-	Color string `json:"color"`
+	Icon  string `json:"icon" binding:"max=50"`
+	Color string `json:"color" binding:"max=7"`
 }
 
 // UpdateCategoryGroupRequest is the body for PUT /api/v1/groups/:id.
 type UpdateCategoryGroupRequest struct {
 	Name  string `json:"name" binding:"max=100"`
-	Icon  string `json:"icon"`
-	Color string `json:"color"`
+	Icon  string `json:"icon" binding:"omitempty,max=50"`
+	Color string `json:"color" binding:"omitempty,max=7"`
 }
 
 // CreateAccountTypeRequest is the admin-only body for POST /api/v1/account-types.
@@ -861,9 +871,11 @@ type ImportTransaction struct {
 	PayeeID     *uuid.UUID   `json:"payeeId"`
 }
 
-// CreateRuleRequest is the body for POST /api/v1/rules.
+// CreateRuleRequest is the body for POST /api/v1/rules. Pattern carries its
+// column width (500): without it an over-long pattern reaches `rules.pattern
+// VARCHAR(500)` and raises 22001, which the handler can only answer with a 500.
 type CreateRuleRequest struct {
-	Pattern    string     `json:"pattern" binding:"required"`
+	Pattern    string     `json:"pattern" binding:"required,max=500"`
 	MatchType  string     `json:"matchType"`
 	CategoryID uuid.UUID  `json:"categoryId" binding:"required"`
 	PayeeID    *uuid.UUID `json:"payeeId"`
@@ -883,9 +895,12 @@ type CreateRuleRequest struct {
 	Notes            string        `json:"notes"`
 }
 
-// UpdateRuleRequest is the body for PUT /api/v1/rules/:id.
+// UpdateRuleRequest is the body for PUT /api/v1/rules/:id. Pattern is not
+// `required` because the handler rejects an empty one with a message of its
+// own; the max is the column width, so an over-long pattern is a 400 rather
+// than the 22001 the column raises.
 type UpdateRuleRequest struct {
-	Pattern    string     `json:"pattern"`
+	Pattern    string     `json:"pattern" binding:"max=500"`
 	MatchType  string     `json:"matchType"`
 	CategoryID uuid.UUID  `json:"categoryId"`
 	PayeeID    *uuid.UUID `json:"payeeId"`

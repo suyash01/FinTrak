@@ -5,10 +5,12 @@ import {
   screen,
   waitFor,
   fireEvent,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import LoanScheduleDialog from "./LoanScheduleDialog";
 import { formatCurrency, formatDate } from "../../utils/formatters";
+import { todayLocalISO } from "../../lib/dates";
 import type {
   Account,
   LoanDisbursement,
@@ -105,9 +107,10 @@ function credit(
   };
 }
 
-// The dialog initials the transfer form to today and quotes the payoff for that
-// date, so the fixtures and the assertions share the same value.
-const TODAY = new Date().toISOString().slice(0, 10);
+// The dialog initials the transfer form to the *local* day (the payoff it
+// quotes is the one accrued through that date), so the fixtures and the
+// assertions take the same value from the same helper the component uses.
+const TODAY = todayLocalISO();
 
 // The payoff the API quotes for a transfer date: the outstanding principal plus
 // the interest accrued since the last EMI payment, i.e. what a balance transfer
@@ -476,10 +479,57 @@ describe("LoanScheduleDialog", () => {
       await screen.findByRole("button", { name: "Undo this balance transfer" }),
     );
 
+    // Undoing a settlement is destructive and now confirms first (AGENTS.md:
+    // destructive confirms → AlertDialog), naming what it reverts.
+    const confirm = await screen.findByRole("alertdialog");
+    expect(apiMock.deleteLoanTransfer).not.toHaveBeenCalled();
+    expect(
+      within(confirm).getByText(/500\.00 settlement of 15 Jun 2024/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(confirm).getByRole("button", { name: "Undo transfer" }),
+    );
+
     await waitFor(() =>
       expect(apiMock.deleteLoanTransfer).toHaveBeenCalledWith("loan-1", "tr1"),
     );
     await waitFor(() => expect(apiMock.getLoanSchedule).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the transfer when the undo confirmation is cancelled", async () => {
+    const user = userEvent.setup();
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        transfers: [
+          {
+            id: "tr1",
+            fromLoanAccountId: "loan-1",
+            fromLoanAccountName: "Car Loan",
+            toLoanAccountId: "loan-2",
+            toLoanAccountName: "Home Loan",
+            amount: 500,
+            principal: 480,
+            accruedInterest: 20,
+            transferDate: "2024-06-15T00:00:00Z",
+            mode: "recast",
+            createdAt: "2024-06-15T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    renderDialog();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Undo this balance transfer" }),
+    );
+    const confirm = await screen.findByRole("alertdialog");
+    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(apiMock.deleteLoanTransfer).not.toHaveBeenCalled();
   });
 
   it("posts the target terms when the chosen target has no schedule", async () => {
@@ -969,6 +1019,15 @@ describe("LoanScheduleDialog", () => {
     await user.click(
       await screen.findByRole("button", { name: /Remove schedule/ }),
     );
+
+    // Removing the schedule is destructive and now confirms first.
+    const confirm = await screen.findByRole("alertdialog");
+    expect(apiMock.deleteLoanSchedule).not.toHaveBeenCalled();
+    expect(
+      within(confirm).getByText(/Car Loan's amortization table/),
+    ).toBeInTheDocument();
+
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
 
     await waitFor(() =>
       expect(apiMock.deleteLoanSchedule).toHaveBeenCalledWith("loan-1"),

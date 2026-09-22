@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestExportTransactions(t *testing.T) {
 	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
 		WithArgs(userID, accountID.String(), []string{"trip"}).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectQuery("SELECT t.date, t.description, t.amount, t.type").
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT t.date, t.description, t.amount, t.type")+".*"+regexp.QuoteMeta("COALESCE(t.tags, '{}') AS tags")).
 		WithArgs(userID, accountID.String(), []string{"trip"}).
 		WillReturnRows(rows)
 
@@ -66,7 +67,7 @@ func TestExportTransactionsQueryError(t *testing.T) {
 	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT t.date, t.description, t.amount, t.type").
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT t.date, t.description, t.amount, t.type") + ".*" + regexp.QuoteMeta("COALESCE(t.tags, '{}') AS tags")).
 		WithArgs(testUserID()).
 		WillReturnError(assert.AnError)
 

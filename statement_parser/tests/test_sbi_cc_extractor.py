@@ -151,7 +151,9 @@ class SbiExtractTransactionsTests(unittest.TestCase):
             ),
             self._make_page("*Total Amount Due (`) 40,991.00"),
         ]
-        mock_open.return_value.__enter__.return_value = pdf
+        # No `with`: the extractor releases the document with limits.close_pdf(),
+        # so the handle it uses is open()'s return value.
+        mock_open.return_value = pdf
 
         result = extract_transactions("/tmp/x.pdf")
 
@@ -170,7 +172,9 @@ class SbiExtractTransactionsTests(unittest.TestCase):
         mock_reader_cls.return_value = mock_reader
         pdf = mock.Mock()
         pdf.pages = []
-        mock_open.return_value.__enter__.return_value = pdf
+        # No `with`: the extractor releases the document with limits.close_pdf(),
+        # so the handle it uses is open()'s return value.
+        mock_open.return_value = pdf
 
         extract_transactions("/tmp/x.pdf", password="1234")
 

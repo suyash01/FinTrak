@@ -1,0 +1,21 @@
+-- The transaction list's default ordering had no index. Every index on
+-- `transactions` leads with user_id but none carries `date`, so both halves of
+-- GET /transactions — the page query and its COUNT — had to read the user's
+-- whole prefix and sort it (top-N heapsort) before returning 50 rows, and paid
+-- that again for every page and every CSV export.
+--
+-- The column list is txnOrderByDate (handlers/transaction.go) exactly, in the
+-- same direction: `date DESC`, then credits before debits within a day
+-- (`CASE WHEN type = 'credit' THEN 0 ELSE 1 END`), then the id as the final
+-- tiebreak. Postgres can therefore satisfy the ORDER BY from the index and stop
+-- after LIMIT rows instead of sorting the user's whole prefix. The count query
+-- shares the `user_id = ...` prefix, so it too has an index to fall back on
+-- (index-only where that beats a scan).
+--
+-- DESC matches the endpoint's default (`sortOrder` defaults to DESC). An
+-- ascending list keeps sorting: a backward scan of this index would invert the
+-- credit/debit tiebreak along with the date, and a second index on the app's
+-- hottest table is not worth the non-default ordering. The result is the same
+-- either way — only the cost differs.
+CREATE INDEX IF NOT EXISTS transactions_tenant_date
+    ON transactions (user_id, date DESC, (CASE WHEN type = 'credit' THEN 0 ELSE 1 END), id);

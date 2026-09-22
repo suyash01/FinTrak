@@ -55,11 +55,11 @@ export default function UploadStep({
     e.currentTarget.classList.remove("border-primary", "bg-card/80");
     const file = e.dataTransfer?.files[0];
     if (!file) return;
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    if (ref.current) {
-      ref.current.files = dt.files;
-    }
+    // Nothing reads the input's value afterwards, so a dropped file is handed
+    // straight to the upload handler and the input is left empty — the same
+    // state the picker leaves it in, so the same file can be dropped or picked
+    // again after a failed parse.
+    if (ref.current) ref.current.value = "";
     upload({ target: { files: [file] } });
   };
 
@@ -125,7 +125,14 @@ export default function UploadStep({
             type="file"
             accept=".csv"
             className="hidden"
-            onChange={onCsvUpload}
+            onChange={(e) => {
+              onCsvUpload(e);
+              // Clear the chosen file once the handler owns it: an input keeps
+              // its value, so re-selecting the same CSV after a failed parse
+              // would fire no change event and the retry would silently do
+              // nothing. Same reason as DataSettingsManager's backup input.
+              e.currentTarget.value = "";
+            }}
           />
         </>
       ) : (
@@ -174,7 +181,12 @@ export default function UploadStep({
             type="file"
             accept=".pdf"
             className="hidden"
-            onChange={onPdfUpload}
+            onChange={(e) => {
+              onPdfUpload(e);
+              // See the CSV input above: a retained value makes re-picking the
+              // same PDF (e.g. after a failed parse) a no-op.
+              e.currentTarget.value = "";
+            }}
           />
           <div className="mt-4 flex flex-col gap-1.5">
             <Label htmlFor="import-extractor" className="text-muted-foreground">

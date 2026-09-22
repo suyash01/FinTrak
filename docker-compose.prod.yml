@@ -3,6 +3,13 @@
 #
 # Extends docker-compose.prod-no-db.yml and adds a managed database service.
 #
+# Same Compose project (`fintrak-prod`) as the no-db file, and a different one
+# from the dev stack (`fintrak-dev`): the named volume here is
+# `fintrak-prod_pgdata`, so running `make prod` on a machine that has run
+# `make dev` starts a fresh database instead of adopting the dev volume (and a
+# distinct project also means two stacks can be up at once without a container
+# name collision). `make prod-down` stops this project either way.
+#
 # Required environment variables (set in .env or export):
 #   POSTGRES_DB       - Database name
 #   POSTGRES_USER     - Database user
@@ -29,11 +36,21 @@
 #                     release keeps redeploys reproducible and rollbacks
 #                     deterministic.
 
+# `fintrak-dev`), so the two can never share a container name or a database
+# volume. See the header note in docker-compose.prod.yml.
+name: fintrak-prod
+
 services:
   # Internal only: never publish Postgres to the host in production.
   db:
-    container_name: postgres
-    image: postgres:18-alpine
+    # Pinned to the same exact patch release as the dev file. The app images are
+    # pinned to a release tag on purpose (see the IMAGE_TAG note above), and the
+    # component that owns the data must not be exempt: a floating `18-alpine`
+    # alias would let `docker compose pull` move a production database to a new
+    # PostgreSQL build — possibly a new minor, which rewrites the data directory
+    # on first start — with no application change and no rollback story. Bumps
+    # are proposed by the docker-compose entry in .github/dependabot.yml.
+    image: postgres:18.6-alpine3.24
     environment:
       # Required, like the backend's secrets: `${VAR}` alone would silently
       # create the database with an empty name/user/password.
@@ -79,8 +96,9 @@ services:
       service: statement-parser
 
 networks:
-  # Pinned so TRUSTED_PROXIES (defaulted to this subnet above) always names the
-  # network the frontend nginx proxies from. Override APP_SUBNET to move both.
+  # Pinned so the frontend's static address (FRONTEND_IP, default 172.28.0.2 —
+  # the default TRUSTED_PROXIES value) always falls inside the network the
+  # backend sees its proxy on. Override APP_SUBNET and FRONTEND_IP together.
   app-net:
     ipam:
       config:

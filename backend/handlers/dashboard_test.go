@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -69,8 +70,9 @@ func TestGetDashboardSummary(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"month", "income", "expense"}).
 			AddRow("2026-07", 50000.00, 30000.50))
 
-	// 8. Recent transactions
-	mock.ExpectQuery("SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type").
+	// 8. Recent transactions. The tags column is coalesced so a pre-existing
+	// NULL row serializes as an array, not null.
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(t.tags, '{}') as tags")).
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type",
@@ -332,8 +334,9 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}).
 			AddRow(catID, "Salary", "#22c55e", "wallet", 10000.00, 1))
 
-	// 9. Recent transactions (across the displayed cycle window)
-	mock.ExpectQuery("SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type").
+	// 9. Recent transactions (across the displayed cycle window). The tags
+	// column is coalesced so a pre-existing NULL row serializes as an array.
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(t.tags, '{}') as tags")).
 		WithArgs(userID, accountID, windowStart, windowEnd).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type",

@@ -15,7 +15,11 @@
 //
 //   - Every tool declares the API operation it performs (Tool.Route), and
 //     tools_test.go checks each one against backend/openapi.yaml: a GET, or a
-//     POST on the short list of documented previews.
+//     POST on the short list of documented previews. A tool whose route is one
+//     of readonly.SideEffectingGETs — the GETs that write derived rows — must
+//     declare what it writes in Tool.SideEffect, which is appended to the
+//     description and is also what Register derives the tool's readOnlyHint
+//     from, so the prose and the hint cannot disagree.
 //   - NewGuard installs a transport in front of the client that refuses any
 //     request outside those routes (plus the session routes the client itself
 //     uses), so a future tool that reaches for a write fails locally instead of
@@ -51,7 +55,7 @@ var Version = "dev"
 // ledger is proposing a change this server cannot make.
 const instructions = `FinTrak is a personal finance ledger. Every tool here is READ-ONLY: no tool creates, changes or deletes a transaction, account, category, payee, rule, link or recurring series.
 
-One qualification, stated again in the affected tool descriptions: a few tools that report on a single credit-card account materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given). That only regenerates the derived statement periods the account's own screens show; it never touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
+One qualification, stated again in the affected tool descriptions and in their readOnlyHint: a few tools that report on a single credit-card account materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given), and list_paperless_documents re-seals the user's stored Paperless token in place on read. The first only regenerates the derived statement periods the account's own screens show; the second leaves the token itself unchanged. Neither touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
 
 Money is returned as decimal major units (for example "1250.50") and every figure is already computed by the server. Do not add amounts up yourself: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) when a total is what the user wants, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
@@ -128,11 +132,16 @@ func NewGuard(c *api.Client, next http.RoundTripper) *readonly.Guard {
 	return readonly.New(next, base, routes)
 }
 
-// Register installs every tool on s, all annotated read-only.
+// Register installs every tool on s. Each tool's read-only annotation is
+// derived from the same declaration the audit checks (Tool.SideEffect, which
+// tools_test.go holds against readonly.SideEffectingGETs), so a tool that
+// performs a write-on-GET is advertised to clients as not-read-only and the
+// machine-readable hint cannot drift from the prose disclosure.
 func Register(s *mcp.Server, c *api.Client) {
 	for _, t := range Tools() {
 		description := t.Description
-		if t.SideEffect != "" {
+		readOnly := t.SideEffect == ""
+		if !readOnly {
 			description += " " + t.SideEffect
 		}
 		tool := &mcp.Tool{
@@ -140,7 +149,13 @@ func Register(s *mcp.Server, c *api.Client) {
 			Title:       t.Title,
 			Description: description,
 			Annotations: &mcp.ToolAnnotations{
-				ReadOnlyHint:   true,
+				// The hint is what a client auto-approving "read-only" calls
+				// acts on, so it must be false wherever the prose says the call
+				// writes.
+				ReadOnlyHint: readOnly,
+				// IdempotentHint stays true even there: the writes converge (a
+				// second identical call finds nothing left to materialize or
+				// re-seal), and no call has an effect a repeat multiplies.
 				IdempotentHint: true,
 				OpenWorldHint:  new(false),
 			},
@@ -186,3 +201,39 @@ func addReadTool[In any](s *mcp.Server, tool *mcp.Tool, call func(context.Contex
 // noArgs is the input type of a tool that takes no arguments; the SDK turns it
 // into an empty object schema.
 type noArgs struct{}
+
+// The two routes behind list_links and list_recurring_transactions answer
+// without paging (no LIMIT in the handler and no page/limit parameters on the
+// route), so a large ledger would otherwise arrive as one multi-megabyte tool
+// result and consume the model's context. Those tools cap the response here
+// instead, at a limit the model can lower but not raise past maxListLimit.
+const (
+	defaultListLimit = 100
+	maxListLimit     = 500
+)
+
+// cappedPage is what a tool over an unpaged route returns: the rows the API
+// sent, cut to the tool's limit, and whether the cut dropped any. The flag is
+// what tells the model that a narrower filter — not a next page, which the route
+// does not offer — is how to see the rest.
+type cappedPage[T any] struct {
+	Items     []T  `json:"items" jsonschema:"the rows the API returned, newest first"`
+	Limit     int  `json:"limit" jsonschema:"the cap this call applied"`
+	Truncated bool `json:"truncated" jsonschema:"true when the API held more rows than limit and the tail was dropped"`
+}
+
+// capItems applies limit to rows, reporting whether anything was dropped. A
+// zero or negative limit takes the default and anything above the maximum is
+// clamped, so a caller cannot ask for an unbounded dump.
+func capItems[T any](rows []T, limit int) cappedPage[T] {
+	switch {
+	case limit <= 0:
+		limit = defaultListLimit
+	case limit > maxListLimit:
+		limit = maxListLimit
+	}
+	if len(rows) > limit {
+		return cappedPage[T]{Items: rows[:limit], Limit: limit, Truncated: true}
+	}
+	return cappedPage[T]{Items: rows, Limit: limit}
+}

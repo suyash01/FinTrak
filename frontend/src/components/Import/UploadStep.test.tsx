@@ -15,19 +15,6 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-class MockDataTransfer {
-  files: File[] = [];
-  items = {
-    add: (file: File) => {
-      this.files.push(file);
-    },
-  };
-}
-
-if (typeof DataTransfer === "undefined") {
-  vi.stubGlobal("DataTransfer", MockDataTransfer);
-}
-
 function fileInput(container: HTMLElement): HTMLInputElement {
   const input = container.querySelector<HTMLInputElement>('input[type="file"]');
   if (!input) throw new Error("file input not found");
@@ -77,6 +64,37 @@ describe("UploadStep", () => {
 
     await user.upload(input, new File(["a,b"], "x.csv", { type: "text/csv" }));
     expect(props.onCsvUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the CSV input so the same file can be re-selected after a failed parse", async () => {
+    const user = userEvent.setup();
+    const { container, props } = renderStep();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("CSV file input not found");
+    const file = new File(["a,b"], "x.csv", { type: "text/csv" });
+
+    await user.upload(input, file);
+
+    // A file input keeps its selection, so a retry with the same file fires no
+    // change event at all (user-event honours that, like a browser does) and
+    // the upload handler is never reached.
+    expect(input.value).toBe("");
+    await user.upload(input, file);
+    expect(props.onCsvUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the PDF input so the same statement can be re-selected after a failed parse", async () => {
+    const user = userEvent.setup();
+    const { container, props } = renderStep({ statementMode: "pdf" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("PDF file input not found");
+    const file = new File(["pdf"], "s.pdf", { type: "application/pdf" });
+
+    await user.upload(input, file);
+
+    expect(input.value).toBe("");
+    await user.upload(input, file);
+    expect(props.onPdfUpload).toHaveBeenCalledTimes(2);
   });
 
   it("shows the parser controls in PDF mode", () => {

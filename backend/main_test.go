@@ -185,6 +185,103 @@ func TestNewServerTimeouts(t *testing.T) {
 	assert.Equal(t, idleTimeout, srv.IdleTimeout)
 }
 
+// TestCrossSiteGetGuard pins the backstop for the GET routes that write: a
+// SameSite=Lax cookie IS attached to a cross-site top-level navigation, so a
+// browser can be steered into a blind, cookie-authenticated write through these
+// routes. Only an explicit `cross-site` claim is refused — a same-origin SPA/PWA
+// request and a non-browser client (which sends no Sec-Fetch-* header at all)
+// must both pass.
+func TestCrossSiteGetGuard(t *testing.T) {
+	const token = "00000000-0000-0000-0000-000000000001"
+
+	writePaths := []string{
+		"/api/v1/accounts/" + token + "/billing-cycles",
+		"/api/v1/accounts/" + token + "/export",
+		"/api/v1/transactions",
+		"/api/v1/dashboard/summary",
+		"/api/v1/dashboard/money-flow",
+		"/api/v1/dashboard/money-flow/timeline",
+		"/api/v1/dashboard/cash-flow-calendar",
+		"/api/v1/paperless/documents",
+	}
+
+	t.Run("cross-site is refused before authentication", func(t *testing.T) {
+		r := testRouter()
+		for _, path := range writePaths {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusForbidden, w.Code, "expected a 403 for cross-site GET %s", path)
+			assert.Contains(t, w.Body.String(), "cross-site")
+		}
+	})
+
+	t.Run("same-origin reaches the handler chain", func(t *testing.T) {
+		r := testRouter()
+		for _, path := range writePaths {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			r.ServeHTTP(w, req)
+
+			// No session cookie here, so the request is stopped by RequireAuth —
+			// what matters is that the guard did not refuse it.
+			assert.Equal(t, http.StatusUnauthorized, w.Code, "same-origin GET %s must not be blocked as cross-site", path)
+		}
+	})
+
+	t.Run("an absent header is allowed", func(t *testing.T) {
+		r := testRouter()
+		for _, path := range writePaths {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusUnauthorized, w.Code, "a non-browser client GET %s must not be blocked", path)
+		}
+	})
+
+	t.Run("a sibling site is allowed", func(t *testing.T) {
+		r := testRouter()
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/summary", nil)
+		req.Header.Set("Sec-Fetch-Site", "same-site")
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("only the state-changing routes are covered", func(t *testing.T) {
+		r := testRouter()
+
+		// A pure read stays reachable cross-site: the guard must not break
+		// unrelated cross-site reads.
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		// Non-GET requests are not this guard's business: SameSite=Lax already
+		// keeps the cookies off a cross-site POST.
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/transactions", nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+}
+
 func TestRouterRegistersExpectedRoutes(t *testing.T) {
 	r := testRouter()
 

@@ -12,6 +12,7 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
@@ -179,6 +180,39 @@ func TestCreateAccountType(t *testing.T) {
 		r.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// account_types.id is the primary key, so re-using an existing custom id is a
+	// client mistake: it must answer 409 (like CreateGroup and the global
+	// category create) rather than the generic 500 an unmapped 23505 produced.
+	t.Run("duplicate id", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		srv := newTestServer(mock)
+
+		r := newAccountTypeTestRouter(srv)
+		reqBody := models.CreateAccountTypeRequest{ID: "savings", Name: "Savings", PositiveTxnType: "credit"}
+
+		mock.ExpectQuery("INSERT INTO account_types").
+			WithArgs(reqBody.ID, reqBody.Name, reqBody.PositiveTxnType).
+			WillReturnError(&pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "account_types_pkey",
+				Message:        `duplicate key value violates unique constraint "account_types_pkey"`,
+			})
+
+		jsonBody, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequest(http.MethodPost, "/account-types", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "already exists")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

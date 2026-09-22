@@ -64,8 +64,21 @@ func (t Theme) ModalFor(height int) lipgloss.Style {
 	}
 }
 
-// DefaultTheme returns the standard palette.
-func DefaultTheme() Theme {
+// DefaultTheme returns the standard palette for a locally run terminal.
+func DefaultTheme() Theme { return ThemeFor(nil) }
+
+// ThemeFor returns the standard palette rendered by a specific renderer, so a
+// session styles with its own terminal's colour profile instead of the one
+// detected for the process. A nil renderer means lipgloss's package-level
+// renderer, which is what a locally run TUI wants. The SSH door serves many
+// terminals from one process, so it builds one theme per session from the
+// renderer it made for that session's pty.
+func ThemeFor(r *lipgloss.Renderer) Theme {
+	newStyle := lipgloss.NewStyle
+	if r != nil {
+		newStyle = r.NewStyle
+	}
+
 	primary := lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#22d3ee"}
 	muted := lipgloss.AdaptiveColor{Light: "#64748b", Dark: "#94a3b8"}
 	danger := lipgloss.AdaptiveColor{Light: "#b91c1c", Dark: "#f87171"}
@@ -81,30 +94,30 @@ func DefaultTheme() Theme {
 		Warn:    warn,
 		Border:  border,
 
-		Sidebar:        lipgloss.NewStyle().Foreground(muted).Padding(0, 1),
-		SidebarItem:    lipgloss.NewStyle().Foreground(muted).Padding(0, 1),
-		SidebarCurrent: lipgloss.NewStyle().Foreground(primary).Bold(true).Padding(0, 1),
-		Title:          lipgloss.NewStyle().Foreground(primary).Bold(true),
-		Subtle:         lipgloss.NewStyle().Foreground(muted),
-		Header:         lipgloss.NewStyle().Foreground(muted).Bold(true),
-		Row:            lipgloss.NewStyle(),
-		RowSelected:    lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#1e293b"}),
-		Money:          lipgloss.NewStyle(),
-		Negative:       lipgloss.NewStyle().Foreground(danger),
-		Positive:       lipgloss.NewStyle().Foreground(success),
-		Error:          lipgloss.NewStyle().Foreground(danger),
-		SuccessText:    lipgloss.NewStyle().Foreground(success),
-		WarnText:       lipgloss.NewStyle().Foreground(warn),
-		Panel:          lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1),
-		PanelTitle:     lipgloss.NewStyle().Foreground(primary).Bold(true),
-		Status:         lipgloss.NewStyle().Foreground(muted),
-		Key:            lipgloss.NewStyle().Foreground(primary),
-		KeyDesc:        lipgloss.NewStyle().Foreground(muted),
-		Modal:          lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(primary).Padding(1, 2),
-		ModalTitle:     lipgloss.NewStyle().Foreground(primary).Bold(true),
-		FieldLabel:     lipgloss.NewStyle().Foreground(muted),
-		FieldFocused:   lipgloss.NewStyle().Foreground(primary).Bold(true),
-		Bar:            lipgloss.NewStyle().Foreground(primary),
-		BarEmpty:       lipgloss.NewStyle().Foreground(border),
+		Sidebar:        newStyle().Foreground(muted).Padding(0, 1),
+		SidebarItem:    newStyle().Foreground(muted).Padding(0, 1),
+		SidebarCurrent: newStyle().Foreground(primary).Bold(true).Padding(0, 1),
+		Title:          newStyle().Foreground(primary).Bold(true),
+		Subtle:         newStyle().Foreground(muted),
+		Header:         newStyle().Foreground(muted).Bold(true),
+		Row:            newStyle(),
+		RowSelected:    newStyle().Background(lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#1e293b"}),
+		Money:          newStyle(),
+		Negative:       newStyle().Foreground(danger),
+		Positive:       newStyle().Foreground(success),
+		Error:          newStyle().Foreground(danger),
+		SuccessText:    newStyle().Foreground(success),
+		WarnText:       newStyle().Foreground(warn),
+		Panel:          newStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1),
+		PanelTitle:     newStyle().Foreground(primary).Bold(true),
+		Status:         newStyle().Foreground(muted),
+		Key:            newStyle().Foreground(primary),
+		KeyDesc:        newStyle().Foreground(muted),
+		Modal:          newStyle().Border(lipgloss.RoundedBorder()).BorderForeground(primary).Padding(1, 2),
+		ModalTitle:     newStyle().Foreground(primary).Bold(true),
+		FieldLabel:     newStyle().Foreground(muted),
+		FieldFocused:   newStyle().Foreground(primary).Bold(true),
+		Bar:            newStyle().Foreground(primary),
+		BarEmpty:       newStyle().Foreground(border),
 	}
 }

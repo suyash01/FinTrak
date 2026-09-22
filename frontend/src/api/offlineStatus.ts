@@ -12,6 +12,14 @@
 export interface OfflineSnapshot {
   online: boolean;
   servedFromCache: boolean;
+  // syncedAt is when the outbox last drained a non-zero number of entries (0
+  // before the first time). It is the signal that the server's copy of the
+  // ledger moved under anything holding a snapshot of it — the account balances
+  // above all, which are computed from transactions on every read — so a holder
+  // revalidates on change. It lives in this store rather than in OfflineContext
+  // because the consumer with cached ledger data (DomainDataProvider) is mounted
+  // above the provider and cannot read its context.
+  syncedAt: number;
 }
 
 const listeners = new Set<() => void>();
@@ -24,6 +32,7 @@ function currentOnline(): boolean {
 let snapshot: OfflineSnapshot = {
   online: currentOnline(),
   servedFromCache: false,
+  syncedAt: 0,
 };
 
 let listening = false;
@@ -70,5 +79,14 @@ export function subscribeOffline(listener: () => void): () => void {
 export function setServedFromCache(served: boolean): void {
   if (served === snapshot.servedFromCache) return;
   snapshot = { ...snapshot, servedFromCache: served };
+  emit();
+}
+
+// markSynced is called by the outbox flush once it has written through to the
+// server; 0 clears it again. Consumers that hold server-computed data (the
+// account balances) revalidate on a change.
+export function markSynced(at: number): void {
+  if (at === snapshot.syncedAt) return;
+  snapshot = { ...snapshot, syncedAt: at };
   emit();
 }

@@ -2,6 +2,7 @@ package money
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,6 @@ func TestParse(t *testing.T) {
 		{in: "1", want: 100},
 		{in: "1.5", want: 150},
 		{in: "1.50", want: 150},
-		{in: ".5", want: 50},
 		{in: "-1.23", want: -123},
 		{in: "+1.23", want: 123},
 		{in: " 12.34 ", want: 1234},
@@ -28,6 +28,29 @@ func TestParse(t *testing.T) {
 		{in: "abc", wantErr: true},
 		{in: "1.234", wantErr: true},
 		{in: "1.2.3", wantErr: true},
+		// An absent part is not a zero. "." and "-" carry no digits at all, and
+		// ".5"/"5." are typos, not amounts — accepting them silently stored 0
+		// (or a truncated value) for input that never meant that.
+		{in: ".5", wantErr: true},
+		{in: "5.", wantErr: true},
+		{in: ".", wantErr: true},
+		{in: "-", wantErr: true},
+		{in: "+", wantErr: true},
+		// Exactly one sign, at the front: a second one used to be absorbed by
+		// strconv.ParseInt and then negated again, so "--1" parsed as +1.00 and
+		// "+-1" as -1.00.
+		{in: "--1", wantErr: true},
+		{in: "+-1", wantErr: true},
+		{in: "-+1", wantErr: true},
+		{in: "1.-5", wantErr: true},
+		{in: "-1.5-", wantErr: true},
+		// Out of range: whole*100 would overflow int64 (and the JSON boundary
+		// cannot represent it either), so it is an error, not a wrapped value.
+		{in: "1e30", wantErr: true},
+		{in: "92233720368547758.08", wantErr: true},
+		{in: "99999999999999999999", wantErr: true},
+		// The largest amounts that still fit under MaxMinorUnits are accepted.
+		{in: "46116860184273878.99", want: Amount(4611686018427387899)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -54,6 +77,45 @@ func TestString(t *testing.T) {
 	assert.Equal(t, "1.50", Amount(150).String())
 	assert.Equal(t, "-1.23", Amount(-123).String())
 	assert.Equal(t, "31939.99", Amount(3193999).String())
+	// The most negative int64 still renders as a valid decimal — and therefore
+	// a valid JSON number. Negating it overflows, which used to emit a
+	// malformed value that made every response containing the row unmarshalable.
+	assert.Equal(t, "-92233720368547758.08", Amount(math.MinInt64).String())
+}
+
+// A value at the top of the supported range must survive the float64 wire
+// boundary: the bound exists precisely because float64 cannot represent every
+// int64 near its maximum exactly.
+func TestUnmarshalJSONRejectsNonFiniteAndOutOfRange(t *testing.T) {
+	for _, body := range []string{
+		`{"amount":"1e30"}`,
+		`{"amount":1e30}`,
+		`{"amount":"-1e30"}`,
+		`{"amount":1e308}`,
+		`{"amount":"NaN"}`,
+		`{"amount":"Inf"}`,
+		`{"amount":"-Inf"}`,
+		`{"amount":"92233720368547759.99"}`,
+	} {
+		var p struct {
+			Amount Amount `json:"amount"`
+		}
+		assert.Error(t, json.Unmarshal([]byte(body), &p), "payload %s", body)
+	}
+}
+
+func TestUnmarshalJSONAcceptsLargeRepresentableAmount(t *testing.T) {
+	// 1e15 major units (1e17 cents) is an absurd ledger balance but is exactly
+	// representable as a float64, so it must still be accepted and round-trip.
+	var p struct {
+		Amount Amount `json:"amount"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"amount":1000000000000000.00}`), &p))
+	assert.Equal(t, Amount(100000000000000000), p.Amount)
+
+	b, err := json.Marshal(p)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"amount":1000000000000000.00}`, string(b))
 }
 
 func TestJSONRoundTrip(t *testing.T) {
@@ -98,6 +160,12 @@ func TestScan(t *testing.T) {
 
 	require.NoError(t, a.Scan(nil))
 	assert.Equal(t, Amount(0), a)
+
+	// A float outside the supported range is refused like the JSON boundary:
+	// storing it would rely on an int64 conversion that wraps.
+	assert.Error(t, a.Scan(1e30))
+	assert.Error(t, a.Scan(math.NaN()))
+	assert.Error(t, a.Scan(math.Inf(1)))
 
 	assert.Error(t, a.Scan(true))
 }

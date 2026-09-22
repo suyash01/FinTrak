@@ -84,7 +84,12 @@ import { setServedFromCache } from "./offlineStatus";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
-const USER_KEY = "fintrak_user";
+// STORED_USER_KEY is the origin-wide signed-in identity. Everything the offline
+// layer namespaces — the read cache, the outbox, the identity a queued create is
+// attributed to — is derived from it, so it is exported for the modules that
+// have to notice it being replaced under them (a second tab signing in as
+// someone else writes it without this tab's knowledge).
+export const STORED_USER_KEY = "fintrak_user";
 
 const REQUEST_TIMEOUT = 15000;
 
@@ -94,7 +99,7 @@ const REQUEST_TIMEOUT = 15000;
 // api.me() on mount.
 export function getStoredUser(): User | null {
   try {
-    return JSON.parse(localStorage.getItem(USER_KEY) || "null");
+    return JSON.parse(localStorage.getItem(STORED_USER_KEY) || "null");
   } catch {
     return null;
   }
@@ -102,9 +107,9 @@ export function getStoredUser(): User | null {
 
 export function storeUser(user: User | null): void {
   if (user) {
-    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    localStorage.setItem(STORED_USER_KEY, JSON.stringify(user));
   } else {
-    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(STORED_USER_KEY);
   }
 }
 
@@ -116,20 +121,31 @@ function offlineUserId(): string | null {
   return getStoredUser()?.id ?? null;
 }
 
+// stillOwner reports whether the identity captured when a request was issued is
+// still the signed-in one. A response that lands under a different identity
+// belongs to a session this browser no longer serves, so it must be neither
+// written into the new user's namespace nor answered from the old one's.
+function stillOwner(owner: string | null): owner is string {
+  return owner !== null && owner === offlineUserId();
+}
+
 // readOffline answers a read from the last payload that came back for the same
-// URL, when the network failed.
-function readOffline<T>(url: string): T | null {
-  const userId = offlineUserId();
-  if (!userId || !isCacheablePath(url)) return null;
-  const cached = readCached<T>(userId, url);
+// URL under the identity that issued the request, when the network failed.
+function readOffline<T>(owner: string | null, url: string): T | null {
+  if (!stillOwner(owner) || !isCacheablePath(url)) return null;
+  const cached = readCached<T>(owner, url);
   if (cached !== null) setServedFromCache(true);
   return cached;
 }
 
-// writeOffline records a successful read for the next offline load.
-function writeOffline(url: string, data: unknown): void {
-  const userId = offlineUserId();
-  if (userId) writeCached(userId, url, data);
+// writeOffline records a successful read for the next offline load, attributed
+// to the session that asked for it.
+function writeOffline(
+  owner: string | null,
+  url: string,
+  data: unknown,
+): void {
+  if (stillOwner(owner)) writeCached(owner, url, data);
 }
 
 // newClientKey identifies one create attempt. It survives the 401 refresh
@@ -212,16 +228,27 @@ function redirectToLogin(): void {
 // refreshSession trades the long-lived refresh cookie for a fresh access token.
 // Concurrent 401s share one in-flight call so a burst of failing requests only
 // hits /auth/refresh once.
+//
+// Rejection and unreachability are not the same answer: only a *rejected*
+// refresh (401/403 — the refresh cookie is gone or invalid) ends the session. A
+// transport failure or a 5xx means the server could not be asked, so it throws a
+// NetworkError: the caller keeps the session and takes the offline path rather
+// than signing the user out over a blip. The call runs through fetchWithTimeout
+// like every other request, so a refresh that hangs cannot stall the queue.
 let refreshPromise: Promise<boolean> | null = null;
 
 function refreshSession(): Promise<boolean> {
   if (!refreshPromise) {
-    refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    })
-      .then((res) => res.ok)
-      .catch(() => false)
+    refreshPromise = fetchWithTimeout(
+      "/auth/refresh",
+      { method: "POST" },
+      REQUEST_TIMEOUT,
+    )
+      .then((res) => {
+        if (res.ok) return true;
+        if (res.status === 401 || res.status === 403) return false;
+        throw new NetworkError("Could not refresh the session");
+      })
       .finally(() => {
         refreshPromise = null;
       });
@@ -274,7 +301,9 @@ async function fetchWithTimeout(
 }
 
 // sendWithAuthRetry sends a request and, if it comes back 401 because the
-// short-lived access token expired, refreshes the session and retries once.
+// short-lived access token expired, refreshes the session and retries once. A
+// refresh that could not be asked throws (NetworkError) instead of being treated
+// as a refusal, so the caller decides between signing out and going offline.
 async function sendWithAuthRetry(
   url: string,
   init: RequestInit,
@@ -284,8 +313,10 @@ async function sendWithAuthRetry(
   // Any response at all means the server was reachable, so the UI stops
   // claiming it is showing saved data.
   setServedFromCache(false);
-  if (res.status === 401 && !isAuthEndpoint(url) && (await refreshSession())) {
-    res = await fetchWithTimeout(url, init, timeout);
+  if (res.status === 401 && !isAuthEndpoint(url)) {
+    if (await refreshSession()) {
+      res = await fetchWithTimeout(url, init, timeout);
+    }
   }
   return res;
 }
@@ -295,6 +326,12 @@ async function request<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const method = options.method ?? "GET";
+  // The offline namespace belongs to the session that issues the request, not to
+  // whoever is signed in when the response lands: this browser can swap users
+  // while a request is in flight (another tab, the login form), and reading the
+  // identity at completion writes one user's ledger into another user's
+  // namespace and serves the previous user's cache to the new session.
+  const owner = offlineUserId();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...options.headers,
@@ -316,7 +353,7 @@ async function request<T>(
     // A read that never reached the server is answered from the offline cache,
     // so the shell shows the state the user last saw instead of an error page.
     if (method === "GET" && isNetworkError(err)) {
-      const cached = readOffline<T>(url);
+      const cached = readOffline<T>(owner, url);
       if (cached !== null) return cached;
     }
     throw err;
@@ -333,7 +370,7 @@ async function request<T>(
 
   const text = await res.text();
   const data = text ? (JSON.parse(text) as T) : (null as T);
-  if (method === "GET") writeOffline(url, data);
+  if (method === "GET") writeOffline(owner, url, data);
   return data;
 }
 
@@ -491,6 +528,11 @@ const api = {
     options: { idempotencyKey?: string; queue?: boolean } = {},
   ): Promise<CreateTransactionResult> => {
     const clientKey = options.idempotencyKey ?? newClientKey();
+    // The queue entry belongs to the session that issued the create: an entry
+    // attributed to whoever is signed in later would be flushed against that
+    // account, which the server rejects as not the entry's own — and the user
+    // would never see where it went.
+    const owner = offlineUserId();
     return request<{ id: string }>("/transactions", {
       method: "POST",
       body: JSON.stringify({ ...data, clientKey }),
@@ -500,9 +542,11 @@ const api = {
         // Only a request that never reached the server may be replayed later; a
         // rejected one is surfaced to the caller as it always was.
         if (options.queue === false || !isNetworkError(err)) throw err;
-        const userId = offlineUserId();
-        if (!userId) throw err;
-        enqueueCreate(userId, { ...data, clientKey }, clientKey);
+        if (!stillOwner(owner)) throw err;
+        // Never answer `queued` unless the entry is really in the queue: a
+        // refused write (or a full queue) has to reach the user as a failure,
+        // or the UI confirms a save that no flush will ever perform.
+        enqueueCreate(owner, { ...data, clientKey }, clientKey);
         return { id: null, queued: true };
       },
     );
@@ -624,9 +668,11 @@ const api = {
     );
   },
 
-  // Statement parsing (PDF) — forwarded by the backend to the parser service
+  // Statement parsing (PDF) — forwarded by the backend to the parser service.
+  // The budget is the nginx location's (75s read/send) plus its own margin; the
+  // backend's forward to the parser is capped at 60s.
   parseStatement: (formData: FormData): Promise<StatementParseResult> =>
-    requestMultipart("/statements/parse", formData, 120000),
+    requestMultipart("/statements/parse", formData, 90000),
   getStatementExtractors: (): Promise<{ extractors: StatementExtractor[] }> =>
     request("/statements/extractors"),
 
@@ -797,14 +843,16 @@ const api = {
   ): Promise<{ detached: number }> =>
     request("/recurring/detach", { method: "POST", body: JSON.stringify(data) }),
 
-  // User-level backup & restore (whole account, not per-account)
+  // User-level backup & restore (whole account, not per-account). A restore
+  // rewrites the whole ledger inside one transaction, so its budget is the
+  // nginx location's (310s) plus the client's own margin.
   exportUserData: (): Promise<void> =>
     downloadFile("/export", "fintrak-backup.json"),
   importUserData: (data: unknown): Promise<BackupImportResult> =>
     request("/import", {
       method: "POST",
       body: JSON.stringify(data),
-      timeout: 120000,
+      timeout: 320000,
     }),
 
   // Dashboard

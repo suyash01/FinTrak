@@ -6,6 +6,7 @@ import {
   enqueueCreate,
   flushOutbox,
   getOutboxSnapshot,
+  OutboxStorageError,
   removeEntry,
   subscribeOutbox,
 } from "./outbox";
@@ -53,15 +54,86 @@ describe("outbox", () => {
     expect(getOutboxSnapshot("other-user")).toHaveLength(0);
   });
 
-  it("keeps the newest entries when the cap is reached", () => {
-    for (let i = 1; i <= 105; i++) {
+  // The cap used to evict the oldest entries silently (`.slice(-MAX_ENTRIES)`),
+  // which destroyed unsent transactions the user had recorded. The contract now
+  // is that a full queue refuses the new entry: losing the oldest entry to make
+  // room for a new one is data loss the user is never told about, while a
+  // refusal reaches the create as its error and says what to do about it.
+  it("refuses a new entry when the queue is full instead of dropping the oldest", () => {
+    for (let i = 1; i <= 100; i++) {
       enqueueCreate(USER, request(`Entry ${i}`), `key-${i}`);
     }
 
+    expect(() => enqueueCreate(USER, request("Entry 101"), "key-101")).toThrow(
+      /queue is full/i,
+    );
+
+    // Every entry that was queued is still there, in order, and the refused one
+    // was not half-written.
     const entries = getOutboxSnapshot(USER);
     expect(entries).toHaveLength(100);
-    expect(entries[0].key).toBe("key-6");
-    expect(entries[99].key).toBe("key-105");
+    expect(entries[0].key).toBe("key-1");
+    expect(entries[99].key).toBe("key-100");
+  });
+
+  it("still returns the queued entry when a retry reuses its key", () => {
+    enqueueCreate(USER, request(), "key-1");
+    // A replay of a key that is already queued is not a new entry, so the cap
+    // cannot turn it into a refusal.
+    expect(enqueueCreate(USER, request("Lunch"), "key-1").key).toBe("key-1");
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  // The stored text is the only copy of the queue (getOutboxSnapshot re-reads
+  // it), so a refused write has to reach the caller: reporting `queued: true`
+  // for an entry that is not stored tells the user a transaction is saved when
+  // nothing will ever flush it.
+  it("throws instead of claiming a queue the browser refused to write", () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    expect(() => enqueueCreate(USER, request(), "key-1")).toThrow(
+      OutboxStorageError,
+    );
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot(USER)).toHaveLength(0);
+  });
+
+  it("reports a removal the browser refused to persist", () => {
+    enqueueCreate(USER, request(), "key-1");
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    const removed = removeEntry(USER, "key-1");
+    setItem.mockRestore();
+
+    expect(removed).toBe(false);
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  it("throws rather than reporting a discard that did not happen", async () => {
+    enqueueCreate(USER, request(), "key-1");
+    await flushOutbox(USER, async () => {
+      throw new ApiError("rejected", 400);
+    });
+
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    expect(() => discardFailed(USER)).toThrow(OutboxStorageError);
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
   });
 
   it("returns a stable snapshot between changes", () => {
@@ -82,8 +154,30 @@ describe("outbox", () => {
     });
 
     expect(sent).toEqual(["key-1", "key-2"]);
-    expect(outcome).toEqual({ sent: 2, remaining: 0, failed: 0 });
+    expect(outcome).toEqual({ sent: 2, remaining: 0, failed: 0, unsaved: 0 });
     expect(getOutboxSnapshot(USER)).toHaveLength(0);
+  });
+
+  it("reports an accepted entry whose removal the browser refused to store", async () => {
+    enqueueCreate(USER, request("First"), "key-1");
+    enqueueCreate(USER, request("Second"), "key-2");
+
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+    const sent: string[] = [];
+    const outcome = await flushOutbox(USER, async (entry) => {
+      sent.push(entry.key);
+    });
+    setItem.mockRestore();
+
+    // key-1 reached the server, but the queue it has to be removed from cannot
+    // be written: the flush stops there and reports it. Claiming an empty queue
+    // would hide that the entry is replayed on every reconnect.
+    expect(sent).toEqual(["key-1"]);
+    expect(outcome).toEqual({ sent: 1, remaining: 2, failed: 0, unsaved: 1 });
   });
 
   it("counts the entries the server accepted, not the queue delta", async () => {
@@ -96,7 +190,7 @@ describe("outbox", () => {
       enqueueCreate(USER, request("Second"), "key-2");
     });
 
-    expect(outcome).toEqual({ sent: 1, remaining: 1, failed: 0 });
+    expect(outcome).toEqual({ sent: 1, remaining: 1, failed: 0, unsaved: 0 });
   });
 
   it("keeps the queue in order when the server is unreachable", async () => {
@@ -112,7 +206,7 @@ describe("outbox", () => {
     // The first failure stops the flush: the second entry was never attempted,
     // so nothing is sent out of order once the connection returns.
     expect(attempted).toEqual(["key-1"]);
-    expect(outcome).toEqual({ sent: 0, remaining: 2, failed: 0 });
+    expect(outcome).toEqual({ sent: 0, remaining: 2, failed: 0, unsaved: 0 });
   });
 
   it("stops on a session or server failure without blaming the entry", async () => {
@@ -122,7 +216,7 @@ describe("outbox", () => {
       throw new ApiError("session expired", 401);
     });
 
-    expect(outcome).toEqual({ sent: 0, remaining: 1, failed: 0 });
+    expect(outcome).toEqual({ sent: 0, remaining: 1, failed: 0, unsaved: 0 });
     expect(getOutboxSnapshot(USER)[0].error).toBeUndefined();
   });
 
@@ -134,7 +228,7 @@ describe("outbox", () => {
       if (entry.key === "key-1") throw new ApiError("account is closed", 409);
     });
 
-    expect(outcome).toEqual({ sent: 1, remaining: 1, failed: 1 });
+    expect(outcome).toEqual({ sent: 1, remaining: 1, failed: 1, unsaved: 0 });
     const remaining = getOutboxSnapshot(USER);
     expect(remaining[0].key).toBe("key-1");
     expect(remaining[0].error).toBe("account is closed");

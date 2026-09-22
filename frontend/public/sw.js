@@ -7,18 +7,31 @@
 // decision in reviewable code rather than an accident of HTTP caching.
 //
 // Bump VERSION when a change must invalidate the caches of an installed app:
-// activate drops every cache that does not carry the new prefix.
-
+// the name is `fintrak-v<N>`, and activate keeps the generation this build
+// writes plus the one before it (see the activate handler).
 const VERSION = "fintrak-v1";
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
+
+// Matches a cache name (`fintrak-v2-assets`) as well as VERSION itself
+// (`fintrak-v2`); null for a name this worker does not own.
+const CACHE_NAME = /^fintrak-v(\d+)(?:-(?:shell|assets))?$/;
+
+function generationOf(name) {
+  const match = CACHE_NAME.exec(name);
+  return match ? Number(match[1]) : null;
+}
+
+const GENERATION = generationOf(VERSION);
 
 // The shell entry point is stored under a canonical key so any navigation can
 // fall back to it — the SPA router resolves the route after boot.
 const SHELL_KEY = "/index.html";
 
+// Everything the shell needs that index.html does not name. /index.html itself
+// is fetched and cached separately below, because its body is also the list of
+// hashed bundles.
 const SHELL_ASSETS = [
-  "/index.html",
   "/theme-init.js",
   "/manifest.webmanifest",
   "/favicon.svg",
@@ -32,8 +45,20 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(SHELL_CACHE);
+      // The shell document is read exactly once, and both the cached shell and
+      // the bundle list come from that one response. Fetching it twice (once via
+      // addAll, once to parse the asset URLs) lets a deploy land in between and
+      // stores one build's shell next to another build's bundles — which boots
+      // offline to a page whose scripts are not cached and cannot be fetched.
+      const response = await fetch(SHELL_KEY, { cache: "reload" });
+      if (!response.ok) throw new Error(`shell responded ${response.status}`);
+      // Stored before its body is read: the clone is the response the browser
+      // actually received (it may be compressed on the wire), which a
+      // reconstruction from the decoded text could not be.
+      await cache.put(SHELL_KEY, response.clone());
+      const html = await response.text();
       await cache.addAll(SHELL_ASSETS);
-      await precacheBuildAssets();
+      await precacheBuildAssets(html);
       // Take over on the next load instead of waiting for every tab to close:
       // a self-hosted app has no fleet of sessions to protect.
       await self.skipWaiting();
@@ -41,14 +66,12 @@ self.addEventListener("install", (event) => {
   );
 });
 
-// The shell document names the hashed bundles, so reading it once at install
-// makes the very first controlled load work offline. Without this the shell
-// would boot to a page whose scripts are not cached yet, because the assets of
-// the visit that installed the worker were fetched before it took control.
-async function precacheBuildAssets() {
+// The shell document names the hashed bundles, so caching them at install makes
+// the very first controlled load work offline. Without this the shell would boot
+// to a page whose scripts are not cached yet, because the assets of the visit
+// that installed the worker were fetched before it took control.
+async function precacheBuildAssets(html) {
   try {
-    const response = await fetch(SHELL_KEY, { cache: "reload" });
-    const html = await response.text();
     const urls = new Set();
     for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
       urls.add(match[1]);
@@ -72,7 +95,16 @@ self.addEventListener("activate", (event) => {
       const names = await caches.keys();
       await Promise.all(
         names
-          .filter((name) => !name.startsWith(VERSION))
+          .filter((name) => {
+            const generation = generationOf(name);
+            // A cache of a generation no live tab can be running is dropped; the
+            // current one and the one before it are kept. An installed app left
+            // open on the previous build lazily loads its remaining route chunks
+            // from that build's asset cache, so deleting it the moment this
+            // worker takes over would 404 every route the tab has not visited
+            // yet. A name this worker does not own is not a cache it may keep.
+            return generation === null || generation < GENERATION - 1;
+          })
           .map((name) => caches.delete(name)),
       );
       await self.clients.claim();

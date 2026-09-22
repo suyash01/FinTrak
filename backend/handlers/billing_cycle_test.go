@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -47,6 +48,33 @@ func TestBillingCycleMonths(t *testing.T) {
 		assert.Len(t, months, 7)
 		assert.Equal(t, time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), months[6])
 	})
+}
+
+// The generated span is bounded no matter what the stored data says. A single
+// transaction carrying a typo'd year (an OCR'd "1024", a zero-padded "0001")
+// would otherwise emit one INSERT per month since then — tens of thousands per
+// request, which makes every read of that account (transactions, cycles,
+// dashboard, calendar) time out until the client gives up.
+func TestBillingCycleMonthsIsBounded(t *testing.T) {
+	today := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+
+	for _, earliest := range []time.Time{
+		time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(1024, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(1800, 6, 10, 0, 0, 0, 0, time.UTC),
+	} {
+		months := billingCycleMonths(earliest, today, 5)
+		assert.LessOrEqual(t, len(months), maxBillingCycleMonths, earliest.Format("2006-01-02"))
+	}
+
+	// The clamp keeps the NEWEST months, and the last generated month is still
+	// the in-progress cycle, so normal accounts are unaffected.
+	months := billingCycleMonths(time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), today, 5)
+	assert.Len(t, months, maxBillingCycleMonths)
+	assert.Equal(t, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), months[len(months)-1])
+	// 599 months before the in-progress cycle's month (June 2026): the clamp
+	// drops the leading months, never the current one.
+	assert.Equal(t, time.Date(1976, 7, 1, 0, 0, 0, 0, time.UTC), months[0])
 }
 
 func TestCycleDates(t *testing.T) {
@@ -175,8 +203,10 @@ func TestEnsureBillingCyclesRegeneratesOnBillingDayChange(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}).AddRow(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)))
 
-	// Detach transactions from the stale cycles, then drop the cycles.
-	mock.ExpectExec("UPDATE transactions SET billing_cycle_id = NULL").
+	// Detach transactions from the stale cycles (clearing the user-detach flag
+	// with them, since the cycles those flags referred to no longer exist),
+	// then drop the cycles.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET billing_cycle_id = NULL, billing_cycle_detached = FALSE")).
 		WithArgs(userID, acctID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectExec("DELETE FROM billing_cycles WHERE account_id").
@@ -289,6 +319,10 @@ func TestGetBillingCycles(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
 	assert.Len(t, res.Data, 1)
 	assert.Equal(t, cycleID, res.Data[0].ID)
+	// The cycle's accountId is part of the contract (openapi.yaml, the TS types
+	// and client/api); it used to be left at the nil UUID, so a consumer that
+	// groups cycles by account silently matched nothing.
+	assert.Equal(t, acctID, res.Data[0].AccountID)
 	assert.Equal(t, money.FromFloat(150.0), res.Data[0].TotalOutstanding)
 	assert.Equal(t, 2, res.Data[0].TransactionCount)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -479,6 +513,83 @@ func TestEnsureBillingCyclesBackfillScopesCycleToOwnAccount(t *testing.T) {
 	mock.ExpectExec("bc.account_id = t.account_id AND bc.user_id = t.user_id").
 		WithArgs(acctID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	err = ensureBillingCycles(context.Background(), mock, userID, acctID, 5)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A transaction the user detached on purpose ("Unassigned" in the edit modal,
+// PATCH {"billingCycleId": null}) must stay detached. NULL alone cannot say why
+// a row has no cycle, so the update path flags the detach and both the
+// unassigned check and the back-fill have to honour it — otherwise the next
+// transaction-list/cycle/dashboard read silently re-attaches the row the user
+// just corrected.
+func TestEnsureBillingCyclesLeavesUserDetachedRowsAlone(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	userID := testUserID()
+	acctID := uuid.New()
+	now := dateOnly(time.Now())
+	earliest := time.Date(now.Year(), now.Month(), 10, 0, 0, 0, 0, time.UTC)
+
+	// Alignment check: no stale cycles.
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+
+	// Earliest transaction.
+	mock.ExpectQuery("MIN\\(date\\)").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
+
+	// Every month already has a cycle -> nothing to generate. A fresh rows set
+	// per call: pgxmock rows are consumed when read.
+	coveredRows := func() *pgxmock.Rows {
+		covered := pgxmock.NewRows([]string{"end_date"})
+		for _, ms := range billingCycleMonths(earliest, now, 5) {
+			_, end := cycleDates(ms, 5)
+			covered.AddRow(end)
+		}
+		return covered
+	}
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(coveredRows())
+
+	// Only a deliberately detached row is "unassigned", so the check that gates
+	// the back-fill excludes it.
+	mock.ExpectQuery(`AND billing_cycle_id IS NULL AND NOT billing_cycle_detached\)`).
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+	// With nothing genuinely unassigned the back-fill never runs, so no row can
+	// be re-attached and no UPDATE is issued at all.
+	err = ensureBillingCycles(context.Background(), mock, userID, acctID, 5)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+
+	// The back-fill statement itself carries the same guard, so a row that is
+	// unassigned for another reason cannot drag a detached row back in with it.
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
+	mock.ExpectQuery("MIN\\(date\\)").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"min"}).AddRow(earliest))
+	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
+		WithArgs(acctID, userID).
+		WillReturnRows(coveredRows())
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("t.billing_cycle_id IS NULL AND NOT t.billing_cycle_detached AND t.date >= bc.start_date").
+		WithArgs(acctID, userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
 	err = ensureBillingCycles(context.Background(), mock, userID, acctID, 5)
 	assert.NoError(t, err)

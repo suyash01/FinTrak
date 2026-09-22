@@ -159,6 +159,56 @@ func TestLoanAmortizationIgnoresProcessingFee(t *testing.T) {
 	assert.Zero(t, entries[len(entries)-1].Balance)
 }
 
+// The EMI is rounded up to the whole rupee, so it eventually retires the
+// balance before the last installment. The surplus must simply not be charged:
+// clamping the principal part at what is left keeps every figure the API
+// returns non-negative, while the table still repays exactly the principal.
+//
+// Before the clamp these tables ended negative — 50,000.00 at 850 bps over 360
+// months quoted a final installment of -511.96 (principal -50,836), and a
+// negative installment matched as "paid" subtracted from the loan.
+func TestLoanAmortizationNeverEmitsNegativeInstallments(t *testing.T) {
+	start := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name      string
+		principal money.Amount
+		bps       int
+		months    int
+	}{
+		{"fifty thousand over 360 months", money.FromFloat(50000), 850, 360},
+		{"eighty thousand over 360 months", money.FromFloat(80000), 850, 360},
+		{"thirty thousand over 240 months", money.FromFloat(30000), 850, 240},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emi, entries := loanAmortization(loanTerms{
+				principal:     tc.principal,
+				annualRateBps: tc.bps,
+				tenureMonths:  tc.months,
+				firstDueDate:  start,
+			}, nil)
+
+			require.Len(t, entries, tc.months)
+			require.Positive(t, emi)
+
+			var principalSum money.Amount
+			for _, e := range entries {
+				zero := int64(0)
+				assert.GreaterOrEqual(t, int64(e.Principal), zero, "installment %d principal", e.Number)
+				assert.GreaterOrEqual(t, int64(e.Interest), zero, "installment %d interest", e.Number)
+				assert.GreaterOrEqual(t, int64(e.Amount), zero, "installment %d amount", e.Number)
+				assert.GreaterOrEqual(t, int64(e.Balance), zero, "installment %d balance", e.Number)
+				assert.Equal(t, e.Amount, e.Principal+e.Interest, "installment %d split", e.Number)
+				principalSum += e.Principal
+			}
+			// The two invariants the table has always held: the principal is
+			// repaid exactly, and nothing is owed after the last installment.
+			assert.Equal(t, tc.principal, principalSum)
+			assert.Zero(t, entries[len(entries)-1].Balance)
+		})
+	}
+}
+
 // A loan disbursed on the 20th with its EMIs fixed to the 5th has a broken first
 // period. That period is charged 45/30 of a month's interest, and the EMI is
 // solved so the loan still clears in twelve level installments — so the first

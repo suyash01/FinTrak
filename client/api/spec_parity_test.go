@@ -2,17 +2,25 @@ package api
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// specPath is the backend's wire contract, relative to this package.
+const specPath = "../../backend/openapi.yaml"
 
 // The route table below is the TUI's declaration of API coverage: one entry per
 // operation registered in backend/main.go, each holding a real call to the
@@ -386,9 +394,11 @@ func routeCases() []routeCase {
 				return err
 			}},
 		{name: "transfer suggestions", method: "GET", path: "/links/transfer-suggestions", body: sugg,
-			call: func(ctx context.Context, c *Client) error { _, err := c.TransferSuggestions(ctx, 1, 50); return err }},
+			query: map[string]string{"page": "1", "limit": "50"},
+			call:  func(ctx context.Context, c *Client) error { _, err := c.TransferSuggestions(ctx, 1, 50); return err }},
 		{name: "cashback suggestions", method: "GET", path: "/links/cashback-suggestions", body: sugg,
-			call: func(ctx context.Context, c *Client) error { _, err := c.CashbackSuggestions(ctx, 1, 50); return err }},
+			query: map[string]string{"page": "1", "limit": "50"},
+			call:  func(ctx context.Context, c *Client) error { _, err := c.CashbackSuggestions(ctx, 1, 50); return err }},
 		{name: "link cycles", method: "GET", path: "/links/cycles", body: `{"cycles":[],"totalCircular":0,"oneSidedFlows":[]}`,
 			query: map[string]string{"accountId": idAcct},
 			call:  func(ctx context.Context, c *Client) error { _, err := c.LinkCycles(ctx, "", "", idAcct); return err }},
@@ -583,6 +593,13 @@ func TestEveryRouteHitsItsDocumentedPath(t *testing.T) {
 			if want := "/api/v1" + tc.expand(t); gotPath != want {
 				t.Errorf("path = %s, want %s", gotPath, want)
 			}
+			// The whole query set is compared, not just the pinned keys: a
+			// filter that was renamed on either side, or a parameter that
+			// stopped being sent, has to fail here rather than silently
+			// narrowing the result set.
+			if len(gotQuery) != len(tc.query) {
+				t.Errorf("query = %v, want exactly %v", gotQuery, tc.query)
+			}
 			for key, want := range tc.query {
 				if got := gotQuery[key]; got != want {
 					t.Errorf("query %s = %q, want %q", key, got, want)
@@ -608,7 +625,6 @@ func TestRouteTableHasNoDuplicateNames(t *testing.T) {
 // normalizing the spec's {param} syntax to the gin :param form the table uses.
 func specRoutes(t *testing.T) map[string]bool {
 	t.Helper()
-	const specPath = "../../backend/openapi.yaml"
 	raw, err := os.ReadFile(specPath)
 	if err != nil {
 		t.Fatalf("reading %s: %v", specPath, err)
@@ -640,4 +656,208 @@ func specRoutes(t *testing.T) map[string]bool {
 		}
 	}
 	return routes
+}
+
+// schemaAlias maps a client type to the components.schemas entry that documents
+// its wire shape under a different name.
+var schemaAlias = map[string]string{
+	"StatementParseResult":        "ParseStatementResult",
+	"TransactionPage":             "TransactionListResponse",
+	"ImportResult":                "ImportResponse",
+	"LinkLoanDisbursementRequest": "LoanDisbursementRequest",
+	"MessageResult":               "MessageResponse",
+	"CreateCategoryRequest":       "Category",
+	"UpdateCategoryRequest":       "Category",
+}
+
+// schemaSubset lists the client types whose schema publishes more than the
+// client carries, because the spec documents the request body with the response
+// schema (POST /categories reuses Category, which also has the read-only id and
+// group fields). Only the client's own tags are checked for these.
+var schemaSubset = map[string]bool{
+	"CreateCategoryRequest": true,
+	"UpdateCategoryRequest": true,
+}
+
+// noSpecSchema lists the client types the spec documents inline in a path
+// rather than as a components.schemas entry, with where. They have no property
+// list to compare against, so they are exempt by name: a type that is in
+// neither this map nor the spec fails the test, which is what stops a rename
+// from quietly dropping it out of the comparison.
+var noSpecSchema = map[string]string{
+	"CategoryGroup":              "GET /groups documents the object inline",
+	"CreateCategoryGroupRequest": "POST /groups documents the body inline",
+	"UpdateCategoryGroupRequest": "PUT /groups/{id} documents the body inline",
+	"AdminCatalog":               "GET /admin/catalog documents the object inline",
+	"AdminCatalogGroup":          "GET /admin/catalog documents the object inline",
+	"AdminCatalogCategory":       "GET /admin/catalog documents the object inline",
+	"RulePreview":                "POST /rules/preview documents the object inline",
+	"PaperlessDocumentsResponse": "GET /paperless/documents documents the object inline",
+	"StatementExtractor":         "GET /statements/extractors documents the object inline",
+	"ExtractorsResponse":         "GET /statements/extractors documents the object inline",
+	"HealthResult":               "GET /health documents the object inline",
+	"SuggestionPage":             "GET /links/transfer-suggestions documents the object inline",
+	"DataList":                   "the list endpoints document each wrapper inline",
+
+	// Client-side acknowledgements: every route below documents its response
+	// inline as a one-key object rather than as a named schema.
+	"UpdatedResult":            "the bulk routes document {updated} inline",
+	"DeletedResult":            "the bulk delete routes document {deleted} inline",
+	"AttachedResult":           "the bulk attach routes document {attached} inline",
+	"DetachedResult":           "the bulk detach routes document {detached} inline",
+	"CreatedCountResult":       "POST /links/bulk documents {createdCount} inline",
+	"DeletedCountResult":       "POST /links/bulk-delete documents its object inline",
+	"AccountDeleteResult":      "DELETE /accounts/{id} documents its object inline",
+	"IDResult":                 "POST /transactions documents {id} inline",
+	"DeleteCategoryResult":     "DELETE /categories/{id} documents its object inline",
+	"DeleteLoanScheduleResult": "DELETE /accounts/{id}/loan-schedule documents its object inline",
+}
+
+// TestClientTypesMatchTheSpecSchemas closes the half of the drift claim the
+// route table cannot reach: the table proves the client covers every route, but
+// the bodies those routes return are decoded into the structs in types.go, and
+// a mistyped or renamed json tag there decodes as an empty field with a green
+// suite. Every struct declared in types.go is therefore compared against the
+// components.schemas entry that documents its wire shape — the client must not
+// carry a tag the spec does not publish, and, unless the type is a subset, the
+// spec must not publish a property the client cannot decode. That comparison is
+// what found BackupImportResult missing the loanTransfers and loanDisbursements
+// counters.
+//
+// Type aliases are not compared: they carry the tags of their target, which is
+// compared itself.
+func TestClientTypesMatchTheSpecSchemas(t *testing.T) {
+	schemas := specSchemas(t)
+	tags := clientJSONTags(t)
+
+	for name, clientTags := range tags {
+		schema, ok := schemaForClientType(name)
+		if !ok {
+			if _, exempt := noSpecSchema[name]; !exempt {
+				t.Errorf("client type %s is neither compared against a components.schemas entry nor listed in noSpecSchema; add it to one of them", name)
+			}
+			continue
+		}
+		props, ok := schemas[schema]
+		if !ok {
+			t.Errorf("client type %s is compared against components.schemas.%s, which the spec does not define", name, schema)
+			continue
+		}
+
+		for _, tag := range clientTags {
+			if !props[tag] {
+				t.Errorf("%s: field tag %q is not a property of components.schemas.%s", name, tag, schema)
+			}
+		}
+		if schemaSubset[name] {
+			continue
+		}
+		for prop := range props {
+			if !slices.Contains(clientTags, prop) {
+				t.Errorf("%s: components.schemas.%s publishes %q, which the client cannot decode", name, schema, prop)
+			}
+		}
+	}
+
+	// A stale exemption hides a real comparison: if the type no longer exists,
+	// the entry is dead weight that would let a rename through.
+	for name := range noSpecSchema {
+		if _, ok := tags[name]; !ok {
+			t.Errorf("noSpecSchema still lists %s, which is no longer a struct in types.go", name)
+		}
+	}
+}
+
+// schemaForClientType resolves a client type to the components.schemas entry
+// that documents it, preferring the identical name.
+func schemaForClientType(name string) (string, bool) {
+	if alias, ok := schemaAlias[name]; ok {
+		return alias, true
+	}
+	if _, exempt := noSpecSchema[name]; exempt {
+		return "", false
+	}
+	return name, true
+}
+
+// specSchemas parses backend/openapi.yaml into components.schemas reduced to
+// the set of property names each entry publishes.
+func specSchemas(t *testing.T) map[string]map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", specPath, err)
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]yaml.Node `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("parsing %s: %v", specPath, err)
+	}
+	if len(spec.Components.Schemas) == 0 {
+		t.Fatalf("%s has no components.schemas", specPath)
+	}
+
+	schemas := make(map[string]map[string]bool, len(spec.Components.Schemas))
+	for name, schema := range spec.Components.Schemas {
+		props := make(map[string]bool, len(schema.Properties))
+		for prop := range schema.Properties {
+			props[prop] = true
+		}
+		schemas[name] = props
+	}
+	return schemas
+}
+
+// clientJSONTags reads the json tag of every field of every struct declared in
+// types.go, keyed by type name. Parsing the declaration rather than reflecting
+// over values keeps it exhaustive: a type the tests never construct is covered
+// too.
+func clientJSONTags(t *testing.T) map[string][]string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "types.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing types.go: %v", err)
+	}
+
+	tags := map[string][]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			if _, seen := tags[ts.Name.Name]; !seen {
+				tags[ts.Name.Name] = nil // an untagged struct still needs a decision
+			}
+			for _, field := range st.Fields.List {
+				if field.Tag == nil {
+					continue
+				}
+				tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`"))
+				name := strings.Split(tag.Get("json"), ",")[0]
+				if name == "" || name == "-" {
+					continue
+				}
+				tags[ts.Name.Name] = append(tags[ts.Name.Name], name)
+			}
+		}
+	}
+	if len(tags) == 0 {
+		t.Fatal("types.go declares no structs")
+	}
+	return tags
 }

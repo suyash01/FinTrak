@@ -79,19 +79,79 @@ func TestGenerateRefreshToken(t *testing.T) {
 func TestNewSession(t *testing.T) {
 	userID := uuid.New()
 
-	access, refresh, err := NewSession(userID, "admin", testSecret)
+	session, err := NewSession(userID, "admin", testSecret)
 	require.NoError(t, err)
 
-	accessClaims, err := ParseToken(access, testSecret, TokenTypeAccess)
+	accessClaims, err := ParseToken(session.AccessToken, testSecret, TokenTypeAccess)
 	require.NoError(t, err)
 	assert.Equal(t, userID, accessClaims.UserID)
 	assert.Equal(t, "admin", accessClaims.Role)
 
-	refreshClaims, err := ParseToken(refresh, testSecret, TokenTypeRefresh)
+	refreshClaims, err := ParseToken(session.RefreshToken, testSecret, TokenTypeRefresh)
 	require.NoError(t, err)
 	assert.Equal(t, userID, refreshClaims.UserID)
 	assert.Equal(t, "admin", refreshClaims.Role)
-	assert.NotEqual(t, access, refresh)
+	assert.NotEqual(t, session.AccessToken, session.RefreshToken)
+
+	// ExpiresAt is the session's absolute deadline, and it is exactly the expiry
+	// the refresh token carries: the handler stores it next to the token's hash
+	// so a rotated session can never outlive the login.
+	require.NotNil(t, refreshClaims.ExpiresAt)
+	assert.Equal(t, refreshClaims.ExpiresAt.Time.Unix(), session.ExpiresAt.Unix())
+	assert.WithinDuration(t, time.Now().Add(refreshTokenTTL), session.ExpiresAt, time.Minute)
+}
+
+func TestRenewRefresh(t *testing.T) {
+	userID := uuid.New()
+
+	refresh, err := GenerateRefreshToken(userID, "user", testSecret)
+	require.NoError(t, err)
+	claims, err := ParseToken(refresh, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+
+	t.Run("rotation keeps the session's absolute deadline", func(t *testing.T) {
+		rotated, err := RenewRefresh(claims, "user", testSecret)
+		require.NoError(t, err)
+		assert.NotEqual(t, refresh, rotated)
+
+		rotatedClaims, err := ParseToken(rotated, testSecret, TokenTypeRefresh)
+		require.NoError(t, err)
+		assert.Equal(t, userID, rotatedClaims.UserID)
+		assert.Equal(t, TokenTypeRefresh, rotatedClaims.TokenType)
+		require.NotNil(t, rotatedClaims.ExpiresAt)
+		assert.WithinDuration(t, claims.ExpiresAt.Time, rotatedClaims.ExpiresAt.Time, time.Second)
+	})
+
+	t.Run("mints the role the caller resolved, not the token's copy", func(t *testing.T) {
+		rotated, err := RenewRefresh(claims, "admin", testSecret)
+		require.NoError(t, err)
+		rotatedClaims, err := ParseToken(rotated, testSecret, TokenTypeRefresh)
+		require.NoError(t, err)
+		assert.Equal(t, "admin", rotatedClaims.Role)
+	})
+
+	t.Run("refuses a session past its deadline", func(t *testing.T) {
+		expired := &Claims{UserID: userID, ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute))}
+		_, err := RenewRefresh(expired, "user", testSecret)
+		require.Error(t, err)
+	})
+
+	t.Run("refuses claims without an expiry", func(t *testing.T) {
+		_, err := RenewRefresh(&Claims{UserID: userID}, "user", testSecret)
+		require.Error(t, err)
+		_, err = RenewRefresh(nil, "user", testSecret)
+		require.Error(t, err)
+	})
+}
+
+func TestHashRefreshToken(t *testing.T) {
+	hash := HashRefreshToken("some.refresh.token")
+
+	// SHA-256 in hex: 64 characters, stable, and never the token itself.
+	assert.Len(t, hash, 64)
+	assert.Equal(t, hash, HashRefreshToken("some.refresh.token"))
+	assert.NotEqual(t, hash, HashRefreshToken("some.refresh.tokeN"))
+	assert.NotContains(t, hash, "some.refresh.token")
 }
 
 func TestRenewAccess(t *testing.T) {
@@ -392,15 +452,6 @@ func TestSetAndClearAuthCookies(t *testing.T) {
 		for _, ck := range w.Result().Cookies() {
 			assert.False(t, ck.Secure)
 		}
-	})
-
-	t.Run("SetAccessCookie writes only the access cookie", func(t *testing.T) {
-		c, w := newCtx()
-		SetAccessCookie(c, "access", false)
-
-		cookies := w.Result().Cookies()
-		require.Len(t, cookies, 1)
-		assert.Equal(t, AccessCookieName, cookies[0].Name)
 	})
 
 	t.Run("clear expires both cookies", func(t *testing.T) {

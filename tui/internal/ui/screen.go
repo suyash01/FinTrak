@@ -78,12 +78,6 @@ type Ctx struct {
 	Theme Theme
 }
 
-// statusMsg is a transient status-line message.
-type statusMsg struct {
-	level Level
-	text  string
-}
-
 // loaded carries the result of one API call. Tag scopes it to the screen and
 // widget that asked.
 type loaded[T any] struct {

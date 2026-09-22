@@ -366,9 +366,16 @@ func (srv *Server) DeleteLink(c *gin.Context) {
 	var linkType string
 	var fromTxnID, toTxnID uuid.UUID
 	err = tx.QueryRow(c, "SELECT type, from_txn_id, to_txn_id FROM links WHERE id = $1 AND user_id = $2", id, auth.GetUserID(c)).Scan(&linkType, &fromTxnID, &toTxnID)
-	if err != nil {
-		slog.Error("looking up link in DeleteLink", slog.String("error", err.Error()))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		validation.RespondError(c, "link not found", http.StatusNotFound)
+		return
+	case err != nil:
+		// A failed lookup is not a missing link: answering 404 would tell the
+		// caller the link does not exist and hide the failure from anything
+		// watching for a 5xx.
+		slog.Error("looking up link in DeleteLink", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -468,12 +475,15 @@ func (srv *Server) BulkDeleteLinks(c *gin.Context) {
 	}
 
 	// Delete links
-	_, err = tx.Exec(c, "DELETE FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
+	res, err := tx.Exec(c, "DELETE FROM links WHERE id = ANY($1) AND user_id = $2", req.IDs, auth.GetUserID(c))
 	if err != nil {
 		slog.Error("deleting links in BulkDeleteLinks", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// The rows the DELETE actually removed, not the ids that were requested: a
+	// repeated, unknown or foreign id is not a deletion.
+	deletedCount := res.RowsAffected()
 
 	// Reset category and payee for all affected transactions that are no
 	// longer referenced by any remaining link.
@@ -500,7 +510,7 @@ func (srv *Server) BulkDeleteLinks(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "deleted", "deletedCount": len(req.IDs)})
+	c.JSON(http.StatusOK, gin.H{"message": "deleted", "deletedCount": deletedCount})
 }
 
 // Suggestion pagination. The suggestion endpoints expose the same page/limit
@@ -618,16 +628,15 @@ func (srv *Server) GetTransferSuggestions(c *gin.Context) {
 }
 
 // calculateTransferScore ranks a transfer suggestion from 0-100. It starts at
-// 100 and subtracts for amount mismatch and date distance, then bumps the score
-// (capped at 100) when the descriptions contain transfer-related keywords.
+// 100 and subtracts for date distance, then bumps the score (capped at 100) when
+// the descriptions contain transfer-related keywords. Amount is deliberately not
+// scored: GetTransferSuggestions pairs a debit only with credits of the same
+// amount, so a term for the mismatch could never fire while its comment — and
+// the test that dressed it — claimed the score graded it.
 func calculateTransferScore(debitTxn, creditTxn models.Transaction) float64 {
-	// Calculate score based on amount match and date proximity
-	amountDiff := (debitTxn.Amount - creditTxn.Amount).Abs()
-	dTime := debitTxn.Date
-	cTime := creditTxn.Date
-	daysDiff := math.Abs(float64(dTime.Sub(cTime).Hours() / 24))
+	daysDiff := math.Abs(debitTxn.Date.Sub(creditTxn.Date).Hours() / 24)
 
-	score := 100 - amountDiff.Float64()*10 - daysDiff*5
+	score := 100 - daysDiff*5
 	if score < 0 {
 		score = 0
 	}

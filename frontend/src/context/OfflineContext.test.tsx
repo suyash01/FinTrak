@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError, NetworkError } from "../api/errors";
 import { enqueueCreate } from "../api/outbox";
+import { markSynced } from "../api/offlineStatus";
 import { OfflineProvider, useOffline } from "./OfflineContext";
 
 const apiMock = vi.hoisted(() => ({ createTransaction: vi.fn() }));
@@ -62,6 +63,8 @@ describe("OfflineProvider", () => {
   beforeEach(() => {
     localStorage.clear();
     setOnline(true);
+    // syncedAt lives in the offline store, which outlives a single case.
+    markSynced(0);
     apiMock.createTransaction.mockReset();
     toastMock.success.mockReset();
     toastMock.error.mockReset();
@@ -146,5 +149,50 @@ describe("OfflineProvider", () => {
     expect(toastMock.success).toHaveBeenCalledWith(
       "Discarded 1 offline transaction",
     );
+  });
+
+  it("says so when the queue cannot be updated after a sync", async () => {
+    enqueueCreate("u1", create, "key-1");
+    apiMock.createTransaction.mockResolvedValue({ id: "txn-1", queued: false });
+    // The server accepts the entry but the browser refuses to write the queue
+    // back: without this the pending count would simply never drop.
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        expect.stringContaining("Could not update the offline queue"),
+      ),
+    );
+    setItem.mockRestore();
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
+  });
+
+  it("reports a discard the browser refused to persist", async () => {
+    const user = userEvent.setup();
+    enqueueCreate("u1", create, "key-1");
+    apiMock.createTransaction.mockRejectedValue(new ApiError("rejected", 400));
+
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId("failed")).toHaveTextContent("1"));
+
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+    await user.click(screen.getByText("discard"));
+    setItem.mockRestore();
+
+    expect(toastMock.error).toHaveBeenCalledWith(
+      expect.stringContaining("Could not write the offline queue"),
+    );
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
   });
 });

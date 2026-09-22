@@ -31,7 +31,8 @@ const maxBackupBytes = 256 << 20
 const backupInsertChunk = 500
 
 // maxBackupWarnings caps the warning list returned by an import so a corrupt
-// bundle cannot produce an unbounded response.
+// bundle cannot produce an unbounded response. The list may hold one more entry
+// than this: the truncation notice addBackupWarning appends when the cap is hit.
 const maxBackupWarnings = 100
 
 // backupError is a business-rule failure that maps to a specific HTTP status
@@ -201,12 +202,16 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 
 	// Global categories the user references are included so the bundle is
 	// self-contained; they carry global=true and are resolved by name on import.
+	// A rule's *filter* category is a separate reference (filter_category_id)
+	// and must be carried too: the restore resolves it through the same map, so
+	// omitting it silently clears the rule's filter condition.
 	if err := exportUserRows(ctx, pool,
 		`SELECT DISTINCT c.id, c.name, COALESCE(c.icon, ''), COALESCE(c.color, ''), c.group_id
 		 FROM categories c
 		 WHERE c.user_id IS NULL AND (
 		     c.id IN (SELECT category_id FROM transactions WHERE user_id = $1 AND category_id IS NOT NULL)
 		     OR c.id IN (SELECT category_id FROM rules WHERE user_id = $1)
+		     OR c.id IN (SELECT filter_category_id FROM rules WHERE user_id = $1 AND filter_category_id IS NOT NULL)
 		     OR c.id IN (SELECT category_id FROM recurring_series WHERE user_id = $1 AND category_id IS NOT NULL)
 		 )`,
 		[]any{userID}, func(rows pgx.Rows) error {
@@ -521,6 +526,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 	// categories by name+group and fall back to a user-owned copy.
 	categoryMap := map[uuid.UUID]uuid.UUID{}
 	categoryRows := make([][]any, 0, len(b.Categories))
+	// Categories that had to be moved into the fallback group are counted and
+	// reported once after the loop: one warning per category was identical text,
+	// and a bundle whose categories all point at a group this instance lacks
+	// (global groups are never exported) exhausted maxBackupWarnings and pushed
+	// out the warnings that name what the import actually dropped.
+	movedToFallback := 0
 	for _, cat := range b.Categories {
 		groupID, known, err := backupCategoryGroupID(ctx, tx, userID, cat.GroupID, groupMap)
 		if err != nil {
@@ -530,7 +541,7 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			if groupID, err = fallbackGroup(); err != nil {
 				return err
 			}
-			addBackupWarning(res, "moved a category into the \""+fallbackGroupName+"\" group: its group is not in the backup or on this instance")
+			movedToFallback++
 		}
 		existingID, found, err := findCategoryID(ctx, tx, userID, cat, groupID)
 		if err != nil {
@@ -543,6 +554,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		newID := uuid.New()
 		categoryMap[cat.ID] = newID
 		categoryRows = append(categoryRows, []any{newID, userID, cat.Name, cat.Icon, cat.Color, groupID})
+	}
+	if movedToFallback == 1 {
+		addBackupWarning(res, "moved a category into the \""+fallbackGroupName+"\" group: its group is not in the backup or on this instance")
+	} else if movedToFallback > 1 {
+		addBackupWarning(res, fmt.Sprintf("moved %d categories into the %q group: their groups are not in the backup or on this instance",
+			movedToFallback, fallbackGroupName))
 	}
 
 	// Payees. The (user_id, name) unique index (migration 000010) makes two
@@ -609,6 +626,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		if err != nil {
 			return err
 		}
+		if err := validateBackupTxnType("transaction type", t.Type); err != nil {
+			return err
+		}
+		if err := validateBackupAmount("amount", t.Amount); err != nil {
+			return err
+		}
 		tags := t.Tags
 		if tags == nil {
 			tags = []string{}
@@ -640,6 +663,9 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		if !okFrom || !okTo {
 			addBackupWarning(res, "skipped link: one of its transactions is not in the backup")
 			continue
+		}
+		if !isValidLinkType(l.Type) {
+			return &backupError{http.StatusBadRequest, fmt.Sprintf("invalid link type %q in backup", l.Type)}
 		}
 		linkRows = append(linkRows, []any{uuid.New(), userID, l.Type, from, to, l.Notes, nonZeroTime(l.CreatedAt)})
 	}
@@ -676,6 +702,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			}
 			disbursal = &d
 		}
+		if err := validateBackupAmount("loan principal", ls.Principal); err != nil {
+			return err
+		}
+		if err := validateBackupAmount("loan processing fee", ls.ProcessingFee); err != nil {
+			return err
+		}
 		loanScheduleRows = append(loanScheduleRows, []any{
 			uuid.New(), userID, accountID, ls.Principal, ls.ProcessingFee, ls.AnnualRateBps,
 			ls.TenureMonths, start, disbursal, nonZeroTime(ls.CreatedAt), nonZeroTime(ls.UpdatedAt),
@@ -695,6 +727,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		}
 		date, err := parseBackupDate(t.TransferDate)
 		if err != nil {
+			return err
+		}
+		if err := validateBackupAmount("transfer amount", t.Amount); err != nil {
+			return err
+		}
+		if err := validateBackupAmount("transfer principal", t.Principal); err != nil {
 			return err
 		}
 		loanTransferRows = append(loanTransferRows, []any{
@@ -722,6 +760,12 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 	seriesMap := map[uuid.UUID]uuid.UUID{}
 	seriesRows := make([][]any, 0, len(b.RecurringSeries))
 	for _, s := range b.RecurringSeries {
+		if err := validateBackupTxnType("recurring series type", s.Type); err != nil {
+			return err
+		}
+		if err := validateBackupFrequency(s.Frequency); err != nil {
+			return err
+		}
 		newID := uuid.New()
 		seriesMap[s.ID] = newID
 		seriesRows = append(seriesRows, []any{
@@ -752,6 +796,9 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			}
 			end = &e
 		}
+		if err := validateBackupAmount("recurring term amount", term.Amount); err != nil {
+			return err
+		}
 		termRows = append(termRows, []any{uuid.New(), userID, seriesID, start, end, term.Amount, accountID, nonZeroTime(term.CreatedAt)})
 	}
 
@@ -779,6 +826,40 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		if matchType == "" {
 			matchType = "contains"
 		}
+		// Validate what the INSERT would otherwise let PostgreSQL reject with a
+		// CHECK (or a DATE parse) failure: that aborts the transaction and
+		// surfaces as a 500, even though the bundle is the user's own input and
+		// the rest of the restore answers 400 for exactly this class of problem.
+		if err := validateBackupMatchType(matchType); err != nil {
+			return err
+		}
+		if r.TxnType != "" {
+			if err := validateBackupTxnType("rule transaction type", r.TxnType); err != nil {
+				return err
+			}
+		}
+		if err := validateBackupAmount("rule minimum amount", optBackupAmount(r.MinAmount)); err != nil {
+			return err
+		}
+		if err := validateBackupAmount("rule maximum amount", optBackupAmount(r.MaxAmount)); err != nil {
+			return err
+		}
+		dateFrom, err := parseBackupDatePtr(r.DateFrom)
+		if err != nil {
+			return err
+		}
+		dateTo, err := parseBackupDatePtr(r.DateTo)
+		if err != nil {
+			return err
+		}
+		// A rule's category *filter* is a separate reference. The bundle carries
+		// every category the rule's other columns point at, so an unmapped filter
+		// means the backup predates that export or was hand-edited; clearing it
+		// widens the rule to every transaction in its remaining dimensions, which
+		// the user has to be told about.
+		if r.FilterCategoryID != nil && mapBackupUUID(categoryMap, r.FilterCategoryID) == nil {
+			addBackupWarning(res, "cleared a rule's category filter: it is not in the backup")
+		}
 		// Conditions referencing a resource missing from the bundle degrade to
 		// "condition unset" rather than dropping the whole rule, so a partial
 		// bundle still restores the rule's core behavior.
@@ -788,7 +869,7 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			mapBackupUUID(categoryMap, r.FilterCategoryID),
 			mapBackupUUID(payeeMap, r.FilterPayeeID),
 			r.MinAmount, r.MaxAmount, nullIfEmpty(r.TxnType),
-			r.DateFrom, r.DateTo, r.IsLinked, r.IsRecurring, r.AddTags, r.Notes,
+			dateFrom, dateTo, r.IsLinked, r.IsRecurring, r.AddTags, r.Notes,
 		})
 	}
 
@@ -1022,13 +1103,27 @@ func mergeBackupPayees(payees []models.BackupPayee) ([]models.BackupPayee, map[u
 		}
 		if p.AccountID != nil {
 			disambiguated := p
-			disambiguated.Name = fmt.Sprintf("%s (%s)", p.Name, p.ID.String()[:8])
+			disambiguated.Name = disambiguatedPayeeName(p.Name, p.ID)
 			kept = append(kept, disambiguated)
 			continue
 		}
 		folded[p.ID] = keep.ID
 	}
 	return kept, folded
+}
+
+// disambiguatedPayeeName appends a disambiguating id suffix to a payee name
+// without overflowing payees.name (VARCHAR(255)): the suffix is 11 characters
+// (" (12345678)"), so the name keeps at most 244 characters — the same bound
+// migration 000010 applies when it disambiguates. The truncation is by rune,
+// which is what VARCHAR(255) counts.
+func disambiguatedPayeeName(name string, id uuid.UUID) string {
+	const suffixLen = len(" (12345678)")
+	runes := []rune(name)
+	if len(runes) > 255-suffixLen {
+		runes = runes[:255-suffixLen]
+	}
+	return fmt.Sprintf("%s (%s)", string(runes), id.String()[:8])
 }
 
 // insertBackupRows inserts rows with multi-row VALUES statements, chunked to
@@ -1096,6 +1191,80 @@ func parseBackupDate(s string) (time.Time, error) {
 	return t, nil
 }
 
+// parseBackupDatePtr validates an optional bundle date and returns it as a TIME
+// value for the INSERT, so a malformed date answers 400 instead of reaching the
+// DATE column (where PostgreSQL would abort the transaction with a 500).
+func parseBackupDatePtr(s *string) (*time.Time, error) {
+	if s == nil {
+		return nil, nil
+	}
+	t, err := parseBackupDate(*s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// maxBackupAmount bounds an amount a bundle may carry: 1e15 minor units is ten
+// trillion major units, orders of magnitude above any personal-finance figure.
+const maxBackupAmount = money.Amount(1e15)
+
+// validateBackupAmount rejects an amount the restore must not store. The case
+// that matters is money.Amount's INT64_MIN sentinel — what an out-of-range or
+// NaN wire value used to decode to — because a row holding it can never be read
+// back: money.Amount.String negates it and emits invalid JSON, so every
+// response containing the row fails to marshal. A bundle carrying one is
+// malformed input, which the backup endpoint answers with 400 rather than a 500
+// (or a corrupt row).
+func validateBackupAmount(field string, a money.Amount) error {
+	if a > maxBackupAmount || a < -maxBackupAmount {
+		return &backupError{
+			http.StatusBadRequest,
+			fmt.Sprintf("invalid %s in backup: %d minor units", field, a.Cents()),
+		}
+	}
+	return nil
+}
+
+// optBackupAmount dereferences an optional amount for validation.
+func optBackupAmount(a *money.Amount) money.Amount {
+	if a == nil {
+		return 0
+	}
+	return *a
+}
+
+// validateBackupTxnType rejects a transaction or recurring-series type the
+// `type` CHECK constraint would reject later. field names the bundle field so
+// the message points at the offender.
+func validateBackupTxnType(field, t string) error {
+	if t == "debit" || t == "credit" {
+		return nil
+	}
+	return &backupError{http.StatusBadRequest, fmt.Sprintf("invalid %s %q in backup", field, t)}
+}
+
+// validateBackupFrequency rejects a recurring frequency outside the four the
+// frequency CHECK constraint accepts.
+func validateBackupFrequency(f string) error {
+	switch f {
+	case "daily", "weekly", "monthly", "yearly":
+		return nil
+	}
+	return &backupError{http.StatusBadRequest, fmt.Sprintf("invalid recurring frequency %q in backup", f)}
+}
+
+// validateBackupMatchType rejects a rule match type outside the three the
+// match_type CHECK constraint accepts. An empty value is allowed: it is the
+// "contains" default.
+func validateBackupMatchType(mt string) error {
+	switch mt {
+	case "", "contains", "starts_with", "exact":
+		return nil
+	}
+	return &backupError{http.StatusBadRequest, fmt.Sprintf("invalid rule match type %q in backup", mt)}
+}
+
 // nonZeroTime substitutes the current time for an omitted timestamp so a
 // hand-written bundle still restores with sane audit columns.
 func nonZeroTime(t time.Time) time.Time {
@@ -1112,9 +1281,15 @@ func newBackupGroupID() string {
 }
 
 // addBackupWarning records a skipped row, capped so a corrupt bundle cannot
-// produce an unbounded response.
+// produce an unbounded response. Reaching the cap appends a truncation notice
+// once, so the client can tell "this is everything that went wrong" from "this
+// list was cut short"; the list therefore holds at most maxBackupWarnings+1
+// entries.
 func addBackupWarning(res *models.BackupImportResult, msg string) {
 	if len(res.Warnings) >= maxBackupWarnings {
+		if len(res.Warnings) == maxBackupWarnings {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("further warnings omitted after the first %d", maxBackupWarnings))
+		}
 		return
 	}
 	res.Warnings = append(res.Warnings, msg)

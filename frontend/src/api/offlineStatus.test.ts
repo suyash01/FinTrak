@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   getOfflineSnapshot,
+  markSynced,
   setServedFromCache,
   subscribeOffline,
 } from "./offlineStatus";
@@ -18,6 +19,9 @@ function setOnline(online: boolean) {
 describe("offline status", () => {
   beforeEach(() => {
     setServedFromCache(false);
+    // The store outlives a single test file's cases, so the flush signal is
+    // reset the same way the cache flag is.
+    markSynced(0);
     setOnline(true);
   });
 
@@ -69,6 +73,22 @@ describe("offline status", () => {
     unsubscribe();
 
     setOnline(true);
+  });
+
+  it("records when the outbox last drained, and notifies once", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeOffline(listener);
+
+    expect(getOfflineSnapshot().syncedAt).toBe(0);
+    markSynced(1_700_000_000_000);
+    // The same value twice is not a change: consumers refetch on the value.
+    markSynced(1_700_000_000_000);
+    expect(getOfflineSnapshot().syncedAt).toBe(1_700_000_000_000);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    markSynced(0);
+    expect(getOfflineSnapshot().syncedAt).toBe(0);
+    unsubscribe();
   });
 
   it("keeps the snapshot reference stable when nothing changed", () => {

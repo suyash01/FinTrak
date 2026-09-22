@@ -26,11 +26,24 @@ import (
 // transactions on other accounts that are attached via loan_attachments.
 const loanAccountTypeID = "loan"
 
+// errLoanDisbursementCredit reports that the exclusivity guard inside the
+// attach write refused a transaction because it is a loan's disbursement credit
+// (a transaction is either an EMI payment or a disbursement, never both).
+var errLoanDisbursementCredit = errors.New("transaction is a loan's disbursement credit")
+
+// errLoanTransferTargetChanged reports that the schedule a balance transfer
+// created on its target is no longer the transfer's: the target's terms were
+// replaced (or another transfer landed on it) after the transfer was recorded,
+// so deleting the transfer may not delete that schedule.
+var errLoanTransferTargetChanged = errors.New("the target loan's terms changed after the transfer")
+
 // BulkLinkLoan attaches many transactions to a single loan/EMI account, or
 // detaches them from whatever loan account they are currently attached to
 // when loanAccountId is omitted/null. One transaction can be attached to at
 // most one loan account (UNIQUE on loan_attachments.transaction_id), enforced
-// here with a pre-check plus a constraint-violation guard.
+// by the insert itself plus a constraint-violation guard, and a transaction
+// that is a loan's disbursement credit can never become an EMI payment: the
+// same insert skips it and the short row count answers 409.
 //
 // Attaching also sets each transaction's payee to the loan account's linked
 // payee (so the payee column reads as the loan account). Detaching leaves
@@ -143,33 +156,28 @@ func (srv *Server) BulkLinkLoan(c *gin.Context) {
 		return
 	}
 
-	// The credit that released a loan is money received, not a repayment:
-	// attaching it as an EMI payment would count it against the loan's progress.
-	var isDisbursement int
-	if err := srv.db.QueryRow(c,
-		"SELECT COUNT(*) FROM loan_disbursements WHERE transaction_id = ANY($1) AND user_id = $2",
-		req.TransactionIDs, userID).Scan(&isDisbursement); err != nil {
-		slog.Error("BulkLinkLoan (checking disbursement credits)", slog.String("error", err.Error()))
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if isDisbursement > 0 {
-		validation.RespondError(c, "one or more transactions are a loan's disbursement credit and cannot be attached as EMI payments", http.StatusConflict)
-		return
-	}
-
 	// The write (attachment rows + payee sync) is atomic so a failure never
-	// leaves transactions half-linked.
+	// leaves transactions half-linked. The credit that released a loan is money
+	// received, not a repayment, so the INSERT itself refuses a transaction that
+	// is a loan's disbursement credit — a pre-check could be won by a concurrent
+	// disbursement link. The short row count is that refusal.
 	var attached int64
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		res, err := tx.Exec(c,
 			`INSERT INTO loan_attachments (loan_account_id, transaction_id, user_id)
-			 SELECT $1, t, $3 FROM unnest($2::uuid[]) AS t`,
+			 SELECT $1, t, $3 FROM unnest($2::uuid[]) AS t
+			 WHERE NOT EXISTS (
+			     SELECT 1 FROM loan_disbursements ld
+			     WHERE ld.transaction_id = t AND ld.user_id = $3
+			 )`,
 			*req.LoanAccountID, req.TransactionIDs, userID)
 		if err != nil {
 			return err
 		}
 		attached = res.RowsAffected()
+		if attached != int64(len(req.TransactionIDs)) {
+			return errLoanDisbursementCredit
+		}
 
 		// Sync the transactions' payee to the loan account's linked payee so
 		// an EMI payment reads as "paid to <loan account>" in the payee column
@@ -191,6 +199,10 @@ func (srv *Server) BulkLinkLoan(c *gin.Context) {
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, errLoanDisbursementCredit) {
+			validation.RespondError(c, "one or more transactions are a loan's disbursement credit and cannot be attached as EMI payments", http.StatusConflict)
+			return
+		}
 		// Race guard: a concurrent attach can still hit the unique index.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -625,8 +637,12 @@ func hasInstallmentsAfter(entries []models.LoanScheduleEntry, date time.Time) bo
 // One thing is not derived: when the transfer opened the target's schedule (the
 // target had no terms of its own), that schedule is deleted too — it holds the
 // moved amount as its principal, so leaving it behind would keep the balance on
-// a loan the transfer invented. A schedule the target already had is left alone.
-// Both writes are one transaction so the two loans can never revert half way.
+// a loan the transfer invented. A schedule the target already had is left alone,
+// and so is one the user has since replaced: the schedule is removed only while
+// it still carries the transferred amount as its principal and no other transfer
+// has landed on the target, otherwise the request answers 409 rather than
+// deleting terms the user authored. Both writes are one transaction so the two
+// loans can never revert half way.
 //
 // The route names the transfer's source account, so a delete cannot be aimed at
 // the same transfer through an unrelated account. It is idempotent, reporting
@@ -648,10 +664,11 @@ func (srv *Server) DeleteLoanTransfer(c *gin.Context) {
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
 		var targetID uuid.UUID
 		var mode string
+		var amount money.Amount
 		err := tx.QueryRow(c,
 			`DELETE FROM loan_transfers WHERE id = $1 AND from_loan_account_id = $2 AND user_id = $3
-			 RETURNING to_loan_account_id, mode`,
-			transferID, accountID, userID).Scan(&targetID, &mode)
+			 RETURNING to_loan_account_id, mode, amount`,
+			transferID, accountID, userID).Scan(&targetID, &mode, &amount)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -662,10 +679,45 @@ func (srv *Server) DeleteLoanTransfer(c *gin.Context) {
 		if mode != models.LoanTransferOpens {
 			return nil
 		}
-		_, err = tx.Exec(c,
-			"DELETE FROM loan_schedules WHERE loan_account_id = $1 AND user_id = $2", targetID, userID)
+		// The target's schedule is only the transfer's to remove while it still
+		// *is* the one the transfer created: its principal is still the
+		// transferred amount and no other transfer landed on the target. Once
+		// the user has replaced the terms (UpsertLoanSchedule overwrites them
+		// in place), deleting that schedule would destroy terms the user
+		// authored, so the delete is refused instead — and with it the whole
+		// revert, because a half-reverted pair of loans is worse.
+		var scheduleID uuid.UUID
+		err = tx.QueryRow(c,
+			`DELETE FROM loan_schedules
+			 WHERE loan_account_id = $1 AND user_id = $2 AND principal = $3
+			   AND NOT EXISTS (
+			       SELECT 1 FROM loan_transfers lt
+			       WHERE lt.user_id = $2 AND lt.to_loan_account_id = $1
+			   )
+			 RETURNING id`,
+			targetID, userID, amount).Scan(&scheduleID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Nothing matched. The target no longer has a schedule at all when
+			// the user deleted the terms themselves — then the transfer has
+			// nothing left to undo there and the revert may proceed. A schedule
+			// that is still there is simply not the transfer's any more.
+			var scheduleExists bool
+			if err := tx.QueryRow(c,
+				"SELECT EXISTS (SELECT 1 FROM loan_schedules WHERE loan_account_id = $1 AND user_id = $2)",
+				targetID, userID).Scan(&scheduleExists); err != nil {
+				return err
+			}
+			if scheduleExists {
+				return errLoanTransferTargetChanged
+			}
+			return nil
+		}
 		return err
 	})
+	if errors.Is(err, errLoanTransferTargetChanged) {
+		validation.RespondError(c, "the target loan's terms have changed since this transfer — the schedule it created is no longer the transfer's to remove", http.StatusConflict)
+		return
+	}
 	if err != nil {
 		slog.Error("DeleteLoanTransfer", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -742,22 +794,6 @@ func (srv *Server) LinkLoanDisbursement(c *gin.Context) {
 		return
 	}
 
-	// A transaction is either an EMI payment or a loan's disbursement, never
-	// both: counting the money that released the loan as a repayment would
-	// corrupt the progress figures.
-	var attached int
-	if err := srv.db.QueryRow(c,
-		"SELECT COUNT(*) FROM loan_attachments WHERE transaction_id = $1 AND user_id = $2",
-		req.TransactionID, userID).Scan(&attached); err != nil {
-		slog.Error("LinkLoanDisbursement (attachment check)", slog.String("error", err.Error()))
-		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if attached > 0 {
-		validation.RespondError(c, "that transaction is already an EMI payment on a loan", http.StatusConflict)
-		return
-	}
-
 	var linkedTo uuid.UUID
 	err = srv.db.QueryRow(c,
 		"SELECT loan_account_id FROM loan_disbursements WHERE transaction_id = $1 AND user_id = $2",
@@ -772,12 +808,23 @@ func (srv *Server) LinkLoanDisbursement(c *gin.Context) {
 		return
 	}
 
-	if _, err := srv.db.Exec(c,
+	// A transaction is either an EMI payment or a loan's disbursement, never
+	// both: counting the money that released the loan as a repayment would
+	// corrupt the progress figures. The write enforces that itself — it inserts
+	// only while the transaction is not attached as an EMI payment, so a
+	// concurrent attach cannot slip between a check and this insert — and a
+	// zero row count is the refusal.
+	res, err := srv.db.Exec(c,
 		`INSERT INTO loan_disbursements (loan_account_id, transaction_id, user_id)
-		 VALUES ($1, $2, $3)
+		 SELECT $1, $2, $3
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM loan_attachments la
+		     WHERE la.transaction_id = $2 AND la.user_id = $3
+		 )
 		 ON CONFLICT (user_id, loan_account_id) DO UPDATE
 		 SET transaction_id = EXCLUDED.transaction_id`,
-		accountID, req.TransactionID, userID); err != nil {
+		accountID, req.TransactionID, userID)
+	if err != nil {
 		// Race guard: a concurrent link of the same transaction.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -786,6 +833,10 @@ func (srv *Server) LinkLoanDisbursement(c *gin.Context) {
 		}
 		slog.Error("LinkLoanDisbursement", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if res.RowsAffected() == 0 {
+		validation.RespondError(c, "that transaction is already an EMI payment on a loan", http.StatusConflict)
 		return
 	}
 
@@ -1203,11 +1254,13 @@ type principalAdjustment struct {
 //
 // The EMI is rounded up to the whole rupee, the way a lender quotes it, and the
 // final installment clears whatever principal is left, so the table repays the
-// loan exactly despite that rounding. The returned EMI is the one in force for
-// the last segment, which is the installment the borrower pays next. The rate
-// factor is a ratio, not money: it is the one place float64 legitimately appears,
-// and every amount derived from it is rounded to the nearest minor unit before
-// further arithmetic.
+// loan exactly despite that rounding; once the surplus has retired the balance
+// the remaining installments are zero rather than negative, because the surplus
+// is never charged. The returned EMI is the one in force for the last segment,
+// which is the installment the borrower pays next. The rate factor is a ratio,
+// not money: it is the one place float64 legitimately appears, and every amount
+// derived from it is rounded to the nearest minor unit before further
+// arithmetic.
 func loanAmortization(terms loanTerms, adjustments []principalAdjustment) (money.Amount, []models.LoanScheduleEntry) {
 	remaining := terms.principal
 	if terms.tenureMonths < 1 {
@@ -1266,9 +1319,23 @@ func loanAmortization(terms loanTerms, adjustments []principalAdjustment) (money
 		var principalPart money.Amount
 		switch {
 		case i == terms.tenureMonths:
-			principalPart = remaining
+			// The final installment clears whatever principal is left — which
+			// is nothing once the rounded-up EMI has already retired it.
+			if remaining > 0 {
+				principalPart = remaining
+			}
 		case emi > interest:
 			principalPart = emi - interest
+			// The EMI is rounded up to the whole rupee, so it eventually
+			// exceeds what the loan still owes. Never let the principal part run
+			// past the balance: that would drive the balance, the interest and
+			// the installment negative, and a negative installment matched as
+			// "paid" would subtract from the loan. The surplus is simply not
+			// charged, so the table repays the loan by (at the latest) the last
+			// installment.
+			if principalPart > remaining {
+				principalPart = remaining
+			}
 		default:
 			// A broken first period can accrue more interest than a whole
 			// month's installment covers. That installment then pays interest

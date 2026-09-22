@@ -43,6 +43,7 @@ import {
 import api from "../../api/client";
 import { formatDate } from "../../utils/formatters";
 import { buildCategorySections } from "../../lib/categories";
+import { todayLocalISO } from "../../lib/dates";
 import type {
   Transaction,
   Account,
@@ -79,7 +80,7 @@ interface TransactionForm {
 
 function createForm(accounts: Account[]): TransactionForm {
   return {
-    date: new Date().toISOString().split("T")[0],
+    date: todayLocalISO(),
     description: "",
     amount: "",
     type: "debit",

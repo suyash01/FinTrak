@@ -104,3 +104,53 @@ func TestTransactionsKeepsTheListOnAFailedWrite(t *testing.T) {
 		t.Error("a failed write should not refetch")
 	}
 }
+
+// TestTransactionsDropsASupersededPage is a regression test for a race: the list
+// load carried only its tag, so two overlapping loads were indistinguishable and
+// whichever answered last won — including an older page overwriting the newer one
+// that had already landed. The header, the rows and the next page request then
+// described different queries.
+func TestTransactionsDropsASupersededPage(t *testing.T) {
+	var gets int32
+	row := func(id, description string) string {
+		return fmt.Sprintf(`{"id":%q,"accountId":"acct-1","date":"2026-09-01T00:00:00Z",`+
+			`"description":%q,"amount":10.5,"type":"debit","tags":[]}`, id, description)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// The first request is answered with two rows and the second with one, so
+		// the test can tell which response the screen ends up showing: they are
+		// executed out of order, the newer request answering first.
+		n := atomic.AddInt32(&gets, 1)
+		body, total := "["+row("t1", "one")+","+row("t2", "two")+"]", 2
+		if n > 1 {
+			body, total = "["+row("t3", "three")+"]", 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":%s,"total":%d,"page":1,"limit":50,"pages":1}`, body, total)
+	}))
+	defer srv.Close()
+
+	client, err := api.New(srv.URL + "/api/v1")
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	ctx := &Ctx{Client: client, Ref: &RefData{}, Theme: DefaultTheme(), Notify: func(Level, string, ...any) {}}
+	screen := NewTransactions(ctx)
+
+	superseded := screen.Refresh()
+	current := screen.Refresh()
+
+	// The newer request answers first...
+	run(t, screen, current)
+	if len(screen.rows) != 2 {
+		t.Fatalf("rows = %d, want the 2 the newer request asked for", len(screen.rows))
+	}
+	// ...and the request it superseded must not overwrite it when it lands late.
+	run(t, screen, superseded)
+	if len(screen.rows) != 2 {
+		t.Errorf("a superseded page overwrote the current one: %d rows, want 2", len(screen.rows))
+	}
+	if screen.info.Total != 2 {
+		t.Errorf("the paging was taken from a superseded page: total = %d, want 2", screen.info.Total)
+	}
+}

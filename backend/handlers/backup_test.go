@@ -3,8 +3,11 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +81,12 @@ func TestExportUserData(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
 			AddRow(categoryID, "Food", "utensils", "#f97316", "expense"))
 
-	mock.ExpectQuery("FROM categories c").
+	// The global categories the user references must include the ones a rule
+	// filter points at (filter_category_id), not just the ones a rule,
+	// transaction or series categorizes with: the restore resolves the filter
+	// through the same map, so a bundle without it restores that rule with the
+	// filter cleared.
+	mock.ExpectQuery("c.id IN \\(SELECT filter_category_id FROM rules WHERE user_id = \\$1 AND filter_category_id IS NOT NULL\\)").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "icon", "color", "group_id"}).
 			AddRow(uuid.New(), "GlobalCat", "", "", "expense"))
@@ -652,4 +660,353 @@ func TestMergeBackupPayees(t *testing.T) {
 			lastManual.ID:  linked.ID,
 		}, folded)
 	})
+
+	t.Run("truncates a long name instead of overflowing the column", func(t *testing.T) {
+		// payees.name is VARCHAR(255) and the suffix adds 11 characters: without
+		// the truncation the payees INSERT would fail and take the whole
+		// all-or-nothing restore with it.
+		firstAccount, secondAccount := uuid.New(), uuid.New()
+		long := strings.Repeat("n", 250)
+		first := models.BackupPayee{ID: uuid.New(), Name: long, AccountID: &firstAccount}
+		second := models.BackupPayee{ID: uuid.New(), Name: long, AccountID: &secondAccount}
+
+		kept, _ := mergeBackupPayees([]models.BackupPayee{first, second})
+
+		require.Len(t, kept, 2)
+		assert.Len(t, []rune(kept[1].Name), 255)
+		assert.True(t, strings.HasSuffix(kept[1].Name, "("+second.ID.String()[:8]+")"))
+	})
+}
+
+// expectRestorePrelude registers the statements every restore runs before it
+// reaches the row loops: the per-user lock, the emptiness check, and the
+// account-type check (the bundles below all carry one "bank" account).
+func expectRestorePrelude(mock pgxmock.PgxPoolIface) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT id FROM account_types").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("bank"))
+}
+
+// expectSeededExpenseGroup registers the group check and category lookup a
+// bundle category in the seeded "expense" group costs, resolving to a category
+// the target user does not have yet.
+func expectSeededExpenseGroup(mock pgxmock.PgxPoolIface) {
+	mock.ExpectQuery("SELECT EXISTS \\(SELECT 1 FROM category_groups").
+		WithArgs("expense", testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
+		WithArgs(testUserID(), "Food", "expense").
+		WillReturnError(pgx.ErrNoRows)
+}
+
+// mappedUUID matches a rule reference the restore resolved to a fresh id.
+// pgxmock.OfType would not do: it also matches the typed nil the restore inserts
+// for a reference it could not resolve.
+func mappedUUID() pgxmock.Argument {
+	return pgxmock.ArgumentFunc(func(v any) bool {
+		p, ok := v.(*uuid.UUID)
+		return ok && p != nil
+	})
+}
+
+// clearedUUID matches the typed nil pointer the restore inserts when it cannot
+// resolve a reference. A plain nil expectation would not match: pgxmock compares
+// non-matcher arguments with reflect.DeepEqual, and the value is (*uuid.UUID)(nil).
+func clearedUUID() pgxmock.Argument {
+	return pgxmock.ArgumentFunc(func(v any) bool {
+		p, ok := v.(*uuid.UUID)
+		return ok && p == nil
+	})
+}
+
+// oneRuleBundle is a bundle holding one account, one category in the seeded
+// "expense" group, and one rule whose category filter points at filterCategoryID.
+func oneRuleBundle(accountID, categoryID uuid.UUID, filterCategoryID *uuid.UUID) models.BackupBundle {
+	return models.BackupBundle{
+		Format:     models.BackupFormat,
+		Version:    models.BackupVersion,
+		Accounts:   []models.BackupAccount{{ID: accountID, Name: "A", AccountTypeID: "bank"}},
+		Categories: []models.BackupCategory{{ID: categoryID, Name: "Food", GroupID: "expense"}},
+		Rules: []models.BackupRule{{
+			ID: uuid.New(), Pattern: "coffee", MatchType: "contains",
+			CategoryID: categoryID, FilterCategoryID: filterCategoryID, Priority: 1,
+		}},
+	}
+}
+
+// expectRestoreOfOneRule registers the statements restoring oneRuleBundle runs.
+// filterArg is the matcher for the rule INSERT's filter_category_id column
+// (the ninth of its nineteen arguments).
+func expectRestoreOfOneRule(mock pgxmock.PgxPoolIface, filterArg any) {
+	expectRestorePrelude(mock)
+	expectSeededExpenseGroup(mock)
+	mock.ExpectExec("INSERT INTO accounts ").WithArgs(anyArgs(12)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO categories ").WithArgs(anyArgs(6)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	ruleArgs := anyArgs(19)
+	ruleArgs[8] = filterArg
+	mock.ExpectExec("INSERT INTO rules ").WithArgs(ruleArgs...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+}
+
+// TestImportUserDataRestoresRuleFilterCategory pins the round trip of a rule's
+// category *filter*: the bundle now carries the category the filter references
+// and the restore maps the reference onto it, so the condition survives.
+func TestImportUserDataRestoresRuleFilterCategory(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	accountID, categoryID := uuid.New(), uuid.New()
+	expectRestoreOfOneRule(mock, mappedUUID())
+
+	w := postBackup(t, r, oneRuleBundle(accountID, categoryID, &categoryID))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 1, result.Rules)
+	assert.Empty(t, result.Warnings)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestImportUserDataWarnsWhenRuleFilterCategoryIsMissing pins that a filter the
+// bundle does not carry is reported instead of degrading silently: the restored
+// rule has no category condition left, so it matches every transaction in its
+// other dimensions.
+func TestImportUserDataWarnsWhenRuleFilterCategoryIsMissing(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	accountID, categoryID := uuid.New(), uuid.New()
+	missingCategory := uuid.New()
+	expectRestoreOfOneRule(mock, clearedUUID())
+
+	w := postBackup(t, r, oneRuleBundle(accountID, categoryID, &missingCategory))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 1, result.Rules)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "cleared a rule's category filter")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestImportUserDataRollsUpFallbackGroupWarnings pins that categories moved into
+// the fallback group are reported once with their count. The per-category form
+// repeated identical text and, with more than maxBackupWarnings such categories,
+// exhausted the budget and silently discarded the warnings that name what the
+// import actually dropped.
+func TestImportUserDataRollsUpFallbackGroupWarnings(t *testing.T) {
+	r, _, mock := newBackupTestRouter(t)
+
+	accountID := uuid.New()
+	const missingGroup = "admin-created-group"
+
+	expectRestorePrelude(mock)
+	// Expectations are matched in order, so the three categories register the
+	// calls they actually make: none of their groups is in the bundle or on this
+	// instance, the fallback group is looked up and created once (on the first
+	// category), and each category then resolves to a new row.
+	for i := range 3 {
+		mock.ExpectQuery("SELECT EXISTS \\(SELECT 1 FROM category_groups").
+			WithArgs(missingGroup, testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+		if i == 0 {
+			mock.ExpectQuery("SELECT id FROM category_groups WHERE user_id = \\$1 AND name = \\$2").
+				WithArgs(testUserID(), "Imported").
+				WillReturnError(pgx.ErrNoRows)
+		}
+		mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
+			WithArgs(testUserID(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WillReturnError(pgx.ErrNoRows)
+	}
+	mock.ExpectExec("INSERT INTO accounts ").WithArgs(anyArgs(12)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO category_groups ").WithArgs(anyArgs(7)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO categories ").WithArgs(anyArgs(18)...).WillReturnResult(pgxmock.NewResult("INSERT", 3))
+	mock.ExpectCommit()
+
+	categories := make([]models.BackupCategory, 0, 3)
+	for i := range 3 {
+		categories = append(categories, models.BackupCategory{
+			ID: uuid.New(), Name: fmt.Sprintf("C%d", i), GroupID: missingGroup,
+		})
+	}
+	bundle := models.BackupBundle{
+		Format:     models.BackupFormat,
+		Version:    models.BackupVersion,
+		Accounts:   []models.BackupAccount{{ID: accountID, Name: "A", AccountTypeID: "bank"}},
+		Categories: categories,
+	}
+
+	w := postBackup(t, r, bundle)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var result models.BackupImportResult
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, 3, result.Categories)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], `moved 3 categories into the "Imported" group`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestAddBackupWarningFlagsTruncation pins that the warning budget is bounded and
+// that reaching it is visible: a truncated list must not look like a complete
+// account of what an import dropped.
+func TestAddBackupWarningFlagsTruncation(t *testing.T) {
+	res := &models.BackupImportResult{}
+
+	for i := range maxBackupWarnings + 5 {
+		addBackupWarning(res, fmt.Sprintf("warning %d", i))
+	}
+
+	require.Len(t, res.Warnings, maxBackupWarnings+1)
+	assert.Equal(t, fmt.Sprintf("warning %d", maxBackupWarnings-1), res.Warnings[maxBackupWarnings-1])
+	assert.Contains(t, res.Warnings[maxBackupWarnings], "further warnings omitted")
+
+	// The notice is appended once, not once per discarded warning.
+	addBackupWarning(res, "one warning too many")
+	assert.Len(t, res.Warnings, maxBackupWarnings+1)
+}
+
+// TestImportUserDataRejectsMalformedBundle pins that a bundle carrying values the
+// schema would reject answers 400 with the offending field named, instead of
+// aborting the transaction and reporting an internal error. Nothing is inserted.
+func TestImportUserDataRejectsMalformedBundle(t *testing.T) {
+	accountID := uuid.New()
+	categoryID := uuid.New()
+
+	account := func() []models.BackupAccount {
+		return []models.BackupAccount{{ID: accountID, Name: "A", AccountTypeID: "bank"}}
+	}
+
+	cases := []struct {
+		name   string
+		bundle models.BackupBundle
+		want   string
+		// group, when true, expects the bundle's category in the seeded group (the
+		// rule cases below carry one).
+		group bool
+	}{
+		{
+			name: "transaction type outside the CHECK constraint",
+			bundle: models.BackupBundle{
+				Format: models.BackupFormat, Version: models.BackupVersion,
+				Accounts: account(),
+				Transactions: []models.BackupTransaction{{
+					ID: uuid.New(), AccountID: accountID, Date: "2024-01-15",
+					Description: "x", Amount: money.FromFloat(10), Type: "DEBIT",
+				}},
+			},
+			want: "invalid transaction type",
+		},
+		{
+			name: "transaction amount beyond any plausible figure",
+			bundle: models.BackupBundle{
+				Format: models.BackupFormat, Version: models.BackupVersion,
+				Accounts: account(),
+				Transactions: []models.BackupTransaction{{
+					ID: uuid.New(), AccountID: accountID, Date: "2024-01-15",
+					Description: "x", Amount: money.Amount(1_100_000_000_000_000), Type: "debit",
+				}},
+			},
+			want: "invalid amount in backup",
+		},
+		{
+			name: "recurring frequency outside the CHECK constraint",
+			bundle: models.BackupBundle{
+				Format: models.BackupFormat, Version: models.BackupVersion,
+				Accounts: account(),
+				RecurringSeries: []models.BackupRecurringSeries{{
+					ID: uuid.New(), Name: "Rent", Type: "debit", Frequency: "fortnightly", Interval: 1,
+				}},
+			},
+			want: "invalid recurring frequency",
+		},
+		{
+			name: "rule date is a timestamp, not a date",
+			bundle: models.BackupBundle{
+				Format: models.BackupFormat, Version: models.BackupVersion,
+				Accounts:   account(),
+				Categories: []models.BackupCategory{{ID: categoryID, Name: "Food", GroupID: "expense"}},
+				Rules: []models.BackupRule{{
+					ID: uuid.New(), Pattern: "coffee", MatchType: "contains",
+					CategoryID: categoryID, DateFrom: new("2024-01-15T00:00:00Z"),
+				}},
+			},
+			want:  "invalid date",
+			group: true,
+		},
+		{
+			name: "rule match type outside the CHECK constraint",
+			bundle: models.BackupBundle{
+				Format: models.BackupFormat, Version: models.BackupVersion,
+				Accounts:   account(),
+				Categories: []models.BackupCategory{{ID: categoryID, Name: "Food", GroupID: "expense"}},
+				Rules: []models.BackupRule{{
+					ID: uuid.New(), Pattern: "coffee", MatchType: "regex", CategoryID: categoryID,
+				}},
+			},
+			want:  "invalid rule match type",
+			group: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, mock := newBackupTestRouter(t)
+			expectRestorePrelude(mock)
+			if tc.group {
+				expectSeededExpenseGroup(mock)
+			}
+			// The restore is all-or-nothing: a rejected bundle must roll back
+			// without a single INSERT.
+			mock.ExpectRollback()
+
+			w := postBackup(t, r, tc.bundle)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Contains(t, w.Body.String(), tc.want)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// TestValidateBackupAmountRejectsTheMinIntSentinel covers the value the JSON
+// decoder used to produce for an out-of-range or NaN amount. It cannot be built
+// through the HTTP endpoint (money.Amount.String then emits invalid JSON, so the
+// bundle cannot even be marshalled for the request), which is exactly why the
+// restore has to refuse it before it reaches a row.
+func TestValidateBackupAmountRejectsTheMinIntSentinel(t *testing.T) {
+	assert.Error(t, validateBackupAmount("amount", money.Amount(math.MinInt64)))
+
+	// The bounds themselves are inclusive; ordinary money is untouched.
+	assert.NoError(t, validateBackupAmount("amount", maxBackupAmount))
+	assert.NoError(t, validateBackupAmount("amount", -maxBackupAmount))
+	assert.Error(t, validateBackupAmount("amount", maxBackupAmount+1))
+	assert.Error(t, validateBackupAmount("amount", -maxBackupAmount-1))
+	assert.NoError(t, validateBackupAmount("amount", money.FromFloat(1250.5)))
+	assert.NoError(t, validateBackupAmount("amount", 0))
+}
+
+// TestParseBackupDatePtr covers the optional-date helper the rule rows use: an
+// absent date stays NULL, a present one is parsed (and rejected when malformed).
+func TestParseBackupDatePtr(t *testing.T) {
+	got, err := parseBackupDatePtr(nil)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	got, err = parseBackupDatePtr(new("2024-02-29"))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "2024-02-29", got.Format("2006-01-02"))
+
+	_, err = parseBackupDatePtr(new("2024-02-30"))
+	var be *backupError
+	require.ErrorAs(t, err, &be)
+	assert.Equal(t, http.StatusBadRequest, be.status)
 }

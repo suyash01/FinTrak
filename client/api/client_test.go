@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // newStub starts a test server and returns a client pointed at it. The handler
@@ -222,6 +224,203 @@ func TestRefreshRejectionEndsTheSession(t *testing.T) {
 	}
 	if c.HasSession() {
 		t.Error("a refused refresh must clear the local session")
+	}
+}
+
+// TestTransientRefreshFailureKeepsTheSession splits the two ways POST
+// /auth/refresh can fail. A rejection clears the cookies server-side, so the
+// session is over and the client drops it too. A transient 5xx (a role-lookup
+// DB error, a restarting pooler, a proxy blip) leaves the 30-day refresh token
+// intact on the server, so the client must keep its copy and let the next 401
+// retry the exchange: clearing it locally would force a fresh sign-in for a
+// session the server never refused.
+func TestTransientRefreshFailureKeepsTheSession(t *testing.T) {
+	var refreshCalls int32
+	var health atomic.Bool
+
+	c := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/accounts":
+			// The access token is only replaced by a successful refresh, so it
+			// stays stale until the exchange works.
+			if r.Header.Get("Cookie") == AccessCookieName+"=access-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"errors":[{"message":"invalid or expired token"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":"a1","name":"Everyday","accountTypeId":"bank"}]`))
+		case "/api/v1/auth/refresh":
+			atomic.AddInt32(&refreshCalls, 1)
+			if !health.Load() {
+				// Transient: no Set-Cookie at all, so nothing is cleared.
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+				return
+			}
+			sessionCookies(w, "access-2", "refresh-1")
+			_, _ = w.Write([]byte(`{"message":"token refreshed"}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	c.SetTokens("access-1", "refresh-1")
+	_, err := c.ListAccounts(context.Background())
+	if err == nil {
+		t.Fatal("a failed refresh must fail the call")
+	}
+	if Unauthorized(err) {
+		t.Errorf("error = %v, want the transient 500 rather than a sign-in prompt", err)
+	}
+	if !StatusIs(err, http.StatusInternalServerError) {
+		t.Errorf("error = %v, want the server's 500", err)
+	}
+	if !c.HasSession() {
+		t.Error("a transient refresh failure must keep the session")
+	}
+	if got := c.refreshToken(); got != "refresh-1" {
+		t.Errorf("refresh token = %q, want it kept for the next attempt", got)
+	}
+
+	// The retry path: once the server is healthy the same client recovers
+	// without signing in again.
+	health.Store(true)
+	accounts, err := c.ListAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("ListAccounts after recovery: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].Name != "Everyday" {
+		t.Errorf("accounts = %+v, want the replayed response", accounts)
+	}
+	if got := atomic.LoadInt32(&refreshCalls); got != 2 {
+		t.Errorf("refresh calls = %d, want 2 (one per 401)", got)
+	}
+}
+
+// TestUnauthorizedPostReplaysTheSameBody pins the design decision the request
+// struct is built on: the body is buffered, so the replay that follows a 401
+// sends it again instead of an empty one (a json.Encoder streamed into the
+// first attempt could not be replayed at all).
+func TestUnauthorizedPostReplaysTheSameBody(t *testing.T) {
+	var bodies []string
+	var refreshed atomic.Bool
+
+	c := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/transactions":
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("reading body: %v", err)
+			}
+			bodies = append(bodies, string(raw))
+			if !refreshed.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"errors":[{"message":"invalid or expired token"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"txn-1"}`))
+		case "/api/v1/auth/refresh":
+			refreshed.Store(true)
+			sessionCookies(w, "access-2", "refresh-1")
+			_, _ = w.Write([]byte(`{"message":"token refreshed"}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	c.SetTokens("access-1", "refresh-1")
+	id, err := c.CreateTransaction(context.Background(), CreateTransactionRequest{
+		AccountID: "acct-1", Date: "2026-01-01", Description: "coffee", Amount: "10.00", Type: "debit",
+	})
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if id != "txn-1" {
+		t.Errorf("id = %q, want the replayed response", id)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("saw %d POSTs, want 2 (original + replay)", len(bodies))
+	}
+	if bodies[0] == "" || bodies[0] != bodies[1] {
+		t.Errorf("replay body = %q, want the original %q", bodies[1], bodies[0])
+	}
+	if !strings.Contains(bodies[1], `"description":"coffee"`) {
+		t.Errorf("replay body = %q, want the encoded transaction", bodies[1])
+	}
+}
+
+// TestLongCallsGetTheirOwnDeadline covers the two endpoints whose work does not
+// fit the 60s JSON default: a whole-database restore (the upload plus a row-by-
+// row replay inside one transaction) and a statement parse (queued behind the
+// server's four-way parse semaphore, then forwarded to the parser). Expiring
+// mid-restore reports a failure for a transaction the server still commits, and
+// the retry is refused with 409. The deadline the client actually sends is
+// observed on the transport, and the ordinary call is there as the control.
+func TestLongCallsGetTheirOwnDeadline(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want time.Duration
+		call func(ctx context.Context, c *Client) error
+	}{
+		{
+			name: "restore",
+			body: `{"accounts":1}`,
+			want: importTimeout,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.ImportBackup(ctx, []byte(`{"format":"fintrak.backup","version":1}`))
+				return err
+			},
+		},
+		{
+			name: "statement parse",
+			body: `{"transactions":[],"pageCount":1}`,
+			want: parseTimeout,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.ParseStatement(ctx, "statement.pdf", []byte("%PDF-1.4"), "", "", "")
+				return err
+			},
+		},
+		{
+			name: "control: an ordinary call keeps the JSON default",
+			body: `[]`,
+			want: requestTimeout,
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.ListAccounts(ctx)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New("http://example.invalid/api/v1")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			var got time.Duration
+			c.SetTransport(transportFunc(func(req *http.Request) (*http.Response, error) {
+				deadline, ok := req.Context().Deadline()
+				if !ok {
+					return nil, errors.New("request carries no deadline")
+				}
+				got = time.Until(deadline)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tc.body)),
+					Request:    req,
+				}, nil
+			}))
+
+			if err := tc.call(context.Background(), c); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if got < tc.want-10*time.Second || got > tc.want {
+				t.Errorf("deadline = %v, want the %v budget", got, tc.want)
+			}
+		})
 	}
 }
 

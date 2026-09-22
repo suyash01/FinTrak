@@ -51,6 +51,7 @@ export default function Transactions() {
     payees,
     settings,
     setSettings,
+    refreshAccounts,
   } = useDomainData();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<TransactionsResponse>({
@@ -499,14 +500,15 @@ export default function Transactions() {
 
   const handleCategoryChange = useCallback(
     async (txnId: string, categoryId: string, txn: Transaction) => {
+      // The inline picker renders "no category" as the empty option.
+      if ((txn.categoryId ?? "") === categoryId) return;
       const seq = nextEditSeq(txnId);
       try {
-        await api.updateTransaction(txnId, {
-          categoryId: categoryId || null,
-          tags: txn.tags || [],
-          notes: txn.notes || "",
-          payeeId: txn.payeeId || null,
-        });
+        // Only the edited field goes out. A whole-row snapshot would carry the
+        // values the row was rendered with, so a second inline edit started
+        // while this one is still in flight would resurrect the other field's
+        // pre-edit value. The endpoint treats an absent key as "leave alone".
+        await api.updateTransaction(txnId, { categoryId: categoryId || null });
         // Ignore a response that a newer edit for the same row superseded.
         if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
@@ -523,6 +525,7 @@ export default function Transactions() {
             };
           }),
         }));
+        void refreshAccounts();
       } catch (err) {
         if (!isLatestEdit(txnId, seq)) return;
         // Revert the optimistic cell change and tell the user.
@@ -543,20 +546,18 @@ export default function Transactions() {
         toastApiError(err);
       }
     },
-    [],
+    [refreshAccounts],
   );
 
   const handlePayeeChange = useCallback(
     async (txnId: string, payeeId: string, txn: Transaction) => {
-      if (txn.payeeId === payeeId) return;
+      // The inline picker renders "no payee" as the empty option, which is the
+      // same thing as the row's null — neither is a change worth a write.
+      if ((txn.payeeId ?? "") === payeeId) return;
       const seq = nextEditSeq(txnId);
       try {
-        await api.updateTransaction(txnId, {
-          categoryId: txn.categoryId,
-          tags: txn.tags || [],
-          notes: txn.notes || "",
-          payeeId: payeeId || null,
-        });
+        // Only the edited field goes out — see handleCategoryChange.
+        await api.updateTransaction(txnId, { payeeId: payeeId || null });
         if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
           ...prev,
@@ -566,6 +567,7 @@ export default function Transactions() {
             return { ...t, payeeId, payee: p?.name || "" };
           }),
         }));
+        void refreshAccounts();
       } catch (err) {
         if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
@@ -577,7 +579,7 @@ export default function Transactions() {
         toastApiError(err);
       }
     },
-    [],
+    [refreshAccounts],
   );
 
   const handleBulkCategorize = async (categoryId: string) => {
@@ -586,6 +588,7 @@ export default function Transactions() {
       await api.bulkCategorize({ transactionIds: [...selected], categoryId });
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -597,6 +600,7 @@ export default function Transactions() {
       await api.bulkUpdatePayee({ transactionIds: [...selected], payeeId });
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -611,6 +615,7 @@ export default function Transactions() {
       });
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -625,6 +630,7 @@ export default function Transactions() {
       });
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -643,6 +649,7 @@ export default function Transactions() {
       }
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -659,6 +666,7 @@ export default function Transactions() {
       loadTransactions();
       refreshTags();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -674,6 +682,7 @@ export default function Transactions() {
       await api.bulkDeleteTransactions({ transactionIds: [...selected] });
       loadTransactions();
       setSelected(new Set());
+      void refreshAccounts();
     } catch (err) {
       toastApiError(err);
     }
@@ -706,12 +715,21 @@ export default function Transactions() {
     async (id: string) => {
       try {
         await api.deleteTransaction(id);
+        // The row is gone, so its id must leave the selection too: otherwise
+        // the bulk bar keeps counting a transaction that no longer exists and
+        // the next bulk action posts a dead id.
+        setSelected((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         loadTransactions();
+        void refreshAccounts();
       } catch (err) {
         toastApiError(err);
       }
     },
-    [loadTransactions],
+    [loadTransactions, refreshAccounts],
   );
 
   const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
@@ -865,6 +883,7 @@ export default function Transactions() {
           onSaved={() => {
             setCreating(false);
             loadTransactions();
+            void refreshAccounts();
           }}
         />
       )}
@@ -879,6 +898,7 @@ export default function Transactions() {
           onSaved={() => {
             setEditingTxn(null);
             loadTransactions();
+            void refreshAccounts();
           }}
         />
       )}

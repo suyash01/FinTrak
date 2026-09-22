@@ -7,9 +7,17 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from statement_parser import limits  # noqa: E402
+from statement_parser import (  # noqa: E402
+    icici_bank_extractor,
+    icici_cc_extractor,
+    indusind_bank_extractor,
+    sbi_cc_extractor,
+    slice_bank_extractor,
+)
 from statement_parser.limits import (  # noqa: E402
     DEFAULT_MAX_PAGES,
     PageLimitExceeded,
+    close_pdf,
     ensure_page_limit,
     max_pages,
 )
@@ -165,6 +173,108 @@ class EnsurePageLimitTests(unittest.TestCase):
         # The fallback keeps other wrappers (and these tests) working.
         with mock.patch.dict(os.environ, {"MAX_PAGES": "5"}):
             self.assertEqual(ensure_page_limit(_FakePdf(2)), 2)
+
+
+class _BombPdf:
+    """A document that declares 50 000 pages and forbids any Page from being
+    built: the exact input the cap exists for (measured at 5.98 s / ~140 MB
+    before it fired). Nothing on the rejection path may touch it."""
+
+    class _Doc:
+        catalog = {"Pages": {"Type": "Pages", "Count": 50_000, "Kids": []}}
+
+    def __init__(self):
+        self.doc = self._Doc()
+        self.flushed = False
+
+    def flush_cache(self):
+        self.flushed = True
+
+    @property
+    def pages(self):
+        raise AssertionError("the rejection path must not build a Page object")
+
+
+class ClosePdfTests(unittest.TestCase):
+    """pdfplumber.PDF.close() iterates pdf.pages, rebuilding one Page per page,
+    so it re-pays the whole cost the page cap avoids. close_pdf() releases the
+    document without ever materializing the page tree."""
+
+    def test_never_materializes_pages(self):
+        pdf = _BombPdf()
+        close_pdf(pdf)  # _BombPdf.pages raises if it is read
+        self.assertTrue(pdf.flushed, "the document's caches must still be flushed")
+
+    def test_closes_a_stream_it_owns(self):
+        pdf = _BombPdf()
+        pdf.stream = mock.Mock()
+        pdf.stream_is_external = False
+        close_pdf(pdf)
+        pdf.stream.close.assert_called_once_with()
+
+    def test_leaves_an_external_stream_open(self):
+        pdf = _BombPdf()
+        pdf.stream = mock.Mock()
+        pdf.stream_is_external = True
+        close_pdf(pdf)
+        pdf.stream.close.assert_not_called()
+
+    def test_tolerates_an_object_without_a_stream(self):
+        # pdfplumber.PDF always has one, but wrappers and test doubles need not.
+        class _Bare:
+            def flush_cache(self):
+                pass
+
+        close_pdf(_Bare())  # must not raise
+
+    def test_tolerates_an_object_with_neither_attribute(self):
+        close_pdf(object())  # must not raise
+
+    def test_still_closes_the_stream_when_flushing_the_cache_fails(self):
+        class _BadCache:
+            def __init__(self):
+                self.stream = mock.Mock()
+                self.stream_is_external = False
+
+            def flush_cache(self):
+                raise RuntimeError("damaged page tree")
+
+        pdf = _BadCache()
+        close_pdf(pdf)
+        pdf.stream.close.assert_called_once_with()
+
+
+class PageLimitRejectionCostTests(unittest.TestCase):
+    """Every extractor's cleanup must close the document through close_pdf().
+
+    Driving the real extract_transactions() with a bomb document keeps this
+    honest: `pdf.close()`/`with ... as pdf` would either materialize every page
+    (pdfplumber) or fail outright on a document that refuses to build one.
+    """
+
+    MODULES = (
+        icici_cc_extractor,
+        sbi_cc_extractor,
+        icici_bank_extractor,
+        slice_bank_extractor,
+        indusind_bank_extractor,
+    )
+
+    def test_the_rejection_path_never_builds_a_page(self):
+        for module in self.MODULES:
+            with self.subTest(module=module.__name__):
+                pdf = _BombPdf()
+                reader = mock.Mock()
+                reader.is_encrypted = False
+                with mock.patch.dict(os.environ, {"MAX_PAGES": "5"}), mock.patch.object(
+                    module.pdfplumber, "open", return_value=pdf
+                ), mock.patch.object(module, "PdfReader", return_value=reader):
+                    with self.assertRaises(PageLimitExceeded):
+                        module.extract_transactions("/tmp/bomb.pdf")
+                self.assertTrue(
+                    pdf.flushed,
+                    "the document must be closed without touching pdf.pages",
+                )
 
 
 if __name__ == "__main__":

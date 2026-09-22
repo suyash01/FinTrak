@@ -74,17 +74,22 @@ func TestCalculateTransferScore(t *testing.T) {
 			maxScore: 100,
 		},
 		{
-			name: "amount mismatch",
+			// GetTransferSuggestions only pairs a debit with credits of the same
+			// amount, so the score has no amount term at all: this case used to
+			// assert a penalty for a 50.00 mismatch, a path no request could
+			// reach (and one that would have floored the score for any 10-unit
+			// gap). Same-day descriptions now score the same as an exact match.
+			name: "amount is not scored",
 			debitTxn: models.Transaction{
 				Amount: money.FromFloat(1000),
 				Date:   now,
 			},
 			creditTxn: models.Transaction{
-				Amount: money.FromFloat(1050), // 50 diff
+				Amount: money.FromFloat(1050),
 				Date:   now,
 			},
-			minScore: 0,
-			maxScore: 60,
+			minScore: 95,
+			maxScore: 100,
 		},
 	}
 
@@ -711,6 +716,38 @@ func TestBulkDeleteLinksNonTransferKeepsCategory(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"deletedCount":2`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The response reports the links the DELETE actually removed, not how many ids
+// were asked for: a repeated, unknown or foreign id is not a deletion.
+func TestBulkDeleteLinksReportsRowsDeleted(t *testing.T) {
+	r, srv, mock := newLinkTestRouter(t)
+	r.POST("/links/bulk-delete", srv.BulkDeleteLinks)
+
+	userID := testUserID()
+	known, unknown := uuid.New(), uuid.New()
+	ids := []uuid.UUID{known, known, unknown}
+	reqBody := models.BulkDeleteLinksRequest{IDs: ids}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT type, from_txn_id, to_txn_id FROM links WHERE id = ANY").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"type", "from_txn_id", "to_txn_id"}).
+			AddRow("cashback", uuid.New(), uuid.New()))
+	mock.ExpectExec("DELETE FROM links WHERE id = ANY").
+		WithArgs(ids, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/links/bulk-delete", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"deletedCount":1`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

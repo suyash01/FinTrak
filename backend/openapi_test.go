@@ -76,6 +76,8 @@ func TestOpenAPISchemasMatchTheModels(t *testing.T) {
 	models := modelJSONFields(t)
 	require.NotEmpty(t, models, "no structs parsed from models.go")
 
+	moneyFields := modelMoneyJSONFields(t)
+
 	compared := 0
 	for name, schema := range doc.Components.Schemas {
 		fields, ok := models[name]
@@ -114,6 +116,20 @@ func TestOpenAPISchemasMatchTheModels(t *testing.T) {
 			"%s: models.go has fields the schema omits: %v (document them, or list them in schemaExceptions with a reason)", name, missing)
 		assert.Emptyf(t, extra,
 			"%s: the schema advertises fields no model has: %v (remove them, or list them in schemaExceptions with a reason)", name, extra)
+
+		// A money.Amount marshals as a bare JSON number in decimal major units
+		// (money.Amount.MarshalJSON), so every schema property backed by one
+		// must be `number` — documenting it as `integer` (the raw minor-unit
+		// column) is how the backup loan schemas came to promise cents while
+		// the encoder sent dollars. Names alone cannot catch that.
+		for _, f := range moneyFields[name] {
+			if _, ok := schema.Properties[f]; !ok {
+				continue // already reported as missing above
+			}
+			assert.Equalf(t, "number", schema.Properties[f].Type,
+				"%s.%s is a money.Amount (decimal major units on the wire) but the schema says type: %q",
+				name, f, schema.Properties[f].Type)
+		}
 	}
 
 	require.Greater(t, compared, 50,
@@ -166,6 +182,79 @@ func modelJSONFields(t *testing.T) map[string][]string {
 				if id, ok := field.Type.(*ast.Ident); ok {
 					out = append(out, collect(id.Name, seen)...)
 				}
+			}
+		}
+		return out
+	}
+
+	out := make(map[string][]string, len(structs))
+	for name := range structs {
+		out[name] = collect(name, map[string]bool{})
+	}
+	return out
+}
+
+// modelMoneyJSONFields parses models.go and returns, per struct, the JSON field
+// names whose Go type is money.Amount (or *money.Amount). Those fields are the
+// ones the schema must document as `number`, so the assertion above can catch a
+// money field documented as the raw minor-unit integer.
+func modelMoneyJSONFields(t *testing.T) map[string][]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "models/models.go", nil, 0)
+	require.NoError(t, err)
+
+	structs := map[string]*ast.StructType{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok {
+			return true
+		}
+		if st, ok := ts.Type.(*ast.StructType); ok {
+			structs[ts.Name.Name] = st
+		}
+		return true
+	})
+
+	var isMoney func(expr ast.Expr) bool
+	isMoney = func(expr ast.Expr) bool {
+		switch e := expr.(type) {
+		case *ast.SelectorExpr:
+			if id, ok := e.X.(*ast.Ident); ok {
+				return id.Name == "money" && e.Sel.Name == "Amount"
+			}
+		case *ast.StarExpr:
+			return isMoney(e.X)
+		}
+		return false
+	}
+
+	var collect func(name string, seen map[string]bool) []string
+	collect = func(name string, seen map[string]bool) []string {
+		st, ok := structs[name]
+		if !ok || seen[name] {
+			return nil
+		}
+		seen[name] = true
+
+		var out []string
+		for _, field := range st.Fields.List {
+			if len(field.Names) == 0 {
+				if id, ok := field.Type.(*ast.Ident); ok {
+					out = append(out, collect(id.Name, seen)...)
+				}
+				continue
+			}
+			if !isMoney(field.Type) || field.Tag == nil {
+				continue
+			}
+			tag, ok := reflect.StructTag(strings.Trim(field.Tag.Value, "`")).Lookup("json")
+			if !ok {
+				continue
+			}
+			if f := strings.Split(tag, ",")[0]; f != "" && f != "-" {
+				out = append(out, f)
 			}
 		}
 		return out

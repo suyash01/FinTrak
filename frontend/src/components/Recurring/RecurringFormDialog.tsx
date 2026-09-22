@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
+import { todayLocalISO } from "../../lib/dates";
 import { toast } from "sonner";
 
 const NONE = "none";
@@ -48,10 +49,6 @@ interface Props {
   categories: Category[];
   payees: Payee[];
   onSaved: () => void;
-}
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 interface FormState {
@@ -85,7 +82,7 @@ const EMPTY: FormState = {
   active: true,
 };
 
-function emptyRange(accountId: string, startDate = todayIso()): RangeRow {
+function emptyRange(accountId: string, startDate = todayLocalISO()): RangeRow {
   return { startDate, endDate: "", amount: "", accountId };
 }
 

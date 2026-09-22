@@ -28,7 +28,7 @@ func (srv *Server) GetTags(c *gin.Context) {
 	rows, err := srv.db.Query(c,
 		`SELECT tag, COUNT(*)::int AS count
 		 FROM transactions t
-		 CROSS JOIN LATERAL unnest(t.tags) AS tag
+		 CROSS JOIN LATERAL unnest(COALESCE(t.tags, '{}')) AS tag
 		 WHERE t.user_id = $1 AND tag <> ''
 		 GROUP BY tag
 		 ORDER BY COUNT(*) DESC, tag ASC`, auth.GetUserID(c))
@@ -86,14 +86,17 @@ func (srv *Server) BulkUpdateTags(c *gin.Context) {
 		return
 	}
 
-	// Rebuild tags as: (existing ∪ add) \ remove, deduplicated and sorted. The
-	// COALESCE keeps an empty result as '{}' rather than NULL. Transactions on
-	// closed accounts are skipped (immutable; linking only).
+	// Rebuild tags as: (existing ∪ add) \ remove, deduplicated and sorted.
+	// COALESCE keeps a row that predates the '{}' column default (its tags are
+	// SQL NULL) equivalent to an empty array, and keeps an empty result as '{}'
+	// rather than NULL — without it, `tags || $2` is NULL, unnest yields no
+	// rows, and the add silently stores nothing. Transactions on closed
+	// accounts are skipped (immutable; linking only).
 	result, err := srv.db.Exec(c,
 		`UPDATE transactions
 		 SET tags = COALESCE((
 		     SELECT array_agg(DISTINCT x ORDER BY x)
-		     FROM unnest(tags || $2::text[]) AS x
+		     FROM unnest(COALESCE(tags, '{}') || $2::text[]) AS x
 		     WHERE x <> ALL($3::text[])
 		 ), '{}')
 		 WHERE user_id = $1 AND id = ANY($4::uuid[])
@@ -118,12 +121,25 @@ func (srv *Server) RenameTag(c *gin.Context) {
 		return
 	}
 
+	// normalizeTags trims and drops blanks, so a blank operand comes back as an
+	// empty list with ok=true. Returning here would leave Gin to answer 200 with
+	// an empty body — a blank tag accepted as a successful no-op. Every other
+	// exit of this handler writes a response (400 from normalizeTags, 200 with
+	// the count for the equal-name short-circuit), so the blank case must too.
 	from, ok := normalizeTags(c, []string{req.From}, "from")
-	if !ok || len(from) == 0 {
+	if !ok {
+		return
+	}
+	if len(from) == 0 {
+		validation.RespondError(c, "from is required", http.StatusBadRequest)
 		return
 	}
 	to, ok := normalizeTags(c, []string{req.To}, "to")
-	if !ok || len(to) == 0 {
+	if !ok {
+		return
+	}
+	if len(to) == 0 {
+		validation.RespondError(c, "to is required", http.StatusBadRequest)
 		return
 	}
 	if from[0] == to[0] {

@@ -66,9 +66,16 @@ type App struct {
 	quitting bool
 }
 
-// New builds the root model. The SSH server calls it once per session, so every
-// session gets its own client, session state and screens.
-func New(client *api.Client) tea.Model {
+// New builds the root model for a locally run terminal, where lipgloss's
+// package-level renderer already describes the terminal the process writes to.
+func New(client *api.Client) tea.Model { return NewWithRenderer(client, nil) }
+
+// NewWithRenderer builds the root model with a renderer for the terminal it will
+// draw on. The SSH door serves many terminals from one process, so each session
+// passes the renderer wishtea made for its own pty: the door's own environment is
+// not the client's, and a shared package-level renderer would let one session's
+// colour profile leak into another's. A nil renderer means the local terminal.
+func NewWithRenderer(client *api.Client, r *lipgloss.Renderer) tea.Model {
 	ref := &RefData{}
 	ctx := &Ctx{Client: client, Ref: ref}
 	ctx.Notify = func(level Level, format string, args ...any) {
@@ -80,7 +87,7 @@ func New(client *api.Client) tea.Model {
 	a := &App{
 		client:  client,
 		keys:    DefaultKeyMap(),
-		theme:   DefaultTheme(),
+		theme:   ThemeFor(r),
 		login:   NewLoginModel(client),
 		ref:     ref,
 		ctx:     ctx,
@@ -189,15 +196,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if api.Unauthorized(m.err) {
 				// The session died (30-day deadline, or the server restarted
 				// with a new secret): fall back to the login screen.
-				a.signedIn = false
-				a.client.ClearSession()
-				a.status, a.level = "session expired — sign in again", LevelError
-				// Reset, not just Init: the model still reports the previous
-				// successful sign-in as done, so without this the next key
-				// "completes" that stale sign-in again and the screen can never
-				// sign in for real.
-				a.login.Reset()
-				return a, a.login.Init()
+				return a, a.signOut("session expired — sign in again", LevelError)
 			}
 			a.refErr = m.err
 			a.status, a.level = m.err.Error(), LevelError
@@ -242,10 +241,6 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, a.forward(msg)...)
 		return a, tea.Batch(cmds...)
-
-	case statusMsg:
-		a.status, a.level = m.text, m.level
-		return a, nil
 	}
 
 	// Keys go to the active screen only. A key press carries no tag, so
@@ -278,20 +273,36 @@ func (a *App) forward(msg tea.Msg) []tea.Cmd {
 
 // handleGlobalKey processes the App's own bindings, reporting whether the key was
 // consumed. Unconsumed keys move the sidebar cursor or fall through to the active
-// screen. Quit keys are handled by update before this runs, so they work even
-// while no screen exists.
+// screen. ctrl+c is handled by update before this runs, so it reaches the program
+// even while a modal or the sign-in screen owns the keyboard.
 func (a *App) handleGlobalKey(key tea.KeyMsg) (tea.Cmd, bool) {
+	// Quit, retry and sign-out are live before the screens exist, because that is
+	// the state a failed reference-data load leaves behind: the session is signed
+	// in but has no screens, so every binding used to be swallowed by the guard
+	// below and the error card was a dead end. The bindings after it all address
+	// a screen, so they still need one.
+	switch {
+	case keyMatches(a.keys.Quit, key):
+		// `q` quits from either pane: it is advertised as a global key and no
+		// screen binds it, so the content pane — the pane that has the keyboard
+		// by default — must honour it as well.
+		return tea.Quit, true
+	case keyMatches(a.keys.Refresh, key):
+		if len(a.screens) == 0 {
+			return a.startSession(), true
+		}
+		return a.refreshActive(), true
+	case keyMatches(a.keys.SignOut, key):
+		return a.signOut("signed out", LevelInfo), true
+	}
+
 	if len(a.screens) == 0 {
 		return nil, false
 	}
 	switch {
-	case key.String() == "q" && a.focus != FocusContent:
-		return tea.Quit, true
 	case keyMatches(a.keys.Help, key):
 		a.modal = NewHelp(helpRows(a.globalBindings()), helpRows(a.screens[a.nav].Keys()))
 		return nil, true
-	case keyMatches(a.keys.Refresh, key):
-		return a.refreshActive(), true
 	case keyMatches(a.keys.FocusNext, key):
 		if a.focus == FocusNav {
 			a.focus = FocusContent
@@ -318,14 +329,6 @@ func (a *App) handleGlobalKey(key tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		a.modal = picker
 		return nil, true
-	case key.String() == "ctrl+o":
-		a.client.ClearSession()
-		a.signedIn = false
-		a.screens = nil
-		a.freshAt = map[int]uint64{}
-		a.status, a.level = "signed out", LevelInfo
-		a.login.Reset()
-		return a.login.Init(), true
 	}
 
 	// Number keys jump straight to a screen and into it.
@@ -334,12 +337,14 @@ func (a *App) handleGlobalKey(key tea.KeyMsg) (tea.Cmd, bool) {
 	}
 
 	if a.focus == FocusNav {
-		switch key.String() {
-		case "up", "k":
+		// The sidebar's keys come from the same bindings the status bar
+		// advertises, so the hint cannot drift from what the pane actually does.
+		switch {
+		case keyMatches(a.keys.Up, key):
 			return a.selectScreen(a.nav - 1), true
-		case "down", "j":
+		case keyMatches(a.keys.Down, key):
 			return a.selectScreen(a.nav + 1), true
-		case "enter", "right", "l":
+		case keyMatches(a.keys.SidebarEnter, key):
 			a.focus = FocusContent
 			return nil, true
 		}
@@ -382,6 +387,30 @@ func (a *App) refreshActive() tea.Cmd {
 	return a.screens[a.nav].Refresh()
 }
 
+// signOut tears the signed-in workspace down and returns the sign-in screen,
+// showing reason on the status line. Everything the session owned goes with it:
+// the screens, the cache's load markers, and any open overlay — an overlay left
+// behind keeps taking every key for a screen that no longer exists, so the
+// sign-in card is displayed but the typing goes nowhere (esc happens to close
+// every modal, which is the only reason that state looked like a hang rather
+// than being one).
+func (a *App) signOut(reason string, level Level) tea.Cmd {
+	a.signedIn = false
+	a.client.ClearSession()
+	a.modal = nil
+	a.screens = nil
+	a.freshAt = map[int]uint64{}
+	// The old load error belongs to the session that is ending; keeping it would
+	// put the error card back on screen during the next sign-in's load.
+	a.refErr = nil
+	a.status, a.level = reason, level
+	// Reset, not just Init: the model still reports the previous successful
+	// sign-in as done, so without this the next key "completes" that stale
+	// sign-in again and the screen can never sign in for real.
+	a.login.Reset()
+	return a.login.Init()
+}
+
 // completeLogin finishes the sign-in handshake: the login model has already
 // captured the session cookies, so the next step is the shared lookups.
 func (a *App) completeLogin() tea.Cmd {
@@ -416,7 +445,11 @@ func (a *App) View() string {
 	}
 	if len(a.screens) == 0 {
 		if a.refErr != nil {
-			return a.centerModal(a.theme.Error.Render("cannot load reference data: " + a.refErr.Error()))
+			// The load failed, so there is no screen to address and no status
+			// bar to hint from: the card carries its own way out, because the
+			// session cannot be used before the lookups load.
+			return a.centerModal(a.theme.Error.Render("cannot load reference data: "+a.refErr.Error()) +
+				"\n\n" + renderBindings(a.theme, a.width, []key.Binding{a.keys.Refresh, a.keys.SignOut}))
 		}
 		return a.centerModal(a.theme.Subtle.Render("loading…"))
 	}
@@ -508,7 +541,7 @@ func (a *App) renderStatus(width int) string {
 	// keyboard its own navigation is live and the screen's keys are not, so
 	// showing the screen's hints there would describe dead keys.
 	if a.focus == FocusNav {
-		hints = append(hints, a.keys.Up, a.keys.Down, a.keys.Detail)
+		hints = append(hints, a.keys.Up, a.keys.Down, a.keys.SidebarEnter)
 	} else {
 		hints = append(hints, a.screens[a.nav].Keys()...)
 	}
@@ -560,7 +593,7 @@ func (a *App) globalBindings() []key.Binding {
 		a.keys.GotoScreen, a.keys.SignOut, a.keys.Quit,
 	)
 	if a.focus == FocusNav {
-		out = append(out, a.keys.Up, a.keys.Down, a.keys.Detail)
+		out = append(out, a.keys.Up, a.keys.Down, a.keys.SidebarEnter)
 	}
 	return out
 }

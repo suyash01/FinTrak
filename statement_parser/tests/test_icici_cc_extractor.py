@@ -241,7 +241,9 @@ class IciciExtractTransactionsTests(unittest.TestCase):
                 "22/10/2024 10120266708 Reversal of Fuel Surcharge 0 10.00 CR\n"
             ),
         ]
-        mock_open.return_value.__enter__.return_value = pdf
+        # No `with`: the extractor releases the document with limits.close_pdf(),
+        # so the handle it uses is open()'s return value.
+        mock_open.return_value = pdf
 
         result = extract_transactions("/tmp/x.pdf")
 
@@ -265,7 +267,9 @@ class IciciExtractTransactionsTests(unittest.TestCase):
                 "26/12/2022 6988385507 UPI Payment Received 1,973.00 CR\n"
             ),
         ]
-        mock_open.return_value.__enter__.return_value = pdf
+        # No `with`: the extractor releases the document with limits.close_pdf(),
+        # so the handle it uses is open()'s return value.
+        mock_open.return_value = pdf
 
         result = extract_transactions("/tmp/x.pdf")
 
@@ -281,7 +285,9 @@ class IciciExtractTransactionsTests(unittest.TestCase):
         mock_reader_cls.return_value = mock_reader
         pdf = mock.Mock()
         pdf.pages = []
-        mock_open.return_value.__enter__.return_value = pdf
+        # No `with`: the extractor releases the document with limits.close_pdf(),
+        # so the handle it uses is open()'s return value.
+        mock_open.return_value = pdf
 
         extract_transactions("/tmp/x.pdf", password="1234")
 

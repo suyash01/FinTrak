@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sort"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
 	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
@@ -187,6 +189,39 @@ func (a *apiClient) register(email string) {
 	}, http.StatusCreated, nil)
 }
 
+// rawRequest sends a request with an explicitly supplied refresh cookie over a
+// jar-less client, so a test can replay a token the cookie jar has already
+// replaced or cleared — exactly what a thief holding a copied cookie does.
+func (a *apiClient) rawRequest(method, path, refreshToken string) (int, []byte) {
+	a.t.Helper()
+	req, err := http.NewRequest(method, a.base+path, nil)
+	require.NoError(a.t, err)
+	if refreshToken != "" {
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refreshToken})
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(a.t, err)
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(a.t, err)
+	return resp.StatusCode, data
+}
+
+// refreshCookie returns the refresh cookie the client's jar currently holds, or
+// "" when it holds none. The cookie is scoped to the auth endpoints, so the jar
+// has to be asked about a URL inside that path.
+func (a *apiClient) refreshCookie() string {
+	a.t.Helper()
+	u, err := url.Parse(a.base + "/api/v1/auth/refresh")
+	require.NoError(a.t, err)
+	for _, ck := range a.client.Jar.Cookies(u) {
+		if ck.Name == auth.RefreshCookieName {
+			return ck.Value
+		}
+	}
+	return ""
+}
+
 func (a *apiClient) createAccount(name, accountType string, billingDay *int) models.Account {
 	a.t.Helper()
 	body := map[string]any{"name": name, "accountTypeId": accountType, "currency": "INR"}
@@ -277,6 +312,64 @@ func TestIntegrationAuthAndSeededCategories(t *testing.T) {
 	require.NotEmpty(t, cats, "registration should seed default categories")
 	require.NotEmpty(t, categoryByName(t, cats, "Transfer"))
 	require.NotEmpty(t, categoryByName(t, cats, "Groceries"))
+}
+
+// TestIntegrationRefreshSessionLifecycle drives rotation, reuse detection and
+// logout revocation against real Postgres, where the refresh_tokens rows and
+// the rotation transaction are actually exercised (pgxmock cannot validate the
+// conditional update that detects reuse).
+func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
+	ctx := context.Background()
+
+	a := newAPIClient(t)
+	a.register("rotate@example.com")
+
+	var me models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &me)
+
+	old := a.refreshCookie()
+	require.NotEmpty(t, old, "registration must issue a refresh cookie")
+
+	// Refresh rotates: the browser is handed a new cookie and the presented one
+	// is spent.
+	a.call(http.MethodPost, "/api/v1/auth/refresh", nil, http.StatusOK, nil)
+	rotated := a.refreshCookie()
+	require.NotEmpty(t, rotated)
+	require.NotEqual(t, old, rotated, "refresh must rotate the refresh cookie")
+
+	liveTokens := func(userID uuid.UUID) int {
+		t.Helper()
+		var n int
+		require.NoError(t, db.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL`, userID).Scan(&n))
+		return n
+	}
+	require.Equal(t, 1, liveTokens(me.ID))
+
+	var replaced int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND replaced_by IS NOT NULL`, me.ID).Scan(&replaced))
+	require.Equal(t, 1, replaced, "rotation must record the successor")
+
+	// Replaying the replaced token is reuse: the whole family is revoked, so
+	// the successor the thief would present next dies with it.
+	status, body := a.rawRequest(http.MethodPost, "/api/v1/auth/refresh", old)
+	require.Equal(t, http.StatusUnauthorized, status, "body: %s", string(body))
+	status, body = a.rawRequest(http.MethodPost, "/api/v1/auth/refresh", rotated)
+	require.Equal(t, http.StatusUnauthorized, status, "the successor must die with the replayed token; body: %s", string(body))
+	require.Equal(t, 0, liveTokens(me.ID))
+
+	// Logout revokes the session's family, so a copied cookie cannot be resumed.
+	other := newAPIClient(t)
+	other.register("logout@example.com")
+	copied := other.refreshCookie()
+	require.NotEmpty(t, copied)
+
+	other.call(http.MethodPost, "/api/v1/auth/logout", nil, http.StatusOK, nil)
+	require.Empty(t, other.refreshCookie(), "logout must clear the browser's cookie")
+
+	status, body = other.rawRequest(http.MethodPost, "/api/v1/auth/refresh", copied)
+	require.Equal(t, http.StatusUnauthorized, status, "a copied refresh token must not survive logout; body: %s", string(body))
 }
 
 func TestIntegrationImportDeduplicatesAgainstPostgres(t *testing.T) {

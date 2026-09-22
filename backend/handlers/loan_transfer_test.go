@@ -678,10 +678,11 @@ func TestDeleteLoanTransfer(t *testing.T) {
 		r := newLoanScheduleTestRouter(srv)
 
 		sourceID, targetID, transferID := uuid.New(), uuid.New(), uuid.New()
+		amount := money.FromFloat(950)
 		mock.ExpectBegin()
 		mock.ExpectQuery("DELETE FROM loan_transfers").
 			WithArgs(transferID, sourceID, testUserID()).
-			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode"}).AddRow(targetID, models.LoanTransferRecast))
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode", "amount"}).AddRow(targetID, models.LoanTransferRecast, amount))
 		mock.ExpectCommit()
 
 		req, _ := http.NewRequest(http.MethodDelete,
@@ -702,13 +703,16 @@ func TestDeleteLoanTransfer(t *testing.T) {
 		r := newLoanScheduleTestRouter(srv)
 
 		sourceID, targetID, transferID := uuid.New(), uuid.New(), uuid.New()
+		amount := money.FromFloat(950)
 		mock.ExpectBegin()
 		mock.ExpectQuery("DELETE FROM loan_transfers").
 			WithArgs(transferID, sourceID, testUserID()).
-			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode"}).AddRow(targetID, models.LoanTransferOpens))
-		mock.ExpectExec("DELETE FROM loan_schedules").
-			WithArgs(targetID, testUserID()).
-			WillReturnResult(pgxmock.NewResult("DELETE", 1))
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode", "amount"}).AddRow(targetID, models.LoanTransferOpens, amount))
+		// The schedule is only removed while its principal is still the
+		// transferred amount and no other transfer landed on the target.
+		mock.ExpectQuery("DELETE FROM loan_schedules").
+			WithArgs(targetID, testUserID(), amount).
+			WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
 		mock.ExpectCommit()
 
 		req, _ := http.NewRequest(http.MethodDelete,
@@ -717,6 +721,76 @@ func TestDeleteLoanTransfer(t *testing.T) {
 		r.ServeHTTP(w, req)
 
 		require.Equal(t, http.StatusOK, w.Code)
+		assert.JSONEq(t, `{"deleted":1}`, w.Body.String())
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// The user edited the target's terms after the transfer opened its
+	// schedule: those terms are theirs, so the transfer is not deleted at all
+	// (a half-reverted pair of loans would be worse than a 409).
+	t.Run("refuses to delete terms the user has since replaced", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+		srv := newTestServer(mock)
+		r := newLoanScheduleTestRouter(srv)
+
+		sourceID, targetID, transferID := uuid.New(), uuid.New(), uuid.New()
+		mock.ExpectBegin()
+		mock.ExpectQuery("DELETE FROM loan_transfers").
+			WithArgs(transferID, sourceID, testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode", "amount"}).
+				AddRow(targetID, models.LoanTransferOpens, money.FromFloat(950)))
+		// The guarded delete removes nothing — the target's principal is no
+		// longer the transferred amount — and the schedule is still there.
+		mock.ExpectQuery("DELETE FROM loan_schedules").
+			WithArgs(targetID, testUserID(), money.FromFloat(950)).
+			WillReturnError(pgx.ErrNoRows)
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(targetID, testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectRollback()
+
+		req, _ := http.NewRequest(http.MethodDelete,
+			"/accounts/"+sourceID.String()+"/loan-transfer/"+transferID.String(), nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), "terms have changed")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// The user deleted the target's schedule outright: the transfer has nothing
+	// left to undo there, so its removal is allowed (refusing it would leave the
+	// source settled with no way back).
+	t.Run("removes the transfer when the target's schedule is already gone", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+		srv := newTestServer(mock)
+		r := newLoanScheduleTestRouter(srv)
+
+		sourceID, targetID, transferID := uuid.New(), uuid.New(), uuid.New()
+		mock.ExpectBegin()
+		mock.ExpectQuery("DELETE FROM loan_transfers").
+			WithArgs(transferID, sourceID, testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"to_loan_account_id", "mode", "amount"}).
+				AddRow(targetID, models.LoanTransferOpens, money.FromFloat(950)))
+		mock.ExpectQuery("DELETE FROM loan_schedules").
+			WithArgs(targetID, testUserID(), money.FromFloat(950)).
+			WillReturnError(pgx.ErrNoRows)
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(targetID, testUserID()).
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+		mock.ExpectCommit()
+
+		req, _ := http.NewRequest(http.MethodDelete,
+			"/accounts/"+sourceID.String()+"/loan-transfer/"+transferID.String(), nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		assert.JSONEq(t, `{"deleted":1}`, w.Body.String())
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})

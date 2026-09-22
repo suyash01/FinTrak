@@ -110,13 +110,12 @@ func TestLinkLoanDisbursementVerifiesMatchingCredit(t *testing.T) {
 		WithArgs(f.loanID, f.userID).
 		WillReturnRows(f.mock.NewRows([]string{"exists"}).AddRow(true))
 	f.expectTransactionCheck("credit", "bank")
-	f.mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
-		WithArgs(f.txnID, f.userID).
-		WillReturnRows(f.mock.NewRows([]string{"count"}).AddRow(0))
 	f.mock.ExpectQuery("SELECT loan_account_id FROM loan_disbursements").
 		WithArgs(f.txnID, f.userID).
 		WillReturnError(pgx.ErrNoRows)
 	// 1,000.00 sanctioned less the 50.00 fee is what should have arrived.
+	// The insert is guarded: it writes only while the transaction is not an EMI
+	// payment, so there is no separate attachment pre-check to mock.
 	f.mock.ExpectExec("INSERT INTO loan_disbursements").
 		WithArgs(f.loanID, f.txnID, f.userID).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -149,9 +148,6 @@ func TestLinkLoanDisbursementReportsMismatch(t *testing.T) {
 		WithArgs(f.loanID, f.userID).
 		WillReturnRows(f.mock.NewRows([]string{"exists"}).AddRow(true))
 	f.expectTransactionCheck("credit", "bank")
-	f.mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
-		WithArgs(f.txnID, f.userID).
-		WillReturnRows(f.mock.NewRows([]string{"count"}).AddRow(0))
 	f.mock.ExpectQuery("SELECT loan_account_id FROM loan_disbursements").
 		WithArgs(f.txnID, f.userID).
 		WillReturnError(pgx.ErrNoRows)
@@ -243,9 +239,15 @@ func TestLinkLoanDisbursementRejections(t *testing.T) {
 				f.mock.ExpectQuery("SELECT EXISTS").WithArgs(f.loanID, f.userID).
 					WillReturnRows(f.mock.NewRows([]string{"exists"}).AddRow(true))
 				f.expectTransactionCheck("credit", "bank")
-				f.mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
+				f.mock.ExpectQuery("SELECT loan_account_id FROM loan_disbursements").
 					WithArgs(f.txnID, f.userID).
-					WillReturnRows(f.mock.NewRows([]string{"count"}).AddRow(1))
+					WillReturnError(pgx.ErrNoRows)
+				// The exclusivity guard is part of the write: the statement
+				// inserts nothing when the transaction is an EMI payment, and
+				// that zero row count is this 409.
+				f.mock.ExpectExec("INSERT INTO loan_disbursements").
+					WithArgs(f.loanID, f.txnID, f.userID).
+					WillReturnResult(pgxmock.NewResult("INSERT", 0))
 			},
 			want: "already an EMI payment",
 			code: http.StatusConflict,
@@ -257,9 +259,6 @@ func TestLinkLoanDisbursementRejections(t *testing.T) {
 				f.mock.ExpectQuery("SELECT EXISTS").WithArgs(f.loanID, f.userID).
 					WillReturnRows(f.mock.NewRows([]string{"exists"}).AddRow(true))
 				f.expectTransactionCheck("credit", "bank")
-				f.mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
-					WithArgs(f.txnID, f.userID).
-					WillReturnRows(f.mock.NewRows([]string{"count"}).AddRow(0))
 				f.mock.ExpectQuery("SELECT loan_account_id FROM loan_disbursements").
 					WithArgs(f.txnID, f.userID).
 					WillReturnRows(f.mock.NewRows([]string{"loan_account_id"}).AddRow(uuid.New()))

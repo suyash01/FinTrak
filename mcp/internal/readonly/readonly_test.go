@@ -8,11 +8,13 @@ import (
 	"testing"
 )
 
-// stubTransport records what reached the network and answers 200.
+// stubTransport records what reached the network and answers 200. The request
+// URI is recorded rather than the path, so a test can prove the query survived
+// the guard instead of being dropped with the match.
 type stubTransport struct{ seen []string }
 
 func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	s.seen = append(s.seen, req.Method+" "+req.URL.Path)
+	s.seen = append(s.seen, req.Method+" "+req.URL.RequestURI())
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       http.NoBody,
@@ -43,7 +45,9 @@ func TestGuardAllowsListedRoutesAndRefusesEverythingElse(t *testing.T) {
 		allowed bool
 	}{
 		{name: "listed read", method: http.MethodGet, path: "/api/v1/accounts", allowed: true},
-		{name: "listed read with a query", method: http.MethodGet, path: "/api/v1/transactions", allowed: true},
+		{name: "listed read with a query", method: http.MethodGet, path: "/api/v1/transactions?accountId=x&limit=5", allowed: true},
+		{name: "a query cannot name another route", method: http.MethodPost, path: "/api/v1/accounts?path=/transactions/validate", allowed: false},
+		{name: "a query cannot widen the allowlist", method: http.MethodGet, path: "/api/v1/payees?next=/accounts", allowed: false},
 		{name: "listed preview post", method: http.MethodPost, path: "/api/v1/rules/preview", allowed: true},
 		{name: "listed session route", method: http.MethodPost, path: "/api/v1/auth/login", allowed: true},
 		{name: "placeholder matches one segment", method: http.MethodGet, path: "/api/v1/accounts/9f1c/loan-schedule", allowed: true},
@@ -87,6 +91,30 @@ func TestGuardAllowsListedRoutesAndRefusesEverythingElse(t *testing.T) {
 				t.Errorf("refused request reached the transport (%v)", next.seen[before:])
 			}
 		})
+	}
+}
+
+// TestGuardIgnoresTheQueryButForwardsIt pins the two halves of the matcher's
+// query contract. Matching looks at the path alone — the write-on-GET shapes
+// this allowlist documents are triggered by query parameters, so a query must
+// never decide which route matched, in either direction — while the query itself
+// still reaches the transport untouched, or every filtered read would silently
+// become an unfiltered one.
+func TestGuardIgnoresTheQueryButForwardsIt(t *testing.T) {
+	next := &stubTransport{}
+	guard := New(next, "/api/v1", testRoutes())
+	client := &http.Client{Transport: guard}
+
+	const target = "http://api.test/api/v1/transactions?accountId=x&next=%2Ftransactions%2Fbulk-delete"
+	resp, err := client.Get(target)
+	if err != nil {
+		t.Fatalf("a listed read with a query was refused: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	want := "GET /api/v1/transactions?accountId=x&next=%2Ftransactions%2Fbulk-delete"
+	if len(next.seen) != 1 || next.seen[0] != want {
+		t.Fatalf("the transport saw %v, want %q", next.seen, want)
 	}
 }
 

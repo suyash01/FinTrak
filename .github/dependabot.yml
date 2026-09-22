@@ -1,4 +1,11 @@
 version: 2
+# Every dependency surface in the monorepo gets update PRs. The repository has
+# four Go modules (backend + the separately-versioned client/tui/mcp modules the
+# shared API client is vendored into by path), one bun project, one uv project
+# whose lockfile CI verifies with `uv lock --check`, four Dockerfiles with
+# hand-pinned base images, and the compose files whose image tags are also
+# pinned by hand — all of which used to be skipped, so security bumps there
+# arrived only if a human noticed.
 updates:
   - package-ecosystem: "gomod"
     directory: "/backend"
@@ -6,8 +13,69 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
+  # client/, tui/ and mcp/ are their own modules (`go.mod` each), so each needs
+  # its own entry; the path replace into client/ is resolved locally.
+  - package-ecosystem: "gomod"
+    directory: "/client"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "gomod"
+    directory: "/tui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "gomod"
+    directory: "/mcp"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
   - package-ecosystem: "npm"
     directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # uv.lock is a CI-enforced lockfile (`uv lock --check` in the parser job).
+  - package-ecosystem: "uv"
+    directory: "/statement_parser"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Base images of the four Dockerfiles (one entry per file location).
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "docker"
+    directory: "/statement_parser"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "docker"
+    directory: "/tui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # The compose files pin `postgres`, `adminer`, `dpage/pgadmin4` and
+  # `amir20/dozzle` by hand (docker-compose.yml, the two production files), so
+  # the database/UI images move deliberately instead of floating.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

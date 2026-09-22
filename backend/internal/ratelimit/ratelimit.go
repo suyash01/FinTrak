@@ -35,6 +35,22 @@ func DefaultConfig() Config {
 	}
 }
 
+// DefaultFailureConfig returns the policy for a per-identity *failure* budget,
+// the second dimension of the auth throttle. It is deliberately far more
+// permissive than DefaultConfig: the per-IP bucket is what bounds an attacker's
+// throughput, while this budget only decides how many rejected credential
+// checks an identity keeps getting an answer for. The high burst matters
+// because the budget is shared by every client — sizing it like the per-IP
+// bucket is what let a single IP lock a chosen address out.
+func DefaultFailureConfig() Config {
+	return Config{
+		Rate:    rate.Every(30 * time.Second),
+		Burst:   50,
+		TTL:     10 * time.Minute,
+		MaxKeys: defaultMaxKeys,
+	}
+}
+
 type entry struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
@@ -68,6 +84,12 @@ func New(cfg Config) *Limiter {
 
 // Allow reports whether a request identified by key may proceed, consuming one
 // token from that key's bucket. A nil Limiter allows everything.
+//
+// The tracked-key cap bounds memory without ever refusing a request because of
+// it: when the map is full the stalest bucket (by last use) is dropped so the
+// new key takes its place. Failing closed instead — refusing every key that is
+// not already tracked — turned a flood of attacker-chosen keys into a global
+// lockout of every client that had not been seen recently.
 func (l *Limiter) Allow(key string) bool {
 	if l == nil {
 		return true
@@ -78,13 +100,10 @@ func (l *Limiter) Allow(key string) bool {
 	now := l.now()
 	e, ok := l.entries[key]
 	if !ok {
-		// Bound the map: if it is at capacity, sweep expired buckets first and
-		// fail closed if that frees nothing. This keeps memory bounded even
-		// when keys are attacker-controlled.
 		if len(l.entries) >= l.cfg.MaxKeys {
 			l.evictLocked(now)
 			if len(l.entries) >= l.cfg.MaxKeys {
-				return false
+				l.evictStalestLocked()
 			}
 		}
 		e = &entry{limiter: rate.NewLimiter(l.cfg.Rate, l.cfg.Burst)}
@@ -92,6 +111,19 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	e.lastSeen = now
 	return e.limiter.AllowN(now, 1)
+}
+
+// Reset drops a key's bucket, returning it to its full burst. It is the refund
+// path for a failure budget: a caller that proves ownership (a correct login
+// password) clears the failures accumulated against its identity, so a third
+// party can never hold that identity's budget at zero.
+func (l *Limiter) Reset(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.entries, key)
 }
 
 // Evict removes buckets idle for longer than the configured TTL. It is safe to
@@ -113,6 +145,24 @@ func (l *Limiter) evictLocked(now time.Time) {
 		if e.lastSeen.Before(cutoff) {
 			delete(l.entries, key)
 		}
+	}
+}
+
+// evictStalestLocked drops the least recently used bucket, making room for a
+// new key when the map is at capacity and nothing has expired. The caller must
+// hold l.mu.
+func (l *Limiter) evictStalestLocked() {
+	var (
+		stalestKey  string
+		stalestSeen time.Time
+	)
+	for key, e := range l.entries {
+		if stalestKey == "" || e.lastSeen.Before(stalestSeen) {
+			stalestKey, stalestSeen = key, e.lastSeen
+		}
+	}
+	if stalestKey != "" {
+		delete(l.entries, stalestKey)
 	}
 }
 

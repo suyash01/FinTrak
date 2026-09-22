@@ -177,6 +177,37 @@ def _make_page(text, words):
     return page
 
 
+# A crore-scale withdrawal row. The template's column header IS present (the
+# old bound derived from it was 405.7 - 368.4 ≈ 43pt, so only the divider-bound
+# 405.7 - 322.9 ≈ 82pt admits this token), and the amounts are lakh-grouped
+# exactly as an Indian statement prints them. Character width matches the
+# transcribed fixtures (3.46pt/char): 14 chars ≈ 48.4pt wide.
+_WIDE_AMOUNT_PAGE_TEXT = """\
+STATEMENT OF CUSTOMER
+43800785
+SUYASH MITTAL Date : 01-Jul-2023
+Transaction History for Savings Account, Current Account and Overdraft Account.
+Account Number Name Holding Status Customer ID
+157044793121 SUYASH MITTAL Primary Holder 43800785
+Statement Period : 01-Jun-2023 TO 30-Jun-2023
+"""
+
+_WIDE_AMOUNT_PAGE_WORDS = _HEADER + [
+    _w("01-Jun-2023", 35.5, 75.9, 241.0),
+    _w("Brought", 80.9, 108.1, 241.0),
+    _w("Forward", 110.0, 137.6, 241.0),
+    _w("1,50,00,000.00", 514.3, 562.7, 241.0),
+    _w("21-Jun-2023", 36.0, 75.3, 250.3),
+    _w("CREDIT", 80.9, 106.9, 250.3),
+    _w("1,00,00,000.00", 357.3, 405.7, 250.3),  # the wide withdrawal
+    _w("50,00,000.00", 521.2, 562.7, 250.3),
+    _w("30-Jun-2023", 35.5, 75.9, 303.2),
+    _w("Carried", 80.9, 105.4, 303.2),
+    _w("Forward", 107.3, 134.9, 303.2),
+    _w("50,00,000.00", 521.2, 562.7, 303.2),
+]
+
+
 class IndusindNarrationAmountTests(unittest.TestCase):
     def test_an_amount_shaped_ref_token_is_not_booked_as_a_withdrawal(self):
         """A reference or narration token that looks like an amount sits left of
@@ -200,9 +231,12 @@ class IndusindNarrationAmountTests(unittest.TestCase):
         self.assertEqual(row["balance"], 5892.32)
 
     def test_a_wide_amount_inside_its_column_is_still_read(self):
-        """The left bound must not reject a legitimate amount that starts a
-        little left of the divider."""
-        words = [
+        """The left bound must come from the column divider (328.9), not from
+        the right-aligned "Withdrawal" header word (x0 368.4): the header's own
+        left edge sits ~40pt (≈11 characters) inside the column, so using it
+        silently dropped every withdrawal wider than ~43pt. The header line is
+        part of this fixture precisely because that is the path that broke."""
+        words = _HEADER + [
             _w("30-Jun-2023", 31.4, 75.3, 100.0),
             _w("UPI payment", 80.9, 160.0, 100.0),
             _w("1,00,000.00", 325.0, 405.7, 100.0),  # wide withdrawal
@@ -414,6 +448,37 @@ class IndusindExtractTransactionsTests(unittest.TestCase):
         self.assertTrue(
             any("closing balance mismatch" in e for e in result["validation_errors"])
         )
+
+    @mock.patch("statement_parser.indusind_bank_extractor.pdfplumber.open")
+    @mock.patch("statement_parser.indusind_bank_extractor.PdfReader")
+    def test_a_crore_withdrawal_survives_into_the_import(self, mock_reader_cls, mock_open):
+        """A ~₹1 crore debit on a page carrying the column header used to be
+        dropped by the header-derived left bound: the row then became a 0.00
+        "Credit" placeholder, the importable filter deleted it, and the balance
+        chain reported a break naming "dep wd None" instead of the real cause."""
+        mock_reader = mock.Mock()
+        mock_reader.is_encrypted = False
+        mock_reader_cls.return_value = mock_reader
+
+        pdf = mock.Mock()
+        pdf.pages = [_make_page(_WIDE_AMOUNT_PAGE_TEXT, _WIDE_AMOUNT_PAGE_WORDS)]
+        mock_open.return_value = pdf
+
+        result = extract_transactions("/tmp/indusind.pdf")
+
+        self.assertEqual(result["validation_errors"], [])
+        self.assertEqual(result["page_count"], 1)
+        self.assertEqual(result["opening_balance"], 15000000.00)
+        self.assertEqual(result["closing_balance"], 5000000.00)
+        self.assertEqual(result["total_withdrawals"], 10000000.00)
+        self.assertEqual(result["transaction_count"], 1)
+        self.assertEqual(len(result["transactions"]), 1)
+        txn = result["transactions"][0]
+        self.assertEqual(txn["date"], "2023-06-21")
+        self.assertEqual(txn["type"], "Debit")
+        self.assertEqual(txn["amount"], 10000000.00)
+        self.assertEqual(txn["withdrawal"], 10000000.00)
+        self.assertEqual(txn["balance"], 5000000.00)
 
     @mock.patch("statement_parser.indusind_bank_extractor.pdfplumber.open")
     @mock.patch("statement_parser.indusind_bank_extractor.PdfReader")

@@ -96,8 +96,10 @@ func (srv *Server) BulkUpdateBillingCycle(c *gin.Context) {
 
 	// The cycle must belong to the user AND to each transaction's own account,
 	// so a bulk assignment can't attach one account's transactions to another
-	// account's cycle.
-	query := `UPDATE transactions SET billing_cycle_id = $1
+	// account's cycle. The detach flag is cleared with it: a row the user had
+	// detached ("Unassigned") and then assigned by hand is assigned, not
+	// detached, so a later move of its date/account may re-derive it.
+	query := `UPDATE transactions SET billing_cycle_id = $1, billing_cycle_detached = FALSE
 	          WHERE id = ANY($2) AND user_id = $3
 	            AND EXISTS (SELECT 1 FROM billing_cycles bc WHERE bc.id = $1 AND bc.user_id = $3 AND bc.account_id = transactions.account_id)
 	            AND NOT EXISTS (SELECT 1 FROM accounts closed_acct WHERE closed_acct.id = transactions.account_id AND closed_acct.closed)`

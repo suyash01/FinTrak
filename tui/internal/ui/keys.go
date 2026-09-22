@@ -29,6 +29,12 @@ type KeyMap struct {
 	Confirm    key.Binding
 	GotoScreen key.Binding
 	SignOut    key.Binding
+
+	// SidebarEnter is what `enter` does while the sidebar has the keyboard: it
+	// hands the keyboard to the content pane rather than opening a detail
+	// overlay, so it needs its own help text — the status bar must name the key
+	// that is actually live in the pane it is describing.
+	SidebarEnter key.Binding
 }
 
 // DefaultKeyMap is the binding set the App installs.
@@ -53,6 +59,10 @@ func DefaultKeyMap() KeyMap {
 		Confirm:    key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "confirm")),
 		GotoScreen: key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "jump to screen")),
 		SignOut:    key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "sign out")),
+		SidebarEnter: key.NewBinding(
+			key.WithKeys("enter", "right", "l"),
+			key.WithHelp("enter", "content"),
+		),
 	}
 }
 

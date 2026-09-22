@@ -98,7 +98,7 @@ func TestUpdateRecurringSeriesEffectiveBeforeStart(t *testing.T) {
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).WillReturnRows(recurringTermRows(id, accountID))
 
 	// An explicit effective date before the series start is rejected.
-	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String(), `{"amount":20,"effectiveDate":"2098-01-01"}`)
+	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String(), `{"amount":20,"effectiveDate":"2024-01-01"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -175,7 +175,7 @@ func TestCreateRecurringTermLoadError(t *testing.T) {
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnError(assert.AnError)
 
 	w := doRecurring(r, http.MethodPut, "/recurring/"+uuid.New().String()+"/terms",
-		`{"startDate":"2099-06-01","amount":10,"accountId":"`+uuid.New().String()+`"}`)
+		`{"startDate":"2025-06-01","amount":10,"accountId":"`+uuid.New().String()+`"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -187,7 +187,7 @@ func TestCreateRecurringTermTermsError(t *testing.T) {
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).WillReturnError(assert.AnError)
 
 	w := doRecurring(r, http.MethodPut, "/recurring/"+id.String()+"/terms",
-		`{"startDate":"2099-06-01","amount":10,"accountId":"`+accountID.String()+`"}`)
+		`{"startDate":"2025-06-01","amount":10,"accountId":"`+accountID.String()+`"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

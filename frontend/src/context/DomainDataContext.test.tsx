@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { markSynced } from "../api/offlineStatus";
 import { DomainDataProvider, useDomainData } from "./DomainDataContext";
 
 const apiMock = vi.hoisted(() => ({
@@ -12,7 +13,20 @@ const apiMock = vi.hoisted(() => ({
   getPaperlessSettings: vi.fn(),
 }));
 
+const toastMock = vi.hoisted(() => ({ error: vi.fn() }));
+
 vi.mock("../api/client", () => ({ default: apiMock }));
+vi.mock("sonner", () => ({ toast: toastMock }));
+
+// jsdom never changes navigator.onLine on its own, so a test drives both the
+// flag and the event the browser would fire with it.
+function setOnline(online: boolean) {
+  Object.defineProperty(window.navigator, "onLine", {
+    configurable: true,
+    value: online,
+  });
+  window.dispatchEvent(new Event(online ? "online" : "offline"));
+}
 
 // Probe renders the parts of the context each assertion needs.
 function Probe() {
@@ -38,6 +52,8 @@ function renderProvider() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setOnline(true);
+  markSynced(0);
   apiMock.getAccounts.mockResolvedValue([{ id: "a1" }]);
   apiMock.getAccountTypes.mockResolvedValue([]);
   apiMock.getCategories.mockResolvedValue([]);
@@ -92,5 +108,52 @@ describe("DomainDataProvider", () => {
       expect(screen.getByTestId("payees-error")).toHaveTextContent(""),
     );
     expect(screen.getByTestId("payees")).toHaveTextContent("1");
+  });
+
+  // The lookups are loaded once per session, so an offline boot would keep
+  // showing the last online snapshot for the rest of it: categories, payees and
+  // accounts created elsewhere stay invisible, and the account balances (which
+  // the server computes from the transactions) keep the value they had when the
+  // app started.
+  it("revalidates the lookups when the connection returns", async () => {
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("loading")).toHaveTextContent("loaded"),
+    );
+    expect(apiMock.getAccounts).toHaveBeenCalledTimes(1);
+
+    await act(async () => setOnline(false));
+    expect(apiMock.getAccounts).toHaveBeenCalledTimes(1);
+
+    await act(async () => setOnline(true));
+    await waitFor(() => expect(apiMock.getAccounts).toHaveBeenCalledTimes(2));
+    expect(apiMock.getPayees).toHaveBeenCalledTimes(2);
+    expect(apiMock.getPaperlessSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it("revalidates the lookups after the outbox flushes", async () => {
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("loading")).toHaveTextContent("loaded"),
+    );
+
+    await act(async () => markSynced(Date.now()));
+
+    await waitFor(() => expect(apiMock.getAccounts).toHaveBeenCalledTimes(2));
+  });
+
+  it("reports a failed load instead of leaving an empty state behind it", async () => {
+    apiMock.getPayees.mockRejectedValueOnce(new Error("payees down"));
+
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("loading")).toHaveTextContent("loaded"),
+    );
+
+    // AGENTS.md routes errors through a toast, and the per-resource message
+    // stays available for the page that renders the list itself.
+    expect(toastMock.error).toHaveBeenCalledWith(
+      "Payees could not be loaded: payees down",
+    );
   });
 });

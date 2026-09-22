@@ -65,7 +65,7 @@ func (srv *Server) ExportTransactions(c *gin.Context) {
 	                 COALESCE(c.name, '') AS category_name,
 	                 COALESCE(g.name, '') AS group_name,
 	                 COALESCE(p.name, '') AS payee,
-	                 t.tags, t.notes` +
+	                 COALESCE(t.tags, '{}') AS tags, t.notes` +
 		exportFrom +
 		f.where() +
 		// Same total order as the list, so the rows a given filter keeps are

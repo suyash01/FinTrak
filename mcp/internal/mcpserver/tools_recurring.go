@@ -30,6 +30,14 @@ type seriesArgs struct {
 	ID string `json:"id" jsonschema:"the recurring series id, from list_recurring"`
 }
 
+// seriesTransactionsArgs identifies one series and caps the list. The cap exists
+// because GET /recurring/{id}/transactions is unpaginated: without it a long
+// series would hand the model its whole transaction history at once.
+type seriesTransactionsArgs struct {
+	ID    string `json:"id" jsonschema:"the recurring series id, from list_recurring"`
+	Limit int    `json:"limit,omitempty" jsonschema:"at most this many transactions, default 100, max 500; the route itself cannot page"`
+}
+
 // forecastArgs bounds a forecast.
 type forecastArgs struct {
 	ID    string `json:"id" jsonschema:"the recurring series id, from list_recurring"`
@@ -69,11 +77,12 @@ func recurringTools() []Tool {
 			install: installRecurringSuggestions,
 		},
 		{
-			Name:        "list_recurring_transactions",
-			Title:       "List a series' transactions",
-			Description: "The transactions currently attached to one recurring series.",
-			Route:       readonly.Route{Method: http.MethodGet, Path: "/recurring/{id}/transactions"},
-			install:     installRecurringTransactions,
+			Name:  "list_recurring_transactions",
+			Title: "List a series' transactions",
+			Description: "The transactions currently attached to one recurring series, newest first. The API's list is unpaginated, so " +
+				"the tool returns at most limit transactions (default 100, max 500) and sets truncated when the tail was dropped.",
+			Route:   readonly.Route{Method: http.MethodGet, Path: "/recurring/{id}/transactions"},
+			install: installRecurringTransactions,
 		},
 		{
 			Name:  "list_recurring_terms",
@@ -111,11 +120,15 @@ func installRecurringSuggestions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 }
 
 func installRecurringTransactions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
-	addReadTool(s, tool, func(ctx context.Context, in seriesArgs) (any, error) {
+	addReadTool(s, tool, func(ctx context.Context, in seriesTransactionsArgs) (any, error) {
 		if strings.TrimSpace(in.ID) == "" {
 			return nil, errSeriesIDRequired
 		}
-		return c.RecurringTransactions(ctx, in.ID)
+		transactions, err := c.RecurringTransactions(ctx, in.ID)
+		if err != nil {
+			return nil, err
+		}
+		return capItems(transactions, in.Limit), nil
 	})
 }
 

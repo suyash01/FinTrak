@@ -176,8 +176,12 @@ paths:
         "422":
           description: |
             The PDF could not be processed (e.g. it has more than `MAX_PAGES`
-            pages, parsing failed, or the parse yielded no transactions — a
-            scanned PDF without a text layer, or a mis-selected extractor).
+            pages, parsing failed, or nothing in it was recognised as a
+            statement — a scanned PDF without a text layer, or a mis-selected
+            extractor). A file that *was* recognised but yielded no importable
+            rows is answered 200 with an empty `transactions` list and a note in
+            `validationErrors`, so the caller can tell "this is not a statement"
+            from "this statement has no rows".
           content:
             application/json:
               schema:

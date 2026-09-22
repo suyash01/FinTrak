@@ -17,10 +17,13 @@ import (
 // payment. The suggestion tools are the read-only half of linking — they rank
 // candidate pairs and change nothing.
 
-// listLinksArgs narrows the link list.
+// listLinksArgs narrows the link list and caps it.
 type listLinksArgs struct {
 	Type          string `json:"type,omitempty" jsonschema:"transfer, cashback, refund or bill_payment"`
 	TransactionID string `json:"transactionId,omitempty" jsonschema:"only links touching this transaction id"`
+	// Limit exists because GET /links is unpaginated: without it a single call
+	// would hand the model the whole link history.
+	Limit int `json:"limit,omitempty" jsonschema:"at most this many links, default 100, max 500; the route itself cannot page"`
 }
 
 // suggestionArgs is the paging shared by both suggestion endpoints.
@@ -42,7 +45,9 @@ func linkTools() []Tool {
 			Name:  "list_links",
 			Title: "List links",
 			Description: "The user's links, newest first, optionally narrowed to one type or to the links touching one transaction. " +
-				"Every link carries both of its transactions joined, so either side can be read without a second call.",
+				"Every link carries both of its transactions joined, so either side can be read without a second call. The API's " +
+				"link list is unpaginated, so the tool returns at most limit links (default 100, max 500) and sets truncated when " +
+				"the tail was dropped: narrow with type or transactionId rather than paging.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/links"},
 			install: installListLinks,
 		},
@@ -76,7 +81,11 @@ func linkTools() []Tool {
 
 func installListLinks(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in listLinksArgs) (any, error) {
-		return c.ListLinks(ctx, in.Type, in.TransactionID)
+		links, err := c.ListLinks(ctx, in.Type, in.TransactionID)
+		if err != nil {
+			return nil, err
+		}
+		return capItems(links, in.Limit), nil
 	})
 }
 

@@ -15,7 +15,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fintrak/backend/internal/crypto"
 	"github.com/fintrak/backend/models"
@@ -53,38 +56,135 @@ func expectPaperlessConfigQuery(mock pgxmock.PgxPoolIface, url, token, tag strin
 		WillReturnRows(pgxmock.NewRows([]string{"paperless_url", "paperless_token", "paperless_tag", "page_size"}).AddRow(url, token, tag, nil))
 }
 
-func TestFetchNameMapsPaginates(t *testing.T) {
+// TestFetchNameMapsFollowsNextPage pins that the pagination loop is driven by
+// the response's own `next` link rather than by the page size it asked for.
+// Paperless (DRF) clamps page_size server-side, so page 1 can come back far
+// shorter than the requested 1000 while more pages remain — the old loop
+// treated any short page as the last one and silently truncated every lookup
+// table.
+func TestFetchNameMapsFollowsNextPage(t *testing.T) {
 	var pages []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		pages = append(pages, page)
-		results := make([]map[string]any, 0, nameMapPageSize)
+		results := make([]map[string]any, 0, 4)
 		if page == "1" {
-			// A full first page: forces the pagination loop to continue.
-			for i := 0; i < nameMapPageSize; i++ {
+			// Fewer rows than requested: the upstream capped page_size.
+			for i := range 3 {
 				results = append(results, map[string]any{"id": i, "name": fmt.Sprintf("c%d", i)})
 			}
-		} else {
-			// A short second page ends the loop.
-			for i := 0; i < 2; i++ {
-				results = append(results, map[string]any{"id": nameMapPageSize + i, "name": fmt.Sprintf("c%d", nameMapPageSize+i)})
-			}
+			// Any URL works: only its presence is read, it is never followed.
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": results, "next": "http://elsewhere.example/api/x/?page=2"})
+			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+		for i := range 2 {
+			results = append(results, map[string]any{"id": 3 + i, "name": fmt.Sprintf("c%d", 3+i)})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results, "next": nil})
 	}))
 	defer server.Close()
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	maps := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
+	maps, err := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
+	require.NoError(t, err)
 
-	// 1000 entries from page 1 + 2 from page 2 — beyond the old single-page
-	// single-fetch limit of 1000.
-	assert.Len(t, maps.correspondents, nameMapPageSize+2)
+	assert.Len(t, maps.correspondents, 5)
 	assert.Equal(t, "c0", maps.correspondents[0])
-	assert.Equal(t, fmt.Sprintf("c%d", nameMapPageSize+1), maps.correspondents[nameMapPageSize+1])
+	assert.Equal(t, "c4", maps.correspondents[4])
 	assert.Contains(t, pages, "2")
+}
+
+// TestFetchNameMapsStopsAtLastPage pins the other half of the response-driven
+// loop: a page whose `next` is null is the last one, however long it is, so no
+// speculative extra request is made.
+func TestFetchNameMapsStopsAtLastPage(t *testing.T) {
+	requests := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests[r.URL.Path]++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{"id": 1, "name": "only"}},
+			"next":    nil,
+		})
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	maps, err := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
+	require.NoError(t, err)
+
+	assert.Len(t, maps.correspondents, 1)
+	assert.Len(t, maps.documentTypes, 1)
+	assert.Len(t, maps.tags, 1)
+	assert.Equal(t, 1, requests["/api/correspondents/"])
+	assert.Equal(t, 1, requests["/api/document_types/"])
+	assert.Equal(t, 1, requests["/api/tags/"])
+}
+
+// TestFetchNameMapsStopsWithoutProgress guards against an upstream that keeps
+// advertising a next page while returning nothing: the fetch must end instead
+// of spending the whole page budget on empty responses.
+func TestFetchNameMapsStopsWithoutProgress(t *testing.T) {
+	pages := map[string][]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages[r.URL.Path] = append(pages[r.URL.Path], page)
+		results := []map[string]any{}
+		if page == "1" {
+			results = []map[string]any{{"id": 1, "name": "a"}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results, "next": "http://x/api/y/?page=next"})
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	_, err := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
+	require.NoError(t, err)
+
+	for path, seen := range pages {
+		assert.Equal(t, []string{"1", "2"}, seen, "resource %s should stop after the empty page", path)
+	}
+}
+
+// TestFetchNameMapsReportsFailure pins that a failing lookup table is reported
+// to the caller instead of being turned into an empty map (which would silently
+// drop the user's filters).
+func TestFetchNameMapsReportsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/document_types") {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	_, err := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "document_types")
+}
+
+// TestFetchNameMapsReportsADeadline pins the classification the list handler
+// turns into 504 rather than 502: a lookup that exhausted its budget must
+// surface context.DeadlineExceeded through the request error.
+func TestFetchNameMapsReportsADeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	_, err := fetchNameMaps(ctx, &http.Client{}, "http://127.0.0.1:1", "tok")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestGetPaperlessSettings(t *testing.T) {
@@ -449,11 +549,53 @@ func TestGetPaperlessDocumentFileInvalidID(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestListPaperlessDocumentsFailsWhenLookupFails pins that a lookup-table
+// failure is not swallowed: answering 200 would forward the request with the
+// user's filters dropped (and with empty filter dropdowns), which is
+// indistinguishable from "nothing matched".
+func TestListPaperlessDocumentsFailsWhenLookupFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"with a name filter that needs the map", "?correspondentInc=SBI"},
+		{"without any filter", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, mock := setupPaperlessMock(t, "", "")
+
+			var documentsRequested atomic.Bool
+			paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "/api/correspondents") {
+					http.Error(w, "boom", http.StatusInternalServerError)
+					return
+				}
+				documentsRequested.Store(true)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"count":0,"results":[]}`))
+			}))
+			defer paperless.Close()
+			expectPaperlessConfigQuery(mock, paperless.URL, "tok", "")
+
+			r := newPaperlessTestRouter(srv)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/paperless/documents"+tc.query, nil))
+
+			assert.Equal(t, http.StatusBadGateway, w.Code)
+			assert.Contains(t, w.Body.String(), "Paperless lookup unavailable")
+			assert.False(t, documentsRequested.Load(),
+				"the document list must not be requested with the filters dropped")
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// TestListPaperlessDocumentsPagination pins that Paperless receives the
+// requested page/page_size directly and that the handler returns its count as
+// pagination metadata.
 func TestListPaperlessDocumentsPagination(t *testing.T) {
 	srv, mock := setupPaperlessMock(t, "", "")
 
-	// Paperless must receive the requested page/page_size directly and the
-	// handler must return its count as pagination metadata.
 	paperless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Token tok", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
@@ -654,6 +796,45 @@ func TestValidatePaperlessURL(t *testing.T) {
 	}
 }
 
+// TestPaperlessClientsShareOneTransport pins that per-request clients reuse one
+// process-wide transport's connection pool: building a transport per request
+// (as this used to) forced a fresh TCP+TLS handshake for every lookup page and
+// every round-trip of a tag write, and left an idle pool behind each call.
+//
+// The reuse is asserted through the observable effect — two requests through
+// two separately built clients arrive on the same connection — because the
+// logging round tripper is a closure, and comparing function values cannot
+// distinguish two closures built from the same literal.
+func TestPaperlessClientsShareOneTransport(t *testing.T) {
+	var mu sync.Mutex
+	var remoteAddrs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remoteAddrs = append(remoteAddrs, r.RemoteAddr)
+		mu.Unlock()
+		w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	origin := models.UserSettings{PaperlessURL: server.URL}
+	for range 2 {
+		client, err := paperlessClient(origin, "development", 0)
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/api/tags/", nil)
+		require.NoError(t, err)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		require.NoError(t, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, remoteAddrs, 2)
+	assert.Equal(t, remoteAddrs[0], remoteAddrs[1], "the second request must reuse the pooled connection")
+}
+
 func TestPaperlessOrigin(t *testing.T) {
 	o, err := paperlessOrigin(models.UserSettings{PaperlessURL: "https://paperless.example.com/paperless"})
 	assert.NoError(t, err)
@@ -734,6 +915,11 @@ func TestPaperlessToken(t *testing.T) {
 
 // TestPaperlessConfigUpgradesLegacyToken verifies a v1-format token is
 // transparently re-sealed under the current v2 derivation when read.
+//
+// The write is now a compare-and-swap on the exact value that was read (the
+// re-sealed ciphertext replaces the legacy one only while the row still holds
+// it), so a settings save that landed in between cannot be clobbered by a stale
+// re-seal. That is the third argument below.
 func TestPaperlessConfigUpgradesLegacyToken(t *testing.T) {
 	prevKey := tokenEncryptionKey
 	tokenEncryptionKey = "upgrade-key"
@@ -743,8 +929,8 @@ func TestPaperlessConfigUpgradesLegacyToken(t *testing.T) {
 	legacy := legacyV1Token(t, "secret-token", tokenEncryptionKey)
 
 	expectPaperlessConfigQuery(mock, "http://paperless.local", legacy, "")
-	mock.ExpectExec("UPDATE users SET paperless_token = \\$1 WHERE id = \\$2").
-		WithArgs(pgxmock.AnyArg(), testUserID()).
+	mock.ExpectExec("UPDATE users SET paperless_token = \\$1 WHERE id = \\$2 AND paperless_token = \\$3").
+		WithArgs(pgxmock.AnyArg(), testUserID(), legacy).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	settings, err := srv.paperlessConfig(context.Background(), testUserID())
@@ -756,6 +942,29 @@ func TestPaperlessConfigUpgradesLegacyToken(t *testing.T) {
 	plain, err := crypto.Decrypt(settings.PaperlessToken, tokenEncryptionKey)
 	require.NoError(t, err)
 	assert.Equal(t, "secret-token", plain)
+}
+
+// TestPaperlessConfigUpgradeLosesRaceToNewToken pins the narrowness of the
+// re-seal: when the row changed between the read and the write (the user saved a
+// new token, or another read re-sealed first) the update matches nothing and the
+// caller keeps the value it read instead of overwriting the newer one.
+func TestPaperlessConfigUpgradeLosesRaceToNewToken(t *testing.T) {
+	prevKey := tokenEncryptionKey
+	tokenEncryptionKey = "upgrade-key"
+	t.Cleanup(func() { tokenEncryptionKey = prevKey })
+
+	srv, mock := setupPaperlessMock(t, "http://paperless.local", "")
+	legacy := legacyV1Token(t, "secret-token", tokenEncryptionKey)
+
+	expectPaperlessConfigQuery(mock, "http://paperless.local", legacy, "")
+	mock.ExpectExec("UPDATE users SET paperless_token = \\$1 WHERE id = \\$2 AND paperless_token = \\$3").
+		WithArgs(pgxmock.AnyArg(), testUserID(), legacy).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	settings, err := srv.paperlessConfig(context.Background(), testUserID())
+	require.NoError(t, err)
+	assert.Equal(t, legacy, settings.PaperlessToken)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // legacyV1Token builds a pre-HKDF ciphertext (bare SHA-256 key, nonce||sealed),

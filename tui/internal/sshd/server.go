@@ -28,9 +28,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
 	wishtea "github.com/charmbracelet/wish/bubbletea"
+	"github.com/muesli/termenv"
 
 	"github.com/fintrak/client/api"
 	"github.com/fintrak/tui/internal/ui"
@@ -161,8 +164,14 @@ func newServer(cfg Config) (*server, error) {
 		// LAST entry is the outermost handler. The session cap must be outermost:
 		// it has to hold its slot for the whole session, wrapping the bubbletea
 		// middleware rather than sitting inside it.
+		//
+		// The colour floor is TrueColor, not wish's default Ascii: the floor is
+		// what MakeRenderer forces a session's renderer DOWN to, so an Ascii floor
+		// hands every client a monochrome TUI no matter what its terminal
+		// supports. With no floor above what the client reports, the profile comes
+		// from the client's own TERM/COLORTERM.
 		wish.WithMiddleware(
-			wishtea.Middleware(s.model),
+			wishtea.MiddlewareWithColorProfile(s.model, termenv.TrueColor),
 			s.logSession,
 			s.limitSessions,
 		),
@@ -276,13 +285,25 @@ func (s *server) logSession(next ssh.Handler) ssh.Handler {
 // model hands a session its TUI. A session that authenticated with the FinTrak
 // credentials reuses the client parked during authentication and starts signed
 // in; a key-authenticated session gets a fresh client and the sign-in screen.
+//
+// The model is built with a renderer for THIS session's terminal: one door
+// process serves many clients, and the door's own environment describes the
+// container it runs in, not the terminal on the other end. Every style in the
+// session comes from that renderer, so the colours a client sees match what its
+// terminal can actually display.
 func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
+	renderer := sessionRenderer(sess)
+	// The program's own environment is the client's too: bubbletea reads TERM
+	// from it for its terminal handling, and the door process's TERM (usually
+	// unset in a container) is not the one the session is drawn on.
+	opts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithEnvironment(sessionEnv(sess))}
+
 	client, _ := sess.Context().Value(clientContextKey{}).(*api.Client)
 	if client != nil {
 		// The credentials were exchanged for a session during authentication; the
 		// client keeps those tokens for the life of the connection, exactly as a
 		// locally-run TUI would, so the session starts signed in.
-		return ui.New(client), []tea.ProgramOption{tea.WithAltScreen()}
+		return ui.NewWithRenderer(client, renderer), opts
 	}
 
 	// Public-key authentication opened the door but cannot be traded for an API
@@ -290,10 +311,31 @@ func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	fresh, err := api.New(s.cfg.APIURL)
 	if err != nil {
 		s.logger.Error("ssh session: bad API URL", slog.String("error", err.Error()))
-		return errorModel{text: "This TUI is misconfigured (bad API URL). Ask the operator to check the logs."},
-			[]tea.ProgramOption{tea.WithAltScreen()}
+		return errorModel{text: "This TUI is misconfigured (bad API URL). Ask the operator to check the logs."}, opts
 	}
-	return ui.New(fresh), []tea.ProgramOption{tea.WithAltScreen()}
+	return ui.NewWithRenderer(fresh, renderer), opts
+}
+
+// sessionRenderer builds the lipgloss renderer for one session's terminal.
+// MakeRenderer wires it to the session (its pty, and its own environment), and
+// the colour profile is then set explicitly from what the client reported, so a
+// terminal that says nothing about itself gets no colour rather than the colour
+// some other session or the door's own environment happened to ask for.
+func sessionRenderer(sess ssh.Session) *lipgloss.Renderer {
+	r := wishtea.MakeRenderer(sess)
+	r.SetColorProfile(termenv.Profile(colorprofile.Env(sessionEnv(sess))))
+	return r
+}
+
+// sessionEnv is the environment the client's terminal runs in: what the client
+// sent over the connection, plus the TERM carried by its pty request — which is
+// where the terminal type actually arrives, so it is appended last and wins.
+func sessionEnv(sess ssh.Session) []string {
+	env := sess.Environ()
+	if pty, _, ok := sess.Pty(); ok && pty.Term != "" {
+		env = append(env, "TERM="+pty.Term)
+	}
+	return env
 }
 
 // errorModel is the fallback for a session that cannot be set up at all. Startup
@@ -391,13 +433,20 @@ func (l *attemptLimiter) allow(key string) bool {
 
 	now := time.Now()
 	if len(l.buckets) >= l.maxKeys {
+		// A bucket idle long enough is full again, so dropping it costs nothing.
 		l.sweepLocked(now)
 	}
 	b, ok := l.buckets[key]
 	if !ok {
-		// Bound memory even when the keys are attacker-controlled.
+		// Bound memory even when the keys are attacker-controlled, but make room
+		// by evicting rather than refusing. Refusing a key the limiter has never
+		// seen turns a full map into a lockout for every new client: one attacker
+		// with 4096 source addresses (a single IPv6 /64 has 2^64 of them, and the
+		// key is the address, not the prefix) can hold the map at its cap with one
+		// attempt every ten minutes, and from then on nobody new can authenticate
+		// at all. Evicting degrades only the address that has been quiet longest.
 		if len(l.buckets) >= l.maxKeys {
-			return false
+			l.evictOldestLocked()
 		}
 		b = &attemptBucket{tokens: l.perMinute, last: now}
 		l.buckets[key] = b
@@ -410,6 +459,22 @@ func (l *attemptLimiter) allow(key string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// evictOldestLocked drops the bucket that has been idle longest, making room for
+// a new key. It runs only when the map is full and nothing was idle enough to
+// sweep, so the linear scan is paid on the path that must not refuse.
+func (l *attemptLimiter) evictOldestLocked() {
+	var oldestKey string
+	var oldest time.Time
+	for key, b := range l.buckets {
+		if oldestKey == "" || b.last.Before(oldest) {
+			oldestKey, oldest = key, b.last
+		}
+	}
+	if oldestKey != "" {
+		delete(l.buckets, oldestKey)
+	}
 }
 
 // sweepLocked drops buckets that have been idle long enough to be full again.

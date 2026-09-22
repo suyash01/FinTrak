@@ -13,9 +13,10 @@ info:
     cookies automatically, which is how the SPA authenticates.
 
     When the access token expires the client calls `POST /auth/refresh`, which
-    trades the refresh cookie for a fresh access token. Refreshing never
-    extends a session past its original 30-day deadline; after that the user
-    must log in again.
+    trades the refresh cookie for a fresh access token and a rotated refresh
+    cookie — both cookies are re-issued on every refresh, so a refresh token is
+    single-use. Refreshing never extends a session past its original 30-day
+    deadline; after that the user must log in again.
 
     For non-browser clients, protected routes also accept a Bearer token in the
     `Authorization` header, using the value of the access-token cookie:
@@ -73,7 +74,15 @@ paths:
       tags:
         - Authentication
       summary: Register a new user
-      description: Create a new user account. Access and refresh tokens are set as httpOnly cookies, not returned in the body.
+      description: >
+        Create a new user account. Access and refresh tokens are set as
+        httpOnly cookies, not returned in the body. An email listed in
+        ADMIN_EMAILS is granted the admin role only when the request carries
+        the operator's ADMIN_SETUP_TOKEN; without it (or when
+        ADMIN_SETUP_TOKEN is unset) the registration is refused with the same
+        409 the duplicate-address case answers, so an unauthenticated caller
+        cannot tell which addresses the deployment has reserved. The request
+        body is capped at 4 KiB on this public credential endpoint.
       operationId: register
       requestBody:
         required: true
@@ -91,7 +100,32 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
-          description: An account with this email already exists
+          description: >
+            An account with this email already exists. The same status and body
+            answer a registration for a reserved (ADMIN_EMAILS) address that
+            does not carry a valid setup token, so an unauthenticated caller
+            cannot tell which addresses the deployment has reserved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Request body too large (max 4 KiB)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: >
+            Too many attempts from this client IP. The throttle key is the
+            client IP and nothing else; a correct password is never refused by
+            the per-identity failure budget.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (30).
+              schema:
+                type: integer
+                example: 30
           content:
             application/json:
               schema:
@@ -104,7 +138,13 @@ paths:
       tags:
         - Authentication
       summary: Login a user
-      description: Authenticate a user. Access and refresh tokens are set as httpOnly cookies, not returned in the body.
+      description: >
+        Authenticate a user. Access and refresh tokens are set as httpOnly
+        cookies, not returned in the body. Failed attempts are throttled by
+        client IP only, with `Retry-After` on the 429; there is no per-account
+        lockout, because the separate per-identity failure budget is charged
+        only for failed credential checks and can never refuse a correct
+        password. The request body is capped at 4 KiB.
       operationId: login
       requestBody:
         required: true
@@ -127,6 +167,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Request body too large (max 4 KiB)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: >
+            Too many attempts from this client IP. The throttle key is the
+            client IP and nothing else; a correct password is never refused by
+            the per-identity failure budget.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (30).
+              schema:
+                type: integer
+                example: 30
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -137,17 +198,24 @@ paths:
       summary: Refresh the access token
       description: |
         Exchange the long-lived refresh cookie (`fintrak_refresh`) for a fresh
-        short-lived access token (`fintrak_token`). This endpoint is public
-        because the access token is expected to have expired; it authenticates
-        with the refresh cookie instead. Refreshing does not extend the
-        session's original 30-day deadline. On failure both cookies are
-        cleared.
+        short-lived access token (`fintrak_token`) and a rotated refresh token.
+        This endpoint is public because the access token is expected to have
+        expired; it authenticates with the refresh cookie instead. Rotation
+        re-issues *both* cookies (`Set-Cookie: fintrak_token=…` and
+        `Set-Cookie: fintrak_refresh=…`), so the browser always holds the
+        current token of the rotation family and the presented refresh token is
+        spent. Refreshing does not extend the session's original 30-day
+        deadline. On failure both cookies are cleared.
       operationId: refresh
       responses:
         "200":
-          description: Access token refreshed
+          description: Access token refreshed; both session cookies are re-issued
         "401":
-          description: Missing, invalid, or expired refresh token
+          description: >
+            The refresh cookie is missing, unknown, revoked, expired, or was
+            already rotated (reused). A reused token also revokes the whole
+            rotation family, since presenting a spent token means a copy
+            leaked.
           content:
             application/json:
               schema:
@@ -160,7 +228,13 @@ paths:
       tags:
         - Authentication
       summary: Log out
-      description: Clears the session cookie.
+      description: >
+        Revokes the session server-side — the whole rotation family of the
+        presented refresh cookie — and then clears both cookies, so a copy of
+        the refresh cookie no longer works after logout. Unauthenticated on
+        purpose, so an expired or invalid cookie can still be removed.
+        Revocation is best-effort: a database failure still answers 200 with
+        the cookies cleared.
       operationId: logout
       responses:
         "200":
@@ -317,7 +391,9 @@ paths:
       summary: Export account transactions as CSV
       description: >
         Download all transactions for an account as a CSV file, newest date
-        first, credits before debits inside a day.
+        first, credits before debits inside a day. The handler only reads, but
+        the route sits on the write-guard list with the sibling GETs that
+        materialize billing cycles, so a cross-site request is refused.
       operationId: exportAccount
       security:
         - BearerAuth: []
@@ -340,6 +416,15 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Same-origin and same-site requests, and clients that send no
+            `Sec-Fetch-*` header (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -348,7 +433,17 @@ paths:
       tags:
         - Accounts
       summary: Get billing cycles for a credit card account
-      description: List all billing cycles for a credit-card account with transaction counts and outstanding totals. Cycles are auto-generated one per month, ending on the account's billingDay. totalOutstanding is the account's running balance at the cycle's end date (all debits minus all credits — purchases, payments, refunds, cashbacks — posted up to that date). Non-credit-card accounts return an empty list.
+      description: >
+        List all billing cycles for a credit-card account with transaction
+        counts and outstanding totals. Cycles are auto-generated one per month,
+        ending on the account's billingDay. totalOutstanding is the account's
+        running balance at the cycle's end date (all debits minus all credits —
+        purchases, payments, refunds, cashbacks — posted up to that date).
+        Non-credit-card accounts return an empty list.
+
+        This is not a pure read: answering materializes the account's missing
+        billing cycles (one INSERT per elapsed month) and back-fills
+        transactions' cycle assignment, so a cross-site request is refused.
       operationId: getBillingCycles
       security:
         - BearerAuth: []
@@ -376,6 +471,18 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route writes derived billing-cycle rows, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -789,7 +896,9 @@ paths:
       tags:
         - Account Types
       summary: Create a new account type
-      description: Create a new custom account type (admin only)
+      description: >
+        Create a new custom account type (admin only). The `id` must be unique
+        across custom and built-in types; re-using one is a 409.
       operationId: createAccountType
       security:
         - BearerAuth: []
@@ -812,6 +921,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          description: An account type with this id already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -908,6 +1023,12 @@ paths:
         day. The id filters (accountId, categoryId, payeeId) each take a
         comma-separated list and match a transaction that satisfies ANY entry,
         so a single value is a one-element list.
+
+        This is not a pure read: when a single accountId is filtered and the
+        default date sort is used, the handler materializes that account's
+        billing cycles (INSERT) and back-fills transactions' cycle assignment
+        to build the synthetic summary rows, so a cross-site request is
+        refused.
       operationId: getTransactions
       security:
         - BearerAuth: []
@@ -1008,14 +1129,20 @@ paths:
           schema:
             type: integer
             default: 1
-            minimum: 1
-          description: Page number (1-indexed)
+          description: >
+            Page number (1-based). A value below 1 is treated as 1; a value
+            above 1,000,000 is rejected with 400 `page out of range`, which
+            keeps the SQL offset from overflowing.
         - in: query
           name: limit
           schema:
             type: integer
             default: 50
-          description: Items per page (0 = no pagination, return all)
+          description: >
+            Items per page. A value below 1 — including 0, which is not an
+            "unlimited" mode — falls back to the default of 50; a value above
+            1000 is clamped to 1000. The response reports the effective
+            `limit`, so a caller can detect the clamp.
       responses:
         "200":
           description: List of transactions
@@ -1023,8 +1150,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TransactionListResponse"
+        "400":
+          description: >
+            A malformed filter (bad date, uuid, amount, or enum value) or a
+            `page` above 1,000,000.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route can write derived billing-cycle rows, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1032,6 +1179,14 @@ paths:
       tags:
         - Transactions
       summary: Create a new transaction
+      description: >
+        Create a transaction. `date` must fall in the ledger's supported window
+        `[1900-01-01, today+1y]`; a date outside it is rejected with 400
+        (`date out of range (1900-01-01 to <today+1y>)`), and a malformed date
+        with `invalid date (expected YYYY-MM-DD)`. The lower bound keeps
+        billing-cycle generation bounded: a single far-past row would otherwise
+        make every read of the account emit one cycle INSERT per month in
+        between.
       operationId: createTransaction
       security:
         - BearerAuth: []
@@ -1080,7 +1235,11 @@ paths:
       tags:
         - Transactions
       summary: Update a transaction
-      description: Update transaction fields (category, tags, notes, payee, date, description, amount, type, billing cycle)
+      description: >
+        Update transaction fields (category, tags, notes, payee, date,
+        description, amount, type, billing cycle). A supplied `date` obeys the
+        same window as create, `[1900-01-01, today+1y]`, and is rejected with
+        the same 400 otherwise — a PATCH must not bypass the create-path check.
       operationId: updateTransaction
       security:
         - BearerAuth: []
@@ -1150,7 +1309,12 @@ paths:
       tags:
         - Transactions
       summary: Import transactions
-      description: Import a batch of transactions into an account with optional duplicate detection
+      description: >
+        Import a batch of transactions into an account with optional duplicate
+        detection. Every transaction's `date` obeys the same window as create,
+        `[1900-01-01, today+1y]`; a violating row is rejected with 400 prefixed
+        by its 1-based position (`transaction 3: date out of range (...)`) and
+        nothing is imported.
       operationId: importTransactions
       security:
         - BearerAuth: []
@@ -1183,7 +1347,11 @@ paths:
       tags:
         - Transactions
       summary: Validate transactions
-      description: Check which transactions would be considered duplicates without importing them
+      description: >
+        Check which transactions would be considered duplicates without
+        importing them. The preview enforces the same `date` window as the
+        import it previews (`[1900-01-01, today+1y]`), so the two agree; a
+        violating row is rejected with 400 prefixed by its 1-based position.
       operationId: validateTransactions
       security:
         - BearerAuth: []
@@ -1563,8 +1731,8 @@ paths:
               properties:
                 id: { type: string }
                 name: { type: string }
-                icon: { type: string }
-                color: { type: string }
+                icon: { type: string, maxLength: 50 }
+                color: { type: string, maxLength: 7 }
       responses:
         "201":
           description: Group created
@@ -1596,8 +1764,8 @@ paths:
               type: object
               properties:
                 name: { type: string }
-                icon: { type: string }
-                color: { type: string }
+                icon: { type: string, maxLength: 50 }
+                color: { type: string, maxLength: 7 }
       responses:
         "200":
           description: Group updated
@@ -1795,8 +1963,8 @@ paths:
               properties:
                 id: { type: string }
                 name: { type: string }
-                icon: { type: string }
-                color: { type: string }
+                icon: { type: string, maxLength: 50 }
+                color: { type: string, maxLength: 7 }
       responses:
         "201":
           description: Global group created
@@ -1936,7 +2104,12 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":
-          description: A payee with this name already exists
+          description: >
+            A unique violation, reported by which index it hit: `this account
+            already has a linked payee` (payees_account_id_tenant_uq — every
+            account has an auto-created linked payee, so re-linking is a real
+            mistake) or `a payee with this name already exists`
+            (payees_user_name_uq).
           content:
             application/json:
               schema:
@@ -1979,7 +2152,12 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: A payee with this name already exists
+          description: >
+            A unique violation, reported by which index it hit: `this account
+            already has a linked payee` (payees_account_id_tenant_uq — every
+            account has an auto-created linked payee, so re-linking is a real
+            mistake) or `a payee with this name already exists`
+            (payees_user_name_uq).
           content:
             application/json:
               schema:
@@ -2053,7 +2231,10 @@ paths:
       summary: Rename a tag across all transactions
       description: >
         Rewrites every occurrence of one tag to another across the user's
-        transactions, collapsing any duplicate the rename creates.
+        transactions, collapsing any duplicate the rename creates. A `from` or
+        `to` that is blank (empty or whitespace, which `required` alone would
+        accept) is a 400 — `from is required` / `to is required` — rather than
+        a 200 with an empty body.
       operationId: renameTag
       security:
         - BearerAuth: []
@@ -2074,7 +2255,13 @@ paths:
                   updated:
                     type: integer
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: >
+            A blank `from` or `to` (empty or whitespace): `from is required` or
+            `to is required`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -2107,6 +2294,12 @@ paths:
       tags:
         - Rules
       summary: Create a new rule
+      description: >
+        Create a rule. `addTags` goes through the shared tag validation: a tag
+        longer than 50 runes is rejected with `tag exceeds the maximum length
+        of 50 characters`, blank tags are dropped, and duplicates are
+        collapsed. The response echoes the stored list, so a rule created
+        without tags answers `[]` (never `null`).
       operationId: createRule
       security:
         - BearerAuth: []
@@ -2135,6 +2328,15 @@ paths:
       tags:
         - Rules
       summary: Update a rule
+      description: >
+        Update a rule. `categoryId` is required: an omitted one is a 400
+        `categoryId is required`, not a 404 — the statement's ownership
+        predicate tests the action category unconditionally, so a missing id
+        would match no rows and read as "the rule was deleted". `pattern` is
+        likewise required (an empty `contains` pattern would match every
+        description). `addTags` obeys the shared tag validation (50-rune cap,
+        blanks dropped, duplicates collapsed) and the response echoes the
+        stored list.
       operationId: updateRule
       security:
         - BearerAuth: []
@@ -3236,6 +3438,19 @@ paths:
         server-side. The full correspondent/document-type/tag lookup tables are
         returned so the UI can render filter dropdowns without fetching every
         document.
+
+        The name filters (correspondentInc/Exc, documentTypeInc/Exc,
+        tagInc/Exc) are resolved against those lookup tables and are never
+        silently dropped: if any table cannot be fetched the request fails
+        (502 or 504) instead of going upstream unfiltered. Lookup pagination
+        follows Paperless's own `next` link, so the returned tables are
+        complete even when the upstream clamps `page_size` below the request.
+
+        This is not strictly idempotent: reading can re-seal a legacy
+        (v1-format) Paperless token under the current key derivation and
+        persist it. The write is a compare-and-swap on the value just read, so
+        it is one-shot, cannot clobber a newer token, and stops once the row
+        holds a current token. A cross-site request is refused.
       operationId: listPaperlessDocuments
       security:
         - BearerAuth: []
@@ -3363,8 +3578,31 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route can re-seal a legacy Paperless token, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "502":
-          description: Paperless or parser service is unavailable
+          description: >
+            A Paperless lookup table (correspondents, document types, or tags)
+            could not be fetched: upstream error, non-2xx, or an unreadable or
+            unparsable body. The request fails rather than answering with the
+            name filters silently dropped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: >
+            The lookup-table fetch exceeded the 30-second lookup timeout.
           content:
             application/json:
               schema:
@@ -3479,7 +3717,12 @@ paths:
       tags:
         - Dashboard
       summary: Get dashboard summary
-      description: Get aggregate financial data with optional date range and account filters
+      description: >
+        Get aggregate financial data with optional date range and account
+        filters. This is not a pure read: with `groupBy=billing_cycle` the
+        handler materializes the account's missing billing cycles (INSERT) and
+        back-fills transactions' cycle assignment, so a cross-site request is
+        refused.
       operationId: getDashboardSummary
       security:
         - BearerAuth: []
@@ -3530,6 +3773,18 @@ paths:
                 $ref: "#/components/schemas/DashboardSummary"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route can write derived billing-cycle rows, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3547,6 +3802,11 @@ paths:
         stays acyclic; the per-type `linkSummary` is still returned alongside.
         The income, category, and payee stages are each capped at `limit`
         nodes, with the remainder collapsed into an "Other" node.
+
+        The handler itself only reads (all its queries run in one read-only,
+        repeatable-read transaction), but the route sits on the write-guard
+        list with the sibling GETs that materialize billing cycles, so a
+        cross-site request is refused.
       operationId: getMoneyFlow
       security:
         - BearerAuth: []
@@ -3595,6 +3855,15 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Same-origin and same-site requests, and clients that send no
+            `Sec-Fetch-*` header (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3608,6 +3877,11 @@ paths:
         strip. Periods are calendar months by default; with
         `groupBy=billing_cycle` (which requires an account with a `billingDay`)
         they are the account's statement periods for the last `cycles` cycles.
+
+        This is not a pure read: with `groupBy=billing_cycle` the handler
+        materializes the account's missing billing cycles (INSERT) and
+        back-fills transactions' cycle assignment, so a cross-site request is
+        refused.
       operationId: getMoneyFlowTimeline
       security:
         - BearerAuth: []
@@ -3658,6 +3932,18 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route can write derived billing-cycle rows, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Account not found
           content:
@@ -3681,6 +3967,11 @@ paths:
         already shown in the transactions list (`markers`: month-end running
         balances, or per-cycle total outstanding when the account has a
         billing day) so they can be overlaid on the calendar.
+
+        This is not a pure read: with an `accountId` whose account has a
+        billing day, the handler materializes the account's missing billing
+        cycles (INSERT) and back-fills transactions' cycle assignment, so a
+        cross-site request is refused.
       operationId: getCashFlowCalendar
       security:
         - BearerAuth: []
@@ -3720,6 +4011,18 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Answering this route can write derived billing-cycle rows, and a
+            `SameSite=Lax` cookie is sent on a cross-site top-level navigation,
+            so the browser's own labelling is what refuses it. Same-origin and
+            same-site requests, and clients that send no `Sec-Fetch-*` header
+            (TUI, MCP, curl), are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3737,6 +4040,14 @@ paths:
         The Paperless API token and password hash are never included. This is
         the user-level counterpart to `GET /accounts/{id}/export`, which only
         covers one account's transactions as CSV.
+
+        The `categories` array carries every category the user's data
+        references — including a global category referenced only by a rule's
+        `filterCategoryId`, not just the ones referenced by a rule's
+        `categoryId`, a transaction, or a recurring series. A bundle that
+        nevertheless arrives without one (an older export or a hand-edited
+        file) restores that rule with no category filter and reports it as a
+        warning; see `POST /import`.
       operationId: exportUserData
       security:
         - BearerAuth: []
@@ -3759,12 +4070,36 @@ paths:
       summary: Restore a JSON backup bundle
       description: |
         Restore a bundle produced by `GET /export`. The restore is applied in a
-        single database transaction and is all-or-nothing. It is refused with
-        409 when the authenticated user already has accounts, because merging a
-        foreign bundle into existing data is ambiguous. Every row is inserted
-        with a freshly minted ID and every reference (category, payee, account,
+        single database transaction and is all-or-nothing: a bundle that is
+        rejected inserts nothing. It is refused with 409 when the
+        authenticated user already has accounts, because merging a foreign
+        bundle into existing data is ambiguous. Every row is inserted with a
+        freshly minted ID and every reference (category, payee, account,
         billing cycle, transaction) is remapped, so a bundle is portable across
         users and instances.
+
+        A value the schema would reject is answered 400 naming the offending
+        field, rather than surfacing as a 500 from the rolled-back
+        transaction: an unknown transaction/recurring `type`, recurring
+        `frequency`, rule `matchType`/`txnType`, or link `type`; a rule
+        `dateFrom`/`dateTo` that is not `YYYY-MM-DD`; or an amount outside
+        ±1e15 minor units — in particular the `INT64_MIN` sentinel an
+        out-of-range or NaN wire amount used to decode to, which cannot be read
+        back because its JSON rendering is invalid.
+
+        Restore is slow by design and needs a long request budget: the
+        backend's write timeout is 300s, nginx allows 310s on `/api/v1/import`,
+        and the bundled SPA/CLI clients allow 320s.
+
+        The response's `warnings` list names every row the restore had to
+        change or drop. Categories whose group is missing from the bundle are
+        moved into the `"Imported"` fallback group and reported with their
+        count in one warning, and a rule whose `filterCategoryId` the bundle
+        does not carry is restored with no filter and reported as
+        `cleared a rule's category filter: it is not in the backup`. The list
+        is capped at 100 entries and, when the cap is reached, ends with
+        `further warnings omitted after the first 100` so it is never silently
+        truncated — it can therefore hold 101 entries.
       operationId: importUserData
       security:
         - BearerAuth: []
@@ -3782,7 +4117,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/BackupImportResult"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: >
+            The body is not a FinTrak backup file, carries an unsupported
+            version, or holds a value the schema would reject (an unknown
+            enum value, a rule date that is not YYYY-MM-DD, or an amount
+            outside ±1e15 minor units). Nothing is inserted for a rejected
+            bundle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":
@@ -3820,9 +4164,11 @@ components:
           type: string
           description: |
             Required only when the email is listed in ADMIN_EMAILS: the shared
-            ADMIN_SETUP_TOKEN that grants the admin role. Without it such a
-            registration is refused, so an unverified registrant can neither
-            self-promote nor squat the address.
+            ADMIN_SETUP_TOKEN that grants the admin role. Without it (or when
+            ADMIN_SETUP_TOKEN is unset) such a registration is refused with the
+            same 409 as the duplicate-address case, so an unverified registrant
+            can neither self-promote nor squat the address — and cannot tell
+            which addresses are reserved.
 
     LoginRequest:
       type: object
@@ -3849,11 +4195,14 @@ components:
           type: string
         bank:
           type: string
+          maxLength: 100
         currency:
           type: string
+          maxLength: 3
           default: INR
         color:
           type: string
+          maxLength: 7
           default: "#06b6d4"
         isDefault:
           type: boolean
@@ -3873,10 +4222,13 @@ components:
           type: string
         bank:
           type: string
+          maxLength: 100
         currency:
           type: string
+          maxLength: 3
         color:
           type: string
+          maxLength: 7
         isDefault:
           type: boolean
         closed:
@@ -4573,6 +4925,7 @@ components:
       properties:
         pattern:
           type: string
+          maxLength: 500
         matchType:
           type: string
           enum: [contains, starts_with, exact]
@@ -4623,18 +4976,28 @@ components:
           description: Condition - match only recurring (true) or non-recurring (false).
         addTags:
           type: array
+          maxItems: 100
           items:
             type: string
-          description: Action - tags to add to matching transactions.
+            maxLength: 50
+          description: >
+            Action - tags to add to matching transactions. Each tag is capped
+            at 50 characters (over-long is a 400); blank tags are dropped and
+            duplicates collapsed, and the response echoes the stored list (so
+            it is `[]`, never `null`).
         notes:
           type: string
           description: Action - note text appended to matching transactions.
 
     UpdateRuleRequest:
       type: object
+      required:
+        - pattern
+        - categoryId
       properties:
         pattern:
           type: string
+          maxLength: 500
         matchType:
           type: string
           enum: [contains, starts_with, exact]
@@ -4911,8 +5274,10 @@ components:
           type: string
         icon:
           type: string
+          maxLength: 50
         color:
           type: string
+          maxLength: 7
         groupId:
           type: string
           description: The group the category is filed under (a base group slug or a custom group id)
@@ -6181,13 +6546,15 @@ components:
           type: string
           format: uuid
         principal:
-          type: integer
-          description: Minor units (cents).
+          type: number
+          format: double
+          description: The sanctioned principal, in major units.
         processingFee:
-          type: integer
+          type: number
+          format: double
           description: >-
-            Minor units (cents); what the lender charged, recorded for reference
-            — it is never amortized.
+            What the lender charged, in major units; recorded for reference —
+            it is never amortized.
         annualRateBps:
           type: integer
         tenureMonths:
@@ -6223,11 +6590,13 @@ components:
           type: string
           format: uuid
         amount:
-          type: integer
-          description: Minor units (cents); the payoff that moved.
+          type: number
+          format: double
+          description: The payoff that moved, in major units.
         principal:
-          type: integer
-          description: Minor units (cents); the part of the amount that was principal.
+          type: number
+          format: double
+          description: The part of the amount that was principal, in major units.
         transferDate:
           type: string
           format: date

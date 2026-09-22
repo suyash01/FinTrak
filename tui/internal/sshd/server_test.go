@@ -325,6 +325,83 @@ func TestAuthThrottlePerAddressBoundsAttempts(t *testing.T) {
 	}
 }
 
+// TestAuthThrottleEvictsRatherThanRefusingNewAddresses is a regression test for a
+// lockout: once the bucket map reached its cap the limiter refused every key it
+// had never seen, and a bucket is kept alive by one attempt every ten minutes. An
+// attacker with 4096 source addresses — a single IPv6 /64 has 2^64 of them, and
+// the limiter keys on the address, not the prefix — could therefore hold the map
+// full and shut every new client out of authentication entirely. A full map must
+// degrade the address that has been quiet longest instead.
+func TestAuthThrottleEvictsRatherThanRefusingNewAddresses(t *testing.T) {
+	l := newAttemptLimiter(2)
+	l.maxKeys = 4
+
+	// Fill the map to its cap, spending each address's burst so none of them is
+	// idle enough to be swept.
+	for i := range l.maxKeys {
+		addr := fmt.Sprintf("198.51.100.%d", i)
+		for range 2 {
+			if !l.allow(addr) {
+				t.Fatalf("address %s was throttled inside its own burst", addr)
+			}
+		}
+	}
+
+	if !l.allow("203.0.113.7") {
+		t.Fatal("a full bucket map refused an address the limiter had never seen: every new client is locked out")
+	}
+	if len(l.buckets) > l.maxKeys {
+		t.Errorf("the bucket map grew past its cap: %d keys, want at most %d", len(l.buckets), l.maxKeys)
+	}
+
+	// The new address still gets a bounded burst of its own.
+	if !l.allow("203.0.113.7") {
+		t.Error("the new address lost the rest of its burst")
+	}
+	if l.allow("203.0.113.7") {
+		t.Error("the new address exceeded its burst: the throttle no longer bounds attempts")
+	}
+}
+
+// TestSessionRendersWithTheClientsColourProfile is a regression test for a
+// monochrome door: the model was built without a renderer, so every style came
+// from lipgloss's package-level renderer — which describes the door process's own
+// stdout, not the terminal on the other end (in a container, not a terminal at
+// all) — and each client got an uncoloured TUI no matter what its terminal
+// supported.
+func TestSessionRendersWithTheClientsColourProfile(t *testing.T) {
+	api := newStubAPI(t, "user@example.com", "pw")
+	addr := startServer(t, testConfig(t, api.url()))
+
+	client := dial(t, addr, "user@example.com", "pw")
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer session.Close()
+	if err := session.RequestPty("xterm-256color", 40, 120, gossh.TerminalModes{}); err != nil {
+		t.Fatalf("request pty: %v", err)
+	}
+	out, err := session.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := session.Shell(); err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+
+	rendered := readFor(t, out, 10*time.Second, "Dashboard")
+	if !strings.Contains(rendered, "Dashboard") {
+		t.Fatalf("the session never rendered; got %q", rendered)
+	}
+	// The palette is a foreground colour, so a client whose terminal reports 256
+	// colours must receive one: 38;5;N for a 256-colour terminal, 38;2;R;G;B for
+	// a truecolour one.
+	if !strings.Contains(rendered, "\x1b[38;5;") && !strings.Contains(rendered, "\x1b[38;2;") {
+		t.Errorf("a 256-colour client was sent no colour at all: %q", rendered)
+	}
+}
+
 // readFor reads the session output until want appears or the deadline passes,
 // returning everything read.
 func readFor(t *testing.T, r io.Reader, timeout time.Duration, want string) string {

@@ -141,9 +141,16 @@ func TestCreatePayee(t *testing.T) {
 
 		r := newPayeeTestRouter(srv)
 
+		// The constraint name decides which message the caller gets: a clash on
+		// payees_user_name_uq is a name conflict, a clash on
+		// payees_account_id_tenant_uq is not (see the account-link case below).
 		mock.ExpectQuery("INSERT INTO payees").
 			WithArgs(testUserID(), "Amazon", pgxmock.AnyArg()).
-			WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
+			WillReturnError(&pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "payees_user_name_uq",
+				Message:        `duplicate key value violates unique constraint "payees_user_name_uq"`,
+			})
 
 		reqBody := models.CreatePayeeRequest{Name: "Amazon"}
 		jsonBody, _ := json.Marshal(reqBody)
@@ -153,7 +160,42 @@ func TestCreatePayee(t *testing.T) {
 		r.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusConflict, w.Code)
-		assert.Contains(t, w.Body.String(), "already exists")
+		assert.Contains(t, w.Body.String(), "name already exists")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// Creating an account always creates its linked payee, so linking a payee to
+	// an account that already has one violates payees_account_id_tenant_uq.
+	// Reporting that as a name clash is untrue and unfixable by the caller:
+	// renaming the payee clears nothing.
+	t.Run("account already has a linked payee", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		srv := newTestServer(mock)
+
+		r := newPayeeTestRouter(srv)
+
+		mock.ExpectQuery("INSERT INTO payees").
+			WithArgs(testUserID(), "Amazon", pgxmock.AnyArg()).
+			WillReturnError(&pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "payees_account_id_tenant_uq",
+				Message:        `duplicate key value violates unique constraint "payees_account_id_tenant_uq"`,
+			})
+
+		reqBody := models.CreatePayeeRequest{Name: "Amazon"}
+		jsonBody, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequest(http.MethodPost, "/payees", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "account already has a linked payee")
+		assert.NotContains(t, w.Body.String(), "name already exists")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -277,7 +319,11 @@ func TestUpdatePayee(t *testing.T) {
 
 		mock.ExpectQuery("UPDATE payees").
 			WithArgs(reqBody.Name, pgxmock.AnyArg(), payeeID, testUserID()).
-			WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
+			WillReturnError(&pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "payees_user_name_uq",
+				Message:        `duplicate key value violates unique constraint "payees_user_name_uq"`,
+			})
 
 		jsonBody, _ := json.Marshal(reqBody)
 		req, _ := http.NewRequest(http.MethodPut, "/payees/"+payeeID.String(), bytes.NewBuffer(jsonBody))
@@ -286,6 +332,43 @@ func TestUpdatePayee(t *testing.T) {
 		r.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "name already exists")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// Re-linking a payee to an account that already has its own linked payee
+	// must not be reported as a name conflict — renaming the payee would not
+	// clear it.
+	t.Run("account already has a linked payee", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		srv := newTestServer(mock)
+
+		r := newPayeeTestRouter(srv)
+		payeeID := uuid.New()
+		accountID := uuid.New()
+		reqBody := models.CreatePayeeRequest{Name: "Amazon", AccountID: &accountID}
+
+		mock.ExpectQuery("UPDATE payees").
+			WithArgs(reqBody.Name, &accountID, payeeID, testUserID()).
+			WillReturnError(&pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "payees_account_id_tenant_uq",
+				Message:        `duplicate key value violates unique constraint "payees_account_id_tenant_uq"`,
+			})
+
+		jsonBody, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequest(http.MethodPut, "/payees/"+payeeID.String(), bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "account already has a linked payee")
+		assert.NotContains(t, w.Body.String(), "name already exists")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

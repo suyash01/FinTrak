@@ -3,7 +3,7 @@ import api, { getStoredUser, storeUser, downloadCSV } from "./client";
 import { NetworkError } from "./errors";
 import { readCached } from "./offlineCache";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
-import { getOutboxSnapshot } from "./outbox";
+import { getOutboxSnapshot, OutboxStorageError } from "./outbox";
 
 const API_BASE = "/api/v1";
 
@@ -196,10 +196,14 @@ describe("api request", () => {
     await expect(promise).rejects.toThrow(NetworkError);
   });
 
-  // The parser can spend ~a minute on a PDF, so the parse routes must not be
-  // aborted at the default timeout.
-  async function expectNotAbortedAtDefaultTimeout(
+  // The parser can spend ~a minute on a PDF and a restore rewrites the whole
+  // ledger, so those routes must not be aborted at the default timeout. Each
+  // budget is the frontend half of the one the nginx location enforces (75s for
+  // the parse, 310s for the restore) plus a margin, so a request the proxy still
+  // considers alive is never cut off by the client first.
+  async function expectTimeoutAfter(
     call: () => Promise<unknown>,
+    timeout: number,
   ) {
     vi.useFakeTimers();
     fetchMock.mockImplementation(abortOnSignal);
@@ -210,19 +214,21 @@ describe("api request", () => {
     await vi.advanceTimersByTimeAsync(15000);
     expect(settled).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(105000);
+    await vi.advanceTimersByTimeAsync(timeout - 15000);
     await expect(promise).rejects.toThrow("Request timed out");
   }
 
   it("keeps statement parsing alive past the default 15s timeout", () =>
-    expectNotAbortedAtDefaultTimeout(() =>
-      api.parseStatement(new FormData()),
-    ));
+    expectTimeoutAfter(() => api.parseStatement(new FormData()), 90000));
 
   it("keeps the Paperless import alive past the default 15s timeout", () =>
-    expectNotAbortedAtDefaultTimeout(() =>
-      api.importPaperlessDocument({ documentId: 1 }),
+    expectTimeoutAfter(
+      () => api.importPaperlessDocument({ documentId: 1 }),
+      120000,
     ));
+
+  it("keeps a backup restore alive past the default 15s timeout", () =>
+    expectTimeoutAfter(() => api.importUserData({ accounts: [] }), 320000));
 
   it("keeps the session when the parser rejects the upload", async () => {
     // A rejected parse (a password-protected PDF, an unextractable scan) is a
@@ -332,6 +338,71 @@ describe("api request", () => {
       String(c[0]).endsWith("/auth/refresh"),
     );
     expect(refreshCalls).toHaveLength(1);
+  });
+
+  // A refresh that could not be asked is not an answer about the session. The
+  // old code mapped every failure to `false` (a refusal), so a blip while the
+  // server was already answering 401 signed the user out — throwing away the
+  // cached ledger that exists for exactly that situation.
+  it("keeps the session when the refresh cannot be reached", async () => {
+    storeUser({ id: "u1", email: "a@b.c" } as never);
+    fetchMock.mockImplementation((url: string) =>
+      String(url).endsWith("/auth/refresh")
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : Promise.resolve(jsonResponse({ error: "Unauthorized" }, 401)),
+    );
+
+    await expect(api.getAccounts()).rejects.toThrow(
+      "Network error: could not reach the API server",
+    );
+
+    expect(getStoredUser()).not.toBeNull();
+    expect(window.location.href).not.toBe("/login");
+  });
+
+  it("keeps the session when the refresh answers 5xx", async () => {
+    storeUser({ id: "u1", email: "a@b.c" } as never);
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        String(url).endsWith("/auth/refresh")
+          ? jsonResponse({ error: "boom" }, 503)
+          : jsonResponse({ error: "Unauthorized" }, 401),
+      ),
+    );
+
+    await expect(api.getAccounts()).rejects.toThrow(NetworkError);
+
+    expect(getStoredUser()).not.toBeNull();
+    expect(window.location.href).not.toBe("/login");
+  });
+
+  it("bounds the refresh with the request timeout so it cannot stall the queue", async () => {
+    storeUser({ id: "u1", email: "a@b.c" } as never);
+    let refreshCalls = 0;
+    fetchMock.mockImplementation((url: string, opts: RequestInit) => {
+      if (String(url).endsWith("/auth/refresh")) {
+        refreshCalls += 1;
+        return abortOnSignal(url, opts);
+      }
+      return Promise.resolve(jsonResponse({ error: "Unauthorized" }, 401));
+    });
+
+    vi.useFakeTimers();
+    const outcome = api.getAccounts().then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+
+    // The refresh ran on the same clock as every other request instead of
+    // hanging until the browser gave up, and its timeout is a transport
+    // failure: the session is kept rather than signed out.
+    const err = await outcome;
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as Error).message).toBe("Request timed out");
+    expect(refreshCalls).toBe(1);
+    expect(getStoredUser()).not.toBeNull();
+    expect(window.location.href).not.toBe("/login");
   });
 });
 
@@ -568,5 +639,71 @@ describe("offline behaviour", () => {
     await expect(api.createTransaction(create)).rejects.toThrow(
       "Network error: could not reach the API server",
     );
+  });
+
+  // The identity is captured when the request is issued. Reading it again when
+  // the response lands attributes the payload to whoever is signed in by then,
+  // which on a shared browser writes one user's ledger into another user's
+  // namespace (and serves the previous user's cache to the new session). The
+  // mocks below swap the session while the request is in flight: the fetch
+  // resolves only after the swap has happened.
+  it("does not cache a read that lands under a different session", async () => {
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.resolve(jsonResponse([{ id: "a1" }]));
+    });
+
+    await expect(api.getAccounts()).resolves.toEqual([{ id: "a1" }]);
+    expect(readCached("u1", "/accounts")).toBeNull();
+    expect(readCached("u2", "/accounts")).toBeNull();
+  });
+
+  it("does not serve the replaced session's cache to the new one", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a1" }]));
+    await api.getAccounts();
+    expect(readCached("u1", "/accounts")).toEqual([{ id: "a1" }]);
+
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.reject(new TypeError("Failed to fetch"));
+    });
+
+    await expect(api.getAccounts()).rejects.toThrow(
+      "Network error: could not reach the API server",
+    );
+    expect(getOfflineSnapshot().servedFromCache).toBe(false);
+  });
+
+  it("refuses to queue a create under a session that replaced the issuing one", async () => {
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.reject(new TypeError("Failed to fetch"));
+    });
+
+    // Neither queue may take it: u1 is gone from this browser and u2 never
+    // recorded it, and the server would reject an u1 entry flushed under u2.
+    await expect(api.createTransaction(create)).rejects.toThrow(
+      "Network error: could not reach the API server",
+    );
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+    expect(getOutboxSnapshot("u2")).toHaveLength(0);
+  });
+
+  it("refuses to claim a save the browser would not let it queue", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    // The create has to fail loudly: resolving `queued: true` would show
+    // "Saved offline" for a transaction that is in no queue at all.
+    await expect(api.createTransaction(create)).rejects.toThrow(
+      OutboxStorageError,
+    );
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 });

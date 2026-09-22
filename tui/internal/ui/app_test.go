@@ -2,12 +2,15 @@ package ui
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/fintrak/client/api"
 )
@@ -343,10 +346,16 @@ func TestStatusBarHidesDeadKeys(t *testing.T) {
 	if strings.Contains(inSidebar, "n new") {
 		t.Errorf("the screen's keys are dead while the sidebar is focused: %q", inSidebar)
 	}
-	for _, want := range []string{"up", "down", "enter details"} {
+	for _, want := range []string{"up", "down", "enter content"} {
 		if !strings.Contains(inSidebar, want) {
 			t.Errorf("the sidebar's own navigation should be advertised; %q missing from %q", want, inSidebar)
 		}
+	}
+	// `enter` in the sidebar hands the keyboard to the content pane; it does not
+	// open a detail overlay, so the bar must not label it "details" (the label
+	// used to be reused from the screens' binding and described the wrong action).
+	if strings.Contains(inSidebar, "enter details") {
+		t.Errorf("the sidebar's enter key is mislabelled: %q", inSidebar)
 	}
 	if !strings.Contains(inSidebar, "tab content") {
 		t.Errorf("the way into the content pane should be advertised: %q", inSidebar)
@@ -404,5 +413,132 @@ func TestFailedWriteLeavesEveryScreenFresh(t *testing.T) {
 	a.selectScreen(0)
 	if active.refreshes != 1 {
 		t.Errorf("a failed write invalidated the current screen (%d loads, want 1)", active.refreshes)
+	}
+}
+
+// TestAppStylesWithTheSessionRenderer pins the App half of the SSH colour fix: the
+// model builds its palette (and the one its screens share through the context)
+// from the renderer handed in for the session's terminal, rather than from the
+// process-wide default.
+func TestAppStylesWithTheSessionRenderer(t *testing.T) {
+	client, err := api.New("http://127.0.0.1:1/api/v1")
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.ANSI256)
+	r.SetHasDarkBackground(true)
+
+	a, ok := NewWithRenderer(client, r).(*App)
+	if !ok {
+		t.Fatal("NewWithRenderer did not return *App")
+	}
+	if got := a.theme.Negative.Render("x"); !strings.Contains(got, "\x1b[") {
+		t.Errorf("the App did not style with the session renderer: %q", got)
+	}
+	if a.ctx.Theme.Negative.Render("x") != a.theme.Negative.Render("x") {
+		t.Error("the screens' context does not carry the session's theme")
+	}
+}
+
+// TestFailedReferenceDataLoadIsRetryable is a regression test for a defect: the
+// global-key handler returned before its switch whenever no screens existed, and
+// the screens are only ever built by a *successful* reference-data load. One
+// failed load therefore left the session on its error card with no working key at
+// all — not a retry, not a sign-out, not even the help overlay — so the only way
+// out was to quit and reconnect.
+func TestFailedReferenceDataLoadIsRetryable(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.screens = nil
+
+	a.Update(loaded[*RefData]{tag: "app.refdata", err: errors.New("backend restarting")})
+	if a.refErr == nil {
+		t.Fatal("the failed load was not recorded, so there is nothing to retry")
+	}
+
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("`r` did nothing after a failed reference-data load: the session is a dead end")
+	}
+
+	// The retry is the load that builds the screens: delivering its success
+	// leaves a usable workspace.
+	a.Update(loaded[*RefData]{tag: "app.refdata", data: &RefData{AccountsByID: map[string]api.Account{}}})
+	if len(a.screens) == 0 {
+		t.Error("a successful retry did not build the screens")
+	}
+	if a.refErr != nil {
+		t.Errorf("the retry left the load error in place: %v", a.refErr)
+	}
+}
+
+// TestSignOutWorksWithoutScreens keeps the way out of the failed-load state
+// open: with no screens there is no sidebar to reach the sign-out binding from,
+// so the key has to work on its own.
+func TestSignOutWorksWithoutScreens(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.screens = nil
+	a.refErr = errors.New("backend restarting")
+
+	a.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+
+	if a.signedIn {
+		t.Fatal("ctrl+o did not sign out of a session with no screens")
+	}
+	if a.login == nil || a.login.form() == nil {
+		t.Fatal("signing out left no sign-in form to type into")
+	}
+}
+
+// TestSessionExpiryDropsTheOpenOverlay is a regression test for a defect: the
+// expiry path tore down the workspace but not the modal, and the App hands every
+// key to an open modal before anything else — so the sign-in card was displayed
+// while the keyboard belonged to an invisible overlay (ctrl+c could not even quit
+// until esc happened to close it).
+func TestSessionExpiryDropsTheOpenOverlay(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.modal = NewHelp(nil, nil)
+
+	a.Update(loaded[*RefData]{tag: "app.refdata", err: &api.APIError{Status: 401}})
+
+	if a.modal != nil {
+		t.Fatal("the overlay survived the session expiry: it keeps consuming keys")
+	}
+	// The keys reach the sign-in form again.
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if got := a.login.form().Value("Email"); got != "a" {
+		t.Errorf("the sign-in form did not receive the key: email = %q", got)
+	}
+}
+
+// TestQuitWorksFromEitherPane is a regression test for a defect: `q` was bound as
+// a global quit and advertised as one in the key reference, but the handler only
+// honoured it while the sidebar held the keyboard — so in the content pane, the
+// pane that has focus by default, the advertised key did nothing.
+func TestQuitWorksFromEitherPane(t *testing.T) {
+	for _, focus := range []Focus{FocusContent, FocusNav} {
+		a, _, _ := newAppForTest(t)
+		a.focus = focus
+
+		_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		if cmd == nil {
+			t.Fatalf("`q` did not quit with focus=%v", focus)
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Errorf("`q` with focus=%v produced %T, want tea.QuitMsg", focus, cmd())
+		}
+	}
+
+	// It works from the failed-load card too, which has no screens to address.
+	a, _, _ := newAppForTest(t)
+	a.screens = nil
+	a.refErr = errors.New("backend restarting")
+
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("`q` did not quit from the reference-data error card")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("`q` on the error card produced %T, want tea.QuitMsg", cmd())
 	}
 }

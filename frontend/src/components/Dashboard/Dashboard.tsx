@@ -39,6 +39,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  PERIOD_CURRENT_FY,
+  PERIOD_CUSTOM,
+  PERIOD_LAST_12_MONTHS,
+  PERIOD_VALUES,
+  lastTwelveMonthsRange,
+  periodRange,
+} from "../../lib/dates";
 import type {
   DashboardSummary,
   BillingCycleTrendItem,
@@ -51,45 +59,7 @@ import type {
 
 const ALL_ACCOUNTS = "all";
 
-const PERIOD_LAST_12_MONTHS = "last_12_months";
-const PERIOD_CURRENT_FY = "current_fy";
-const PERIOD_CUSTOM = "custom";
-const PERIOD_VALUES = [
-  PERIOD_LAST_12_MONTHS,
-  PERIOD_CURRENT_FY,
-  PERIOD_CUSTOM,
-];
-
 const recentColumnHelper = createColumnHelper<Transaction>();
-
-function toISODate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function lastTwelveMonthsRange(): { dateFrom: string; dateTo: string } {
-  const to = new Date();
-  const from = new Date(to.getFullYear(), to.getMonth() - 12, to.getDate() + 1);
-  return { dateFrom: toISODate(from), dateTo: toISODate(to) };
-}
-
-function currentFinancialYearRange(): { dateFrom: string; dateTo: string } {
-  const now = new Date();
-  const startYear =
-    now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-  return {
-    dateFrom: toISODate(new Date(startYear, 3, 1)),
-    dateTo: toISODate(new Date(startYear + 1, 2, 31)),
-  };
-}
-
-function periodRange(period: string): { dateFrom: string; dateTo: string } {
-  return period === PERIOD_CURRENT_FY
-    ? currentFinancialYearRange()
-    : lastTwelveMonthsRange();
-}
 
 export default function Dashboard() {
   const { accounts } = useDomainData();

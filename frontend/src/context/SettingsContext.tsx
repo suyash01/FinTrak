@@ -38,7 +38,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    localStorage.setItem(COMPACT_LAYOUT_KEY, JSON.stringify(compactLayout));
+    try {
+      localStorage.setItem(COMPACT_LAYOUT_KEY, JSON.stringify(compactLayout));
+    } catch {
+      // Mirrors readStoredCompactLayout: a full or blocked quota keeps the
+      // in-memory value instead of throwing during commit, which would unmount
+      // the app to its error boundary.
+    }
   }, [compactLayout]);
 
   const toggleCompactLayout = () => setCompactLayout((prev) => !prev);

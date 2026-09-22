@@ -3,6 +3,10 @@ package db
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -104,4 +108,48 @@ func TestMigrateRejectsInvalidURL(t *testing.T) {
 	// A malformed DSN fails while constructing the migrate instance, before any
 	// network connection is attempted.
 	assert.Error(t, Migrate("://not-a-valid-dsn"))
+}
+
+// migrationVersionPattern matches "000011_transactions_list_index.up.sql".
+var migrationVersionPattern = regexp.MustCompile(`^(\d{6})_.+\.(up|down)\.sql$`)
+
+// TestEmbeddedMigrationsAreCompleteAndPaired guards the property golang-migrate
+// depends on and that a hand-added file gets wrong: every version in the embed
+// has both halves, the versions are contiguous from 1, and no file is empty.
+// A missing `.down.sql` or a version gap is invisible at compile time and only
+// surfaces as a failed boot (or an un-migratable schema) in production, which
+// is exactly the class of mistake this test is here to catch.
+func TestEmbeddedMigrationsAreCompleteAndPaired(t *testing.T) {
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	require.NoError(t, err)
+
+	versions := map[int]map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := migrationVersionPattern.FindStringSubmatch(e.Name())
+		require.NotNilf(t, m, "migration file %q does not follow NNNNNN_name.(up|down).sql", e.Name())
+
+		version, err := strconv.Atoi(m[1])
+		require.NoError(t, err)
+
+		if versions[version] == nil {
+			versions[version] = map[string]bool{}
+		}
+		require.Falsef(t, versions[version][m[2]], "duplicate %s migration for version %06d", m[2], version)
+		versions[version][m[2]] = true
+
+		body, err := fs.ReadFile(migrationFiles, "migrations/"+e.Name())
+		require.NoError(t, err)
+		assert.NotEmptyf(t, strings.TrimSpace(string(body)), "%s is empty", e.Name())
+	}
+
+	require.NotEmpty(t, versions)
+	for v := 1; v <= len(versions); v++ {
+		halves, ok := versions[v]
+		require.Truef(t, ok, "migration version %06d is missing (versions must be contiguous from 000001)", v)
+		assert.Truef(t, halves["up"], "migration version %06d has no .up.sql", v)
+		assert.Truef(t, halves["down"], "migration version %06d has no .down.sql", v)
+	}
 }

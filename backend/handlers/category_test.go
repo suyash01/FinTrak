@@ -51,6 +51,65 @@ func TestCreateCategoryRejectsAnOverLongName(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// Icon (VARCHAR(50)) and Color (VARCHAR(7)) are column-backed like the name:
+// an over-long value must be a 400 field error, not the 22001 the column raises
+// (which the handler can only answer with a 500).
+func TestCreateCategoryRejectsOverLongIconAndColor(t *testing.T) {
+	cases := map[string]models.CreateCategoryRequest{
+		"icon":  {Name: "Food", Icon: strings.Repeat("i", 51), Color: "#f97316", GroupID: "expense"},
+		"color": {Name: "Food", Icon: "utensils", Color: strings.Repeat("c", 8), GroupID: "expense"},
+	}
+
+	for name, reqBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			srv := newTestServer(mock)
+
+			body, err := json.Marshal(reqBody)
+			assert.NoError(t, err)
+
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodPost, "/categories", bytes.NewReader(body))
+			newCategoryTestRouter(srv).ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestUpdateCategoryRejectsOverLongIconAndColor(t *testing.T) {
+	cases := map[string]models.UpdateCategoryRequest{
+		"icon":  {Name: "Food", Icon: strings.Repeat("i", 51)},
+		"color": {Name: "Food", Color: strings.Repeat("c", 8)},
+	}
+
+	for name, reqBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			srv := newTestServer(mock)
+
+			body, err := json.Marshal(reqBody)
+			assert.NoError(t, err)
+
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodPut, "/categories/"+uuid.New().String(), bytes.NewReader(body))
+			newCategoryTestRouter(srv).ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestGetCategories(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

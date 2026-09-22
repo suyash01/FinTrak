@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/fintrak/backend/models"
@@ -152,7 +153,9 @@ func TestBulkUpdateBillingCycleErrors(t *testing.T) {
 		r.POST("/transactions/bulk-billing-cycle", srv.BulkUpdateBillingCycle)
 
 		cycleID := uuid.New()
-		mock.ExpectExec("UPDATE transactions SET billing_cycle_id").
+		// A bulk assignment is an assignment: it also clears the
+		// billing_cycle_detached flag the "Unassigned" action set.
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE transactions SET billing_cycle_id = $1, billing_cycle_detached = FALSE")).
 			WithArgs(cycleID, pgxmock.AnyArg(), testUserID()).
 			WillReturnError(assert.AnError)
 

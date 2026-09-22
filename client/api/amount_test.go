@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -42,7 +43,9 @@ func TestAmountSignAndAbs(t *testing.T) {
 
 // TestParseAmountMirrorsTheBackendGrammar pins the rules the API enforces
 // (money.Parse in backend/internal/money/money.go) so the TUI rejects exactly
-// what the server would reject, and normalizes to two decimals either way.
+// what the server would reject, and normalizes to two decimals either way. The
+// valid and invalid tables mirror that package's own TestParse, so a change on
+// either side of the boundary fails here.
 func TestParseAmountMirrorsTheBackendGrammar(t *testing.T) {
 	valid := map[string]string{
 		"5":       "5.00",
@@ -51,10 +54,15 @@ func TestParseAmountMirrorsTheBackendGrammar(t *testing.T) {
 		" 5.55 ":  "5.55",
 		"+5.55":   "5.55",
 		"-5.55":   "-5.55",
-		".5":      "0.50",
 		"0":       "0.00",
 		"-0":      "0.00",
+		"-0.01":   "-0.01",
 		"1000000": "1000000.00",
+		// The integer part is rendered from the parsed digits, so a leading
+		// zero run cannot reach the wire (JSON forbids it, and the body would
+		// not parse even though the value itself is fine).
+		"007":    "7.00",
+		"0007.5": "7.50",
 	}
 	for in, want := range valid {
 		got, err := ParseAmount(in)
@@ -67,10 +75,62 @@ func TestParseAmountMirrorsTheBackendGrammar(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"", "   ", "abc", "1.234", "-", "+", "1,000", "1.2.3", "--1", "1e3", "$5"}
+	// Re-pinned to the tightened grammar: ".5", "5." and "." used to be
+	// accepted (as 0.50, 5.00 and 0.00), which meant the form accepted input
+	// the API now rejects. The backend answers all of them with an error, so
+	// the client has to as well.
+	invalid := []string{
+		"", "   ", "abc", "1.234", "-", "+", "1,000", "1.2.3", "--1", "1e3", "1e30", "$5",
+		".5", "5.", ".", "+.", "-.", ".00",
+		// A second sign is a typo, not a number: it is rejected here rather
+		// than double-negated into an amount the user did not type.
+		"+-1", "-+1",
+		// Above MaxInt64 the whole part is not a number at all, exactly as on
+		// the backend, where strconv.ParseInt fails before the bound is even
+		// consulted.
+		"99999999999999999999",
+	}
 	for _, in := range invalid {
 		if got, err := ParseAmount(in); err == nil {
 			t.Errorf("ParseAmount(%q) = %q, want an error", in, got)
+		}
+	}
+}
+
+// TestParseAmountBoundsTheValue covers the bound ParseAmount shares with
+// money.MaxMinorUnits (1<<62 minor units): above it whole*100 overflows int64
+// on the backend, so the API refuses the amount and the client must not send
+// it. 4611686018427387904 cents is the largest value the backend accepts, so
+// ...3879.04 is inside and ...3879.05 is not.
+func TestParseAmountBoundsTheValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"46116860184273878.99":  "46116860184273878.99",
+		"46116860184273879.04":  "46116860184273879.04",  // exactly MaxMinorUnits
+		"-46116860184273879.04": "-46116860184273879.04", // the bound is on the magnitude
+	} {
+		got, err := ParseAmount(in)
+		if err != nil {
+			t.Errorf("ParseAmount(%q) errored: %v", in, err)
+			continue
+		}
+		if got != Amount(want) {
+			t.Errorf("ParseAmount(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	for _, in := range []string{
+		"46116860184273879.05", // one cent above the bound
+		"46116860184273880",    // one whole unit above it
+		"-46116860184273880",   // the sign does not widen it
+		"92233720368547758.08", // the backend's own overflow case
+	} {
+		got, err := ParseAmount(in)
+		if err == nil {
+			t.Errorf("ParseAmount(%q) = %q, want an out-of-range error", in, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), "out of range") {
+			t.Errorf("ParseAmount(%q) error = %v, want it to name the range rather than read as a typo", in, err)
 		}
 	}
 }

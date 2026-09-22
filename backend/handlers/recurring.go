@@ -80,10 +80,16 @@ func isValidRecurringFrequency(f string) bool {
 }
 
 // parseRecurringDate parses a YYYY-MM-DD date and normalizes it to midnight UTC.
+// The date must fall inside the ledger's supported window ([1900-01-01,
+// today+1y], validation.CheckTransactionDate): a series whose earliest range
+// starts in year 0001 — an OCR'd or mistyped year — would otherwise make every
+// forecast and suggestion scan its whole occurrence bound before answering
+// nothing, and the balance transfer's target start date feeds the same
+// generator.
 func parseRecurringDate(s string) (time.Time, error) {
-	t, err := time.Parse("2006-01-02", strings.TrimSpace(s))
-	if err != nil {
-		return time.Time{}, errors.New("invalid date (expected YYYY-MM-DD)")
+	t, msg := validation.CheckTransactionDate(strings.TrimSpace(s), time.Now())
+	if msg != "" {
+		return time.Time{}, errors.New(msg)
 	}
 	return dateOnly(t), nil
 }
@@ -1328,6 +1334,12 @@ func (srv *Server) GetRecurringForecast(c *gin.Context) {
 	}
 	deriveRecurringSeries(&series, terms)
 
+	// An attached transaction covers exactly one occurrence: the one nearest to
+	// it. The window alone is wider than the gap between two monthly
+	// occurrences, so asking "is this transaction within the window of occ?"
+	// per occurrence would mark two consecutive months paid by one payment.
+	matched := recurringMatchedOccurrences(series, attachedTxns, recurringMaxDaysOff(series))
+
 	occurrences := recurringUpcoming(series, dateOnly(time.Now()), count)
 	items := make([]models.RecurringForecastItem, 0, len(occurrences))
 	for _, occ := range occurrences {
@@ -1337,11 +1349,12 @@ func (srv *Server) GetRecurringForecast(c *gin.Context) {
 		if t := recurringTermAt(terms, occ); t != nil {
 			amount = t.Amount
 		}
+		_, isMatched := matched[dateOnly(occ).Unix()]
 		items = append(items, models.RecurringForecastItem{
 			Date:    occ,
 			Amount:  amount,
 			Type:    series.Type,
-			Matched: recurringOccurrenceMatched(occ, attachedTxns, recurringMaxDaysOff(series)),
+			Matched: isMatched,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items})
@@ -1353,18 +1366,22 @@ type recurringAttachedTxn struct {
 	date time.Time
 }
 
-// recurringOccurrenceMatched reports whether any attached transaction falls
-// within windowDays of the occurrence. The window is the same tolerance the
-// suggestion filter uses (recurringMaxDaysOff), so the API never proposes a
-// link its own forecast would report as unmatched.
-func recurringOccurrenceMatched(occ time.Time, attached []recurringAttachedTxn, windowDays float64) bool {
+// recurringMatchedOccurrences returns the occurrences (keyed by day) that an
+// attached transaction covers. Each attached transaction is attributed to the
+// single occurrence nearest to it and only counts while it is within windowDays
+// of that occurrence — the same rule GetRecurringSuggestions applies — so one
+// payment can never mark two consecutive occurrences matched and the two
+// endpoints agree about the same transaction.
+func recurringMatchedOccurrences(s models.RecurringSeries, attached []recurringAttachedTxn, windowDays float64) map[int64]struct{} {
+	matched := make(map[int64]struct{}, len(attached))
 	for _, a := range attached {
-		diffDays := math.Abs(dateOnly(a.date).Sub(dateOnly(occ)).Hours() / 24)
-		if diffDays <= windowDays {
-			return true
+		occ, daysOff, ok := nearestRecurringOccurrence(s, a.date)
+		if !ok || daysOff > windowDays {
+			continue
 		}
+		matched[dateOnly(occ).Unix()] = struct{}{}
 	}
-	return false
+	return matched
 }
 
 // GetRecurringSuggestions scores existing transactions that likely satisfy a
@@ -1567,7 +1584,7 @@ func (srv *Server) GetRecurringTransactions(c *gin.Context) {
 
 	rows, err := srv.db.Query(c, `
 		SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
-		       t.tags, t.notes, t.payee_id, COALESCE(p.name, ''), t.created_at, a.name,
+		       COALESCE(t.tags, '{}'), t.notes, t.payee_id, COALESCE(p.name, ''), t.created_at, a.name,
 		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''),
 		       t.billing_cycle_id, COALESCE(bc.label, '')
 		FROM recurring_attachments ra

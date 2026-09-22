@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,6 +285,11 @@ func TestDeleteAccount(t *testing.T) {
 	mock.ExpectExec("DELETE FROM payees WHERE account_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	// A series whose only range pointed at the account goes with it, so the
+	// account-delete cascade can never leave a range-less series behind.
+	mock.ExpectExec("DELETE FROM recurring_series rs").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec("DELETE FROM accounts WHERE id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
@@ -304,6 +310,45 @@ func TestDeleteAccount(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// Deleting an account cascades its recurring_series_terms rows away (the terms
+// FK is ON DELETE CASCADE), so a series whose only range pointed at that account
+// would be left with none: it would disappear from GET /recurring while its
+// attachments — and the transactions they link — stayed behind. DeleteAccount
+// removes exactly those series, the same way it already removes the account's
+// transactions and its linked payee; a series with a range on another account
+// keeps its history.
+func TestDeleteAccountRemovesSeriesLeftWithoutRanges(t *testing.T) {
+	r, srv, mock := newAccountTestRouter(t)
+	r.DELETE("/accounts/:id", srv.DeleteAccount)
+
+	userID := testUserID()
+	accountID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM transactions WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	mock.ExpectExec("DELETE FROM payees WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	// The predicate is what makes this the *stranded* series only: it has at
+	// least one range on the account, and no range anywhere else.
+	mock.ExpectExec(`(?s)DELETE FROM recurring_series rs.*NOT EXISTS.*o\.account_id <> \$1`).
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec("DELETE FROM accounts WHERE id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest("DELETE", "/accounts/"+accountID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestDeleteAccountNotFound(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
 	r.DELETE("/accounts/:id", srv.DeleteAccount)
@@ -316,6 +361,9 @@ func TestDeleteAccountNotFound(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 	mock.ExpectExec("DELETE FROM payees WHERE account_id").
+		WithArgs(accountID, userID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	mock.ExpectExec("DELETE FROM recurring_series rs").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 	mock.ExpectExec("DELETE FROM accounts WHERE id").
@@ -613,4 +661,45 @@ func TestUpdateAccountBillingDayInvalidRange(t *testing.T) {
 		})
 	}
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The account text fields carry the width of the column they land in (bank 100,
+// currency 3, color 7) as binding tags, so an over-long value is a 400 at the
+// edge instead of a 22001 the handler could only report as a 500.
+func TestAccountColumnLimitsRejectedAtBinding(t *testing.T) {
+	overLong := strings.Repeat("b", 101)
+	accountID := uuid.New().String()
+
+	cases := map[string]struct {
+		method string
+		path   string
+		body   string
+	}{
+		"create: currency longer than 3": {http.MethodPost, "/accounts",
+			`{"name":"X","accountTypeId":"bank","currency":"INRX"}`},
+		"create: bank longer than 100": {http.MethodPost, "/accounts",
+			`{"name":"X","accountTypeId":"bank","bank":"` + overLong + `"}`},
+		"create: color longer than 7": {http.MethodPost, "/accounts",
+			`{"name":"X","accountTypeId":"bank","color":"#00ff00ff"}`},
+		"update: bank longer than 100": {http.MethodPut, "/accounts/" + accountID,
+			`{"bank":"` + overLong + `"}`},
+		"update: currency longer than 3": {http.MethodPut, "/accounts/" + accountID,
+			`{"currency":"INRX"}`},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, srv, mock := newAccountTestRouter(t)
+			r.POST("/accounts", srv.CreateAccount)
+			r.PUT("/accounts/:id", srv.UpdateAccount)
+
+			req, _ := http.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }

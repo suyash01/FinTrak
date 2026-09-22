@@ -14,6 +14,16 @@ export function shouldRegisterServiceWorker(): boolean {
 }
 
 export function registerServiceWorker(): void {
+  // A lazily imported chunk whose URL no longer exists — a deploy landed while
+  // this tab was open, and the worker kept only the previous build's cache —
+  // fails the import and would show the route's error boundary. Vite emits this
+  // event for exactly that case; reloading fetches the new build's shell and
+  // chunks, which is the only way out of it. Skipped when there is no network:
+  // an offline reload would repeat the same failed import instead of healing.
+  window.addEventListener("vite:preloadError", () => {
+    if (navigator.onLine !== false) window.location.reload();
+  });
+
   if (!shouldRegisterServiceWorker()) return;
 
   const register = () => {

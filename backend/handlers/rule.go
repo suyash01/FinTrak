@@ -135,6 +135,17 @@ func (srv *Server) CreateRule(c *gin.Context) {
 		return
 	}
 
+	// A rule's action tags go through the same normalization as every other tag
+	// write edge (transaction create/import, bulk tag update, rename). The cap
+	// and the blank/dedupe rules live in one place, and ApplyRules mass-applies
+	// whatever this stores onto every matching transaction — a rule is the
+	// widest blast radius a tag can have, so it must not be the one edge that
+	// skips the validation.
+	addTags, ok := normalizeTags(c, req.AddTags, "addTags")
+	if !ok {
+		return
+	}
+
 	var rule models.Rule
 	err := srv.db.QueryRow(c,
 		// Every SELECT-list parameter is cast to its column type. Without the
@@ -156,7 +167,7 @@ func (srv *Server) CreateRule(c *gin.Context) {
 		 RETURNING id, pattern, match_type, category_id, payee_id, priority`,
 		auth.GetUserID(c), req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
 		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount, nullIfEmpty(req.TxnType),
-		dateFrom, dateTo, req.IsLinked, req.IsRecurring, req.AddTags, req.Notes,
+		dateFrom, dateTo, req.IsLinked, req.IsRecurring, addTags, req.Notes,
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
@@ -179,7 +190,10 @@ func (srv *Server) CreateRule(c *gin.Context) {
 	rule.DateTo = dateTo
 	rule.IsLinked = req.IsLinked
 	rule.IsRecurring = req.IsRecurring
-	rule.AddTags = req.AddTags
+	// Echo what was stored, not what was sent: the tags were normalized (blank
+	// entries dropped, duplicates collapsed), so a create without tags now
+	// answers `[]` where it used to answer `null` while the column held '{}'.
+	rule.AddTags = addTags
 	rule.Notes = req.Notes
 
 	c.JSON(http.StatusCreated, rule)
@@ -234,6 +248,18 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		return
 	}
 
+	// The UPDATE's ownership predicate tests the action category unconditionally
+	// (`EXISTS (SELECT 1 FROM categories c WHERE c.id = $3 ...)`), and the
+	// documented request schema marks no property required, so a body that omits
+	// categoryId leaves the zero UUID in $3. The statement then matches no rows
+	// and the handler answered 404 "rule not found" — which reads as "the rule
+	// was deleted" for what is really an invalid request. Reject it here, like
+	// the pattern above.
+	if req.CategoryID == uuid.Nil {
+		validation.RespondError(c, "categoryId is required", http.StatusBadRequest)
+		return
+	}
+
 	matchType, ok := normalizeRuleMatchType(c, req.MatchType)
 	if !ok {
 		return
@@ -243,6 +269,14 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		return
 	}
 	dateFrom, dateTo, ok := validateRuleDates(c, req.DateFrom, req.DateTo)
+	if !ok {
+		return
+	}
+
+	// Same normalization as the create path (see CreateRule): the tags this
+	// stores are mass-applied by ApplyRules, so they obey the same cap and
+	// blank/dedupe rules as every other tag write edge.
+	addTags, ok := normalizeTags(c, req.AddTags, "addTags")
 	if !ok {
 		return
 	}
@@ -263,7 +297,7 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		req.Pattern, matchType, req.CategoryID, req.PayeeID, req.Priority,
 		req.AccountID, req.FilterCategoryID, req.FilterPayeeID, req.MinAmount, req.MaxAmount,
 		nullIfEmpty(req.TxnType), dateFrom, dateTo, req.IsLinked, req.IsRecurring,
-		req.AddTags, req.Notes, id, auth.GetUserID(c),
+		addTags, req.Notes, id, auth.GetUserID(c),
 	).Scan(&rule.ID, &rule.Pattern, &rule.MatchType, &rule.CategoryID, &rule.PayeeID, &rule.Priority)
 
 	if err != nil {
@@ -286,7 +320,7 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 	rule.DateTo = dateTo
 	rule.IsLinked = req.IsLinked
 	rule.IsRecurring = req.IsRecurring
-	rule.AddTags = req.AddTags
+	rule.AddTags = addTags
 	rule.Notes = req.Notes
 
 	c.JSON(http.StatusOK, rule)

@@ -16,7 +16,13 @@ coverage:
         flags:
           - backend
       frontend:
-        target: 75%
+        # Must stay equal to the floor that can actually fail the build:
+        # `bun run test:coverage` (the CI frontend job) fails below the v8
+        # thresholds in frontend/vitest.config.ts — statements 76, branches 67,
+        # functions 71, lines 78 — so the flag reports the strictest of them
+        # (lines, 78%). A target of 75% would have shown a pass on the dashboard
+        # for a commit the gate rejects.
+        target: 78%
         threshold: 1%
         flags:
           - frontend

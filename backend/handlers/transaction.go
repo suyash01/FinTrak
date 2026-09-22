@@ -298,8 +298,12 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		validation.RespondError(c, "page out of range", http.StatusBadRequest)
 		return
 	}
-	// Clamp the page size so a crafted request can't bypass the frontend limit
-	// (0 or negative values fall back to the default).
+	// Clamp the page size. There is no "unlimited" mode: 0 or a negative value
+	// falls back to the default (50) and anything above maxPageSize is clamped
+	// to it (1000), because the documented alternative — 0 = return everything
+	// — would let one request pull the user's whole history into memory. The
+	// response reports the effective `limit`, so a caller can detect the
+	// clamp; GET /transactions documents the same bounds.
 	if limit < 1 {
 		limit = 50
 	}
@@ -332,7 +336,7 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 
 	where := f.where()
 	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
-				t.tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
+				COALESCE(t.tags, '{}') as tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
 				COALESCE(c.name, '') as category_name, COALESCE(c.icon, '') as category_icon,
 			  COALESCE(c.color, '') as category_color,
 			  EXISTS(SELECT 1 FROM links WHERE from_txn_id = t.id OR to_txn_id = t.id) as is_linked,
@@ -519,8 +523,8 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 		validation.RespondError(c, "amount must be positive", http.StatusBadRequest)
 		return
 	}
-	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
-		validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
+	if _, msg := validation.CheckTransactionDate(req.Date, time.Now()); msg != "" {
+		validation.RespondError(c, msg, http.StatusBadRequest)
 		return
 	}
 	req.ClientKey = strings.TrimSpace(req.ClientKey)
@@ -648,6 +652,15 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 		}
 	}
 
+	// pgx encodes a nil slice as SQL NULL, which is not the same as "no tags":
+	// unnest(NULL) yields no rows, so a later bulk tag add (which rebuilds the
+	// array from unnest(tags || $add)) would silently store nothing, and the
+	// row would serialize as "tags": null against a documented array. The
+	// column default is '{}', so bind that explicitly.
+	if tags == nil {
+		tags = []string{}
+	}
+
 	// Insert, but only when any supplied category/payee belongs to this user.
 	// Rules-derived values are already user-scoped, so the predicates only
 	// reject explicit cross-user references.
@@ -735,8 +748,8 @@ func (srv *Server) UpdateTransaction(c *gin.Context) {
 	// surface as a driver error, i.e. a 500) or a zero/negative amount (which
 	// would corrupt balance math and billing-cycle totals).
 	if req.Date != nil {
-		if _, err := time.Parse("2006-01-02", *req.Date); err != nil {
-			validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		if _, msg := validation.CheckTransactionDate(*req.Date, time.Now()); msg != "" {
+			validation.RespondError(c, msg, http.StatusBadRequest)
 			return
 		}
 	}
@@ -824,15 +837,29 @@ func (srv *Server) UpdateTransaction(c *gin.Context) {
 		if v := req.BillingCycleID.Value(); v != nil {
 			args = append(args, *v)
 			cycleParam = paramIdx
+			// Naming a cycle is an assignment, not a detach: clear the flag so
+			// a later date/account move (or a regenerated set of cycles) may
+			// re-derive the assignment again.
+			setClauses = append(setClauses, "billing_cycle_detached = FALSE")
 		} else {
 			args = append(args, nil)
+			// An explicit null means the user detached this transaction
+			// ("Unassigned"). NULL alone cannot express that — it is also what
+			// a row that was never assigned looks like — so record the intent:
+			// ensureBillingCycles' date-based back-fill skips flagged rows
+			// instead of silently re-attaching the one the user just cleared.
+			setClauses = append(setClauses, "billing_cycle_detached = TRUE")
 		}
 		paramIdx++
-	} else if req.AccountID != nil {
-		// Moving a transaction to another account invalidates the old cycle
-		// (cycles belong to one account), so clear it unless the caller names
-		// the new account's cycle explicitly.
-		setClauses = append(setClauses, "billing_cycle_id = NULL")
+	} else if req.AccountID != nil || req.Date != nil {
+		// Moving a transaction to another account, or to another date,
+		// invalidates the cycle it is attached to: cycles belong to one account
+		// (and to one date range), and the cycle rollups aggregate by cycle id
+		// without rechecking the date, so a stale cycle would pollute the old
+		// cycle's net and count. Clearing the assignment (and the detach flag)
+		// lets the next read re-derive the cycle from the new account/date,
+		// unless the caller named the cycle explicitly.
+		setClauses = append(setClauses, "billing_cycle_id = NULL", "billing_cycle_detached = FALSE")
 	}
 
 	if len(setClauses) == 0 {

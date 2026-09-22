@@ -56,7 +56,10 @@ const maxPaperlessPageSize = 100
 // paperlessConfig loads a user's Paperless-ngx settings from the users row. The
 // stored API token may be encrypted at rest; it is decrypted on demand by
 // paperlessToken so read-only paths never need it. A legacy v1-format token is
-// transparently re-sealed under the current v2 derivation.
+// transparently re-sealed under the current v2 derivation, which makes the read
+// paths that call this helper (GET /paperless/settings, GET
+// /paperless/documents among them) potential writers — see upgradeLegacyToken
+// for how narrow that write is kept.
 func (srv *Server) paperlessConfig(ctx context.Context, userID uuid.UUID) (models.UserSettings, error) {
 	var s models.UserSettings
 	err := srv.db.QueryRow(ctx,
@@ -74,6 +77,12 @@ func (srv *Server) paperlessConfig(ctx context.Context, userID uuid.UUID) (model
 // derivation and persists it, so legacy ciphertext converges on the stronger
 // key derivation over time. Best-effort: any failure leaves the original value
 // in place so reads still work.
+//
+// The write is a compare-and-swap on the exact value that was read, so a
+// concurrent settings save that stored a new token is never clobbered with the
+// re-sealed old one (the read and the write are not in one transaction). It is
+// also naturally one-shot: once a row holds a v2 token IsLegacy is false and no
+// further writes happen.
 func (srv *Server) upgradeLegacyToken(ctx context.Context, userID uuid.UUID, token string) string {
 	if !crypto.IsLegacy(token) || tokenEncryptionKey == "" {
 		return token
@@ -88,8 +97,19 @@ func (srv *Server) upgradeLegacyToken(ctx context.Context, userID uuid.UUID, tok
 		slog.Debug("paperless token upgrade skipped (encrypt failed)", slog.String("error", err.Error()))
 		return token
 	}
-	if _, err := srv.db.Exec(ctx, "UPDATE users SET paperless_token = $1 WHERE id = $2", resealed, userID); err != nil {
+	tag, err := srv.db.Exec(ctx,
+		"UPDATE users SET paperless_token = $1 WHERE id = $2 AND paperless_token = $3",
+		resealed, userID, token)
+	if err != nil {
 		slog.Debug("paperless token upgrade skipped (persist failed)", slog.String("error", err.Error()))
+		return token
+	}
+	if tag.RowsAffected() == 0 {
+		// The row changed under us (another read re-sealed it first, or the
+		// user saved a new token). The value this caller read is still usable,
+		// so answer with it and leave the newer one alone.
+		slog.Debug("paperless token upgrade skipped (token changed concurrently)",
+			slog.String("user_id", userID.String()))
 		return token
 	}
 	return resealed
@@ -212,28 +232,56 @@ func validatePaperlessURL(raw string) error {
 	return nil
 }
 
+// paperlessTransports caches one transport per (environment, log body limit)
+// for the process. A transport owns the keep-alive connection pool, so building
+// one per request — as this used to — forced a fresh TCP+TLS handshake for
+// every lookup page and for each of the four round-trips a tagged document
+// costs, and left a pool of up to 100 idle connections behind every call. The
+// dial-time SSRF veto only depends on the environment and the token travels per
+// request in the Authorization header, so a single pool serves every user's
+// origin and nothing secret is stored here.
+//
+// MaxIdleConnsPerHost is raised above net/http's default of 2 so the concurrent
+// tag writes (tagPaperlessConcurrency at a time, four round-trips each) keep
+// their connections instead of re-dialing for the next batch.
+var paperlessTransports sync.Map // key string -> http.RoundTripper
+
+// paperlessTransport returns the shared transport for the given environment.
+func paperlessTransport(appEnv string, logBodyLimit int) http.RoundTripper {
+	key := appEnv + "|" + strconv.Itoa(logBodyLimit)
+	if cached, ok := paperlessTransports.Load(key); ok {
+		return cached.(http.RoundTripper)
+	}
+	wrapped := logger.LoggingRoundTripper(&http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           paperlessDialContext(appEnv),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   tagPaperlessConcurrency * 4,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}, slog.Default(), logBodyLimit)
+	actual, _ := paperlessTransports.LoadOrStore(key, wrapped)
+	return actual.(http.RoundTripper)
+}
+
 // paperlessClient builds an HTTP client for the user's Paperless-ngx instance
 // that refuses to follow redirects leaving the configured origin and dials only
 // addresses vetted by isDisallowedPaperlessIP. Resolving and dialing inside the
 // custom DialContext closes the DNS-rebinding (TOCTOU) gap that would exist if
 // validation and connection happened as separate lookups.
+//
+// Only the redirect policy is per-client; the transport (and therefore the
+// connection pool) is shared process-wide — see paperlessTransports.
 func paperlessClient(s models.UserSettings, appEnv string, logBodyLimit int) (*http.Client, error) {
 	origin, err := paperlessOrigin(s)
 	if err != nil {
 		return nil, err
 	}
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           paperlessDialContext(appEnv),
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
 	return &http.Client{
 		Timeout:   paperlessClientTimeout,
-		Transport: logger.LoggingRoundTripper(transport, slog.Default(), logBodyLimit),
+		Transport: paperlessTransport(appEnv, logBodyLimit),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme+"://"+req.URL.Host != origin {
 				return http.ErrUseLastResponse
@@ -503,7 +551,15 @@ type paperlessNameMaps struct {
 	tags           map[int]string
 }
 
+// paperlessNameEntry is one row of a Paperless lookup table.
+type paperlessNameEntry struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // nameMapPageSize is the page size requested for each Paperless lookup table.
+// Paperless (DRF) clamps it server-side to maxPaperlessPageSize, which is why
+// the pagination loop follows the response instead of this number.
 const nameMapPageSize = 1000
 
 // paperlessLookupTimeout bounds the whole lookup-table fetch (three paginated
@@ -513,85 +569,110 @@ const nameMapPageSize = 1000
 const paperlessLookupTimeout = 30 * time.Second
 
 // maxNameMapPages bounds the pagination loop so a misbehaving instance that
-// keeps returning full pages can't make the lookup hang forever.
+// keeps advertising a next page can't make the lookup hang forever.
 const maxNameMapPages = 100
 
 // fetchNameMaps pulls the correspondent/document_type/tag lookup tables from
-// Paperless and returns them as ID->name maps. Individual failures are logged
-// but not fatal — the document list still renders, just without names. Each
-// table is paginated (Paperless caps page_size at 1000) so instances with
-// more than 1000 entries are not truncated.
-func fetchNameMaps(ctx context.Context, client *http.Client, base, token string) paperlessNameMaps {
+// Paperless and returns them as ID->name maps. The maps resolve the name-based
+// filters and humanize the document list, so a failure is returned to the caller
+// rather than degraded: a missing map would forward the user's filters upstream
+// unresolved and look exactly like "no documents matched".
+//
+// Each table is paginated, and the loop is driven by the response's own `next`
+// link instead of by the size it asked for: DRF clamps page_size server-side, so
+// a page can come back far shorter than requested while more pages remain, and
+// treating a short page as the last one silently truncated every lookup table
+// (blank names, half-empty filter dropdowns). maxNameMapPages still bounds an
+// instance that never clears `next`.
+func fetchNameMaps(ctx context.Context, client *http.Client, base, token string) (paperlessNameMaps, error) {
 	maps := paperlessNameMaps{
 		correspondents: map[int]string{},
 		documentTypes:  map[int]string{},
 		tags:           map[int]string{},
 	}
-	fetch := func(path string) []struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} {
-		var out []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		}
+	fetch := func(resource string) ([]paperlessNameEntry, error) {
+		var out []paperlessNameEntry
+		path := fmt.Sprintf("/api/%s/?page_size=%d", resource, nameMapPageSize)
 		for page := 1; page <= maxNameMapPages; page++ {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 				fmt.Sprintf("%s%s&page=%d", base, path, page), nil)
 			if err != nil {
-				return nil
+				return nil, fmt.Errorf("lookup %s page %d: %w", resource, page, err)
 			}
 			req.Header.Set("Authorization", "Token "+token)
 			resp, err := client.Do(req)
 			if err != nil {
-				slog.Error("fetching paperless resource", slog.String("path", path), slog.String("error", err.Error()))
-				return nil
+				return nil, fmt.Errorf("lookup %s page %d: %w", resource, page, err)
 			}
-			body, err := readAllLimited(resp.Body, maxPaperlessResponse)
+			body, readErr := readAllLimited(resp.Body, maxPaperlessResponse)
 			resp.Body.Close()
-			if err != nil {
-				return nil
+			if readErr != nil {
+				return nil, fmt.Errorf("lookup %s page %d: %w", resource, page, readErr)
+			}
+			if resp.StatusCode >= 400 {
+				return nil, fmt.Errorf("lookup %s page %d: status %d", resource, page, resp.StatusCode)
 			}
 			var list struct {
-				Results []struct {
-					ID   int    `json:"id"`
-					Name string `json:"name"`
-				} `json:"results"`
+				// Next is decoded raw: only its presence matters, its URL is
+				// never followed (the next request is built from the configured
+				// base), so an upstream cannot point this loop elsewhere.
+				Next    json.RawMessage      `json:"next"`
+				Results []paperlessNameEntry `json:"results"`
 			}
 			if err := json.Unmarshal(body, &list); err != nil {
-				return nil
+				return nil, fmt.Errorf("lookup %s page %d: %w", resource, page, err)
 			}
 			out = append(out, list.Results...)
-			// A short page means the last one; a full page means more may
-			// follow, so keep paging.
-			if len(list.Results) < nameMapPageSize {
+			// A page with no results makes no progress, and a missing/null
+			// `next` (DRF's last page, or an upstream that does not paginate)
+			// ends the table.
+			if !hasNextPage(list.Next) || len(list.Results) == 0 {
 				break
 			}
 		}
-		return out
+		return out, nil
 	}
 
-	listPath := func(resource string) string {
-		return fmt.Sprintf("/api/%s/?page_size=%d", resource, nameMapPageSize)
+	correspondents, err := fetch("correspondents")
+	if err != nil {
+		return maps, err
 	}
-	for _, r := range fetch(listPath("correspondents")) {
+	documentTypes, err := fetch("document_types")
+	if err != nil {
+		return maps, err
+	}
+	tags, err := fetch("tags")
+	if err != nil {
+		return maps, err
+	}
+	for _, r := range correspondents {
 		maps.correspondents[r.ID] = r.Name
 	}
-	for _, r := range fetch(listPath("document_types")) {
+	for _, r := range documentTypes {
 		maps.documentTypes[r.ID] = r.Name
 	}
-	for _, r := range fetch(listPath("tags")) {
+	for _, r := range tags {
 		maps.tags[r.ID] = r.Name
 	}
-	return maps
+	return maps, nil
+}
+
+// hasNextPage reports whether a page advertises a following one. DRF sets `next`
+// to the next page's URL and null on the last page; an upstream that returns
+// everything in one response omits the key entirely, and both end the loop.
+func hasNextPage(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
 }
 
 // ListPaperlessDocuments proxies the user's Paperless-ngx document list so the
 // Paperless import UI can show available statements to pull. Filters (search
 // text, correspondents, document types, tags) and pagination are forwarded to
 // Paperless so it does the filtering and returns a single page — the backend
-// never pulls the full document set and filters in memory. Requires the user
-// to have configured both a URL and an API token.
+// never pulls the full document set and filters in memory. The name-based
+// filters are resolved against Paperless's lookup tables, so a lookup that
+// cannot be fetched fails the request (502/504) instead of being dropped.
+// Requires the user to have configured both a URL and an API token.
 func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
 	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
@@ -624,10 +705,22 @@ func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
 	// The lookup tables are fetched once and reused to (a) resolve the
 	// name-based filters the UI sends back into Paperless IDs, (b) humanize the
 	// document list, and (c) populate the filter dropdown options in the
-	// response.
+	// response. A failure is fatal rather than tolerated: continuing would
+	// forward a filtered request upstream with the filters dropped (and answer
+	// with empty dropdowns), so the client cannot tell "nothing matched" from
+	// "your filters were ignored".
 	lookupCtx, cancelLookup := context.WithTimeout(c.Request.Context(), paperlessLookupTimeout)
 	defer cancelLookup()
-	maps := fetchNameMaps(lookupCtx, client, base, token)
+	maps, lookupErr := fetchNameMaps(lookupCtx, client, base, token)
+	if lookupErr != nil {
+		slog.Error("ListPaperlessDocuments (name maps)", slog.String("error", lookupErr.Error()))
+		if errors.Is(lookupErr, context.DeadlineExceeded) {
+			validation.RespondError(c, "Paperless lookup timed out", http.StatusGatewayTimeout)
+			return
+		}
+		validation.RespondError(c, "Paperless lookup unavailable", http.StatusBadGateway)
+		return
+	}
 
 	page := paperlessQueryInt(c, "page", 1, 1, math.MaxInt)
 	pageSize := paperlessQueryInt(c, "pageSize", defaultPaperlessPageSize, 1, maxPaperlessPageSize)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fintrak/backend/models"
@@ -137,6 +138,59 @@ func TestCreateGroup(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// icon and color are column-backed (VARCHAR(50) / VARCHAR(7)) like the id, so
+// an over-long value is rejected before SQL rather than surfacing as the 22001
+// the column raises — a 500 the admin console cannot explain.
+func TestCreateGroupRejectsOverLongIconAndColor(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newGroupTestRouter(srv)
+
+	bodies := []string{
+		`{"id":"vacation","name":"Vacation","icon":"` + strings.Repeat("i", 51) + `"}`,
+		`{"id":"vacation","name":"Vacation","color":"` + strings.Repeat("c", 8) + `"}`,
+	}
+	for _, body := range bodies {
+		req, _ := http.NewRequest(http.MethodPost, "/groups", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", body)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateGroupRejectsOverLongIconAndColor(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newGroupTestRouter(srv)
+
+	bodies := []string{
+		`{"icon":"` + strings.Repeat("i", 51) + `"}`,
+		`{"color":"` + strings.Repeat("c", 8) + `"}`,
+	}
+	for _, body := range bodies {
+		req, _ := http.NewRequest(http.MethodPut, "/groups/vacation", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", body)
+	}
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

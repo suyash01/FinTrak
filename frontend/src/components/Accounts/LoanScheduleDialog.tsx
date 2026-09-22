@@ -11,6 +11,7 @@ import {
 import { toast } from "sonner";
 import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
+import { todayLocalISO } from "../../lib/dates";
 import { useDomainData } from "../../context/DomainDataContext";
 import { useSettings } from "../../context/SettingsContext";
 import type {
@@ -23,6 +24,16 @@ import type {
   Transaction,
 } from "../../types";
 import { cn } from "@/lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,10 +87,6 @@ const EMPTY_FORM: ScheduleForm = {
   tenureMonths: "",
   startDate: "",
 };
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function toForm(detail: LoanScheduleDetail): ScheduleForm {
   const s = detail.schedule;
@@ -154,6 +161,11 @@ export default function LoanScheduleDialog({
   const [transferOpen, setTransferOpen] = useState(false);
   const [credits, setCredits] = useState<Transaction[]>([]);
   const [loadingCredits, setLoadingCredits] = useState(false);
+  // Destructive actions are confirmed first: the schedule delete drops the
+  // amortization table with its installment matches, and undoing a balance
+  // transfer reverts a settlement. Both are irreversible.
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [undoTransferId, setUndoTransferId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -365,6 +377,9 @@ export default function LoanScheduleDialog({
   const settledTransfer = detail?.settledOn
     ? detail.transfers.filter((t) => t.fromLoanAccountId === account.id).pop()
     : undefined;
+  // The transfer the undo confirmation is describing, so the dialog can name
+  // the amount and date it is about to revert.
+  const undoTransfer = detail?.transfers.find((t) => t.id === undoTransferId);
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -786,7 +801,7 @@ export default function LoanScheduleDialog({
                               size="icon-sm"
                               title="Undo this balance transfer"
                               aria-label="Undo this balance transfer"
-                              onClick={() => void handleUndoTransfer(t.id)}
+                              onClick={() => setUndoTransferId(t.id)}
                               disabled={saving}
                             >
                               <Undo2 size={14} />
@@ -825,7 +840,7 @@ export default function LoanScheduleDialog({
             <>
               <Button
                 variant="outline"
-                onClick={handleDelete}
+                onClick={() => setConfirmDeleteOpen(true)}
                 disabled={saving}
                 className="text-destructive"
               >
@@ -865,6 +880,63 @@ export default function LoanScheduleDialog({
           }}
         />
       )}
+
+      <AlertDialog
+        open={confirmDeleteOpen}
+        onOpenChange={(open) => !open && setConfirmDeleteOpen(false)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this schedule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes {account.name}'s amortization table with its
+              installment matches. The loan account, its transactions and any
+              balance-transfer history are kept. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmDeleteOpen(false);
+                void handleDelete();
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={undoTransferId !== null}
+        onOpenChange={(open) => !open && setUndoTransferId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Undo this balance transfer?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {undoTransfer
+                ? `This reverts the ${formatCurrency(undoTransfer.amount)} settlement of ${formatDate(undoTransfer.transferDate)} and restores both loans' schedules to what they were. This action cannot be undone.`
+                : "This reverts the settlement and restores both loans' schedules. This action cannot be undone."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const id = undoTransferId;
+                setUndoTransferId(null);
+                if (id) void handleUndoTransfer(id);
+              }}
+            >
+              Undo transfer
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -890,7 +962,7 @@ function TransferBalanceDialog({
   const { accounts } = useDomainData();
   const [form, setForm] = useState<TransferForm>(() => ({
     targetId: "",
-    transferDate: todayIso(),
+    transferDate: todayLocalISO(),
     targetRatePercent: "",
     targetTenureMonths: "",
     targetStartDate: "",

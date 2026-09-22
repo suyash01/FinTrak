@@ -89,7 +89,7 @@ from typing import Any, Dict, Iterable, List, Optional, TypedDict
 import pdfplumber
 from pypdf import PdfReader
 
-from .limits import ensure_page_limit
+from .limits import close_pdf, ensure_page_limit
 from .money import same_money
 
 
@@ -598,7 +598,9 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             page_count=page_count,
         )
     finally:
-        pdf.close()
+        # NOT pdf.close(): it iterates pdf.pages and rebuilds one Page per page,
+        # re-paying the cost ensure_page_limit was called to avoid.
+        close_pdf(pdf)
 
 
 _CSV_FIELDS: List[str] = ["date", "description", "amount", "type"]

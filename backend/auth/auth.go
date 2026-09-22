@@ -4,6 +4,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -81,16 +83,40 @@ func EqualizePasswordTiming(password string) {
 	_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
 }
 
+// Session is a freshly minted token pair plus the refresh token's expiry, which
+// is also the session's absolute deadline. Callers persist ExpiresAt alongside
+// the refresh token's hash so a rotated session can never outlive the deadline
+// the session started with.
+type Session struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+}
+
 // NewSession mints a fresh access/refresh token pair for a new login. The
 // refresh token's expiry is the session's absolute deadline.
-func NewSession(userID uuid.UUID, role, secret string) (accessToken, refreshToken string, err error) {
-	if accessToken, err = GenerateAccessToken(userID, role, secret); err != nil {
-		return "", "", err
+func NewSession(userID uuid.UUID, role, secret string) (Session, error) {
+	now := time.Now()
+	expiresAt := now.Add(refreshTokenTTL)
+
+	accessToken, err := generateTokenAt(userID, role, secret, TokenTypeAccess, now.Add(accessTokenTTL))
+	if err != nil {
+		return Session{}, err
 	}
-	if refreshToken, err = GenerateRefreshToken(userID, role, secret); err != nil {
-		return "", "", err
+	refreshToken, err := generateTokenAt(userID, role, secret, TokenTypeRefresh, expiresAt)
+	if err != nil {
+		return Session{}, err
 	}
-	return accessToken, refreshToken, nil
+	return Session{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresAt: expiresAt}, nil
+}
+
+// HashRefreshToken returns the hex SHA-256 of a refresh token — the value the
+// refresh_tokens table stores. Only the hash is persisted, so a database leak
+// cannot be replayed against the API, and a presented token can be looked up
+// without ever storing the token itself.
+func HashRefreshToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // GenerateAccessToken signs a short-lived HS256 access token. It is sent with
@@ -119,6 +145,17 @@ func RenewAccess(claims *Claims, role, secret string) (string, error) {
 	return generateToken(claims.UserID, role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time)
 }
 
+// RenewRefresh mints the replacement refresh token handed out when a session is
+// rotated, bounded by the presented token's expiry: rotation re-issues the
+// cookie on every successful refresh, so without the cap a session could be
+// extended indefinitely one refresh at a time.
+func RenewRefresh(claims *Claims, role, secret string) (string, error) {
+	if claims == nil || claims.ExpiresAt == nil {
+		return "", errors.New("refresh token has no expiry")
+	}
+	return generateTokenAt(claims.UserID, role, secret, TokenTypeRefresh, claims.ExpiresAt.Time)
+}
+
 // generateToken signs a token of the given type. Its expiry is now+ttl, capped
 // at notAfter when that is non-zero.
 func generateToken(userID uuid.UUID, role, secret, tokenType string, ttl time.Duration, notAfter time.Time) (string, error) {
@@ -127,6 +164,14 @@ func generateToken(userID uuid.UUID, role, secret, tokenType string, ttl time.Du
 	if !notAfter.IsZero() && notAfter.Before(expiresAt) {
 		expiresAt = notAfter
 	}
+	return generateTokenAt(userID, role, secret, tokenType, expiresAt)
+}
+
+// generateTokenAt signs a token of the given type with an explicit expiry, so
+// the caller that also persists the session's deadline (see NewSession) stores
+// exactly the expiry the token carries.
+func generateTokenAt(userID uuid.UUID, role, secret, tokenType string, expiresAt time.Time) (string, error) {
+	now := time.Now()
 	if !expiresAt.After(now) {
 		return "", errors.New("token expiry is in the past")
 	}
@@ -190,18 +235,14 @@ const (
 
 // SetAuthCookies writes the access and refresh tokens as httpOnly, SameSite=Lax
 // cookies so neither is readable from JavaScript. Pass secure=true in
-// production (HTTPS). SameSite=Lax is the CSRF defense: browsers do not attach
-// the cookies to cross-site POST/PUT/PATCH/DELETE requests.
+// production (HTTPS). SameSite=Lax is the first CSRF defense: browsers do not
+// attach the cookies to cross-site POST/PUT/PATCH/DELETE requests (the
+// side-effecting GET routes are covered by the Sec-Fetch-Site check in
+// main.setupRouter). Login, registration and every successful refresh call this,
+// so a rotated session's browser always carries the current refresh token.
 func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, secure bool) {
 	setCookie(c, AccessCookieName, accessToken, "/", int(accessTokenTTL.Seconds()), secure)
 	setCookie(c, RefreshCookieName, refreshToken, RefreshCookiePath, int(refreshTokenTTL.Seconds()), secure)
-}
-
-// SetAccessCookie refreshes just the access-token cookie. Used by the refresh
-// endpoint so the long-lived refresh cookie keeps its original expiry and the
-// session's absolute deadline is preserved.
-func SetAccessCookie(c *gin.Context, token string, secure bool) {
-	setCookie(c, AccessCookieName, token, "/", int(accessTokenTTL.Seconds()), secure)
 }
 
 // ClearAuthCookies expires both session cookies.

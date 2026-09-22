@@ -2,10 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -26,7 +29,7 @@ const (
 	testSeriesID   = "33333333-3333-3333-3333-333333333333"
 )
 
-// sampleArgs is one minimal valid call per tool. TestSampleArgsCoverEveryTool
+// sampleArgs is one minimal valid call per tool. TestArgumentTablesCoverEveryTool
 // keeps the table in step with the registry, so a new tool cannot be added
 // without describing how it is exercised.
 var sampleArgs = map[string]map[string]any{
@@ -59,6 +62,46 @@ var sampleArgs = map[string]map[string]any{
 	"list_paperless_documents":    {"search": "receipt", "pageSize": 5},
 }
 
+// expectedQuery is what each tool must ask the API for, given the sample call
+// above. Matching the route proves which operation a tool calls; only the query
+// proves it calls it with the arguments the model supplied, which is where a
+// date window fed into the wrong filter or a dropped paging parameter would
+// land — both keep the route and change the answer. Every key the sample call
+// sets is asserted, and anything the tool invents is a mismatch too.
+//
+// The table mirrors api/spec_parity_test.go's route cases for the same reason:
+// the client pins its own methods, and this pins the tool-argument → client
+// mapping on top of it.
+var expectedQuery = map[string]url.Values{
+	"list_accounts":               {},
+	"list_account_types":          {},
+	"list_billing_cycles":         {},
+	"get_loan_schedule":           {},
+	"get_loan_payoff":             {"date": {"2026-01-31"}},
+	"list_groups":                 {},
+	"list_categories":             {},
+	"list_payees":                 {},
+	"list_tags":                   {},
+	"list_transactions":           {"accountId": {testAccountID}, "dateFrom": {"2026-01-01"}, "limit": {"5"}},
+	"validate_transactions":       {},
+	"list_rules":                  {},
+	"preview_rule":                {},
+	"list_links":                  {"type": {"transfer"}},
+	"get_transfer_suggestions":    {"limit": {"5"}},
+	"get_cashback_suggestions":    {},
+	"get_link_cycles":             {"accountId": {testAccountID}},
+	"list_recurring":              {},
+	"forecast_recurring":          {"count": {"3"}},
+	"get_recurring_suggestions":   {},
+	"list_recurring_transactions": {},
+	"list_recurring_terms":        {},
+	"get_dashboard_summary":       {"accountId": {testAccountID}, "groupBy": {"billing_cycle"}, "cycles": {"3"}},
+	"get_money_flow":              {"limit": {"5"}},
+	"get_money_flow_timeline":     {},
+	"get_cash_flow_calendar":      {"dateFrom": {"2026-01-01"}, "dateTo": {"2026-01-31"}},
+	"list_paperless_documents":    {"pageSize": {"5"}, "search": {"receipt"}},
+}
+
 // readOnlyPosts are the POST operations the API documents as previews that
 // write nothing. A tool may only use one of these, and the list is the whole
 // reason a POST is admitted to a read-only surface — adding to it is a claim
@@ -88,6 +131,7 @@ var unexposedRoutes = map[string]string{
 type recorded struct {
 	method string
 	path   string
+	query  string
 }
 
 // stubAPI is a FinTrak API stand-in: it records every request and answers
@@ -96,6 +140,7 @@ type recorded struct {
 type stubAPI struct {
 	mu   sync.Mutex
 	seen []recorded
+	body string
 	srv  *httptest.Server
 }
 
@@ -104,13 +149,25 @@ func newStubAPI(t *testing.T) *stubAPI {
 	stub := &stubAPI{}
 	stub.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stub.mu.Lock()
-		stub.seen = append(stub.seen, recorded{method: r.Method, path: r.URL.Path})
+		stub.seen = append(stub.seen, recorded{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery})
+		body := stub.body
 		stub.mu.Unlock()
+		if body == "" {
+			body = "null"
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("null"))
+		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(stub.srv.Close)
 	return stub
+}
+
+// respond makes the stub answer with body instead of "null", for the tests that
+// need rows to look at.
+func (s *stubAPI) respond(body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.body = body
 }
 
 // client returns a client for the stub with a session pre-installed, so the
@@ -171,6 +228,18 @@ func call(t *testing.T, session *mcp.ClientSession, name string, args map[string
 	return res
 }
 
+// resultText flattens a tool result's text content, which is where the SDK
+// writes the JSON payload the model reads.
+func resultText(res *mcp.CallToolResult) string {
+	var b strings.Builder
+	for _, content := range res.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // errorText flattens a tool result that reported a failure.
 func errorText(res *mcp.CallToolResult) string {
 	var b strings.Builder
@@ -183,12 +252,16 @@ func errorText(res *mcp.CallToolResult) string {
 	return strings.TrimSpace(b.String())
 }
 
-// TestSampleArgsCoverEveryTool keeps the registry and the test table in step:
-// a tool with no sample call is a tool nothing exercises.
-func TestSampleArgsCoverEveryTool(t *testing.T) {
+// TestArgumentTablesCoverEveryTool keeps the registry and the test tables in
+// step: a tool with no sample call is a tool nothing exercises, and a tool with
+// no expected query is a tool whose arguments nothing checks.
+func TestArgumentTablesCoverEveryTool(t *testing.T) {
 	for _, tool := range Tools() {
 		if _, ok := sampleArgs[tool.Name]; !ok {
 			t.Errorf("tool %q has no sample call in sampleArgs", tool.Name)
+		}
+		if _, ok := expectedQuery[tool.Name]; !ok {
+			t.Errorf("tool %q has no expected query in expectedQuery", tool.Name)
 		}
 	}
 	names := map[string]bool{}
@@ -198,6 +271,11 @@ func TestSampleArgsCoverEveryTool(t *testing.T) {
 	for name := range sampleArgs {
 		if !names[name] {
 			t.Errorf("sampleArgs names %q, which is not a tool", name)
+		}
+	}
+	for name := range expectedQuery {
+		if !names[name] {
+			t.Errorf("expectedQuery names %q, which is not a tool", name)
 		}
 	}
 }
@@ -220,7 +298,8 @@ func TestToolNamesAreUnique(t *testing.T) {
 // tool is called through a real MCP session, over a client whose transport is
 // the read-only guard, against a stub API that records what arrived. A tool
 // that calls a different client method than it declares (or one the guard
-// refuses) fails here.
+// refuses) fails here, and so does one that reaches the right route with the
+// wrong arguments: the recorded query is checked against expectedQuery.
 func TestEveryToolHitsItsDeclaredRoute(t *testing.T) {
 	for _, tool := range Tools() {
 		t.Run(tool.Name, func(t *testing.T) {
@@ -242,6 +321,13 @@ func TestEveryToolHitsItsDeclaredRoute(t *testing.T) {
 			path := strings.TrimPrefix(got.path, "/api/v1")
 			if !readonly.Match(tool.Route, got.method, path) {
 				t.Errorf("%s called %s %s, want %s", tool.Name, got.method, path, tool.Route)
+			}
+			query, err := url.ParseQuery(got.query)
+			if err != nil {
+				t.Fatalf("%s sent an unparseable query %q: %v", tool.Name, got.query, err)
+			}
+			if want := expectedQuery[tool.Name]; !reflect.DeepEqual(query, want) {
+				t.Errorf("%s asked for %v, want %v", tool.Name, query, want)
 			}
 		})
 	}
@@ -349,6 +435,76 @@ func TestIDToolsRejectAnEmptyID(t *testing.T) {
 	}
 }
 
+// TestUnpagedToolsCapTheirResponse covers the two tools whose API route cannot
+// page: they must hand the model a bounded page and say when the tail was
+// dropped, so a large ledger cannot arrive as one multi-megabyte tool result.
+// The limit is clamped, not trusted: a model cannot ask for an unbounded dump.
+func TestUnpagedToolsCapTheirResponse(t *testing.T) {
+	cases := []struct {
+		name      string
+		tool      string
+		args      map[string]any
+		body      string
+		wantLimit int
+		wantItems int
+		truncated bool
+	}{
+		{
+			name: "links are cut to the requested limit", tool: "list_links",
+			args: map[string]any{"limit": 2}, body: `[{"id":"l1"},{"id":"l2"},{"id":"l3"}]`,
+			wantLimit: 2, wantItems: 2, truncated: true,
+		},
+		{
+			name: "a shorter link list is returned whole", tool: "list_links",
+			args: map[string]any{}, body: `[{"id":"l1"},{"id":"l2"}]`,
+			wantLimit: defaultListLimit, wantItems: 2,
+		},
+		{
+			name: "a series' transactions are cut to the requested limit", tool: "list_recurring_transactions",
+			args: map[string]any{"id": testSeriesID, "limit": 1}, body: `{"data":[{"id":"t1"},{"id":"t2"}]}`,
+			wantLimit: 1, wantItems: 1, truncated: true,
+		},
+		{
+			name: "the limit is clamped to the maximum", tool: "list_recurring_transactions",
+			args: map[string]any{"id": testSeriesID, "limit": maxListLimit + 1000}, body: `{"data":[{"id":"t1"}]}`,
+			wantLimit: maxListLimit, wantItems: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := newStubAPI(t)
+			stub.respond(tc.body)
+			c := stub.client(t)
+			c.SetTransport(NewGuard(c, http.DefaultTransport))
+			session := connect(t, c)
+
+			res := call(t, session, tc.tool, tc.args)
+			if res.IsError {
+				t.Fatalf("%s reported an error: %s", tc.tool, errorText(res))
+			}
+
+			var page struct {
+				Items     []map[string]any `json:"items"`
+				Limit     int              `json:"limit"`
+				Truncated bool             `json:"truncated"`
+			}
+			if err := json.Unmarshal([]byte(resultText(res)), &page); err != nil {
+				t.Fatalf("%s returned %q, want the capped page: %v", tc.tool, resultText(res), err)
+			}
+			if len(page.Items) != tc.wantItems {
+				t.Errorf("%s returned %d rows, want %d", tc.tool, len(page.Items), tc.wantItems)
+			}
+			if page.Limit != tc.wantLimit {
+				t.Errorf("%s applied limit %d, want %d", tc.tool, page.Limit, tc.wantLimit)
+			}
+			if page.Truncated != tc.truncated {
+				t.Errorf("%s reported truncated=%v, want %v", tc.tool, page.Truncated, tc.truncated)
+			}
+		})
+	}
+}
+
 // spec is the part of backend/openapi.yaml these tests read.
 type spec struct {
 	Paths map[string]map[string]any `yaml:"paths"`
@@ -370,11 +526,13 @@ func loadSpec(t *testing.T) spec {
 	return s
 }
 
-// TestSideEffectingRoutesAreDisclosed keeps the read-only claim the server makes
-// to the model honest. A few GETs in this API are not pure reads — they
-// materialize an account's billing cycles — so a tool performing one must say so
-// in the description the client shows the model, and a tool on a pure read must
-// not claim a side effect (or the disclosure means nothing).
+// TestSideEffectingRoutesAreDisclosed keeps the claim the server makes to the
+// model honest. A few GETs in this API are not pure reads — they materialize an
+// account's billing cycles, or re-seal a stored Paperless token — so a tool
+// performing one must say so in the description the client shows the model, and
+// a tool on a pure read must not claim a side effect (or the disclosure means
+// nothing). The same declaration drives the tool's readOnlyHint, so a hint that
+// says "read-only" about a call that writes fails here too.
 //
 // The claim itself lives in readonly.SideEffectingGETs, so the audit compares the
 // two rather than trusting either.
@@ -403,7 +561,8 @@ func TestSideEffectingRoutesAreDisclosed(t *testing.T) {
 	}
 
 	// The disclosure has to reach the client, not just the registry: the model
-	// reads the description served over the protocol.
+	// reads the description served over the protocol, and a client that
+	// auto-approves read-only calls reads the hint.
 	stub := newStubAPI(t)
 	session := connect(t, stub.client(t))
 	listed, err := session.ListTools(context.Background(), nil)
@@ -411,10 +570,23 @@ func TestSideEffectingRoutesAreDisclosed(t *testing.T) {
 		t.Fatalf("tools/list: %v", err)
 	}
 	descriptions := make(map[string]string, len(listed.Tools))
+	annotations := make(map[string]*mcp.ToolAnnotations, len(listed.Tools))
 	for _, tool := range listed.Tools {
 		descriptions[tool.Name] = tool.Description
+		annotations[tool.Name] = tool.Annotations
 	}
 	for _, tool := range Tools() {
+		ann := annotations[tool.Name]
+		if ann == nil {
+			t.Errorf("%s: the tool is served without annotations", tool.Name)
+			continue
+		}
+		// ReadOnlyHint is derived from the same declaration this test audits,
+		// so a tool that writes is advertised as not-read-only: a client that
+		// auto-approves read-only calls must not auto-approve these.
+		if want := tool.SideEffect == ""; ann.ReadOnlyHint != want {
+			t.Errorf("%s: readOnlyHint = %v, want %v (side effect: %q)", tool.Name, ann.ReadOnlyHint, want, tool.SideEffect)
+		}
 		if tool.SideEffect == "" {
 			continue
 		}

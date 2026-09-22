@@ -5,15 +5,23 @@
 # for docker-compose.prod.yml, which extends it with a bundled PostgreSQL
 # database service.
 #
-# Only the frontend (3000) and backend (8080) are published to the host. The
-# unauthenticated statement-parser is reachable solely on the internal Docker
-# network.
+# Only the frontend (3000) is published to the host. The backend is reachable
+# solely on the internal Docker network, through the frontend nginx, so nginx
+# stays the only ingress and the API cannot be reached without going through it.
+# The unauthenticated statement-parser is internal-only too.
 #
 # This stack serves PLAIN HTTP. It is designed to sit behind a TLS-terminating
 # reverse proxy / ingress; with COOKIE_SECURE=true (the default) browsers never
 # send the session cookie over plain HTTP, so exposing :3000 directly over HTTP
 # is unsupported. See the "Production Deployment" section of README.md for the
 # supported topology.
+#
+# Project name and container names are deliberately distinct from the dev stack
+# (docker-compose.yml uses `fintrak-dev`), so this stack can never adopt the dev
+# database: the named volume is `fintrak-prod_pgdata`, not the dev `pgdata`, and
+# no container name is shared. `make prod` on a machine that has run `make dev`
+# therefore starts its own database instead of crash-looping on a volume whose
+# stored POSTGRES_PASSWORD no longer matches .env.
 #
 # Required environment variables (set in .env or export):
 #   DATABASE_URL          - Full connection string to an external database
@@ -33,26 +41,49 @@
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
 #   TRUSTED_PROXIES - Comma-separated proxy CIDRs whose X-Forwarded-For /
-#                     X-Real-IP headers are believed. Defaults to APP_SUBNET
-#                     (the app-net below), because every browser request
-#                     reaches the API through the frontend nginx: without it
-#                     gin reports that proxy's address as the client IP and all
-#                     users share one auth rate-limit bucket, so a single
-#                     unauthenticated client can lock everyone out of login and
-#                     registration. Set it empty to trust no forwarded headers
-#                     (only correct if nothing proxies to the backend).
+#                     X-Real-IP headers are believed. UNSET defaults to the
+#                     frontend's single static app-net address (FRONTEND_IP
+#                     below, /32) because every browser request reaches the API
+#                     through that one nginx: without it gin reports that
+#                     proxy's address as the client IP and all users share one
+#                     auth rate-limit bucket, so a single unauthenticated client
+#                     can lock everyone out of login and registration. One
+#                     address, not the whole app-net subnet, on purpose: gin
+#                     believes the left-most X-Forwarded-For entry when the peer
+#                     is trusted, so a subnet-wide allowlist would let any other
+#                     container on this network — the unauthenticated
+#                     statement-parser above all, which parses hostile uploads —
+#                     forge a client IP (choosing its own rate-limit bucket and
+#                     poisoning the client_ip audit field). With the allowlist
+#                     pinned to the frontend, only nginx may forward a client
+#                     address. An EXPLICITLY EMPTY value means "trust no proxy":
+#                     forwarded headers are then ignored (and cannot be
+#                     spoofed), which is only correct when nothing proxies to the
+#                     backend. The single-dash substitution below is what keeps
+#                     those two cases apart — `:-` would replace the empty value
+#                     with the default, making the switch a no-op.
+#   FRONTEND_IP     - Static app-net address of the frontend nginx (default
+#                     172.28.0.2), and the default TRUSTED_PROXIES value. Override
+#                     it together with APP_SUBNET if that subnet collides with an
+#                     existing network on the host: the address has to fall
+#                     inside APP_SUBNET or the stack refuses to start.
 #   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
 #   IMAGE_TAG       - Released image tag to deploy (required; e.g. v1.2.3).
 #                     There is intentionally no "latest" default: pinning a
 #                     release keeps redeploys reproducible and rollbacks
 #                     deterministic.
 
+# Distinct project name and volumes from the dev stack (docker-compose.yml is
+# `fintrak-dev`), so the two can never share a container name or a database
+# volume. See the header note in docker-compose.prod.yml.
+name: fintrak-prod
+
 services:
   backend:
-    container_name: backend
     image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-backend:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
-    ports:
-      - "8080:8080"
+    # No published port: the frontend nginx proxies /api/v1 over app-net, so it
+    # is the only ingress. The healthcheck below runs inside the container and
+    # keeps working without a host port.
     environment:
       # `:?` makes `docker compose config` — the preflight `make prod` runs —
       # fail on an unset secret, instead of creating a stack that crash-loops
@@ -67,7 +98,18 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_BODY_LIMIT=${LOG_BODY_LIMIT:-0}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
-      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-${APP_SUBNET:-172.28.0.0/24}}
+      # Single dash (not `:-`): an explicitly empty value stays empty and reaches
+      # SetTrustedProxies(nil) — "trust no forwarded headers" — while an unset
+      # variable still gets the frontend's single address. Only the frontend's
+      # /32 is trusted, not the whole app-net subnet: a trusted peer's
+      # X-Forwarded-For is believed verbatim, so a subnet-wide allowlist would
+      # let any other container on this network (the unauthenticated
+      # statement-parser, say) forge a client IP. Every container here also runs
+      # with cap_drop: ALL, so the parser cannot source packets from the
+      # frontend's address either. ALLOWED_ORIGINS keeps `:-` because its empty
+      # value is not meaningful: the backend itself falls back to the localhost
+      # dev origins when it is empty (config.Load).
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES-${FRONTEND_IP:-172.28.0.2}/32}
       - APP_ENV=production
       - STATEMENT_PARSER_URL=http://statement-parser:5000
     depends_on:
@@ -79,7 +121,13 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-    mem_limit: 512m
+    # Sized for the biggest restore the API accepts: POST /api/v1/import caps the
+    # body at 256MB (handlers/backup.go maxBackupBytes, mirrored by nginx's
+    # client_max_body_size) and decodes the whole bundle into structs before the
+    # restore transaction, so peak RSS is a multiple of the body — 512m let a
+    # maximal, permitted restore OOM-kill the container under
+    # `restart: unless-stopped` and drop every in-flight request with it.
+    mem_limit: 1g
     cpus: 1.0
     security_opt:
       - no-new-privileges:true
@@ -94,8 +142,9 @@ services:
     networks:
       - app-net
 
+  # No `container_name`: names are derived from the project (`fintrak-prod-*`),
+  # which is what keeps them from colliding with the dev stack's fixed names.
   frontend:
-    container_name: frontend
     image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-frontend:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
     ports:
       - "3000:8080"
@@ -115,12 +164,17 @@ services:
         max-file: "3"
     restart: unless-stopped
     networks:
-      - app-net
+      # Static address so the backend's TRUSTED_PROXIES default can name exactly
+      # this one peer (see the header): it must fall inside APP_SUBNET, so
+      # override FRONTEND_IP together with APP_SUBNET. Everything else on
+      # app-net — the backend itself, the unauthenticated statement-parser — is
+      # deliberately not trusted to forward a client IP.
+      app-net:
+        ipv4_address: ${FRONTEND_IP:-172.28.0.2}
 
   # Internal only: the parser is unauthenticated and parses arbitrary uploads,
   # so it must never be published to the host.
   statement-parser:
-    container_name: statement-parser
     image: ${IMAGE_REPO:?IMAGE_REPO must be set (e.g. ghcr.io/your-org)}/fintrak-statement-parser:${IMAGE_TAG:?IMAGE_TAG must be a pinned release tag (e.g. v1.2.3)}
     mem_limit: 512m
     cpus: 1.0
@@ -138,8 +192,9 @@ services:
       - app-net
 
 networks:
-  # Pinned so TRUSTED_PROXIES (defaulted to this subnet above) always names the
-  # network the frontend nginx proxies from. Override APP_SUBNET to move both.
+  # Pinned so the frontend's static address (FRONTEND_IP, default 172.28.0.2 —
+  # the default TRUSTED_PROXIES value) always falls inside the network the
+  # backend sees its proxy on. Override APP_SUBNET and FRONTEND_IP together.
   app-net:
     ipam:
       config:

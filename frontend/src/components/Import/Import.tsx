@@ -60,7 +60,8 @@ const EMPTY_NEW_ACCOUNT: NewAccountForm = {
 };
 
 export default function Import() {
-  const { accounts, accountTypes, payees, setAccounts } = useDomainData();
+  const { accounts, accountTypes, payees, setAccounts, refreshAccounts } =
+    useDomainData();
   const [step, setStep] = useState(1);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [newAccount, setNewAccount] =
@@ -417,6 +418,9 @@ export default function Import() {
       const result = await api.importTransactions(payload);
       setImportResult(result);
       setStep(5);
+      // The imported rows move the account's balance, so the shared account
+      // list is reloaded for every consumer of it.
+      void refreshAccounts();
     } catch (err) {
       toast.error("Import failed: " + (err as Error).message);
     } finally {

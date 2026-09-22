@@ -47,9 +47,6 @@ func TestBulkLinkLoanAttach(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
-		WithArgs(ids, userID).
-		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	// The write is transactional: insert attachments, sync payees, commit.
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO loan_attachments").
@@ -97,9 +94,6 @@ func TestBulkLinkLoanAttachWithoutPayee(t *testing.T) {
 		WithArgs(loanID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "loan"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
-		WithArgs(ids, userID).
-		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	// A loan whose linked payee was deleted still attaches; payees are
@@ -363,6 +357,49 @@ func TestBulkLinkLoanAlreadyAttached(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The credit that released a loan must never become an EMI payment, and the
+// guard for that lives inside the insert: a transaction that is a disbursement
+// is skipped, so the insert writes fewer rows than were asked for and the
+// handler answers 409 with nothing attached.
+func TestBulkLinkLoanRejectsDisbursementCredit(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
+
+	userID := testUserID()
+	loanID := uuid.New()
+	txn1, txn2 := uuid.New(), uuid.New()
+	ids := []uuid.UUID{txn1, txn2}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t WHERE t.id = ANY").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(2))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
+	mock.ExpectQuery("SELECT user_id, account_type_id FROM accounts").
+		WithArgs(loanID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "loan"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
+		WithArgs(ids, userID).
+		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
+	// The write itself skips the disbursement credit: two ids, one row.
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO loan_attachments").
+		WithArgs(loanID, ids, userID).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectRollback()
+
+	body, _ := json.Marshal(models.BulkLoanRequest{TransactionIDs: ids, LoanAccountID: &loanID})
+	req, _ := http.NewRequest("POST", "/transactions/bulk-loan", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "disbursement credit")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBulkLinkLoanInsertUniqueViolationRace(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.POST("/transactions/bulk-loan", srv.BulkLinkLoan)
@@ -382,9 +419,6 @@ func TestBulkLinkLoanInsertUniqueViolationRace(t *testing.T) {
 		WithArgs(loanID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "account_type_id"}).AddRow(userID, "loan"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_attachments").
-		WithArgs(ids, userID).
-		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM loan_disbursements").
 		WithArgs(ids, userID).
 		WillReturnRows(pgxmock.NewRows([]string{loanCountCols}).AddRow(0))
 	mock.ExpectBegin()

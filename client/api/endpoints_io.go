@@ -16,13 +16,16 @@ import (
 // extractor) and dateFormat hints the parser's date layout ("" auto-detects).
 //
 // It is the one multipart endpoint: the bytes go as the "file" part and the
-// other fields as form values. Errors a caller must handle: 400 when no file is
-// attached or it is not a PDF, 413 above 20 MB, 422 when the PDF is
-// password-protected (retry with password) or nothing could be extracted (a
-// scanned image-only file, or a mismatched extractor), 429 when the parser is
-// busy (retry shortly), 408 when the request was cancelled, and 502 when the
-// parser service is unavailable. A non-empty ValidationErrors in the result
-// means the parser's own reconciliation failed and the rows are suspect.
+// other fields as form values. The call is allowed parseTimeout (90s) rather
+// than the 60s JSON default, because the handler queues the upload behind its
+// four-way parse semaphore and then waits for the parser service. Errors a
+// caller must handle: 400 when no file is attached or it is not a PDF, 413
+// above 20 MB, 422 when the PDF is password-protected (retry with password) or
+// nothing could be extracted (a scanned image-only file, or a mismatched
+// extractor), 429 when the parser is busy (retry shortly), 408 when the request
+// was cancelled, and 502 when the parser service is unavailable. A non-empty
+// ValidationErrors in the result means the parser's own reconciliation failed
+// and the rows are suspect.
 func (c *Client) ParseStatement(ctx context.Context, filename string, pdf []byte, password, extractor, dateFormat string) (StatementParseResult, error) {
 	r, err := uploadRequest("/statements/parse", map[string]string{
 		"password":    password,
@@ -32,7 +35,7 @@ func (c *Client) ParseStatement(ctx context.Context, filename string, pdf []byte
 	if err != nil {
 		return StatementParseResult{}, err
 	}
-	return do[StatementParseResult](ctx, c, r)
+	return do[StatementParseResult](ctx, c, r.withTimeout(parseTimeout))
 }
 
 // ListStatementExtractors returns the extractor registry of the parser service.
@@ -156,6 +159,13 @@ func (c *Client) ExportBackup(ctx context.Context, w io.Writer) (string, error) 
 // how many rows of each resource were created. The body is the bundle file read
 // from disk and is forwarded verbatim, so bundle must be valid JSON.
 //
+// The call is allowed importTimeout (320s) rather than the 60s JSON default:
+// a restore decodes a bundle the route accepts up to 256 MB of and replays it
+// row by row inside one transaction, so the upload plus the replay can outlast
+// the default. Expiring early would report a failure for a transaction the
+// server is still committing, and the retry is refused with 409, so the
+// deadline has to cover the whole restore rather than the first byte.
+//
 // The whole restore is one all-or-nothing transaction: on any error nothing is
 // written, and rows that reference a resource the bundle did not carry are
 // skipped and listed in Warnings rather than failing the restore. Every row is
@@ -165,7 +175,7 @@ func (c *Client) ExportBackup(ctx context.Context, w io.Writer) (string, error) 
 // data is ambiguous. It answers 413 above the 256 MB cap and 400 when the body
 // is not a FinTrak bundle (wrong format key or unsupported version).
 func (c *Client) ImportBackup(ctx context.Context, bundle []byte) (BackupImportResult, error) {
-	return do[BackupImportResult](ctx, c, post("/import").withRawJSON(bundle))
+	return do[BackupImportResult](ctx, c, post("/import").withRawJSON(bundle).withTimeout(importTimeout))
 }
 
 // OpenAPISpec fetches the API's OpenAPI document. It is YAML, not JSON, so it

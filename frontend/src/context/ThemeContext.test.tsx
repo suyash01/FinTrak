@@ -133,6 +133,24 @@ describe("ThemeProvider", () => {
     expect(screen.getByTestId("dark").textContent).toBe("true");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
+
+  it("keeps the theme when storage refuses the write", async () => {
+    const user = userEvent.setup();
+    renderHarness();
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    // The write happens during commit, so an unguarded throw here unmounts the
+    // whole app to its ErrorBoundary instead of just not persisting.
+    await user.click(screen.getByText("set-dark"));
+    setItem.mockRestore();
+
+    expect(screen.getByTestId("dark").textContent).toBe("true");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
 });
 
 describe("useTheme", () => {

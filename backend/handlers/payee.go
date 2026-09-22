@@ -66,9 +66,7 @@ func (srv *Server) CreatePayee(c *gin.Context) {
 			validation.RespondError(c, "referenced account not found", http.StatusBadRequest)
 			return
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
+		if respondPayeeUniqueViolation(c, err) {
 			return
 		}
 		slog.Error("CreatePayee", slog.String("error", err.Error()))
@@ -77,6 +75,27 @@ func (srv *Server) CreatePayee(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, p)
+}
+
+// payees carries two unique indexes and a 23505 from either of them must not be
+// reported as the other: payees_user_name_uq (user_id, name) and
+// payees_account_id_tenant_uq (user_id, account_id). Every account created
+// through CreateAccount gets a linked payee row, so linking a payee to an
+// account that already has one violates the *account* index — answering "a
+// payee with this name already exists" there is untrue (renaming clears
+// nothing) and leaves the caller with no way forward. respondPayeeUniqueViolation
+// writes the response and reports whether it handled the error.
+func respondPayeeUniqueViolation(c *gin.Context, err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return false
+	}
+	if pgErr.ConstraintName == "payees_account_id_tenant_uq" {
+		validation.RespondError(c, "this account already has a linked payee", http.StatusConflict)
+		return true
+	}
+	validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
+	return true
 }
 
 // UpdatePayee renames a payee and/or re-links it to an account, enforcing
@@ -108,9 +127,7 @@ func (srv *Server) UpdatePayee(c *gin.Context) {
 			validation.RespondError(c, "payee not found", http.StatusNotFound)
 			return
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			validation.RespondError(c, "a payee with this name already exists", http.StatusConflict)
+		if respondPayeeUniqueViolation(c, err) {
 			return
 		}
 		slog.Error("UpdatePayee", slog.String("error", err.Error()))

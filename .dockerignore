@@ -3,13 +3,25 @@
 # the whole context, and only .dockerignore applies to it — .gitignore does not —
 # so keep it small. Other images build from their own subdirectory and use the
 # .dockerignore in it.
+#
+# .env* must never enter the build context: the TUI image builds from the root,
+# and that file is where the production stacks' secrets live (JWT_SECRET,
+# TOKEN_ENCRYPTION_KEY, POSTGRES_PASSWORD). BuildKit only sends what a COPY
+# needs, but the classic builder transfers the whole context, and a remote/cloud
+# buildx builder sends it to a third party — so keep the secrets out of scope
+# entirely (the three sub-directory files do the same).
 .git
 .github
+.env
+.env.*
 backend
 frontend
 statement_parser
 scripts
 docs
+# The TUI image only COPYs client/ and tui/; the MCP module is not part of any
+# root-context build.
+mcp
 **/node_modules
 **/coverage.out
 **/cover.out

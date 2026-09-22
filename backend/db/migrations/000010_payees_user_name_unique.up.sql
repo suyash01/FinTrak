@@ -21,11 +21,29 @@
 -- deleting one would strip its account of the linked payee that the account
 -- handlers never re-create — so the extra rows are disambiguated with an id
 -- suffix instead of being dropped.
+--
+-- Corrected in place rather than superseded by a later migration, unlike every
+-- other schema change in this directory: a later file cannot prevent this one
+-- from failing. golang-migrate runs the versions in order and stops at the
+-- first error, and this migration is the one that appends the suffix, so a name
+-- that already fills VARCHAR(255) makes step 1 raise 22001, leaves the schema
+-- version unadvanced, and repeats the same failure on every restart — the
+-- backend never boots and a self-hosted deployment has no rollback path (the
+-- application never migrates down). Both defects below are therefore fixed in
+-- the statement itself: the rename is bounded to the column width, and the
+-- statements that act on `ranked` are scoped to the row's own tenant.
 
 -- 1. Disambiguate the extra account-linked rows of a duplicated name. Manual
 --    duplicates keep their name so step 2 can fold them into the survivor.
+--
+--    The suffix is 11 characters (" (" + 8 hex + ")"), so the name is truncated
+--    to 244 first: `payees.name` is VARCHAR(255) and appending to a name that
+--    already fills it would raise 22001 (value too long for type character
+--    varying(255)) and take startup down with it. Truncation cannot make two
+--    rows of one group collide — the suffix is derived from the id, which is
+--    unique within the group's (user_id) partition.
 WITH ranked AS (
-    SELECT id,
+    SELECT id, user_id,
            row_number() OVER (
                PARTITION BY user_id, name
                ORDER BY (account_id IS NOT NULL) DESC, created_at, id
@@ -33,10 +51,11 @@ WITH ranked AS (
     FROM payees
 )
 UPDATE payees p
-SET name = p.name || ' (' || left(p.id::text, 8) || ')',
+SET name = left(p.name, 244) || ' (' || left(p.id::text, 8) || ')',
     updated_at = NOW()
 FROM ranked r
 WHERE p.id = r.id
+  AND p.user_id = r.user_id
   AND r.rn > 1
   AND p.account_id IS NOT NULL;
 
@@ -134,6 +153,12 @@ WHERE s.payee_id = d.duplicate AND s.user_id = d.user_id;
 
 -- 3. Drop the folded duplicates. Account-linked rows are never deleted here:
 --    step 1 renamed them instead.
+--
+--    Scoped by user_id as well as id: the identity of a payee is (user_id, id),
+--    so one UUID can legitimately name one payee per user, and joining on the
+--    id alone would rename — and then delete — another tenant's payee. The
+--    delete cascades SET NULL onto that user's transactions, rules and
+--    recurring series, so the damage would be silent.
 WITH ranked AS (
     SELECT id, user_id, account_id,
            row_number() OVER (
@@ -144,7 +169,7 @@ WITH ranked AS (
 )
 DELETE FROM payees p
 USING ranked r
-WHERE p.id = r.id AND r.rn > 1 AND p.account_id IS NULL;
+WHERE p.id = r.id AND p.user_id = r.user_id AND r.rn > 1 AND p.account_id IS NULL;
 
 -- 4. The index itself, under the name the handlers and their tests already
 --    refer to.

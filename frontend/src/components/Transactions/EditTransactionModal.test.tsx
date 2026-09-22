@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EditTransactionModal from "./EditTransactionModal";
@@ -80,6 +80,41 @@ function billingCycleTrigger(): HTMLElement {
   if (!trigger) throw new Error("billing cycle select trigger not found");
   return trigger;
 }
+
+describe("EditTransactionModal — default date", () => {
+  // A ledger date is a local-calendar fact. `toISOString()` is UTC, so east of
+  // UTC (the app's INR/en-IN target is +05:30) it names yesterday for the first
+  // hours of every local day. The zone is pinned so this assertion means the
+  // same thing on any host.
+  const hostTz = process.env.TZ;
+  beforeEach(() => {
+    process.env.TZ = "Asia/Kolkata";
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env.TZ = hostTz;
+  });
+
+  it("pre-fills a new transaction with the local day, not the UTC day", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 02:00 IST on the 16th is 2026-03-15T20:30Z: the UTC day is still the 15th.
+    vi.setSystemTime(new Date("2026-03-15T20:30:00Z"));
+    apiMocks.getBillingCycles.mockResolvedValue({ data: [] });
+
+    render(
+      <EditTransactionModal
+        accounts={[account]}
+        categories={noCategories}
+        groups={noGroups}
+        payees={noPayees}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText("Date")).toHaveValue("2026-03-16");
+  });
+});
 
 describe("EditTransactionModal — billing cycle dropdown", () => {
   beforeEach(() => {

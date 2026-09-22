@@ -38,6 +38,8 @@ func paperioTools() []Tool {
 			Description: "One page of documents from the user's Paperless-ngx instance, with the correspondent, document type and tag " +
 				"names available for filtering. Answers 400 when the integration is not configured and 502 when Paperless is " +
 				"unreachable or rejects the token.",
+			SideEffect: "Not a pure read: answering re-seals a legacy-format Paperless token stored on the user's row under the " +
+				"current key derivation. The token itself is unchanged.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/paperless/documents"},
 			install: installListPaperlessDocuments,
 		},

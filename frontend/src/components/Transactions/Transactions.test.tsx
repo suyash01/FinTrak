@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Transactions from "./Transactions";
@@ -20,29 +26,33 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-const { apiMock, domainMock, setSettings, toastApiError } = vi.hoisted(() => ({
-  apiMock: {
-    getTransactions: vi.fn(),
-    updateTransaction: vi.fn(),
-    bulkCategorize: vi.fn(),
-    bulkUpdatePayee: vi.fn(),
-    bulkUpdateBillingCycle: vi.fn(),
-    bulkLoan: vi.fn(),
-    bulkDeleteTransactions: vi.fn(),
-    deleteTransaction: vi.fn(),
-    getBillingCycles: vi.fn(),
-    updateUserSettings: vi.fn(),
-    getRecurringSeries: vi.fn(),
-    attachRecurring: vi.fn(),
-    detachRecurring: vi.fn(),
-    getTags: vi.fn(),
-    bulkUpdateTags: vi.fn(),
-    exportTransactions: vi.fn(),
-  },
-  domainMock: { useDomainData: vi.fn() },
-  setSettings: vi.fn(),
-  toastApiError: vi.fn(),
-}));
+const { apiMock, domainMock, setSettings, toastApiError, refreshAccounts } =
+  vi.hoisted(() => ({
+    apiMock: {
+      getTransactions: vi.fn(),
+      updateTransaction: vi.fn(),
+      bulkCategorize: vi.fn(),
+      bulkUpdatePayee: vi.fn(),
+      bulkUpdateBillingCycle: vi.fn(),
+      bulkLoan: vi.fn(),
+      bulkDeleteTransactions: vi.fn(),
+      deleteTransaction: vi.fn(),
+      getBillingCycles: vi.fn(),
+      updateUserSettings: vi.fn(),
+      getRecurringSeries: vi.fn(),
+      attachRecurring: vi.fn(),
+      detachRecurring: vi.fn(),
+      getTags: vi.fn(),
+      bulkUpdateTags: vi.fn(),
+      exportTransactions: vi.fn(),
+    },
+    domainMock: { useDomainData: vi.fn() },
+    setSettings: vi.fn(),
+    // The page reloads the shared account list after every successful
+    // transaction write so balances stay fresh.
+    refreshAccounts: vi.fn(),
+    toastApiError: vi.fn(),
+  }));
 
 vi.mock("../../api/client", () => ({
   default: apiMock,
@@ -141,6 +151,7 @@ function defaultDomain(settings: Record<string, unknown> = {}) {
     payees,
     settings,
     setSettings,
+    refreshAccounts,
   };
 }
 
@@ -281,11 +292,88 @@ describe("Transactions", () => {
 
     fireEvent.change(categorySelect!, { target: { value: "c1" } });
 
+    // Only the edited field is PATCHed. The body used to be a snapshot of the
+    // whole row (category, payee, tags, notes), which overwrote a concurrent
+    // inline edit with the values the row had been rendered with.
     await waitFor(() =>
-      expect(apiMock.updateTransaction).toHaveBeenCalledWith(
-        "t1",
-        expect.objectContaining({ categoryId: "c1" }),
-      ),
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith("t1", {
+        categoryId: "c1",
+      }),
+    );
+  });
+
+  it("sends only the payee on an inline payee edit", async () => {
+    renderPage();
+    await screen.findByText("Coffee Shop");
+
+    const payeeSelect = Array.from(
+      document.querySelectorAll<HTMLSelectElement>("td select"),
+    ).find((s) => s.options[0]?.textContent === "No Payee");
+    expect(payeeSelect).toBeTruthy();
+
+    fireEvent.change(payeeSelect!, { target: { value: "p1" } });
+
+    await waitFor(() =>
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith("t1", {
+        payeeId: "p1",
+      }),
+    );
+  });
+
+  it("refreshes the shared accounts after an inline edit", async () => {
+    renderPage();
+    await screen.findByText("Coffee Shop");
+
+    const categorySelect = Array.from(
+      document.querySelectorAll<HTMLSelectElement>("td select"),
+    ).find((s) => s.options[0]?.textContent === "Uncategorized")!;
+
+    fireEvent.change(categorySelect, { target: { value: "c1" } });
+
+    await waitFor(() => expect(refreshAccounts).toHaveBeenCalled());
+  });
+
+  it("refreshes the shared accounts after a delete", async () => {
+    renderPage();
+    await screen.findByText("Coffee Shop");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Coffee Shop" }));
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Delete",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deleteTransaction).toHaveBeenCalledWith("t1"),
+    );
+    await waitFor(() => expect(refreshAccounts).toHaveBeenCalled());
+  });
+
+  it("drops a deleted transaction from the selection", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Coffee Shop");
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select Coffee Shop" }),
+    );
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+    // Deleting the row through its own trash button must retire its id too,
+    // otherwise the bulk bar keeps advertising a transaction that is gone.
+    fireEvent.click(screen.getByRole("button", { name: "Delete Coffee Shop" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Delete",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(apiMock.deleteTransaction).toHaveBeenCalledWith("t1"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("1 selected")).not.toBeInTheDocument(),
     );
   });
 
@@ -311,6 +399,7 @@ describe("Transactions", () => {
         categoryId: "c1",
       }),
     );
+    await waitFor(() => expect(refreshAccounts).toHaveBeenCalled());
   });
 
   it("keeps the newest inline edit when responses resolve out of order", async () => {

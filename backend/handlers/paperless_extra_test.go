@@ -95,9 +95,28 @@ func TestUpgradeLegacyToken(t *testing.T) {
 
 		srv, mock := setupPaperlessMock(t, "", "")
 		legacy := legacyV1Token(t, "secret", tokenEncryptionKey)
+		// The re-seal is a compare-and-swap on the value that was read, so the
+		// update binds three arguments (new ciphertext, user id, expected value).
 		mock.ExpectExec("UPDATE users SET paperless_token").
-			WithArgs(pgxmock.AnyArg(), userID).
+			WithArgs(pgxmock.AnyArg(), userID, legacy).
 			WillReturnError(assert.AnError)
+
+		assert.Equal(t, legacy, srv.upgradeLegacyToken(context.Background(), userID, legacy))
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a row changed under us keeps its newer token", func(t *testing.T) {
+		prev := tokenEncryptionKey
+		tokenEncryptionKey = "key"
+		t.Cleanup(func() { tokenEncryptionKey = prev })
+
+		srv, mock := setupPaperlessMock(t, "", "")
+		legacy := legacyV1Token(t, "secret", tokenEncryptionKey)
+		// The CAS matched nothing: another read re-sealed first, or the user
+		// saved a new token while this request was in flight.
+		mock.ExpectExec("UPDATE users SET paperless_token").
+			WithArgs(pgxmock.AnyArg(), userID, legacy).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 		assert.Equal(t, legacy, srv.upgradeLegacyToken(context.Background(), userID, legacy))
 		assert.NoError(t, mock.ExpectationsWereMet())

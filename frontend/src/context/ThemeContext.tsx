@@ -104,7 +104,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const root = document.documentElement;
     root.classList.toggle("dark", isDark);
     root.dataset.theme = accent;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, accent }));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, accent }));
+    } catch {
+      // A full or blocked quota must not take the app down: the write happens
+      // during commit, so throwing here unmounts to the ErrorBoundary and
+      // replaces the whole UI. The in-memory theme stays, like the reader
+      // (readStored) tolerates a missing value.
+    }
     document
       .querySelector('meta[name="theme-color"]')
       ?.setAttribute(

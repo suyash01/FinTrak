@@ -4,6 +4,15 @@ set -euo pipefail
 # One-command release: verifies, tests, then tags and pushes to trigger the
 # CI publish workflow (.github/workflows/docker-publish.yml).
 #
+# The gate below is deliberately not a restatement of CI's: it calls the same
+# entry points the workflow's `validate` aggregate depends on (the Makefile
+# coverage targets, `bun run test:coverage`, `uv lock --check`, the go.mod
+# tidy checks and `make openapi-check`). Restating them is how the two drifted
+# apart — `bun run test` passes where CI's `bun run test:coverage` fails on the
+# v8 thresholds, and an untidy go.mod, a stale uv.lock or a coverage
+# regression used to reach a tag that CI then rejected, leaving a public tag
+# with no images behind it.
+#
 # Usage:
 #   ./scripts/release.sh v1.2.3
 
@@ -21,7 +30,12 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# 1. Must be on master with a clean working tree
+if ! command -v make >/dev/null 2>&1; then
+    echo "Error: GNU make is required - the gate reuses the Makefile targets CI runs" >&2
+    exit 1
+fi
+
+# 1. Must be on master, with a clean tree, at the commit that is on origin/master
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$branch" != "master" ]]; then
     echo "Error: releases must be cut from 'master' (currently on '$branch')" >&2
@@ -33,54 +47,73 @@ if ! git diff --quiet --exit-code; then
     exit 1
 fi
 
+# The tag is pushed on its own, and CI validates whatever commit it points at, so
+# nothing else checks that the released commit is on the remote branch. Without
+# this a stale or diverged local master publishes a tag whose code origin/master
+# does not contain.
+echo "==> Fetching origin/master"
+if ! git fetch origin master; then
+    echo "Error: could not fetch origin/master - is 'origin' configured?" >&2
+    exit 1
+fi
+
+head_commit="$(git rev-parse HEAD)"
+remote_commit="$(git rev-parse FETCH_HEAD)"
+if [[ "$head_commit" != "$remote_commit" ]]; then
+    echo "Error: HEAD ($head_commit) is not origin/master ($remote_commit)." >&2
+    echo "       Push your commits, or pull origin master, before tagging a release." >&2
+    exit 1
+fi
+
 # 2. Tag must not already exist
 if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
     echo "Error: tag $VERSION already exists" >&2
     exit 1
 fi
 
-# 3. Backend: vet, unit tests, integration tests (mirrors the CI gate)
-echo "==> Running go vet"
-(cd "$ROOT/backend" && go vet ./...)
+cd "$ROOT"
 
-echo "==> Running backend tests"
-(cd "$ROOT/backend" && go test ./...)
+# 3. Every Go module must be tidy (CI: "Verify go.mod is tidy" in all four jobs)
+for module in backend client tui mcp; do
+    echo "==> Verifying $module/go.mod is tidy"
+    (
+        cd "$module"
+        go mod tidy
+        if ! git diff --exit-code go.mod go.sum; then
+            echo "Error: $module/go.mod or go.sum changed under 'go mod tidy' - commit the tidy result" >&2
+            exit 1
+        fi
+    )
+done
 
+# 4. go vet, the parser lockfile, the coverage floors and the OpenAPI route
+#    check - the Makefile targets and commands the CI jobs invoke, so the
+#    numbers stay in one place.
+echo "==> Running go vet (all four Go modules)"
+make vet vet-client vet-tui vet-mcp
+
+echo "==> Verifying uv.lock is up to date"
+(cd "$ROOT/statement_parser" && uv lock --check)
+
+echo "==> Enforcing coverage floors and the OpenAPI route parity"
+make test-cover-check test-client-cover-check test-tui-cover-check test-mcp-cover-check test-parser-cover-check openapi-check
+
+# 5. Backend integration tests (Docker required; catches SQL pgxmock cannot)
 echo "==> Running backend integration tests (Docker required)"
-(cd "$ROOT/backend" && go test -tags=integration -count=1 ./...)
+make test-integration
 
-# 4. Frontend: typecheck, tests, production build
+# 6. Frontend: the lockfile, typecheck, threshold-enforcing tests, production build
+echo "==> Installing frontend dependencies from the lockfile"
+(cd "$ROOT/frontend" && bun install --frozen-lockfile)
+
 echo "==> Typechecking frontend"
 (cd "$ROOT/frontend" && bun run typecheck)
 
-echo "==> Running frontend tests"
-(cd "$ROOT/frontend" && bun run test)
+echo "==> Running frontend tests with the coverage thresholds"
+(cd "$ROOT/frontend" && bun run test:coverage)
 
 echo "==> Building frontend"
 (cd "$ROOT/frontend" && bun run build)
-
-# 5. Statement parser tests
-echo "==> Running statement parser tests"
-(cd "$ROOT/statement_parser" && uv run --frozen python -m unittest discover -s tests -v)
-
-# 6. Go clients: shared client, TUI, MCP server (mirrors the CI gate)
-echo "==> Running go vet (client)"
-(cd "$ROOT/client" && go vet ./...)
-
-echo "==> Running shared client tests"
-(cd "$ROOT/client" && go test ./...)
-
-echo "==> Running go vet (tui)"
-(cd "$ROOT/tui" && go vet ./...)
-
-echo "==> Running TUI tests"
-(cd "$ROOT/tui" && go test ./...)
-
-echo "==> Running go vet (mcp)"
-(cd "$ROOT/mcp" && go vet ./...)
-
-echo "==> Running MCP server tests"
-(cd "$ROOT/mcp" && go test ./...)
 
 # 7. Tag and push (triggers the publish workflow)
 echo "==> Tagging $VERSION"

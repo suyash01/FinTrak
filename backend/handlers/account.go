@@ -182,6 +182,30 @@ func (srv *Server) DeleteAccount(c *gin.Context) {
 		if _, err := tx.Exec(c, "DELETE FROM payees WHERE account_id = $1 AND user_id = $2", id, userID); err != nil {
 			return err
 		}
+
+		// A recurring series is read entirely through its ranges, and
+		// recurring_series_terms.account_id cascades with the account. Removing
+		// the account would therefore delete the ranges of every series that
+		// pointed at it, and a series left without any disappears from
+		// GET /recurring while its attachments (and their transactions) stay
+		// behind — the state DeleteRecurringTerm refuses to create by hand.
+		// Take those series with the account, the way its transactions and its
+		// linked payee already go: only the series whose *every* range pointed
+		// at it, so a series that still has a range elsewhere keeps its history.
+		if _, err := tx.Exec(c, `
+			DELETE FROM recurring_series rs
+			WHERE rs.user_id = $2
+			  AND EXISTS (
+			      SELECT 1 FROM recurring_series_terms t
+			      WHERE t.series_id = rs.id AND t.account_id = $1
+			  )
+			  AND NOT EXISTS (
+			      SELECT 1 FROM recurring_series_terms o
+			      WHERE o.series_id = rs.id AND o.account_id <> $1
+			  )`, id, userID); err != nil {
+			return err
+		}
+
 		result, err := tx.Exec(c, "DELETE FROM accounts WHERE id = $1 AND user_id = $2", id, userID)
 		if err != nil {
 			return err

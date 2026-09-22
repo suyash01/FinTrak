@@ -73,4 +73,18 @@ describe("LinkResultsList", () => {
 
     expect(props.onSelect).toHaveBeenCalledWith(results[1]);
   });
+
+  it("keeps the match action visible without hover", () => {
+    renderList();
+
+    // The surrounding row has no click handler, so this button is the only way
+    // to pick a candidate; it used to be fully transparent until the row was
+    // hovered, and `group-hover` never fires on a touch device. jsdom applies
+    // no Tailwind, so the class is the only observable form of that promise.
+    for (const button of screen.getAllByRole("button", {
+      name: /Choose Type/,
+    })) {
+      expect(button.className).not.toContain("opacity-0");
+    }
+  });
 });

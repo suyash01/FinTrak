@@ -1,5 +1,18 @@
 # Local Development
 # Usage: docker compose up -d
+#
+# Every published port is bound to 127.0.0.1 on purpose. Only :3000 (the
+# frontend, which proxies /api/v1 to the backend) and :8080 (the backend, for
+# curl/tests) are meant to be reached from the host; the rest — Postgres,
+# adminer, pgAdmin and the unauthenticated statement parser — are developer
+# conveniences and must not be reachable from another host on a shared network.
+#
+# Distinct project name and volumes: the dev stack can never share a container
+# name or a `pgdata` volume with the production stacks (docker-compose.prod*.yml
+# use `fintrak-prod`), so `make prod` on a machine that has run `make dev` starts
+# its own database instead of reusing the dev one.
+name: fintrak-dev
+#
 # The optional log viewer (dozzle) mounts the Docker socket, so it is behind
 # the "debug" profile and is not started by default:
 #   docker compose --profile debug up -d
@@ -12,13 +25,15 @@
 services:
   db:
     container_name: postgres
-    image: postgres:18-alpine3.24
+    # Pinned patch release (not the floating `18-alpine3.24` alias) so a rebuild
+    # never silently moves the dev database to a new minor.
+    image: postgres:18.6-alpine3.24
     environment:
       POSTGRES_DB: fintrak
       POSTGRES_USER: fintrak
       POSTGRES_PASSWORD: fintrak
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -35,7 +50,7 @@ services:
     build:
       context: ./statement_parser
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     restart: unless-stopped
     networks:
       - backend-net
@@ -45,11 +60,13 @@ services:
     build:
       context: ./backend
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - DATABASE_URL=postgres://fintrak:fintrak@db:5432/fintrak?sslmode=disable
       - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
       - JWT_SECRET=dev-only-secret-change-me
+      # The dev stack opts in explicitly: unset APP_ENV now means production.
+      - APP_ENV=development
       - STATEMENT_PARSER_URL=http://statement-parser:5000
     depends_on:
       db:
@@ -72,7 +89,7 @@ services:
     build:
       context: ./frontend
     ports:
-      - "3000:8080"
+      - "127.0.0.1:3000:8080"
     depends_on:
       backend:
         condition: service_healthy
@@ -84,20 +101,22 @@ services:
     container_name: adminer
     image: adminer:6.0.1
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     depends_on:
       - db
     networks:
       - backend-net
 
+  # Dev-only login-less database UI on published default credentials; loopback
+  # only (see the header). Pin the image so it cannot change contents unread.
   pgadmin:
-    image: dpage/pgadmin4:latest
+    image: dpage/pgadmin4:9.18.0
     container_name: pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin123
     ports:
-      - "8082:80"
+      - "127.0.0.1:8082:80"
     depends_on:
       - db
     networks:
@@ -116,7 +135,7 @@ services:
       context: .
       dockerfile: tui/Dockerfile
     ports:
-      - "2222:2222"
+      - "127.0.0.1:2222:2222"
     environment:
       - FINTRAK_API_URL=http://backend:8080/api/v1
       - FINTRAK_SSH_AUTH=password
@@ -130,20 +149,30 @@ services:
     networks:
       - backend-net
 
+  # Log viewer. Opt-in (see the header comment): it mounts the Docker socket,
+  # which hands the container the whole Docker API — that is the reason this one
+  # must be asked for explicitly, so the profile is required. It serves logs
+  # without authentication, so the port is loopback-only as well; if you publish
+  # it anywhere else, mount a bcrypt users file and set
+  # DOZZLE_AUTH_PROVIDER=simple first.
   dozzle:
     container_name: dozzle
-    image: amir20/dozzle:latest
-    # Opt-in (see the header comment): mounting the Docker socket is the reason
-    # this one must be asked for explicitly, so the profile is required.
+    # Pinned release: the debug profile is not started by default, so a floating
+    # tag would change contents unnoticed between opt-ins.
+    image: amir20/dozzle:v11.1.1-alpine
     profiles:
       - debug
     volumes:
-      # Read-only: dozzle only needs to read container logs, and a writable
-      # Docker socket is a container-escape risk on shared hosts.
+      # `:ro` only stops the container from writing to the mount point on the
+      # host filesystem; the Docker API is reached by connecting to the socket,
+      # so this is NOT a boundary around Docker (container create/exec remain
+      # available). Use a socket proxy such as docker-socket-proxy when a real
+      # API boundary is wanted; the profile gate and the loopback bind are the
+      # controls actually in place here.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - dozzle_data:/data
     ports:
-      - 8083:8080
+      - "127.0.0.1:8083:8080"
 
 networks:
   backend-net:
