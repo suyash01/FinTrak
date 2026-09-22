@@ -32,7 +32,7 @@ import (
 	"github.com/charmbracelet/wish"
 	wishtea "github.com/charmbracelet/wish/bubbletea"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 	"github.com/fintrak/tui/internal/ui"
 )
 

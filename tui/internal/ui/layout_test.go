@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // These tests cover the fitting rule the widgets share: a scrolling area is sized

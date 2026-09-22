@@ -99,6 +99,15 @@ func New(baseURL string) (*Client, error) {
 // BaseURL returns the API base URL the client was built with.
 func (c *Client) BaseURL() string { return c.base.String() }
 
+// SetTransport routes every request through rt, which is how a caller wraps the
+// client in a policy rather than a decorator: the MCP server installs a
+// read-only guard here so a request the tools never intend to make cannot leave
+// the process. A nil transport restores the default one. It must be called
+// before the client is used concurrently.
+func (c *Client) SetTransport(rt http.RoundTripper) {
+	c.http.Transport = rt
+}
+
 // SetTokens installs a session outright.
 func (c *Client) SetTokens(access, refresh string) {
 	c.mu.Lock()
@@ -153,7 +162,9 @@ type request struct {
 	body        []byte
 	contentType string
 
-	// noAuth suppresses the access-token cookie (the auth endpoints).
+	// noAuth suppresses the access-token cookie and the 401-refresh replay:
+	// the credential-carrying auth endpoints, where a 401 is a rejection of the
+	// credentials the caller just sent rather than an expired session.
 	noAuth bool
 	// cookie, when set, is sent verbatim instead of the access token, so the
 	// refresh call can present the refresh token without leaking it elsewhere.
@@ -169,6 +180,13 @@ func del(path string) *request  { return &request{method: http.MethodDelete, pat
 
 func patch(path string) *request {
 	return &request{method: http.MethodPatch, path: path}
+}
+
+// withoutAuth marks the request as credential-carrying: no access token is
+// attached and a 401 is reported as-is instead of triggering a refresh.
+func (r *request) withoutAuth() *request {
+	r.noAuth = true
+	return r
 }
 
 // withJSON attaches a JSON body. A nil body sends none.

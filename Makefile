@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-tui test-tui-cover test-tui-cover-check vet vet-tui build-backend build-frontend build-tui openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-client test-client-cover-check vet-client build-client test-tui test-tui-cover test-tui-cover-check vet-tui build-tui test-mcp test-mcp-cover-check vet-mcp build-mcp build-backend build-frontend openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -18,14 +18,22 @@ help:
 	@echo "  make test-cover-check   Run backend tests and enforce the coverage floor"
 	@echo "  make test-integration   Run backend integration tests (Docker + testcontainers)"
 	@echo "  make test-parser        Run statement parser tests"
+	@echo "  make test-client        Run shared API client tests"
+	@echo "  make test-client-cover-check  Run client tests and enforce the coverage floor"
 	@echo "  make test-tui           Run TUI tests"
 	@echo "  make test-tui-cover     Run TUI tests with a coverage profile"
 	@echo "  make test-tui-cover-check  Run TUI tests and enforce the coverage floor"
+	@echo "  make test-mcp           Run MCP server tests"
+	@echo "  make test-mcp-cover-check  Run MCP tests and enforce the coverage floor"
 	@echo "  make vet                Run go vet on backend"
+	@echo "  make vet-client         Run go vet on the shared API client"
 	@echo "  make vet-tui            Run go vet on the TUI"
+	@echo "  make vet-mcp            Run go vet on the MCP server"
 	@echo "  make build-backend      Verify backend compiles"
 	@echo "  make build-frontend     Build frontend production bundle"
+	@echo "  make build-client       Verify the shared API client compiles"
 	@echo "  make build-tui          Verify the TUI compiles"
+	@echo "  make build-mcp          Verify the MCP server compiles"
 	@echo "  make openapi-check      Verify openapi.yaml covers every registered route"
 	@echo "  make release VERSION=v1.2.3  Test, tag, and push a release"
 
@@ -70,11 +78,24 @@ vet:
 build-backend:
 	cd backend && go build ./...
 
-build-tui:
-	cd tui && go build ./...
+# The shared API client is its own module so the TUI and the MCP server use one
+# client rather than a copy each: `cd client && go test ./...` runs it, and the
+# spec-parity suite inside it still reads backend/openapi.yaml.
 
-vet-tui:
-	cd tui && go vet ./...
+test-client:
+	cd client && go test ./...
+
+# Its own floor, enforced with the same stdlib-only covercheck as the other
+# modules; the target matches the backend's library-level gate.
+test-client-cover-check:
+	cd client && go test -covermode=atomic -coverprofile=coverage.out ./...
+	cd backend && go run ./cmd/covercheck -profile ../client/coverage.out -min 85
+
+vet-client:
+	cd client && go vet ./...
+
+build-client:
+	cd client && go build ./...
 
 test-tui:
 	cd tui && go test ./...
@@ -83,11 +104,34 @@ test-tui-cover:
 	cd tui && go test -covermode=atomic -coverprofile=coverage.out ./...
 
 # The floor is enforced by the backend's covercheck (stdlib-only), the same tool
-# and the same 20% baseline the CI job uses. Ratchet the number up as screen
-# tests land.
+# and the same baseline the CI job uses. It sits at 18% because the shared API
+# client moved out to client/ (25.25% -> 19.41% when it left, with the client
+# now carrying its own 85% floor): the render-heavy screens in internal/ui are
+# what this number really measures. Ratchet it up as screen tests land.
 test-tui-cover-check:
 	cd tui && go test -covermode=atomic -coverprofile=coverage.out ./...
-	cd backend && go run ./cmd/covercheck -profile ../tui/coverage.out -min 20
+	cd backend && go run ./cmd/covercheck -profile ../tui/coverage.out -min 18
+
+vet-tui:
+	cd tui && go vet ./...
+
+build-tui:
+	cd tui && go build ./...
+
+test-mcp:
+	cd mcp && go test ./...
+
+# The MCP server's own floor. Ratchet it up as the surface grows: the tool audit
+# against openapi.yaml and the binary's end-to-end test keep it high.
+test-mcp-cover-check:
+	cd mcp && go test -covermode=atomic -coverprofile=coverage.out ./...
+	cd backend && go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80
+
+vet-mcp:
+	cd mcp && go vet ./...
+
+build-mcp:
+	cd mcp && go build ./...
 
 build-frontend:
 	cd frontend && bun run build

@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // LoginModel is the sign-in screen. It reuses the modal form so validation and

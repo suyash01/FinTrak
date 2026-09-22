@@ -63,12 +63,24 @@ echo "==> Building frontend"
 echo "==> Running statement parser tests"
 (cd "$ROOT/statement_parser" && uv run --frozen python -m unittest discover -s tests -v)
 
-# 6. TUI: vet and tests (mirrors the CI gate)
+# 6. Go clients: shared client, TUI, MCP server (mirrors the CI gate)
+echo "==> Running go vet (client)"
+(cd "$ROOT/client" && go vet ./...)
+
+echo "==> Running shared client tests"
+(cd "$ROOT/client" && go test ./...)
+
 echo "==> Running go vet (tui)"
 (cd "$ROOT/tui" && go vet ./...)
 
 echo "==> Running TUI tests"
 (cd "$ROOT/tui" && go test ./...)
+
+echo "==> Running go vet (mcp)"
+(cd "$ROOT/mcp" && go vet ./...)
+
+echo "==> Running MCP server tests"
+(cd "$ROOT/mcp" && go test ./...)
 
 # 7. Tag and push (triggers the publish workflow)
 echo "==> Tagging $VERSION"

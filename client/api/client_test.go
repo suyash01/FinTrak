@@ -328,3 +328,74 @@ func TestUnauthorizedUnwrapsWrappedErrors(t *testing.T) {
 		t.Error("a wrapped APIError must still read as unauthorized")
 	}
 }
+
+// transportFunc adapts a function to an http.RoundTripper.
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestSetTransportWrapsEveryRequest covers the hook the MCP server installs its
+// read-only guard through: the transport sees the request before the network,
+// and a transport that refuses makes the call fail.
+func TestSetTransportWrapsEveryRequest(t *testing.T) {
+	c := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request reached the server: %s %s", r.Method, r.URL.Path)
+	})
+
+	var seen []string
+	c.SetTransport(transportFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, req.Method+" "+req.URL.Path)
+		return nil, errors.New("refused by policy")
+	}))
+
+	if _, err := c.ListAccounts(context.Background()); err == nil {
+		t.Fatal("a refusing transport must fail the call")
+	}
+	if len(seen) != 1 || seen[0] != "GET /api/v1/accounts" {
+		t.Fatalf("transport saw %v, want the accounts request", seen)
+	}
+
+	// A nil transport restores the default one, so the client works again.
+	c.SetTransport(nil)
+	if c.http.Transport != nil {
+		t.Error("SetTransport(nil) should restore the default transport")
+	}
+}
+
+// TestLoginFailureReportsTheAPIsOwnError pins the credential-carrying auth
+// requests: a 401 from /auth/login rejects the credentials that were just sent,
+// so it must surface the server's message rather than a refresh attempt's
+// "session expired".
+func TestLoginFailureReportsTheAPIsOwnError(t *testing.T) {
+	var refreshed bool
+	c := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/login":
+			if cookie := r.Header.Get("Cookie"); cookie != "" {
+				t.Errorf("login sent a session cookie: %q", cookie)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"invalid email or password"}]}`))
+		case "/api/v1/auth/refresh":
+			refreshed = true
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	_, err := c.Login(context.Background(), "a@b.c", "wrong")
+	if err == nil {
+		t.Fatal("a rejected login must fail")
+	}
+	if !StatusIs(err, http.StatusUnauthorized) {
+		t.Fatalf("error = %v, want a 401 APIError", err)
+	}
+	if !strings.Contains(err.Error(), "invalid email or password") {
+		t.Errorf("error = %q, want the server's message", err)
+	}
+	if refreshed {
+		t.Error("a rejected login must not try to refresh a session it never had")
+	}
+}

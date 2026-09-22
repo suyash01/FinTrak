@@ -193,7 +193,7 @@ jobs:
       - name: Enforce coverage floor
         run: |
           cd backend
-          go run ./cmd/covercheck -profile ../tui/coverage.out -min 20
+          go run ./cmd/covercheck -profile ../tui/coverage.out -min 18
       - name: Upload tui coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -210,11 +210,104 @@ jobs:
           flags: tui
           fail_ci_if_error: false
 
+  # The shared Go client (`client/`) and the MCP server (`mcp/`) are their own
+  # modules with their own floors, exactly like the TUI: the backend's aggregate
+  # gate covers `backend/ ./...` only, and `cmd/covercheck` exempts `main.go`.
+  test-client:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: client/go.sum
+      - name: Verify go.mod is tidy
+        run: |
+          cd client
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Run go vet
+        run: |
+          cd client
+          go vet ./...
+      - name: Run tests
+        run: |
+          cd client
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Enforce coverage floor
+        run: |
+          cd backend
+          go run ./cmd/covercheck -profile ../client/coverage.out -min 85
+      - name: Upload client coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-coverage
+          path: client/coverage.out
+          if-no-files-found: ignore
+      - name: Upload client coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./client/coverage.out
+          flags: client
+          fail_ci_if_error: false
+
+  test-mcp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: mcp/go.sum
+      - name: Verify go.mod is tidy
+        run: |
+          cd mcp
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Run go vet
+        run: |
+          cd mcp
+          go vet ./...
+      - name: Run tests
+        run: |
+          cd mcp
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Enforce coverage floor
+        run: |
+          cd backend
+          go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80
+      - name: Upload mcp coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-coverage
+          path: mcp/coverage.out
+          if-no-files-found: ignore
+      - name: Upload mcp coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./mcp/coverage.out
+          flags: mcp
+          fail_ci_if_error: false
+
   # Single aggregate validation gate. Every publish job depends on this so a
   # tagged release can never push one component's image while another
   # component's tests (or the backend integration suite) are still red.
   validate:
-    needs: [test-backend, test-backend-integration, test-frontend, test-parser, test-tui]
+    needs: [test-backend, test-backend-integration, test-frontend, test-parser, test-tui, test-client, test-mcp]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any validation job did not succeed
@@ -235,12 +328,18 @@ jobs:
         include:
           - name: backend
             context: ./backend
+            file: ./backend/Dockerfile
           - name: frontend
             context: ./frontend
+            file: ./frontend/Dockerfile
           - name: statement-parser
             context: ./statement_parser
+            file: ./statement_parser/Dockerfile
           - name: tui
-            context: ./tui
+            # Root context: the TUI module replaces the shared client module
+            # with a path (../client), so the build needs both directories.
+            context: .
+            file: ./tui/Dockerfile
     steps:
       - uses: actions/checkout@v7
 
@@ -254,6 +353,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: false
           platforms: linux/amd64
           cache-from: type=gha,scope=${{ matrix.name }}

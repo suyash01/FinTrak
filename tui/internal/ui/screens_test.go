@@ -3,7 +3,7 @@ package ui
 import (
 	"testing"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // TestScreenRegistryMatchesTheSidebar pins the screen set and its order. The

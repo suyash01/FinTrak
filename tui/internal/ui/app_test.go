@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // stubScreen records what it receives, so routing can be asserted directly.

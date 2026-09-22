@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // Focus is which pane owns the arrow keys.

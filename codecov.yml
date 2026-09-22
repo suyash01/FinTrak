@@ -1,6 +1,7 @@
 # Codecov configuration.
-# Backend, frontend, statement parser, and TUI client upload separately with
-# flags so each part of the monorepo reports its own coverage. carryforward keeps
+# Backend, frontend, statement parser, shared Go client, TUI, and MCP server
+# upload separately with flags so each part of the monorepo reports its own
+# coverage. carryforward keeps
 # the last known coverage when a job uploads nothing for a commit (e.g. a
 # backend-only PR).
 coverage:
@@ -26,12 +27,29 @@ coverage:
           - parser
       tui:
         # The render-heavy screens in internal/ui are barely covered, so the
-        # floor sits just above the current baseline. Ratchet it up as screen
+        # floor sits just above the current baseline. It reads lower than it did
+        # when the shared API client lived in this module (25.25% -> 19.41%):
+        # the client moved to `client/` and carries its own 85% flag now, so this
+        # number measures the terminal client alone. Ratchet it up as screen
         # tests land; `make test-tui-cover-check` enforces the same number.
-        target: 21%
+        target: 19%
         threshold: 1%
         flags:
           - tui
+      client:
+        # The shared API client is a library; `make test-client-cover-check`
+        # enforces the same 85% floor.
+        target: 85%
+        threshold: 1%
+        flags:
+          - client
+      mcp:
+        # The MCP server's floors are enforced locally by
+        # `make test-mcp-cover-check` at the same numbers.
+        target: 80%
+        threshold: 1%
+        flags:
+          - mcp
     patch:
       default:
         target: auto
@@ -63,4 +81,12 @@ flags:
   tui:
     paths:
       - tui/
+    carryforward: true
+  client:
+    paths:
+      - client/
+    carryforward: true
+  mcp:
+    paths:
+      - mcp/
     carryforward: true

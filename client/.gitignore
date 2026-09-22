@@ -1,0 +1,4 @@
+# Coverage profiles written by `make test-client-cover-check` (same rules as
+# backend/.gitignore, which owns the coverage.out convention).
+*.out
+coverage.*

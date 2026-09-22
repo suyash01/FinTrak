@@ -9,9 +9,11 @@ require (
 	github.com/charmbracelet/ssh v0.0.0-20250128164007-98fd5ae11894
 	github.com/charmbracelet/wish v1.4.7
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/fintrak/client v0.0.0
 	golang.org/x/crypto v0.57.0
-	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/fintrak/client => ../client
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect

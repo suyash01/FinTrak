@@ -1,14 +1,20 @@
 # --- Build Stage ---
+# The build context is the repository root, because the TUI module replaces the
+# shared client module with a path (../client): both have to be visible to the
+# build. See the root .dockerignore for what is kept out of that context.
 FROM golang:1.27.1-alpine3.24 AS builder
 
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN GOFLAGS=-mod=readonly go mod download
+WORKDIR /src
+COPY client/go.mod client/go.sum ./client/
+COPY tui/go.mod tui/go.sum ./tui/
+RUN cd tui && GOFLAGS=-mod=readonly go mod download
 
-COPY . .
+COPY client/ ./client/
+COPY tui/ ./tui/
+
 # Override at build time with: docker build --build-arg VERSION=v1.2.3
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o fintrak-tui .
+RUN cd tui && CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /fintrak-tui .
 
 # --- Runtime Stage ---
 FROM alpine:3.24
@@ -19,7 +25,7 @@ RUN apk add --no-cache ca-certificates tzdata \
     && chown -R appuser:appgroup /home/appuser/.config
 
 WORKDIR /app
-COPY --from=builder --chown=appuser:appgroup /app/fintrak-tui .
+COPY --from=builder --chown=appuser:appgroup /fintrak-tui .
 
 USER appuser
 EXPOSE 2222

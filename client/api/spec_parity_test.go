@@ -608,7 +608,7 @@ func TestRouteTableHasNoDuplicateNames(t *testing.T) {
 // normalizing the spec's {param} syntax to the gin :param form the table uses.
 func specRoutes(t *testing.T) map[string]bool {
 	t.Helper()
-	const specPath = "../../../backend/openapi.yaml"
+	const specPath = "../../backend/openapi.yaml"
 	raw, err := os.ReadFile(specPath)
 	if err != nil {
 		t.Fatalf("reading %s: %v", specPath, err)

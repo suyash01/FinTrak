@@ -111,7 +111,10 @@ services:
     profiles:
       - tui
     build:
-      context: ./tui
+      # The context is the repo root because the TUI module replaces the shared
+      # client module with a path (../client); see the root .dockerignore.
+      context: .
+      dockerfile: tui/Dockerfile
     ports:
       - "2222:2222"
     environment:

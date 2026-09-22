@@ -1,0 +1,17 @@
+# The TUI image builds with the repository root as its context, because that
+# module replaces the shared client module with a path (../client). Docker sends
+# the whole context, and only .dockerignore applies to it — .gitignore does not —
+# so keep it small. Other images build from their own subdirectory and use the
+# .dockerignore in it.
+.git
+.github
+backend
+frontend
+statement_parser
+scripts
+docs
+**/node_modules
+**/coverage.out
+**/cover.out
+**/*.exe
+**/dist

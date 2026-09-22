@@ -25,7 +25,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 	"github.com/fintrak/tui/internal/sshd"
 	"github.com/fintrak/tui/internal/ui"
 )

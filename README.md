@@ -43,6 +43,7 @@
 - **Close Accounts**: Mark an account closed and its transactions become immutable — no manual add/edit/remove, no bulk action (categorize, payee, billing cycle, tags, delete), no tag rename and no rule re-run can rewrite them; linking stays possible.
 - **Bulk Operations**: Apply a category, payee, billing cycle or tag add/remove to a selection, delete many at once, or attach/detach the whole selection to a loan account or a recurring series.
 - **Command Palette**: Ctrl/Cmd-K jumps to any page, opens the right record dialog, applies rules to uncategorized transactions, or toggles the theme.
+- **Agent Access (MCP)**: `fintrak-mcp` serves the ledger to a model client (Claude Desktop, Claude Code, an IDE) over the Model Context Protocol, as **27 read-only tools**: the ledger, the aggregates, the rule and series definitions and the read-only preview endpoints the app itself uses. It cannot create, change or delete anything — the surface is checked against the OpenAPI document and enforced by a transport guard — so a model's suggestions are always confirmed in the app.
 - **Admin Console**: An admin-only Settings card curates the shared global catalog of groups and categories, showing the category and transaction usage counts needed before editing or retiring one.
 
 ---
@@ -82,6 +83,18 @@
 - **Language**: Go 1.27, a separate module (`github.com/fintrak/tui`)
 - **Framework**: Bubble Tea + Bubbles/Lip Gloss, with [wish](https://github.com/charmbracelet/wish) for the optional SSH door
 - **Tests**: stdlib `testing` plus a route-parity suite against `backend/openapi.yaml`
+
+### Shared API client (`client/`)
+
+- **Language**: Go 1.27, module `github.com/fintrak/client` (package `client/api`)
+- **Role**: the single hand-written REST client for the Go side; the terminal client and the MCP server both depend on it, so auth, filters and the typed models exist once
+- **Drift guard**: a route-parity suite pins every operation to `backend/openapi.yaml` in both directions
+
+### MCP server (`mcp/`)
+
+- **Protocol**: [Model Context Protocol](https://modelcontextprotocol.io/) over stdio (the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk)), so an MCP client (Claude Desktop, Claude Code, an IDE) launches it as a subprocess
+- **Surface**: 27 **read-only** tools over the same REST API and the same client the TUI uses — the ledger, its reference data, the aggregates, and the API's read-only preview endpoints
+- **Guarantee**: every tool declares the API operation it performs, a test checks each against `backend/openapi.yaml`, and a transport guard refuses any other request before it can leave the process
 
 ---
 
@@ -124,10 +137,14 @@ make test                   # backend unit tests (no database needed)
 make test-cover-check       # backend tests + the 85% coverage floor
 make test-integration       # backend integration tests (Docker + testcontainers)
 make test-parser            # statement parser tests (uv/unittest)
+make test-client            # shared API client tests
+make test-client-cover-check  # client tests + its 85% coverage floor
 make test-tui               # terminal client tests
-make test-tui-cover-check   # TUI tests + its 20% coverage floor
-make vet / make vet-tui     # go vet
-make build-backend / make build-frontend / make build-tui
+make test-tui-cover-check   # TUI tests + its 18% coverage floor
+make test-mcp               # MCP server tests
+make test-mcp-cover-check   # MCP tests + its 80% coverage floor
+make vet / make vet-client / make vet-tui / make vet-mcp   # go vet
+make build-backend / make build-frontend / make build-client / make build-tui / make build-mcp
 make openapi-check          # every registered route is in backend/openapi.yaml
 make release VERSION=v1.2.3 # test, tag, and push a release (master only)
 ```
@@ -224,6 +241,38 @@ docker compose --profile tui up -d
 ssh -p 2222 localhost
 ```
 
+### Agent access (MCP)
+
+The `mcp/` module ships a second binary, `fintrak-mcp`, which serves FinTrak to a model client over the Model Context Protocol. It is a pure client of the same API and holds the same session the other clients do, so nothing has to be enabled server-side.
+
+```bash
+cd mcp
+go build -o fintrak-mcp .    # or: go install .
+```
+
+Point an MCP client at it, passing the credentials through the environment (`-email`/`-password` work too, but a password on a command line is visible to other processes):
+
+```json
+{
+  "mcpServers": {
+    "fintrak": {
+      "command": "fintrak-mcp",
+      "env": {
+        "FINTRAK_API_URL": "http://localhost:8080/api/v1",
+        "FINTRAK_EMAIL": "you@example.com",
+        "FINTRAK_PASSWORD": "…"
+      }
+    }
+  }
+}
+```
+
+**Every tool is read-only.** The server can read the ledger (`list_accounts`, `list_categories`, `list_groups`, `list_payees`, `list_tags`, `list_transactions` with the app's full filter grammar, `list_billing_cycles`, `get_loan_schedule`, `list_links`, `list_recurring`, `list_recurring_terms`, `list_recurring_transactions`) and the derived aggregates (`get_dashboard_summary`, `get_money_flow`, `get_money_flow_timeline`, `get_cash_flow_calendar`), the rules (`list_rules`) and the Paperless document list (`list_paperless_documents`) — and it can run the API's own read-only preview twins (`validate_transactions`, `preview_rule`, `get_transfer_suggestions`, `get_cashback_suggestions`, `get_recurring_suggestions`, `forecast_recurring`, `get_loan_payoff`, `get_link_cycles`), which is how a model proposes something the app then validates. It cannot create, change or delete anything: it exposes no write operation, and every request is checked against the tool list by a transport guard, so a call outside it fails locally instead of reaching the ledger.
+
+The read-only claim is not a convention but a checked property. Each tool declares the API operation it performs; `go test ./...` in `mcp/` verifies every declared operation exists in `backend/openapi.yaml` and is either a `GET` or one of the two documented preview `POST`s, that every read-only operation is either exposed as a tool or explicitly exempted with a reason, and that calling every tool really hits the route it declares. `mcp/internal/readonly` refuses anything else at the transport, including the write endpoints of the shared client. A model's suggestions therefore have to be confirmed in the app — which is exactly the app's own ethos: it never auto-categorizes, auto-links or auto-creates either.
+
+The server signs in lazily with its first tool call and refreshes the session from then on, so a backend restart or a long-lived session needs no attention; a failed sign-in is reported as a tool error rather than killing the process. Since stdout carries the protocol, logs go to stderr (`-log-file` to redirect them). There is no scoped read-only token yet (backlog idea #56), which is why the server takes the account credentials; the propose-and-apply half of idea #59 is deliberately not implemented.
+
 ---
 
 ## 📂 Project Structure
@@ -251,12 +300,18 @@ ssh -p 2222 localhost
 │   │   ├── utils        # Formatters and small display helpers
 │   │   └── types.ts     # API models
 │   └── Dockerfile       # Build + nginx runtime (reverse-proxies /api/v1)
+├── client               # Shared Go REST client (own module, used by tui and mcp)
+│   └── api              # The one hand-written API client
+├── mcp                  # MCP server (own module): read-only tools for model clients
+│   └── internal
+│       ├── mcpserver    # Tool registry, handlers and the lazy sign-in
+│       └── readonly     # Transport guard behind the read-only guarantee
 ├── statement_parser     # Standalone Python PDF statement parser (own module)
 ├── tui                  # Go terminal client (Bubble Tea), local or over SSH
 ├── scripts              # release.sh / release.ps1 guardrails
 ├── .github/workflows    # CI: tests, coverage upload, validate gate, GHCR publish
 ├── Makefile             # dev / test / vet / build / openapi / release targets
-├── codecov.yml          # Per-flag coverage targets (backend 85, frontend 75, parser 90, tui 21)
+├── codecov.yml          # Per-flag coverage targets (backend 85, frontend 75, parser 90, client 85, tui 19, mcp 80)
 ├── AGENTS.md            # Repo conventions for contributors and coding agents
 ├── FLOWCHART.md         # Architecture, transaction lifecycle, ER diagram
 ├── IDEAS.md             # Feature backlog

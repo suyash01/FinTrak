@@ -66,7 +66,29 @@ try {
     Pop-Location
 }
 
-# 6. TUI: vet and tests (mirrors the CI gate)
+# 6. Go clients: shared client, TUI, MCP server (mirrors the CI gate)
+Push-Location "$repoRoot\client"
+try {
+    go vet ./...
+    if ($LASTEXITCODE -ne 0) { throw "go vet (client) failed" }
+
+    go test ./...
+    if ($LASTEXITCODE -ne 0) { throw "Shared client tests failed" }
+} finally {
+    Pop-Location
+}
+
+Push-Location "$repoRoot\mcp"
+try {
+    go vet ./...
+    if ($LASTEXITCODE -ne 0) { throw "go vet (mcp) failed" }
+
+    go test ./...
+    if ($LASTEXITCODE -ne 0) { throw "MCP server tests failed" }
+} finally {
+    Pop-Location
+}
+
 Push-Location "$repoRoot\tui"
 try {
     go vet ./...

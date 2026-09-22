@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fintrak/tui/internal/api"
+	"github.com/fintrak/client/api"
 )
 
 // Presentation helpers shared by the screens. Nothing here computes money: an

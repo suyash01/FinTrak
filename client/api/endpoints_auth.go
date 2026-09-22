@@ -15,7 +15,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (User, error
 
 	res, err := do[struct {
 		User User `json:"user"`
-	}](ctx, c, post("/auth/login").withJSON(body))
+	}](ctx, c, post("/auth/login").withoutAuth().withJSON(body))
 	return res.User, err
 }
 
@@ -30,7 +30,7 @@ func (c *Client) Register(ctx context.Context, email, password, setupToken strin
 
 	res, err := do[struct {
 		User User `json:"user"`
-	}](ctx, c, post("/auth/register").withJSON(body))
+	}](ctx, c, post("/auth/register").withoutAuth().withJSON(body))
 	return res.User, err
 }
 
