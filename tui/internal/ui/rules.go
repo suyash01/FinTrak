@@ -86,6 +86,9 @@ func (r *Rules) Keys() []key.Binding {
 	return []key.Binding{r.keys.New, r.keys.Edit, r.keys.Delete, r.keys.Preview, r.keys.Apply}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (r *Rules) CapturesText() bool { return false }
+
 // Refresh implements Screen.
 func (r *Rules) Refresh() tea.Cmd { return r.reload() }
 

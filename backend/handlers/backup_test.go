@@ -211,6 +211,9 @@ func TestImportUserDataRejectsNonEmptyUser(t *testing.T) {
 	r, _, mock := newBackupTestRouter(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
@@ -231,6 +234,9 @@ func TestImportUserDataRejectsMissingAccountType(t *testing.T) {
 	r, _, mock := newBackupTestRouter(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -256,6 +262,9 @@ func TestImportUserDataAccountOnly(t *testing.T) {
 
 	accountID := uuid.New()
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -299,6 +308,9 @@ func TestImportUserDataRemapsReferences(t *testing.T) {
 	oldTxn := uuid.New()
 
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -392,6 +404,9 @@ func TestImportUserDataSkipsDanglingTransaction(t *testing.T) {
 	r, _, mock := newBackupTestRouter(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
@@ -435,6 +450,9 @@ func TestImportUserDataFullBundle(t *testing.T) {
 	seriesID := uuid.New()
 
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT id FROM users WHERE id = \\$1 FOR UPDATE").
+		WithArgs(testUserID()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs(testUserID()).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))

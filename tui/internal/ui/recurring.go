@@ -140,6 +140,9 @@ func (r *Recurring) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (r *Recurring) CapturesText() bool { return false }
+
 // Refresh implements Screen. An open sub-view is reloaded alongside the series
 // list, so `r` can never leave a stale pane on screen.
 func (r *Recurring) Refresh() tea.Cmd {

@@ -70,6 +70,8 @@ func transactionTools() []Tool {
 				"(account, category or group, payee, tags, amount, date range, type, linked, recurring, attachment state, " +
 				"uncategorized). Amounts are the ledger's own decimal values; totals are not computed here — use " +
 				"get_dashboard_summary or list_billing_cycles for aggregates.",
+			SideEffect: "With an accountId and the default date sort this is not a pure read: that account's missing billing " +
+				"cycles are generated, and its transactions' cycle assignments back-filled, as part of answering.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/transactions"},
 			install: installListTransactions,
 		},

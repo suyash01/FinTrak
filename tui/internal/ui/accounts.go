@@ -122,6 +122,9 @@ func (a *Accounts) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (a *Accounts) CapturesText() bool { return false }
+
 // Refresh implements Screen.
 func (a *Accounts) Refresh() tea.Cmd { return a.reload() }
 

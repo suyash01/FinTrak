@@ -10,9 +10,14 @@
 // A Route is a method plus a path template relative to the API base path, with
 // {name} standing for exactly one path segment ("/accounts/{id}/loan-schedule"
 // matches "/accounts/9f.../loan-schedule", not "/accounts" or
-// "/accounts/a/b"). GET is read-only by definition; the allowlist admits a POST
-// only when the API documents it as a preview that writes nothing
-// (POST /transactions/validate, POST /rules/preview).
+// "/accounts/a/b"). The allowlist admits a POST only when the API documents it
+// as a preview that writes nothing (POST /transactions/validate,
+// POST /rules/preview).
+//
+// GET is not read-only by definition in this API: the billing-cycle handlers
+// materialize an account's statement periods on read, so a few GET routes write
+// derived rows. They are enumerated in SideEffectingGETs rather than assumed
+// away, because a guard that trusts the method reports a write as a read.
 package readonly
 
 import (
@@ -34,6 +39,32 @@ type Route struct {
 
 // String renders the route as "GET /accounts/{id}".
 func (r Route) String() string { return r.Method + " " + r.Path }
+
+// SideEffectingGETs are the GET operations that are not pure reads: each one
+// reaches ensureBillingCycles, which materializes a credit-card account's
+// statement periods (INSERT) and back-fills transactions' cycle assignment
+// (UPDATE transactions ... SET billing_cycle_id = ...), dropping and recreating
+// the account's cycles when its billing day changed.
+//
+// They stay on the allowlist — the app's own list, dashboard and calendar views
+// call the same operations, and a tool cannot report a statement period that was
+// never generated — but the surface must not describe them as reads. Every tool
+// performing one declares it in its SideEffect, which tools_test.go checks
+// against this list: adding a route here without that declaration fails the
+// suite, and so does declaring a side effect on a pure read.
+//
+// The billing-cycle generation is route-level: GET /transactions only writes
+// when an accountId and the default date sort are supplied, and the aggregate
+// GETs only when they are asked to group by billing cycle. The list errs on the
+// side of the whole route, because that is the granularity the allowlist works
+// at.
+var SideEffectingGETs = []Route{
+	{Method: http.MethodGet, Path: "/accounts/{id}/billing-cycles"},
+	{Method: http.MethodGet, Path: "/transactions"},
+	{Method: http.MethodGet, Path: "/dashboard/summary"},
+	{Method: http.MethodGet, Path: "/dashboard/money-flow/timeline"},
+	{Method: http.MethodGet, Path: "/dashboard/cash-flow-calendar"},
+}
 
 // Guard is an http.RoundTripper that refuses any request that is not one of the
 // allowed routes. Requests are matched after the API base path is stripped, so

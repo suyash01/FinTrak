@@ -145,6 +145,9 @@ func (s *Categories) Keys() []key.Binding {
 	return out
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (s *Categories) CapturesText() bool { return false }
+
 // Refresh implements Screen. Nothing is fetched here: the lists live in the
 // shared cache, so refreshing is rebuilding the rows from it.
 func (s *Categories) Refresh() tea.Cmd {

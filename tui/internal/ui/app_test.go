@@ -14,17 +14,21 @@ import (
 
 // stubScreen records what it receives, so routing can be asserted directly.
 type stubScreen struct {
-	title     string
-	keys      int
-	dataMsg   int
-	refreshes int
-	bindings  []key.Binding
+	title        string
+	keys         int
+	dataMsg      int
+	refreshes    int
+	bindings     []key.Binding
+	capturesText bool
 }
 
 func (s *stubScreen) Title() string        { return s.title }
 func (s *stubScreen) Refresh() tea.Cmd     { s.refreshes++; return nil }
 func (s *stubScreen) View(int, int) string { return "" }
 func (s *stubScreen) Keys() []key.Binding  { return s.bindings }
+
+// CapturesText stands in for an open inline search box.
+func (s *stubScreen) CapturesText() bool { return s.capturesText }
 
 func (s *stubScreen) Update(msg tea.Msg) tea.Cmd {
 	if _, ok := msg.(tea.KeyMsg); ok {
@@ -53,6 +57,100 @@ func newAppForTest(t *testing.T) (*App, *stubScreen, *stubScreen) {
 	a.nav = 0
 	a.focus = FocusContent
 	return a, active, other
+}
+
+// TestCtrlCQuitsWhileSignedOut is a regression test for a defect the user hit:
+// while signed out the login form owns every key, and the form's own ctrl+c only
+// closes it — so the process could not be quit from the sign-in screen.
+func TestCtrlCQuitsWhileSignedOut(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.signedIn = false
+	a.screens = nil
+	a.login = NewLoginModel(a.client)
+
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c must quit from the sign-in screen")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestGlobalKeysYieldToAScreenReadingText covers the search-box defect: the App
+// consumed `r`, `g`, the digits and `[`/`]` before the active screen, so those
+// characters never reached an inline search box and the query silently lost them.
+func TestGlobalKeysYieldToAScreenReadingText(t *testing.T) {
+	a, active, _ := newAppForTest(t)
+
+	// With no search box open, `r` is the refresh binding.
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if active.refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", active.refreshes)
+	}
+	if active.keys != 0 {
+		t.Fatalf("the global binding must not reach the screen: keys = %d", active.keys)
+	}
+
+	// With one open, the same key is a character in the query.
+	active.capturesText = true
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if active.refreshes != 1 {
+		t.Errorf("a typed character was consumed as a refresh: refreshes = %d", active.refreshes)
+	}
+	if active.keys != 1 {
+		t.Errorf("the key never reached the search box: keys = %d", active.keys)
+	}
+
+	// A digit jumps screens globally; inside a search box it is text.
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	if a.nav != 0 {
+		t.Errorf("a digit jumped screens while a search box was open: nav = %d", a.nav)
+	}
+	if active.keys != 2 {
+		t.Errorf("keys = %d, want 2", active.keys)
+	}
+}
+
+// TestSessionExpiryLetsTheUserSignInAgain is a regression test for a defect the
+// user hit: the login model still reported the previous successful sign-in as
+// done, so the next key "completed" that stale sign-in and the sign-in screen
+// could never sign in for real.
+func TestSessionExpiryLetsTheUserSignInAgain(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.login = NewLoginModel(a.client)
+	a.login.done = true // what a successful sign-in leaves behind
+
+	a.Update(loaded[*RefData]{tag: "app.refdata", err: &api.APIError{Status: 401}})
+
+	if a.signedIn {
+		t.Fatal("a 401 must return to the sign-in screen")
+	}
+	if a.login.Done() {
+		t.Fatal("the sign-in screen still reports the expired session as signed in")
+	}
+	// Any key afterwards must not re-complete the stale sign-in.
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if a.signedIn {
+		t.Error("the expired session was completed again instead of signing in")
+	}
+}
+
+// TestLoginFormSurvivesEsc is a regression test for a defect the user hit:
+// pressing esc at the sign-in screen closed the form, and a closed form ignores
+// every later key, so the screen could neither sign in nor be quit.
+func TestLoginFormSurvivesEsc(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.signedIn = false
+	a.screens = nil
+	a.login = NewLoginModel(a.client)
+
+	a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+
+	if got := a.login.form().Value("Email"); got != "a" {
+		t.Errorf("the sign-in form ignored input after esc: email = %q", got)
+	}
 }
 
 // TestKeysReachOnlyTheActiveScreen is a regression test for a real defect: the

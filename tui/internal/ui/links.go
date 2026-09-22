@@ -185,6 +185,9 @@ func (l *Links) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (l *Links) CapturesText() bool { return false }
+
 // Refresh implements Screen: whichever pane is showing is the one reloaded.
 func (l *Links) Refresh() tea.Cmd { return l.refreshPane() }
 

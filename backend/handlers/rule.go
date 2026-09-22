@@ -224,6 +224,16 @@ func (srv *Server) UpdateRule(c *gin.Context) {
 		return
 	}
 
+	// The create path gets this from the model's `binding:"required"`; the update
+	// request has no binding tag, so without this check PUT /rules/:id could
+	// blank the pattern and silently turn the rule into a catch-all — an empty
+	// `contains` pattern matches every description, and the next apply (or every
+	// new/imported transaction) would then be categorized by it.
+	if req.Pattern == "" {
+		validation.RespondError(c, "pattern is required", http.StatusBadRequest)
+		return
+	}
+
 	matchType, ok := normalizeRuleMatchType(c, req.MatchType)
 	if !ok {
 		return

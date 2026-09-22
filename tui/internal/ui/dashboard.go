@@ -106,6 +106,9 @@ func (d *Dashboard) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (d *Dashboard) CapturesText() bool { return false }
+
 // Refresh implements Screen.
 func (d *Dashboard) Refresh() tea.Cmd { return d.reload() }
 

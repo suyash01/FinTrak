@@ -94,6 +94,10 @@ func (t *Tags) Keys() []key.Binding {
 	return []key.Binding{t.keys.Usage, t.keys.Rename, t.keys.Search}
 }
 
+// CapturesText implements Screen: while the inline filter box is open, every
+// character belongs to the query.
+func (t *Tags) CapturesText() bool { return t.searching }
+
 // Refresh implements Screen.
 func (t *Tags) Refresh() tea.Cmd { return t.reload() }
 

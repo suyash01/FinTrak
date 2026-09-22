@@ -43,6 +43,19 @@ type moneyFlowArgs struct {
 	Limit     int    `json:"limit,omitempty" jsonschema:"cap on the income, category and payee stages, default 12, max 30; the remainder of each stage collapses into one Other node"`
 }
 
+// sideEffectBillingCycle is the disclosure shared by the aggregate tools that
+// reach the billing-cycle materialization when asked to group by statement
+// period. It is stated in the description the model reads (Register appends it),
+// because the alternative — a blanket "read-only" claim — is untrue for these
+// calls.
+const sideEffectBillingCycle = "With groupBy=billing_cycle this is not a pure read: the account's missing statement periods are " +
+	"generated, and its transactions are re-assigned to them, as part of answering."
+
+// sideEffectBillingCycleForAccount is the same disclosure for a tool that only
+// reaches it when a single account is selected.
+const sideEffectBillingCycleForAccount = "With a single accountId this is not a pure read: that account's missing statement " +
+	"periods are generated, and its transactions are re-assigned to them, as part of answering."
+
 func dashboardTools() []Tool {
 	return []Tool{
 		{
@@ -52,8 +65,9 @@ func dashboardTools() []Tool {
 				"and income (top 15 each), a trend series and the most recent transactions. With groupBy=billing_cycle the whole " +
 				"response is framed around one account's statement periods and accountId is required. Prefer this to summing a " +
 				"transaction page.",
-			Route:   readonly.Route{Method: http.MethodGet, Path: "/dashboard/summary"},
-			install: installDashboardSummary,
+			SideEffect: sideEffectBillingCycle,
+			Route:      readonly.Route{Method: http.MethodGet, Path: "/dashboard/summary"},
+			install:    installDashboardSummary,
 		},
 		{
 			Name:  "get_money_flow",
@@ -70,8 +84,9 @@ func dashboardTools() []Tool {
 			Description: "One period of income, expense and net per calendar month, or per billing cycle when groupBy=billing_cycle " +
 				"(which needs accountId). Each period carries its inclusive start and end dates, so a period can be handed straight " +
 				"back to get_money_flow as dateFrom/dateTo.",
-			Route:   readonly.Route{Method: http.MethodGet, Path: "/dashboard/money-flow/timeline"},
-			install: installMoneyFlowTimeline,
+			SideEffect: sideEffectBillingCycle,
+			Route:      readonly.Route{Method: http.MethodGet, Path: "/dashboard/money-flow/timeline"},
+			install:    installMoneyFlowTimeline,
 		},
 		{
 			Name:  "get_cash_flow_calendar",
@@ -79,8 +94,9 @@ func dashboardTools() []Tool {
 			Description: "Daily income, expense and net for every day in the window that has transactions, with window totals. " +
 				"Selecting a single account also returns that account's billing-cycle boundaries and its synthetic summary markers " +
 				"(month-end running balances, or per-cycle total outstanding), which are overlay data and excluded from the day totals.",
-			Route:   readonly.Route{Method: http.MethodGet, Path: "/dashboard/cash-flow-calendar"},
-			install: installCashFlowCalendar,
+			SideEffect: sideEffectBillingCycleForAccount,
+			Route:      readonly.Route{Method: http.MethodGet, Path: "/dashboard/cash-flow-calendar"},
+			install:    installCashFlowCalendar,
 		},
 	}
 }

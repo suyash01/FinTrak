@@ -326,6 +326,60 @@ func loadSpec(t *testing.T) spec {
 	return s
 }
 
+// TestSideEffectingRoutesAreDisclosed keeps the read-only claim the server makes
+// to the model honest. A few GETs in this API are not pure reads — they
+// materialize an account's billing cycles — so a tool performing one must say so
+// in the description the client shows the model, and a tool on a pure read must
+// not claim a side effect (or the disclosure means nothing).
+//
+// The claim itself lives in readonly.SideEffectingGETs, so the audit compares the
+// two rather than trusting either.
+func TestSideEffectingRoutesAreDisclosed(t *testing.T) {
+	sideEffecting := make(map[string]bool, len(readonly.SideEffectingGETs))
+	for _, route := range readonly.SideEffectingGETs {
+		sideEffecting[route.String()] = true
+	}
+
+	performed := map[string]bool{}
+	for _, tool := range Tools() {
+		route := tool.Route.String()
+		performed[route] = true
+		switch want := sideEffecting[route]; {
+		case want && tool.SideEffect == "":
+			t.Errorf("%s performs %s, which is not a pure read, but declares no side effect", tool.Name, route)
+		case !want && tool.SideEffect != "":
+			t.Errorf("%s declares a side effect for %s, a pure read: add the route to readonly.SideEffectingGETs if that changed",
+				tool.Name, route)
+		}
+	}
+	for _, route := range readonly.SideEffectingGETs {
+		if !performed[route.String()] {
+			t.Errorf("readonly.SideEffectingGETs lists %s, which no tool performs: drop it or expose the tool", route)
+		}
+	}
+
+	// The disclosure has to reach the client, not just the registry: the model
+	// reads the description served over the protocol.
+	stub := newStubAPI(t)
+	session := connect(t, stub.client(t))
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	descriptions := make(map[string]string, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		descriptions[tool.Name] = tool.Description
+	}
+	for _, tool := range Tools() {
+		if tool.SideEffect == "" {
+			continue
+		}
+		if !strings.Contains(descriptions[tool.Name], tool.SideEffect) {
+			t.Errorf("%s: the description sent to clients omits the declared side effect", tool.Name)
+		}
+	}
+}
+
 // TestToolRoutesAreDocumentedReadOnly checks every tool against the API
 // document: the operation must exist, and it must be a GET or one of the
 // preview POSTs. This is what "read-only" means for the tool surface — it is

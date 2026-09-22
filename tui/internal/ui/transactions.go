@@ -121,6 +121,10 @@ func (t *Transactions) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: while the inline search box is open, every
+// character belongs to the query.
+func (t *Transactions) CapturesText() bool { return t.searching }
+
 // Refresh implements Screen.
 func (t *Transactions) Refresh() tea.Cmd { return t.reload() }
 

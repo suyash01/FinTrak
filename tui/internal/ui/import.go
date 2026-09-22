@@ -212,6 +212,10 @@ func (i *Import) Keys() []key.Binding {
 	}
 }
 
+// CapturesText implements Screen: while the Paperless document search is open,
+// every character belongs to the query.
+func (i *Import) CapturesText() bool { return i.searching }
+
 // Refresh implements Screen. It always refetches: `r` is the user asking for
 // current data, and a stale Paperless page or extractor registry is worse than
 // one redundant call.

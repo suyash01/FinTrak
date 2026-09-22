@@ -131,7 +131,20 @@ func (m *LoginModel) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 	}
-	return m.form().Update(msg)
+	cmd := m.form().Update(msg)
+	if !m.form().Closed() {
+		return cmd
+	}
+	// esc (or a form-level ctrl+c) only closed the form. The sign-in screen has
+	// nothing to cancel, so leaving it closed would make every later key a no-op
+	// — the form ignores input once done, and only the sign-out path rebuilds
+	// it. Start a fresh one instead.
+	if m.mode == "register" {
+		m.register = m.buildRegisterForm()
+	} else {
+		m.login = m.buildLoginForm()
+	}
+	return nil
 }
 
 // Done reports whether authentication succeeded.

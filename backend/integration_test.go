@@ -587,6 +587,47 @@ func TestIntegrationConcurrentSkipImportIsAtomic(t *testing.T) {
 	require.Len(t, a.transactions(acc.ID), 2)
 }
 
+// TestIntegrationConcurrentRestoreIsSerialized covers the restore guard: the
+// "user already has accounts" check is a plain read, so two simultaneous
+// imports of the same bundle would both see an empty user and each insert a
+// full copy. The user row's lock serializes them, so the loser waits, then sees
+// the committed rows and answers the same 409 a sequential retry gets.
+func TestIntegrationConcurrentRestoreIsSerialized(t *testing.T) {
+	alice := newAPIClient(t)
+	alice.register("restore-source@example.com")
+	bank := alice.createAccount("Checking", "bank", nil)
+	alice.createTransaction(bank.ID, nil, "2024-07-01", "One", 10, "debit")
+
+	var bundle models.BackupBundle
+	alice.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+
+	bob := newAPIClient(t)
+	bob.register("restore-target@example.com")
+
+	statuses := make([]int, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range statuses {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			statuses[i], _, errs[i] = bob.concurrentRequest(http.MethodPost, "/api/v1/import", bundle)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "request %d", i)
+	}
+	require.Contains(t, statuses, http.StatusOK, "statuses: %v", statuses)
+	require.Contains(t, statuses, http.StatusConflict, "statuses: %v", statuses)
+
+	// The bundle was restored exactly once.
+	var accounts []models.Account
+	bob.call(http.MethodGet, "/api/v1/accounts", nil, http.StatusOK, &accounts)
+	require.Len(t, accounts, 1)
+}
+
 // TestIntegrationUserBackupRoundTrip exports one user's whole graph and
 // restores it into a fresh user, verifying that account/category/payee/billing
 // cycle/transaction references survive the ID remapping and that a non-empty

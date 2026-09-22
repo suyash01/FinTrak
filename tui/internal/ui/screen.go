@@ -38,6 +38,13 @@ type Screen interface {
 	View(w, h int) string
 	// Keys lists the screen's bindings for the status bar and help overlay.
 	Keys() []key.Binding
+	// CapturesText reports whether the screen is currently reading raw text from
+	// the keyboard — an inline search or filter box. The App skips its global
+	// bindings while it does, so a character the user types reaches the input
+	// instead of navigating: `r` refreshes the screen, `g` opens the go-to
+	// picker, `[`/`]` and the digits jump between screens, and none of them may
+	// steal a search term.
+	CapturesText() bool
 }
 
 // Level classifies a status-line message.

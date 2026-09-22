@@ -49,7 +49,9 @@ var Version = "dev"
 // instructions is the server's guidance for the model. It states the read-only
 // contract first, because the useful failure mode of an agent on a finance
 // ledger is proposing a change this server cannot make.
-const instructions = `FinTrak is a personal finance ledger. Every tool here is READ-ONLY: nothing can create, change or delete a transaction, account, category, payee, rule, link or recurring series.
+const instructions = `FinTrak is a personal finance ledger. Every tool here is READ-ONLY: no tool creates, changes or deletes a transaction, account, category, payee, rule, link or recurring series.
+
+One qualification, stated again in the affected tool descriptions: a few tools that report on a single credit-card account materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given). That only regenerates the derived statement periods the account's own screens show; it never touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
 
 Money is returned as decimal major units (for example "1250.50") and every figure is already computed by the server. Do not add amounts up yourself: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) when a total is what the user wants, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
@@ -67,7 +69,12 @@ type Tool struct {
 	Name        string
 	Title       string
 	Description string
-	Route       readonly.Route
+	// SideEffect states what a call can change when the tool's route is not a
+	// pure read (see readonly.SideEffectingGETs). Register appends it to
+	// Description so the model always sees it, and tools_test.go fails when it is
+	// missing on a side-effecting route or present on a pure one.
+	SideEffect string
+	Route      readonly.Route
 
 	install func(*mcp.Server, *api.Client, *mcp.Tool)
 }
@@ -124,10 +131,14 @@ func NewGuard(c *api.Client, next http.RoundTripper) *readonly.Guard {
 // Register installs every tool on s, all annotated read-only.
 func Register(s *mcp.Server, c *api.Client) {
 	for _, t := range Tools() {
+		description := t.Description
+		if t.SideEffect != "" {
+			description += " " + t.SideEffect
+		}
 		tool := &mcp.Tool{
 			Name:        t.Name,
 			Title:       t.Title,
-			Description: t.Description,
+			Description: description,
 			Annotations: &mcp.ToolAnnotations{
 				ReadOnlyHint:   true,
 				IdempotentHint: true,

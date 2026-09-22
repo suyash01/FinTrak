@@ -152,7 +152,16 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.modal != nil {
 			return a, a.modal.Update(m)
 		}
-		if a.signedIn {
+		// ctrl+c quits from anywhere, before any model can swallow it: while
+		// signed out the login form owns every key, and its own ctrl+c merely
+		// closes the form — which left the process unquittable from the sign-in
+		// screen.
+		if m.String() == "ctrl+c" {
+			return a, tea.Quit
+		}
+		// A screen that is reading text owns the keyboard: `r`, `g`, `[`/`]` and
+		// the digits are characters in a search box there, not navigation.
+		if a.signedIn && !capturesText(a.screens, a.nav) {
 			if cmd, handled := a.handleGlobalKey(m); handled {
 				return a, cmd
 			}
@@ -183,6 +192,11 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.signedIn = false
 				a.client.ClearSession()
 				a.status, a.level = "session expired — sign in again", LevelError
+				// Reset, not just Init: the model still reports the previous
+				// successful sign-in as done, so without this the next key
+				// "completes" that stale sign-in again and the screen can never
+				// sign in for real.
+				a.login.Reset()
 				return a, a.login.Init()
 			}
 			a.refErr = m.err
@@ -264,11 +278,9 @@ func (a *App) forward(msg tea.Msg) []tea.Cmd {
 
 // handleGlobalKey processes the App's own bindings, reporting whether the key was
 // consumed. Unconsumed keys move the sidebar cursor or fall through to the active
-// screen.
+// screen. Quit keys are handled by update before this runs, so they work even
+// while no screen exists.
 func (a *App) handleGlobalKey(key tea.KeyMsg) (tea.Cmd, bool) {
-	if key.String() == "ctrl+c" {
-		return tea.Quit, true
-	}
 	if len(a.screens) == 0 {
 		return nil, false
 	}
@@ -384,6 +396,13 @@ func (a *App) completeLogin() tea.Cmd {
 		a.status, a.level = "signed in", LevelSuccess
 	}
 	return a.startSession()
+}
+
+// capturesText reports whether the screen at index i is reading raw text from
+// the keyboard, in which case the App's global bindings must not consume the key
+// first.
+func capturesText(screens []Screen, i int) bool {
+	return i >= 0 && i < len(screens) && screens[i].CapturesText()
 }
 
 // View renders the whole program: either the login screen or the workspace.

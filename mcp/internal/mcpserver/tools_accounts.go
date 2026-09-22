@@ -46,7 +46,9 @@ func accountTools() []Tool {
 			Name:  "list_billing_cycles",
 			Title: "List billing cycles",
 			Description: "One account's statement periods, newest first, each with its total outstanding and whether it is closed. " +
-				"Missing cycles are generated on read. Accounts without a billing day return an empty list.",
+				"Accounts without a billing day return an empty list.",
+			SideEffect: "Not a pure read: the account's missing statement periods are generated, and its transactions are " +
+				"re-assigned to them, as part of answering.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/accounts/{id}/billing-cycles"},
 			install: installListBillingCycles,
 		},

@@ -608,6 +608,29 @@ func TestUpdateRule(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The update path must reject a blank pattern exactly as the create path does:
+// an empty `contains` pattern matches every description, so accepting it turns
+// the rule into a catch-all that categorizes every uncategorized transaction.
+func TestUpdateRuleRequiresPattern(t *testing.T) {
+	r, srv, mock := newRuleTestRouter(t)
+	r.PUT("/rules/:id", srv.UpdateRule)
+
+	body, _ := json.Marshal(models.UpdateRuleRequest{
+		Pattern:    "",
+		MatchType:  "contains",
+		CategoryID: uuid.New(),
+	})
+	req, _ := http.NewRequest("PUT", "/rules/"+uuid.New().String(), bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "pattern is required")
+	// Rejected before the statement, so nothing was written.
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpdateRuleNotFound(t *testing.T) {
 	r, srv, mock := newRuleTestRouter(t)
 	r.PUT("/rules/:id", srv.UpdateRule)

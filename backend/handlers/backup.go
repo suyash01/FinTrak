@@ -434,6 +434,17 @@ func backupDatePtr(t *time.Time) *string {
 // reference. The bundle's own IDs are never reused: rows are inserted in
 // dependency order with fresh UUIDs recorded in per-resource maps.
 func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *models.BackupBundle, res *models.BackupImportResult) error {
+	// Serialize restores per user before the emptiness check. That check is a
+	// plain read, so two overlapping imports of the same bundle would both see
+	// no accounts and each insert a full copy — fresh UUIDs collide with
+	// nothing, so both would commit and the ledger would be duplicated. The row
+	// lock makes the second restore wait, then observe the committed rows and
+	// answer the same 409 a sequential retry gets. FOR UPDATE is a lock, not a
+	// read: Exec discards the row.
+	if _, err := tx.Exec(ctx, "SELECT id FROM users WHERE id = $1 FOR UPDATE", userID); err != nil {
+		return err
+	}
+
 	var existing int
 	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&existing); err != nil {
 		return err

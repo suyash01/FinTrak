@@ -74,6 +74,10 @@ func (p *Payees) Keys() []key.Binding {
 	return []key.Binding{p.keys.Filter, p.keys.New, p.keys.Edit, p.keys.Detail, p.keys.Delete}
 }
 
+// CapturesText implements Screen: while the inline name filter is open, every
+// character belongs to the query.
+func (p *Payees) CapturesText() bool { return p.filtering }
+
 // Refresh implements Screen.
 func (p *Payees) Refresh() tea.Cmd { return p.reload() }
 

@@ -153,6 +153,9 @@ func (m *MoneyFlow) Keys() []key.Binding {
 	return []key.Binding{m.keys.Filter, m.keys.Limit, m.keys.Timeline, m.keys.Trace, m.keys.Clear}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (m *MoneyFlow) CapturesText() bool { return false }
+
 // Refresh implements Screen. The graph and the strip are independent requests,
 // so they are issued together.
 func (m *MoneyFlow) Refresh() tea.Cmd {

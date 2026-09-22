@@ -109,6 +109,9 @@ func (c *Calendar) Keys() []key.Binding {
 	return []key.Binding{c.keys.Window, c.keys.Day, c.keys.Next, c.keys.Prev}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (c *Calendar) CapturesText() bool { return false }
+
 // Refresh implements Screen.
 func (c *Calendar) Refresh() tea.Cmd { return c.reload() }
 

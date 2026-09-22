@@ -133,6 +133,9 @@ func (s *Settings) Keys() []key.Binding {
 	return []key.Binding{s.keys.EditPaperless, s.keys.Export, s.keys.Import, s.keys.NewType, s.keys.Catalog}
 }
 
+// CapturesText implements Screen: this screen has no inline text input.
+func (s *Settings) CapturesText() bool { return false }
+
 // Refresh implements Screen.
 func (s *Settings) Refresh() tea.Cmd {
 	return tea.Batch(s.loadPaperless(), s.loadTypes())
