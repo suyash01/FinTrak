@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRightLeft,
   Check,
@@ -898,6 +898,9 @@ function TransferBalanceDialog({
   const [targetDetail, setTargetDetail] = useState<LoanScheduleDetail | null>(
     null,
   );
+  // The target whose schedule the dialog is showing, so a response for a
+  // superseded one can be dropped (see handleTargetChange).
+  const requestedTargetRef = useRef("");
   const [mode, setMode] = useState<LoanTransferMode>("recast");
   const [loadingTarget, setLoadingTarget] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -955,16 +958,23 @@ function TransferBalanceDialog({
     setTargetDetail(null);
     setMode("recast");
     if (!targetId) return;
+    // The schedule decides the mode and the terms the transfer is submitted
+    // with, so a response for a target the user has already moved past must not
+    // describe the current one (picking A then B quickly used to submit A's
+    // mode/terms for B).
+    requestedTargetRef.current = targetId;
     setLoadingTarget(true);
     try {
       const res = await api.getLoanSchedule(targetId);
+      if (requestedTargetRef.current !== targetId) return;
       setTargetDetail(res);
     } catch (err) {
+      if (requestedTargetRef.current !== targetId) return;
       toast.error(
         (err as Error).message || "Failed to load the target loan schedule",
       );
     } finally {
-      setLoadingTarget(false);
+      if (requestedTargetRef.current === targetId) setLoadingTarget(false);
     }
   };
 

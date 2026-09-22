@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RecurringFormDialog from "./RecurringFormDialog";
-import type { Account, RecurringSeries } from "../../types";
+import type {
+  Account,
+  RecurringSeries,
+  RecurringSeriesTerm,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -103,6 +107,89 @@ describe("RecurringFormDialog", () => {
         }),
       ),
     );
+  });
+
+  it("ignores a superseded series' terms", async () => {
+    const seriesA = {
+      id: "s1",
+      accountId: "a1",
+      name: "Rent",
+      description: "",
+      amount: 1000,
+      type: "debit",
+      frequency: "monthly",
+      interval: 1,
+      startDate: "2099-01-15",
+      endDate: null,
+      categoryId: null,
+      payeeId: null,
+      active: true,
+      notes: "",
+      monthlyAmount: 1000,
+      attachedCount: 0,
+    } as unknown as RecurringSeries;
+    const seriesB = { ...seriesA, id: "s2", name: "Spotify" } as RecurringSeries;
+
+    // tsconfig targets ES2022, so Promise.withResolvers is not available here.
+    let landFirst: (value: { data: RecurringSeriesTerm[] }) => void = () => {};
+    const slowFirst = new Promise<{ data: RecurringSeriesTerm[] }>((resolve) => {
+      landFirst = resolve;
+    });
+    apiMock.getRecurringTerms.mockImplementation((id: string) =>
+      id === "s1"
+        ? slowFirst
+        : Promise.resolve({
+            data: [
+              {
+                id: "t2",
+                seriesId: "s2",
+                startDate: "2099-04-01",
+                endDate: null,
+                amount: 777,
+                accountId: "a1",
+                accountName: "Checking",
+              },
+            ],
+          }),
+    );
+
+    const view = (s: RecurringSeries) => (
+      <RecurringFormDialog
+        open
+        onOpenChange={vi.fn()}
+        series={s}
+        accounts={accounts}
+        categories={[]}
+        payees={[]}
+        onSaved={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(seriesA));
+    rerender(view(seriesB));
+
+    const firstAmount = () =>
+      (screen.getByLabelText("Entry 1 amount") as HTMLInputElement).value;
+    await waitFor(() => expect(firstAmount()).toBe("777"));
+
+    // The first series' ranges land after the user moved on: filling this form
+    // with them would rewrite the newly opened series' history on save, because
+    // the update replaces the whole range list. Flush the response before
+    // asserting, so a late write cannot slip in after the test ends.
+    landFirst({
+      data: [
+        {
+          id: "t1",
+          seriesId: "s1",
+          startDate: "2099-01-01",
+          endDate: null,
+          amount: 1599,
+          accountId: "a1",
+          accountName: "Checking",
+        },
+      ],
+    });
+    await act(async () => {});
+    expect(firstAmount()).toBe("777");
   });
 
   it("prefills ranges from the series and updates", async () => {

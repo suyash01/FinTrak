@@ -146,6 +146,17 @@ describe("CashFlowCalendar", () => {
     expect(apiMock.getCashFlowCalendar.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("renders the whole window, however long", async () => {
+    // A fixed cap of 80 weeks used to truncate the grid while the header and
+    // the totals above it still covered the full range, so the heatmap silently
+    // disagreed with the figures.
+    render(page("/cash-flow-calendar?dateFrom=2024-01-01&dateTo=2025-12-31"));
+
+    await screen.findByText("Cash Flow Calendar");
+    // Two years is ~105 weeks; the old cap stopped at 80 (560 cells).
+    expect(screen.getAllByRole("gridcell").length).toBeGreaterThan(700);
+  });
+
   it("shows an empty state when there is no activity", async () => {
     apiMock.getCashFlowCalendar.mockResolvedValue(
       calendar({

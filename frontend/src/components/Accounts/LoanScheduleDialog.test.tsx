@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  act,
   render,
   screen,
   waitFor,
@@ -583,6 +584,47 @@ describe("LoanScheduleDialog", () => {
         mode: "recast",
       }),
     );
+  });
+
+  it("ignores a superseded target's schedule", async () => {
+    const user = userEvent.setup();
+    const bike: Account = { ...account, id: "loan-4", name: "Bike Loan" };
+    domainMock.useDomainData.mockReturnValue({ accounts: [...accounts, bike] });
+
+    // tsconfig targets ES2022, so Promise.withResolvers is not available here.
+    let landHome: (value: LoanScheduleDetail) => void = () => {};
+    const slowHome = new Promise<LoanScheduleDetail>((resolve) => {
+      landHome = resolve;
+    });
+    apiMock.getLoanSchedule.mockImplementation((id: string) => {
+      if (id === "loan-1") return Promise.resolve(detail()); // the dialog's own loan
+      if (id === "loan-2") return slowHome; // Home Loan: lands late
+      // Bike Loan has no schedule yet, so it takes terms rather than a mode.
+      return Promise.resolve(detail({ schedule: null, entries: [] }));
+    });
+
+    renderDialog();
+    await user.click(
+      await screen.findByRole("button", { name: /Transfer balance/ }),
+    );
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Home Loan" }));
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: "Bike Loan" }));
+
+    expect(
+      await screen.findByLabelText("Annual interest rate (%)"),
+    ).toBeInTheDocument();
+
+    // Home Loan's schedule lands after the switch: it must not describe Bike
+    // Loan, or the transfer would be submitted with the wrong target's mode and
+    // terms.
+    landHome(detail());
+    await act(async () => {});
+    expect(screen.getByLabelText("Annual interest rate (%)")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Transfer mode" }),
+    ).toBeNull();
   });
 
   it("shows the quoted payoff breakdown for the transfer date", async () => {

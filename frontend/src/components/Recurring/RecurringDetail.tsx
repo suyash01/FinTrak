@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../../api/client";
 import type {
   Account,
@@ -58,7 +58,15 @@ export default function RecurringDetail({
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // The series the currently-displayed payloads belong to. A response for a
+  // series the user has already navigated away from must not overwrite them:
+  // closing series A and opening B used to leave A's forecast and suggestions
+  // under B's title, and "Link" then posted A's transaction id with B's series
+  // id — a real attachment on the wrong series.
+  const loadedForRef = useRef<string | null>(null);
+
   const load = useCallback(async (s: RecurringSeries) => {
+    loadedForRef.current = s.id;
     setLoading(true);
     try {
       const [f, sug, linkedRes, termsRes] = await Promise.all([
@@ -67,14 +75,17 @@ export default function RecurringDetail({
         api.getRecurringTransactions(s.id),
         api.getRecurringTerms(s.id),
       ]);
+      // A newer load owns the panel now: drop this one, spinner included.
+      if (loadedForRef.current !== s.id) return;
       setForecast(f.data || []);
       setSuggestions(sug.data || []);
       setLinked(linkedRes.data || []);
       setTerms(termsRes.data || []);
     } catch (err) {
+      if (loadedForRef.current !== s.id) return;
       toast.error((err as Error).message);
     } finally {
-      setLoading(false);
+      if (loadedForRef.current === s.id) setLoading(false);
     }
   }, []);
 

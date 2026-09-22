@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import api from "../../api/client";
 import type {
@@ -107,6 +107,15 @@ export default function RecurringFormDialog({
   const [loadingRanges, setLoadingRanges] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // The create branch needs one account id for its first range row, but the
+  // accounts array is replaced on every reference-data refresh: depending on it
+  // re-ran this effect and discarded whatever the user had already typed, so the
+  // default is read from a ref instead.
+  const accountsRef = useRef(accounts);
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+
   useEffect(() => {
     if (!open) return;
     if (series) {
@@ -122,9 +131,15 @@ export default function RecurringFormDialog({
       });
       setLoadingRanges(true);
       setRanges([]);
+      // The terms belong to the series that was open when the fetch started: a
+      // response for a series the user has moved past used to fill this form
+      // with another series' ranges, and saving then rewrote its history (the
+      // update replaces the whole range list).
+      let cancelled = false;
       api
         .getRecurringTerms(series.id)
         .then((res) => {
+          if (cancelled) return;
           setRanges(
             (res.data || []).map((t) => ({
               startDate: t.startDate.slice(0, 10),
@@ -134,13 +149,19 @@ export default function RecurringFormDialog({
             })),
           );
         })
-        .catch((err) => toast.error((err as Error).message))
-        .finally(() => setLoadingRanges(false));
-    } else {
-      setForm({ ...EMPTY });
-      setRanges([emptyRange(accounts[0]?.id || "")]);
+        .catch((err) => {
+          if (!cancelled) toast.error((err as Error).message);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingRanges(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [open, series, accounts]);
+    setForm({ ...EMPTY });
+    setRanges([emptyRange(accountsRef.current[0]?.id || "")]);
+  }, [open, series]);
 
   const updateRange = (index: number, patch: Partial<RangeRow>) => {
     setRanges((rows) =>

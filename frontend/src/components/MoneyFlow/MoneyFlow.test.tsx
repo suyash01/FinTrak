@@ -268,6 +268,41 @@ describe("MoneyFlow", () => {
     );
   });
 
+  it("keeps the billing-cycle grouping while the account list loads", async () => {
+    // Billing-cycle grouping is only valid for an account with a billing day,
+    // but the guard must not fire before the account list arrives: a bookmarked
+    // groupBy=billing_cycle used to be reset to months on every load, and the
+    // URL writer then dropped the parameter for good.
+    domainMock.useDomainData.mockReturnValue({ accounts: [], groups: [] });
+    const view = render(
+      page("/money-flow?accountId=a1&groupBy=billing_cycle"),
+    );
+    domainMock.useDomainData.mockReturnValue({
+      accounts: [
+        {
+          id: "a1",
+          name: "Card",
+          accountTypeId: "credit_card",
+          billingDay: 15,
+        },
+      ],
+      groups: [],
+    });
+    view.rerender(page("/money-flow?accountId=a1&groupBy=billing_cycle"));
+
+    await waitFor(() =>
+      expect(apiMock.getMoneyFlowTimeline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: "a1",
+          groupBy: "billing_cycle",
+        }),
+      ),
+    );
+    expect(
+      await screen.findByRole("combobox", { name: "Timeline grouping" }),
+    ).toHaveTextContent("By billing cycle");
+  });
+
   it("shows an error and retries on demand", async () => {
     const user = userEvent.setup();
     apiMock.getMoneyFlow.mockRejectedValue(new Error("load failed"));

@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RecurringDetail from "./RecurringDetail";
-import type { Account, RecurringSeries } from "../../types";
+import type {
+  Account,
+  RecurringForecastItem,
+  RecurringSeries,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -131,6 +135,51 @@ describe("RecurringDetail", () => {
   it("shows the forecast with matched occurrences", async () => {
     renderDetail();
     expect(await screen.findByText("Matched")).toBeInTheDocument();
+  });
+
+  it("ignores a superseded series' late response", async () => {
+    const other = { ...series, id: "s2", name: "Spotify" };
+    // tsconfig targets ES2022, so Promise.withResolvers is not available here.
+    let landFirst: (value: { data: RecurringForecastItem[] }) => void = () => {};
+    const firstResponse = new Promise<{ data: RecurringForecastItem[] }>(
+      (resolve) => {
+        landFirst = resolve;
+      },
+    );
+    apiMock.getRecurringForecast.mockImplementation((id: string) =>
+      id === series.id
+        ? firstResponse
+        : Promise.resolve({
+            data: [
+              { date: "2099-04-15", amount: 999, type: "debit", matched: false },
+            ],
+          }),
+    );
+
+    const view = (s: RecurringSeries) => (
+      <RecurringDetail
+        series={s}
+        open
+        onOpenChange={vi.fn()}
+        accounts={accounts}
+        onChanged={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(series));
+    rerender(view(other as RecurringSeries));
+
+    expect(await screen.findByText("15 Apr 2099")).toBeInTheDocument();
+
+    // The first series' forecast lands after the user moved on: it must not
+    // replace what is on screen, or "Link" would post its transaction id with
+    // the newly opened series' id.
+    landFirst({
+      data: [{ date: "2099-03-15", amount: 1599, type: "debit", matched: true }],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("15 Mar 2099")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("15 Apr 2099")).toBeInTheDocument();
   });
 
   it("links a suggested transaction", async () => {

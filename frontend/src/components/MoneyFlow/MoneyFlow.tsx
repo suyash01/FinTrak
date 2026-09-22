@@ -296,8 +296,17 @@ export default function MoneyFlow() {
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const isBillingAccount = Boolean(selectedAccount?.billingDay);
   useEffect(() => {
-    if (groupBy === "billing_cycle" && !isBillingAccount) setGroupBy("month");
-  }, [groupBy, isBillingAccount]);
+    // Do not force it off while the account list is still loading
+    // (selectedAccount is undefined), so a bookmarked
+    // groupBy=billing_cycle survives a refresh — the same guard the Dashboard
+    // carries for the same reason.
+    if (
+      groupBy === "billing_cycle" &&
+      (!accountId || (selectedAccount && !selectedAccount.billingDay))
+    ) {
+      setGroupBy("month");
+    }
+  }, [groupBy, accountId, selectedAccount]);
 
   const handleNodeClick = useCallback(
     (node: MoneyFlowNode) => {

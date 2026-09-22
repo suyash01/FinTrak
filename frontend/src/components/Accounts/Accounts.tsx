@@ -41,7 +41,7 @@ import {
 } from "./accountHelpers";
 
 export default function Accounts() {
-  const { accounts, accountTypes, setAccounts } = useDomainData();
+  const { accounts, accountTypes, setAccounts, refreshPayees } = useDomainData();
   const [createOpen, setCreateOpen] = useState(false);
   const [newAcc, setNewAcc] = useState<AccountForm>(EMPTY_NEW_ACCOUNT);
   const [editing, setEditing] = useState<Account | null>(null);
@@ -62,6 +62,11 @@ export default function Accounts() {
     try {
       const acc = await api.createAccount(newAcc);
       setAccounts((prev) => [...prev, acc]);
+      // The backend keeps an account-linked payee in sync with the account, so
+      // the shared payee list is stale until it is refetched: it used to keep
+      // showing a deleted account's payee for the rest of the session, with no
+      // delete control (the row carries an accountId).
+      refreshPayees();
       setCreateOpen(false);
       resetNew();
     } catch (err) {
@@ -73,6 +78,9 @@ export default function Accounts() {
     try {
       const res = await api.deleteAccount(acc.id);
       setAccounts((prev) => prev.filter((a) => a.id !== acc.id));
+      // The account's linked payee went with it; refetch so the phantom row
+      // leaves the payee list.
+      refreshPayees();
       const deleted = res?.transactionsDeleted ?? 0;
       if (deleted > 0) {
         toast.success(
@@ -105,6 +113,8 @@ export default function Accounts() {
         toUpdatePayload(editAcc),
       );
       setAccounts((prev) => prev.map((a) => (a.id === editing.id ? updated : a)));
+      // Renaming an account renames its linked payee server-side.
+      refreshPayees();
       setEditing(null);
       setEditAcc(null);
     } catch (err) {

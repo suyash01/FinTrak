@@ -14,13 +14,16 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-const { apiMock, downloadCSV, domainMock } = vi.hoisted(() => ({
+const { apiMock, downloadCSV, domainMock, refreshPayees } = vi.hoisted(() => ({
   apiMock: {
     createAccount: vi.fn(),
     updateAccount: vi.fn(),
     deleteAccount: vi.fn(),
   },
   downloadCSV: vi.fn(),
+  // The account handlers refresh the shared payee list, because the backend
+  // keeps an account-linked payee in step with its account.
+  refreshPayees: vi.fn(),
   domainMock: { useDomainData: vi.fn() },
 }));
 
@@ -70,6 +73,7 @@ function setDomain(list: Account[]) {
     accounts: list,
     accountTypes,
     setAccounts,
+    refreshPayees,
   });
 }
 
@@ -156,5 +160,8 @@ describe("Accounts", () => {
     await waitFor(() =>
       expect(apiMock.deleteAccount).toHaveBeenCalledWith("a3"),
     );
+    // The account's linked payee went with it, so the payee list is refetched
+    // instead of keeping a phantom row for the rest of the session.
+    await waitFor(() => expect(refreshPayees).toHaveBeenCalled());
   });
 });

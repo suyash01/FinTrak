@@ -335,7 +335,11 @@ export default function Dashboard() {
     // formatters used inside the cells are module-level and stable.
   }, [compactLayout]);
 
-  if (loading)
+  // A refetch — a filter change, or the offline layer reporting a sync — must
+  // not replace the page the user is reading: the spinner and the error screen
+  // are for the first load, and a later failure is shown as a banner over the
+  // data that is still there. MoneyFlow and the calendar follow the same rule.
+  if (loading && !data)
     return (
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -344,7 +348,7 @@ export default function Dashboard() {
       </div>
     );
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto">
         <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -462,6 +466,11 @@ export default function Dashboard() {
         </div>
       </div>
       <div className="flex-1 px-8 pb-8 pt-6 overflow-y-auto w-full">
+        {error && (
+          <div className="mb-4 px-4 py-2 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
+            {error}
+          </div>
+        )}
         {/* Current statement period (billing-cycle view) */}
         {data.currentCycle && (
           <p className="text-muted-foreground text-[13px] mb-3">

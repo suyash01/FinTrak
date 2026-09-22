@@ -142,8 +142,13 @@ function buildWeeks(
   const weeks: WeekColumn[] = [];
   let prevMonth = -1;
   let cursor = new Date(start);
-  // Guard the loop so a bad clock/DST edge can never spin forever.
-  for (let guard = 0; cursor <= end && guard < 80; guard++) {
+  // Guard the loop so a bad clock/DST edge can never spin forever — sized from
+  // the requested range, because a fixed cap of 80 silently truncated any window
+  // longer than ~18 months while the header and the totals above the grid still
+  // covered the whole range.
+  const maxWeeks =
+    Math.ceil((end.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 2;
+  for (let guard = 0; cursor <= end && guard < maxWeeks; guard++) {
     const cells: DayCell[] = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(cursor);

@@ -226,6 +226,32 @@ describe("Dashboard", () => {
     expect(screen.getByText(formatCurrency(9999))).toBeInTheDocument();
   });
 
+  it("keeps the loaded dashboard while a refetch is in flight and after it fails", async () => {
+    const user = userEvent.setup();
+    renderLoaded([account({ billingDay: 15 })]);
+    await screen.findByText("Total Income");
+
+    // A filter change starts a refetch. The page — including the control being
+    // used — must stay on screen rather than becoming a bare spinner, and a
+    // failure must be reported inline instead of discarding the data.
+    // tsconfig targets ES2022, so Promise.withResolvers is not available here.
+    let failRefetch: (err: Error) => void = () => {};
+    apiMock.getDashboardSummary.mockImplementation(
+      () =>
+        new Promise<DashboardSummary>((_resolve, reject) => {
+          failRefetch = reject;
+        }),
+    );
+    await user.click(screen.getByRole("switch"));
+
+    expect(screen.getByText("Total Income")).toBeInTheDocument();
+
+    failRefetch(new Error("refetch failed"));
+    expect(await screen.findByText("refetch failed")).toBeInTheDocument();
+    expect(screen.getByText("Total Income")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("switches to the billing-cycle view for an account with a billing day", async () => {
     const user = userEvent.setup();
     apiMock.getDashboardSummary.mockResolvedValue(
