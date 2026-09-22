@@ -251,7 +251,12 @@ async function fetchWithTimeout(
     });
   } catch (err) {
     if ((err as Error).name === "AbortError") {
-      if (timedOut) throw new Error("Request timed out");
+      // A timeout is a transport failure, not a caller cancellation: the
+      // request may or may not have reached the server, which is exactly what
+      // NetworkError means. Anything that keys on it — the cached read, the
+      // outbox enqueue, AuthContext keeping the cached session — must see it as
+      // one; a plain Error would silently skip all three.
+      if (timedOut) throw new NetworkError("Request timed out");
       throw err;
     }
     throw new NetworkError();

@@ -165,7 +165,7 @@ docker compose -f docker-compose.prod-no-db.yml up -d
 
 `make prod` / `make prod-no-db` / `make prod-down` wrap those three commands (they preflight the Compose config first, so unset secrets or image variables fail before anything is created).
 
-`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, `LOG_LEVEL`, `LOG_BODY_LIMIT`, and `TRUSTED_PROXIES` are optional (log level defaults to `info` in production; body logging is off unless `LOG_BODY_LIMIT` is positive). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
+`APP_ENV=production` is set for you, so the backend refuses to start unless `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are both set, and set to something other than the built-in development values. `APP_ENV` accepts only `development` (the default) or `production`: any other value — a typo like `prod`, or `staging` — stops startup instead of silently falling back to the development JWT secret and encryption key. `ADMIN_EMAILS`, `ADMIN_SETUP_TOKEN`, `LOG_LEVEL`, `LOG_BODY_LIMIT`, and `TRUSTED_PROXIES` are optional (log level defaults to `info` in production; body logging is off unless `LOG_BODY_LIMIT` is positive). `IMAGE_REPO` and `IMAGE_TAG` are required too: pin `IMAGE_TAG` to a released version (e.g. `v1.2.3`), never `latest`, so redeploys and rollbacks are deterministic. See `.env.example` for the full list.
 
 The backend runs schema migrations on startup, and the frontend reverse-proxies `/api/v1` to the backend.
 

@@ -503,15 +503,30 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		categoryRows = append(categoryRows, []any{newID, userID, cat.Name, cat.Icon, cat.Color, groupID})
 	}
 
-	// Payees.
+	// Payees. The (user_id, name) unique index (migration 000010) makes two
+	// payees of the same name impossible, but a bundle written before that index
+	// existed can still hold them — and a single duplicate would fail the whole
+	// all-or-nothing restore on the payees insert. Merge them the same way the
+	// migration does, then point every reference at the survivor.
+	bundlePayees, foldedPayees := mergeBackupPayees(b.Payees)
+	if len(foldedPayees) > 0 {
+		addBackupWarning(res, "merged payees that shared a name")
+	}
+	payeeRows := make([][]any, 0, len(bundlePayees))
 	payeeMap := map[uuid.UUID]uuid.UUID{}
-	payeeRows := make([][]any, 0, len(b.Payees))
-	for _, p := range b.Payees {
+	payeeInsertID := make(map[uuid.UUID]uuid.UUID, len(bundlePayees))
+	for _, p := range bundlePayees {
 		newID := uuid.New()
-		payeeMap[p.ID] = newID
+		payeeInsertID[p.ID] = newID
 		payeeRows = append(payeeRows, []any{
 			newID, userID, p.Name, mapBackupUUID(accountMap, p.AccountID), nonZeroTime(p.CreatedAt), nonZeroTime(p.UpdatedAt),
 		})
+	}
+	for foldedID, survivorID := range foldedPayees {
+		payeeMap[foldedID] = payeeInsertID[survivorID]
+	}
+	for id, newID := range payeeInsertID {
+		payeeMap[id] = newID
 	}
 
 	// Billing cycles. cycleAccount tracks each new cycle's account so a
@@ -891,6 +906,52 @@ func backupTransferMode(mode string) string {
 		return mode
 	}
 	return models.LoanTransferRecast
+}
+
+// mergeBackupPayees folds payees that share a name into one survivor, so a
+// bundle written before the payees_user_name_uq index (migration 000010)
+// existed can still be restored. The survivor of a name is the account-linked
+// row when the bundle has one — that is the payee the account UI resolves — and
+// the first row otherwise; the folded ids are returned mapped to their
+// survivor so transactions, rules and recurring series keep their payee.
+//
+// A second account-linked row of the same name can only come from two accounts
+// that share a name (accounts are not name-unique) and is not folded: deleting
+// it would strip its account of the linked payee the account handlers never
+// re-create. It gets the same id-suffix disambiguation the migration applies.
+func mergeBackupPayees(payees []models.BackupPayee) ([]models.BackupPayee, map[uuid.UUID]uuid.UUID) {
+	survivor := make(map[string]models.BackupPayee, len(payees))
+	for _, p := range payees {
+		current, seen := survivor[p.Name]
+		if !seen {
+			survivor[p.Name] = p
+			continue
+		}
+		// The first account-linked row of a name wins over a manual one (and
+		// over later account-linked rows, which are only reachable when two
+		// accounts share a name).
+		if current.AccountID == nil && p.AccountID != nil {
+			survivor[p.Name] = p
+		}
+	}
+
+	kept := make([]models.BackupPayee, 0, len(payees))
+	folded := map[uuid.UUID]uuid.UUID{}
+	for _, p := range payees {
+		keep := survivor[p.Name]
+		if p.ID == keep.ID {
+			kept = append(kept, p)
+			continue
+		}
+		if p.AccountID != nil {
+			disambiguated := p
+			disambiguated.Name = fmt.Sprintf("%s (%s)", p.Name, p.ID.String()[:8])
+			kept = append(kept, disambiguated)
+			continue
+		}
+		folded[p.ID] = keep.ID
+	}
+	return kept, folded
 }
 
 // insertBackupRows inserts rows with multi-row VALUES statements, chunked to

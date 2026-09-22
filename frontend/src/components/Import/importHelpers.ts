@@ -182,10 +182,22 @@ export function parseAmount(str: string | number | null | undefined): number {
     body = body.slice(0, -1);
   }
 
+  // Leading sign: -1.234,56 / +56,78. Stripped before the separator decision so
+  // the grouped-number patterns below only ever see digits.
+  if (body.startsWith("-") || body.startsWith("+")) {
+    if (body.startsWith("-")) negative = true;
+    body = body.slice(1);
+  }
+
   let parsed: number;
   if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(body)) {
     // European style: 1.234.567,89
     parsed = parseFloat(body.replace(/\./g, "").replace(",", "."));
+  } else if (/^\d+,\d{1,2}$/.test(body)) {
+    // A lone comma followed by one or two digits is a decimal comma, not a
+    // thousands separator: "56,78" is 56.78. Reading it as grouping multiplied
+    // every ungrouped European amount under a thousand by 100.
+    parsed = parseFloat(body.replace(",", "."));
   } else {
     // Remove thousands separators, use "." as decimal separator
     parsed = parseFloat(body.replace(/,/g, ""));

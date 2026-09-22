@@ -47,6 +47,26 @@ describe("parseAmount", () => {
     expect(parseAmount("1.234.567,89")).toBe(1234567.89);
   });
 
+  it("parses a lone decimal comma (European amounts below a thousand)", () => {
+    // "56,78" is 56.78: reading the comma as a thousands separator multiplied
+    // every ungrouped European amount by 100 on import.
+    expect(parseAmount("56,78")).toBe(56.78);
+    expect(parseAmount("1234,56")).toBe(1234.56);
+    expect(parseAmount("0,99")).toBe(0.99);
+    expect(parseAmount("12,5")).toBe(12.5);
+  });
+
+  it("keeps a three-digit comma as a thousands separator", () => {
+    expect(parseAmount("1,234")).toBe(1234);
+    expect(parseAmount("12,345")).toBe(12345);
+  });
+
+  it("parses a leading sign on grouped amounts", () => {
+    expect(parseAmount("-1.234,56")).toBe(-1234.56);
+    expect(parseAmount("+1,234.56")).toBe(1234.56);
+    expect(parseAmount("-56,78")).toBe(-56.78);
+  });
+
   it("parses parenthesised negatives", () => {
     expect(parseAmount("(1,234.56)")).toBe(-1234.56);
   });

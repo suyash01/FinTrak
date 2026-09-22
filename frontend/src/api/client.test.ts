@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import api, { getStoredUser, storeUser, downloadCSV } from "./client";
+import { NetworkError } from "./errors";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
 import { getOutboxSnapshot } from "./outbox";
 
@@ -188,6 +189,10 @@ describe("api request", () => {
     const promise = api.getAccounts();
     vi.advanceTimersByTime(15000);
     await expect(promise).rejects.toThrow("Request timed out");
+    // A timeout is a transport failure, not a plain Error: the offline layer
+    // keys on the type, so getting this wrong disables the cached read, the
+    // outbox enqueue and the offline session probe at once.
+    await expect(promise).rejects.toThrow(NetworkError);
   });
 
   // The parser can spend ~a minute on a PDF, so the parse routes must not be
@@ -442,6 +447,31 @@ describe("offline behaviour", () => {
     await expect(api.getAccounts()).rejects.toThrow(
       "Network error: could not reach the API server",
     );
+  });
+
+  // A request that hangs until the timeout is as unreachable as one that is
+  // refused at once: it must take the same offline path.
+  it("serves the cached read when the request times out", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a1" }]));
+    await api.getAccounts();
+
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(abortOnSignal);
+    const promise = api.getAccounts();
+    await vi.advanceTimersByTimeAsync(15000);
+
+    await expect(promise).resolves.toEqual([{ id: "a1" }]);
+    expect(getOfflineSnapshot().servedFromCache).toBe(true);
+  });
+
+  it("queues a create that times out", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(abortOnSignal);
+    const promise = api.createTransaction(create);
+    await vi.advanceTimersByTimeAsync(15000);
+
+    await expect(promise).resolves.toEqual({ id: null, queued: true });
+    expect(getOutboxSnapshot("u1")).toHaveLength(1);
   });
 
   it("sends a client key with every create so a retry cannot double-post", async () => {

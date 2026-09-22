@@ -553,3 +553,73 @@ func TestExportUserDataQueryError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// mergeBackupPayees is what keeps a bundle written before the
+// payees_user_name_uq index from failing the whole restore on the payees
+// insert, so it must fold duplicates onto a survivor that every reference can
+// point at — and must never drop the payee an account is linked to.
+func TestMergeBackupPayees(t *testing.T) {
+	t.Run("leaves distinct payees alone", func(t *testing.T) {
+		payees := []models.BackupPayee{
+			{ID: uuid.New(), Name: "Amazon"},
+			{ID: uuid.New(), Name: "Airtel"},
+		}
+
+		kept, folded := mergeBackupPayees(payees)
+
+		assert.Equal(t, payees, kept)
+		assert.Empty(t, folded)
+	})
+
+	t.Run("folds a duplicate name onto the first row", func(t *testing.T) {
+		first := models.BackupPayee{ID: uuid.New(), Name: "Coffee Shop"}
+		second := models.BackupPayee{ID: uuid.New(), Name: "Coffee Shop"}
+
+		kept, folded := mergeBackupPayees([]models.BackupPayee{first, second})
+
+		assert.Equal(t, []models.BackupPayee{first}, kept)
+		assert.Equal(t, map[uuid.UUID]uuid.UUID{second.ID: first.ID}, folded)
+	})
+
+	t.Run("keeps the account-linked row as the survivor", func(t *testing.T) {
+		manual := models.BackupPayee{ID: uuid.New(), Name: "HDFC"}
+		accountID := uuid.New()
+		linked := models.BackupPayee{ID: uuid.New(), Name: "HDFC", AccountID: &accountID}
+
+		kept, folded := mergeBackupPayees([]models.BackupPayee{manual, linked})
+
+		require.Len(t, kept, 1)
+		assert.Equal(t, linked.ID, kept[0].ID)
+		assert.Equal(t, &accountID, kept[0].AccountID)
+		assert.Equal(t, map[uuid.UUID]uuid.UUID{manual.ID: linked.ID}, folded)
+	})
+
+	t.Run("disambiguates a second account-linked row instead of dropping it", func(t *testing.T) {
+		firstAccount, secondAccount := uuid.New(), uuid.New()
+		first := models.BackupPayee{ID: uuid.New(), Name: "Savings", AccountID: &firstAccount}
+		second := models.BackupPayee{ID: uuid.New(), Name: "Savings", AccountID: &secondAccount}
+
+		kept, folded := mergeBackupPayees([]models.BackupPayee{first, second})
+
+		require.Len(t, kept, 2)
+		assert.Equal(t, first, kept[0])
+		assert.Equal(t, "Savings ("+second.ID.String()[:8]+")", kept[1].Name)
+		assert.Equal(t, &secondAccount, kept[1].AccountID)
+		assert.Empty(t, folded)
+	})
+
+	t.Run("folds every duplicate of a name onto one survivor", func(t *testing.T) {
+		accountID := uuid.New()
+		linked := models.BackupPayee{ID: uuid.New(), Name: "Zomato", AccountID: &accountID}
+		firstManual := models.BackupPayee{ID: uuid.New(), Name: "Zomato"}
+		lastManual := models.BackupPayee{ID: uuid.New(), Name: "Zomato"}
+
+		kept, folded := mergeBackupPayees([]models.BackupPayee{firstManual, linked, lastManual})
+
+		assert.Equal(t, []models.BackupPayee{linked}, kept)
+		assert.Equal(t, map[uuid.UUID]uuid.UUID{
+			firstManual.ID: linked.ID,
+			lastManual.ID:  linked.ID,
+		}, folded)
+	})
+}

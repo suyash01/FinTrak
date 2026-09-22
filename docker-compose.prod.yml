@@ -35,9 +35,11 @@ services:
     container_name: postgres
     image: postgres:18-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Required, like the backend's secrets: `${VAR}` alone would silently
+      # create the database with an empty name/user/password.
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set (database name)}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set (database user)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set to a long random value}
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:

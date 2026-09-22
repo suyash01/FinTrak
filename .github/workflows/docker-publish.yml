@@ -392,7 +392,10 @@ jobs:
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_BACKEND }}
           tags: |
             type=raw,value=latest
-            type=semver,pattern={{version}}
+            # {{raw}} keeps the tag exactly as pushed (v1.2.3). {{version}}
+            # strips the "v", which would publish 1.2.3 while the release notes,
+            # .env.example and the prod compose files all deploy v1.2.3.
+            type=semver,pattern={{raw}}
             type=sha,prefix=,format=short
 
       - name: Build and push
@@ -439,7 +442,10 @@ jobs:
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_FRONTEND }}
           tags: |
             type=raw,value=latest
-            type=semver,pattern={{version}}
+            # {{raw}} keeps the tag exactly as pushed (v1.2.3). {{version}}
+            # strips the "v", which would publish 1.2.3 while the release notes,
+            # .env.example and the prod compose files all deploy v1.2.3.
+            type=semver,pattern={{raw}}
             type=sha,prefix=,format=short
 
       - name: Build and push
@@ -484,7 +490,10 @@ jobs:
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_PARSER }}
           tags: |
             type=raw,value=latest
-            type=semver,pattern={{version}}
+            # {{raw}} keeps the tag exactly as pushed (v1.2.3). {{version}}
+            # strips the "v", which would publish 1.2.3 while the release notes,
+            # .env.example and the prod compose files all deploy v1.2.3.
+            type=semver,pattern={{raw}}
             type=sha,prefix=,format=short
 
       - name: Build and push

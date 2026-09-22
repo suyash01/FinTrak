@@ -5,6 +5,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -42,11 +43,32 @@ type Config struct {
 }
 
 const (
+	// envDevelopment and envProduction are the only accepted APP_ENV values. Any
+	// other value stops the process rather than falling back to development:
+	// a typo (APP_ENV=prod, staging, Production) would otherwise run a
+	// production deployment on the built-in development JWT secret and
+	// encryption key, with a non-Secure cookie and body logging enabled.
+	envDevelopment = "development"
+	envProduction  = "production"
+
 	// Development-only fallbacks. Production startup fails unless the real
 	// secrets are provided via the environment.
 	defaultJWTSecret   = "dev-secret-change-me-in-production"
 	defaultTokenEncKey = "dev-token-encryption-key-change-me"
 )
+
+// resolveEnv validates APP_ENV. Unset means development; an unknown value is a
+// configuration error, not a default.
+func resolveEnv() (string, error) {
+	switch env := strings.TrimSpace(os.Getenv("APP_ENV")); env {
+	case "":
+		return envDevelopment, nil
+	case envDevelopment, envProduction:
+		return env, nil
+	default:
+		return "", fmt.Errorf("APP_ENV must be %q or %q (got %q)", envDevelopment, envProduction, env)
+	}
+}
 
 // Load reads the environment (loading .env first) and returns a fully resolved
 // Config, applying defaults for anything not set. It exits the process when a
@@ -54,9 +76,9 @@ const (
 func Load() *Config {
 	godotenv.Load()
 
-	env := os.Getenv("APP_ENV")
-	if env == "" {
-		env = "development"
+	env, err := resolveEnv()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	port := os.Getenv("PORT")
@@ -76,7 +98,7 @@ func Load() *Config {
 	// the production default so secrets and payloads stay out of the logs.
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
-		if env == "production" {
+		if env == envProduction {
 			logLevel = "info"
 		} else {
 			logLevel = "debug"
@@ -96,18 +118,24 @@ func Load() *Config {
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		if env == "production" {
+		if env == envProduction {
 			log.Fatal("JWT_SECRET must be set when APP_ENV=production")
 		}
 		jwtSecret = defaultJWTSecret
 	}
+	if env == envProduction && jwtSecret == defaultJWTSecret {
+		log.Fatal("JWT_SECRET must not be the built-in development default when APP_ENV=production")
+	}
 
 	tokenEncryptionKey := os.Getenv("TOKEN_ENCRYPTION_KEY")
 	if tokenEncryptionKey == "" {
-		if env == "production" {
+		if env == envProduction {
 			log.Fatal("TOKEN_ENCRYPTION_KEY must be set when APP_ENV=production")
 		}
 		tokenEncryptionKey = defaultTokenEncKey
+	}
+	if env == envProduction && tokenEncryptionKey == defaultTokenEncKey {
+		log.Fatal("TOKEN_ENCRYPTION_KEY must not be the built-in development default when APP_ENV=production")
 	}
 
 	rawOrigins := strings.Split(allowedOrigins, ",")
@@ -140,7 +168,7 @@ func Load() *Config {
 
 	// Session cookie Secure flag. Production defaults to true (HTTPS); an
 	// operator with a deliberately plain-HTTP deployment can opt out.
-	cookieSecure := env == "production"
+	cookieSecure := env == envProduction
 	if raw := os.Getenv("COOKIE_SECURE"); raw != "" {
 		if b, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
 			cookieSecure = b

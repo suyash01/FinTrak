@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -97,5 +98,38 @@ func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
 		t.Setenv(k, "")
+	}
+}
+
+// An unrecognized APP_ENV must not silently resolve to development: that is
+// what makes every production-only guard (mandatory secrets, Secure cookies,
+// body logging off) apply to a deployment that typos the value.
+func TestResolveEnv(t *testing.T) {
+	cases := []struct {
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{value: "", want: envDevelopment},
+		{value: "development", want: envDevelopment},
+		{value: "production", want: envProduction},
+		{value: " production ", want: envProduction},
+		{value: "prod", wantErr: true},
+		{value: "staging", wantErr: true},
+		{value: "Production", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("APP_ENV", tc.value)
+			got, err := resolveEnv()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "APP_ENV must be")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
 	}
 }
