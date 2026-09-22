@@ -211,12 +211,33 @@ func TestNearestRecurringOccurrence(t *testing.T) {
 	assert.Equal(t, "2026-03-15", occ.Format("2006-01-02"))
 	assert.InDelta(t, 5, daysOff, 0.001)
 
-	// An ended series still yields its closest (last) occurrence.
+	// An ended series still yields its closest occurrence — and the end date is
+	// exclusive, so 2026-01-15 is the last one in range (2026-02-15 would be an
+	// occurrence on the end date, which no term range covers).
 	end, _ := time.Parse("2006-01-02", "2026-02-15")
 	s.EndDate = &end
 	occ, _, ok = nearestRecurringOccurrence(s, d)
 	assert.True(t, ok)
-	assert.Equal(t, "2026-02-15", occ.Format("2006-01-02"))
+	assert.Equal(t, "2026-01-15", occ.Format("2006-01-02"))
+}
+
+// The series' end date is exclusive (it is the last term's exclusive end), so an
+// occurrence landing exactly on it is outside the series.
+func TestRecurringOccurrenceOnTheEndDateIsExcluded(t *testing.T) {
+	s := testRecurringSeries(recurringFreqMonthly, 1, "2026-01-15")
+	end, _ := time.Parse("2006-01-02", "2026-03-15")
+	s.EndDate = &end
+
+	from, _ := time.Parse("2006-01-02", "2026-01-01")
+	dates := recurringUpcoming(s, from, 12)
+	if assert.Len(t, dates, 2) { // Jan 15, Feb 15 — not Mar 15
+		assert.Equal(t, "2026-02-15", dates[1].Format("2006-01-02"))
+	}
+
+	// nextDueDate follows the same rule: with the last occurrence behind us the
+	// series has no next occurrence, rather than reporting one on its end date.
+	after, _ := time.Parse("2006-01-02", "2026-02-20")
+	assert.Nil(t, nextRecurringOccurrence(s, after))
 }
 
 func TestCalculateRecurringScore(t *testing.T) {
@@ -1460,13 +1481,17 @@ func TestDeleteRecurringTerm(t *testing.T) {
 	id, accountID := uuid.New(), uuid.New()
 	start, _ := time.Parse("2006-01-02", "2099-01-15")
 	termID := uuid.New()
+	otherTermID := uuid.New()
 
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).
 		WillReturnRows(pgxmock.NewRows(recurringSeriesColumnsForTest).
 			AddRow(recurringSeriesRow(id, accountID, "Rent", 1000, recurringFreqMonthly, 1, start, nil)...))
+	// Two ranges: a series must keep at least one, so removing one of two is the
+	// case this test is about.
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
 		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
-			AddRow(recurringTermRow(termID, id, start, 1000, accountID)...))
+			AddRow(recurringTermRow(termID, id, start, 1000, accountID)...).
+			AddRow(recurringTermRowEnd(otherTermID, id, mustDate("2099-06-15"), mustDate("2099-12-15"), 1200, accountID)...))
 	mock.ExpectBegin()
 	expectExecAny(mock, "DELETE FROM recurring_series_terms", 3).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
@@ -1477,6 +1502,31 @@ func TestDeleteRecurringTerm(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A series is read through its ranges, so the delete that would leave it without
+// any is refused rather than hiding it from the list while its attachments stay.
+func TestDeleteRecurringTermRejectsTheLastRange(t *testing.T) {
+	r, _, mock := recurringTestRouter(t)
+	id, accountID := uuid.New(), uuid.New()
+	start, _ := time.Parse("2006-01-02", "2099-01-15")
+	termID := uuid.New()
+
+	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).
+		WillReturnRows(pgxmock.NewRows(recurringSeriesColumnsForTest).
+			AddRow(recurringSeriesRow(id, accountID, "Rent", 1000, recurringFreqMonthly, 1, start, nil)...))
+	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
+		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
+			AddRow(recurringTermRow(termID, id, start, 1000, accountID)...))
+
+	req, _ := http.NewRequest(http.MethodDelete, "/recurring/"+id.String()+"/terms/"+termID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "at least one range")
+	// Refused before the write, so nothing was deleted.
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

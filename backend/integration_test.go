@@ -587,6 +587,43 @@ func TestIntegrationConcurrentSkipImportIsAtomic(t *testing.T) {
 	require.Len(t, a.transactions(acc.ID), 2)
 }
 
+// TestIntegrationValidateAgreesWithSkipImport pins the contract the import
+// preview dialog relies on: the duplicate count /transactions/validate reports
+// is the count an import with duplicateAction=skip actually drops — including
+// rows repeated inside the batch, which only the import path used to count.
+func TestIntegrationValidateAgreesWithSkipImport(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("validate-agreement@example.com")
+	acc := a.createAccount("Checking", "bank", nil)
+
+	coffee := map[string]any{"date": "2024-09-01", "description": "Coffee", "amount": 250.5, "type": "debit"}
+	tea := map[string]any{"date": "2024-09-01", "description": "Tea", "amount": 50, "type": "debit"}
+	batch := []map[string]any{coffee, coffee, tea}
+
+	var preview models.ValidateTransactionsResponse
+	a.call(http.MethodPost, "/api/v1/transactions/validate", map[string]any{
+		"accountId":    acc.ID,
+		"transactions": batch,
+	}, http.StatusOK, &preview)
+	require.Equal(t, 1, preview.ExistingCount, "the in-batch repeat is a duplicate")
+	require.Equal(t, 2, preview.MissingCount)
+
+	var imported struct {
+		Imported   int `json:"imported"`
+		Duplicates int `json:"duplicates"`
+		Total      int `json:"total"`
+	}
+	a.call(http.MethodPost, "/api/v1/transactions/import", map[string]any{
+		"accountId":       acc.ID,
+		"duplicateAction": "skip",
+		"transactions":    batch,
+	}, http.StatusOK, &imported)
+
+	require.Equal(t, preview.MissingCount, imported.Imported)
+	require.Equal(t, preview.ExistingCount, imported.Duplicates)
+	require.Len(t, a.transactions(acc.ID), preview.MissingCount)
+}
+
 // TestIntegrationMalformedFilterIDsAreRejected pins the filter validation
 // against a real database. pgx cannot encode a Go string for a uuid parameter,
 // so before the up-front checks these filters reached Postgres and answered 500

@@ -237,9 +237,12 @@ func TestDeleteRecurringTermWriteError(t *testing.T) {
 	id, accountID := uuid.New(), uuid.New()
 	termID := uuid.New()
 	expectQueryAny(mock, "FROM recurring_series WHERE id", 2).WillReturnRows(recurringSeriesRows(id, accountID))
+	// Two ranges, so the request reaches the write instead of the last-range
+	// refusal.
 	expectQueryAny(mock, "FROM recurring_series_terms t JOIN accounts a", 2).
 		WillReturnRows(pgxmock.NewRows(recurringTermLoadCols).
-			AddRow(recurringTermRow(termID, id, mustDate("2099-01-15"), 1000, accountID)...))
+			AddRow(recurringTermRow(termID, id, mustDate("2099-01-15"), 1000, accountID)...).
+			AddRow(recurringTermRowEnd(uuid.New(), id, mustDate("2099-06-15"), mustDate("2099-12-15"), 1200, accountID)...))
 	mock.ExpectBegin()
 	expectExecAny(mock, "DELETE FROM recurring_series_terms", 3).WillReturnError(assert.AnError)
 	mock.ExpectRollback()

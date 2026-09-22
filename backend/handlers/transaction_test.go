@@ -593,6 +593,51 @@ func TestValidateTransactionsSuccess(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The validate endpoint promises to report what an import with
+// duplicateAction=skip would drop, and that includes rows repeated inside the
+// batch: the second copy is not new even though no stored transaction matches it
+// yet, so counting only stored rows made the preview disagree with the import.
+func TestValidateTransactionsCountsInBatchDuplicates(t *testing.T) {
+	r, _, mock := newValidateTestRouter(t)
+
+	accountID := uuid.New()
+	userID := testUserID()
+
+	mock.ExpectQuery("SELECT user_id FROM accounts").
+		WithArgs(accountID).
+		WillReturnRows(mock.NewRows([]string{"user_id"}).AddRow(userID))
+
+	// Nothing stored matches the batch, so the repeat is the only duplicate.
+	mock.ExpectQuery("SELECT date, amount, type, description FROM transactions").
+		WithArgs(accountID, userID, []time.Time{time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)}).
+		WillReturnRows(mock.NewRows([]string{"date", "amount", "type", "description"}))
+
+	row := models.ImportTransaction{
+		Date: "2024-02-01", Description: "Coffee", Amount: money.FromFloat(250.5), Type: "debit",
+	}
+	body, _ := json.Marshal(models.ValidateTransactionsRequest{
+		AccountID: accountID,
+		Transactions: []models.ImportTransaction{
+			row,
+			row,
+			{Date: "2024-02-01", Description: "Tea", Amount: money.FromFloat(50), Type: "debit"},
+		},
+	})
+	w := postValidate(r, body)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp models.ValidateTransactionsResponse
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 3, resp.Total)
+	assert.Equal(t, 1, resp.ExistingCount)
+	assert.Equal(t, 2, resp.MissingCount)
+	assert.False(t, resp.Results[0].Exists)
+	assert.True(t, resp.Results[1].Exists, "the in-batch repeat is a duplicate")
+	assert.False(t, resp.Results[2].Exists)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // The import success path uses pgx.Batch (tx.SendBatch), which pgxmock does not
 // support (it returns nil), so the full handler can't be exercised here. The
 // billing-cycle override it calls is covered directly by
@@ -635,6 +680,29 @@ func TestTransactionFingerprint(t *testing.T) {
 		transactionFingerprint("2024-01-15", money.FromFloat(250.5), "debit", "Coffee"),
 		transactionFingerprint("2024-01-16", money.FromFloat(250.5), "debit", "Coffee"),
 	)
+}
+
+// A Paperless tag is the durable record that a document's statement was
+// imported, so it must not be applied when the import wrote nothing (every row
+// was skipped) — and nothing is applied when the caller named no documents.
+func TestPaperlessDocumentsToTag(t *testing.T) {
+	tests := []struct {
+		name     string
+		imported int
+		docIDs   []int
+		want     []int
+	}{
+		{name: "labels the named documents after a write", imported: 2, docIDs: []int{7, 9}, want: []int{7, 9}},
+		{name: "labels nothing when no rows were written", imported: 0, docIDs: []int{7, 9}},
+		{name: "labels nothing when none were named", imported: 3},
+		{name: "labels nothing when neither", imported: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, paperlessDocumentsToTag(tt.imported, tt.docIDs))
+		})
+	}
 }
 
 func TestDedupeTransactions(t *testing.T) {

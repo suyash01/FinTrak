@@ -158,7 +158,11 @@ func recurringUpcoming(s models.RecurringSeries, from time.Time, count int) []ti
 	}
 	for i := 0; i < maxRecurringSteps && len(out) < count; i++ {
 		occ := recurringOccurrenceAt(start, s.Frequency, s.Interval, i)
-		if end != nil && occ.After(*end) {
+		// The series' end date is exclusive, like every term range it is
+		// derived from: an occurrence falling exactly on it is outside the
+		// series, and emitting it made nextDueDate and the forecast report a
+		// "next due" date no range covers.
+		if end != nil && !occ.Before(*end) {
 			break
 		}
 		if occ.Before(from) {
@@ -217,7 +221,10 @@ func nearestRecurringOccurrence(s models.RecurringSeries, d time.Time) (time.Tim
 	found := false
 	for i := 0; i < maxRecurringSteps; i++ {
 		occ := recurringOccurrenceAt(start, s.Frequency, s.Interval, i)
-		if end != nil && occ.After(*end) {
+		// Exclusive end, as in recurringUpcoming: an occurrence on the end date
+		// is outside the series, so scoring a transaction against it would
+		// invent an expected payment that never was.
+		if end != nil && !occ.Before(*end) {
 			break
 		}
 		diff := math.Abs(occ.Sub(d).Hours() / 24)
@@ -1237,6 +1244,16 @@ func (srv *Server) DeleteRecurringTerm(c *gin.Context) {
 	}
 	if !found {
 		validation.RespondError(c, "term not found", http.StatusNotFound)
+		return
+	}
+	// A series is read entirely through its ranges: the list, the forecast and
+	// the suggestion filter all inner-join them, so a series left without any
+	// would disappear from GET /recurring while its attachments (and their
+	// linked transactions) stayed behind, and by id it would degrade to
+	// zero-amount occurrences. Refuse the delete that would do it, exactly as
+	// creating a series without a range is refused.
+	if len(terms) == 1 {
+		validation.RespondError(c, "a series must keep at least one range", http.StatusBadRequest)
 		return
 	}
 

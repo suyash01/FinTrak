@@ -176,7 +176,8 @@ paths:
         "422":
           description: |
             The PDF could not be processed (e.g. it has more than `MAX_PAGES`
-            pages, or parsing failed).
+            pages, parsing failed, or the parse yielded no transactions — a
+            scanned PDF without a text layer, or a mis-selected extractor).
           content:
             application/json:
               schema:

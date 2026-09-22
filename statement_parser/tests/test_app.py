@@ -147,6 +147,40 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("boom", resp.get_json()["error"])
 
     @mock.patch("statement_parser.app.extract_transactions")
+    def test_api_extract_empty_result_is_an_error(self, mock_extract):
+        # An image-only PDF, a mis-selected extractor and a drifted template all
+        # parse to nothing. Reporting that as a clean empty import hid the
+        # failure from the user, so it is a 422 instead.
+        mock_extract.return_value = {
+            "transactions": [],
+            "summary": {},
+            "page_count": 1,
+            "transaction_count": 0,
+        }
+        resp = self.client.post(
+            "/api/extract",
+            data=_pdf_upload(),
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("No transactions found", resp.get_json()["error"])
+
+    @mock.patch("statement_parser.app.extract_transactions")
+    def test_api_extract_empty_csv_result_is_an_error(self, mock_extract):
+        mock_extract.return_value = {
+            "transactions": [],
+            "summary": {},
+            "page_count": 1,
+            "transaction_count": 0,
+        }
+        resp = self.client.post(
+            "/api/extract?format=csv",
+            data=_pdf_upload(),
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    @mock.patch("statement_parser.app.extract_transactions")
     def test_api_extract_page_limit(self, mock_extract):
         mock_extract.side_effect = PageLimitExceeded(
             "statement has 600 pages, exceeding the 500-page limit"

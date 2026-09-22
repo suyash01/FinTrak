@@ -113,6 +113,24 @@ def api_extract():
     finally:
         os.remove(tmp_path)
 
+    if not result.get("transactions"):
+        # A parse that yields nothing is a failure, not an empty success: an
+        # image-only (scanned) PDF, the wrong extractor, and a template the
+        # extractor no longer matches all land here. Answering 200 with an empty
+        # list made them look like a clean, warning-free import in the app.
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "No transactions found. The file may be a scanned PDF "
+                        "without a text layer, or the wrong extractor may be "
+                        "selected."
+                    )
+                }
+            ),
+            422,
+        )
+
     if out_format == "csv":
         csv_bytes = to_csv_bytes(
             result["transactions"],

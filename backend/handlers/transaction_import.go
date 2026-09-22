@@ -272,8 +272,13 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 	// the user's Paperless instance is slow or unreachable. The detached
 	// context outlives the request; tagPaperlessDocuments applies its own
 	// overall timeout and bounded concurrency.
-	if len(req.PaperlessDocumentIDs) > 0 {
-		go srv.tagPaperlessDocuments(context.Background(), userID, req.PaperlessDocumentIDs, tokenEncryptionKey, appEnv)
+	//
+	// imported > 0 is part of the condition, not an optimisation: with every row
+	// skipped the transaction above never commits, so tagging would mark
+	// documents as imported when nothing was written — and the tag is the only
+	// durable record that a statement was processed.
+	if docs := paperlessDocumentsToTag(imported, req.PaperlessDocumentIDs); docs != nil {
+		go srv.tagPaperlessDocuments(context.Background(), userID, docs, tokenEncryptionKey, appEnv)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -282,6 +287,20 @@ func (srv *Server) ImportTransactions(c *gin.Context) {
 		"total":      len(req.Transactions),
 	})
 	slog.Info("import complete", slog.Int("imported", imported), slog.Int("duplicates", duplicates), slog.Int("total", len(req.Transactions)), slog.String("account_id", req.AccountID.String()))
+}
+
+// paperlessDocumentsToTag returns the documents to label after an import:
+// nothing when the import wrote no rows — with every row skipped the write
+// transaction never commits, so the label would claim a statement was processed
+// while nothing was stored — and nothing when the caller named none.
+//
+// The tag is the only durable record that a statement was imported, so it has to
+// match what the ledger actually received.
+func paperlessDocumentsToTag(imported int, documentIDs []int) []int {
+	if imported == 0 || len(documentIDs) == 0 {
+		return nil
+	}
+	return documentIDs
 }
 
 // transactionFingerprint collapses a row into a stable value used for duplicate
@@ -418,8 +437,15 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 
 	results := make([]models.ValidateTransactionResult, 0, len(req.Transactions))
 	existingCount := 0
+	// seen tracks repeats inside the batch, exactly as dedupeTransactions does:
+	// without it a row that appears twice was reported as "new" while the
+	// import with duplicateAction=skip would drop the second copy, so the
+	// preview disagreed with the import it is previewing.
+	seen := make(map[string]bool, len(req.Transactions))
 	for i, t := range req.Transactions {
-		exists := existing[transactionFingerprint(t.Date, t.Amount, t.Type, t.Description)]
+		fp := transactionFingerprint(t.Date, t.Amount, t.Type, t.Description)
+		exists := existing[fp] || seen[fp]
+		seen[fp] = true
 		if exists {
 			existingCount++
 		}
