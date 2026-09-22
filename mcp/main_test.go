@@ -185,3 +185,24 @@ func TestParseFlagsRequiresCredentials(t *testing.T) {
 		t.Errorf("stdout = %q, want it left alone: it carries the MCP protocol", stdout.String())
 	}
 }
+
+// TestParseFlagsRequiresBothTokenHalves keeps the token shape honest too. The
+// server holds no other credentials, so a lone access token works until it
+// expires and then fails every call with "sign in again" — the permanent 401
+// the startup check exists to prevent — so the pair is required at startup.
+func TestParseFlagsRequiresBothTokenHalves(t *testing.T) {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(childEnv(), testMainEnv+"=1", "FINTRAK_ACCESS_TOKEN=access-token")
+	var stderr, stdout bytes.Buffer
+	cmd.Stderr, cmd.Stdout = &stderr, &stdout
+
+	if err := cmd.Run(); err == nil {
+		t.Fatal("the binary started with an access token but no refresh token")
+	}
+	if !strings.Contains(stderr.String(), "FINTRAK_REFRESH_TOKEN") {
+		t.Errorf("stderr = %q, want it to name the missing variable", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want it left alone: it carries the MCP protocol", stdout.String())
+	}
+}

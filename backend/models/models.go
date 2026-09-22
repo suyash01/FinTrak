@@ -347,7 +347,7 @@ type AuthResponse struct {
 
 // CreateAccountRequest is the body for POST /api/v1/accounts.
 type CreateAccountRequest struct {
-	Name          string `json:"name" binding:"required"`
+	Name          string `json:"name" binding:"required,max=255"`
 	AccountTypeID string `json:"accountTypeId" binding:"required"`
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
@@ -365,7 +365,7 @@ type CreateAccountRequest struct {
 // explicit null clears the stored value while an absent key leaves it
 // untouched, and the *bool fields distinguish "not provided" from "set".
 type UpdateAccountRequest struct {
-	Name          string `json:"name"`
+	Name          string `json:"name" binding:"max=255"`
 	AccountTypeID string `json:"accountTypeId"`
 	Bank          string `json:"bank"`
 	Currency      string `json:"currency"`
@@ -383,7 +383,7 @@ type UpdateAccountRequest struct {
 
 // CreateCategoryRequest is the body for POST /api/v1/categories.
 type CreateCategoryRequest struct {
-	Name    string `json:"name" binding:"required"`
+	Name    string `json:"name" binding:"required,max=100"`
 	Icon    string `json:"icon"`
 	Color   string `json:"color"`
 	GroupID string `json:"groupId" binding:"required"`
@@ -391,7 +391,7 @@ type CreateCategoryRequest struct {
 
 // UpdateCategoryRequest is the body for PUT /api/v1/categories/:id.
 type UpdateCategoryRequest struct {
-	Name    string `json:"name"`
+	Name    string `json:"name" binding:"max=100"`
 	Icon    string `json:"icon"`
 	Color   string `json:"color"`
 	GroupID string `json:"groupId"`
@@ -407,14 +407,14 @@ type DeleteCategoryResult struct {
 // CreateCategoryGroupRequest is the body for POST /api/v1/groups.
 type CreateCategoryGroupRequest struct {
 	ID    string `json:"id" binding:"required"`
-	Name  string `json:"name" binding:"required"`
+	Name  string `json:"name" binding:"required,max=100"`
 	Icon  string `json:"icon"`
 	Color string `json:"color"`
 }
 
 // UpdateCategoryGroupRequest is the body for PUT /api/v1/groups/:id.
 type UpdateCategoryGroupRequest struct {
-	Name  string `json:"name"`
+	Name  string `json:"name" binding:"max=100"`
 	Icon  string `json:"icon"`
 	Color string `json:"color"`
 }
@@ -422,13 +422,13 @@ type UpdateCategoryGroupRequest struct {
 // CreateAccountTypeRequest is the admin-only body for POST /api/v1/account-types.
 type CreateAccountTypeRequest struct {
 	ID              string `json:"id" binding:"required"`
-	Name            string `json:"name" binding:"required"`
+	Name            string `json:"name" binding:"required,max=100"`
 	PositiveTxnType string `json:"positiveTxnType" binding:"required"`
 }
 
 // UpdateAccountTypeRequest is the admin-only body for PUT /api/v1/account-types/:id.
 type UpdateAccountTypeRequest struct {
-	Name            string `json:"name"`
+	Name            string `json:"name" binding:"max=100"`
 	PositiveTxnType string `json:"positiveTxnType"`
 }
 
@@ -907,7 +907,7 @@ type UpdateRuleRequest struct {
 
 // CreatePayeeRequest is the body for POST /api/v1/payees.
 type CreatePayeeRequest struct {
-	Name      string     `json:"name" binding:"required"`
+	Name      string     `json:"name" binding:"required,max=255"`
 	AccountID *uuid.UUID `json:"accountId"`
 }
 
@@ -1269,7 +1269,7 @@ type RecurringSeriesRange struct {
 // end), or a single StartDate + AccountID + Amount.
 type CreateRecurringSeriesRequest struct {
 	AccountID   *uuid.UUID             `json:"accountId"`
-	Name        string                 `json:"name" binding:"required"`
+	Name        string                 `json:"name" binding:"required,max=255"`
 	Description string                 `json:"description"`
 	Amount      *money.Amount          `json:"amount"`
 	Type        string                 `json:"type" binding:"required"`
@@ -1292,7 +1292,7 @@ type CreateRecurringSeriesRequest struct {
 // new range starting at EffectiveDate (default: today).
 type UpdateRecurringSeriesRequest struct {
 	AccountID     *uuid.UUID             `json:"accountId"`
-	Name          *string                `json:"name"`
+	Name          *string                `json:"name" binding:"omitempty,max=255"`
 	Description   *string                `json:"description"`
 	Amount        *money.Amount          `json:"amount"`
 	Type          *string                `json:"type"`

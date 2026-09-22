@@ -151,6 +151,54 @@ func TestRequestLoggerSkipsBinaryPayloads(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// isTextual trusts the client's Content-Type, so the bytes decide: a payload
+// that is not valid UTF-8 must not reach the log however it is declared.
+func TestRequestLoggerSkipsBinaryBodiesDeclaredAsText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h), testBodyLimit))
+	var received []byte
+	r.POST("/upload", func(c *gin.Context) {
+		received, _ = io.ReadAll(c.Request.Body)
+		c.Status(http.StatusNoContent)
+	})
+
+	// A PDF header followed by bytes that cannot be UTF-8.
+	payload := append([]byte("%PDF-1.4"), 0xff, 0xfe, 0x00, 0x80)
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, payload, received, "the handler must still receive the body")
+	require.Len(t, h.records, 1)
+	_, ok := recordAttr(t, h.records[0], "request_body")
+	assert.False(t, ok, "invalid UTF-8 must not be logged as text")
+}
+
+// A capture cut off mid-rune is not a binary payload: the truncated tail must
+// not disqualify an otherwise textual body.
+func TestRequestLoggerLogsTextCutMidRune(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &collectHandler{level: slog.LevelDebug}
+	const limit = 4 // the capture takes 5 bytes: one 3-byte rune plus 2 of the next
+	r := gin.New()
+	r.Use(RequestLogger(slog.New(h), limit))
+	r.POST("/echo", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", bytes.NewBufferString("€€€"))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Len(t, h.records, 1)
+	reqBody, ok := recordAttr(t, h.records[0], "request_body")
+	require.True(t, ok, "a body cut mid-rune is still text")
+	assert.Contains(t, reqBody, "€")
+}
+
 func TestRequestLoggerDoesNotTruncateLargeResponses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &collectHandler{level: slog.LevelDebug}

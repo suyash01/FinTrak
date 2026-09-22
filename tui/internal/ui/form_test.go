@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -233,5 +234,36 @@ func TestSmallTerminalModalShowsSeveralFormFields(t *testing.T) {
 		if lines := strings.Count(frame, "\n") + 1; lines > size[1] {
 			t.Errorf("%dx%d: frame is %d lines", size[0], size[1], lines)
 		}
+	}
+}
+
+// TestFormIgnoresASecondSubmitWhileTheFirstIsInFlight is a regression test: the
+// form stays open and editable until the App matches the mutation back to it, so
+// both submit keys used to run the same write again while the first was still in
+// flight — two identical transactions, or two writers on one CSV path.
+func TestFormIgnoresASecondSubmitWhileTheFirstIsInFlight(t *testing.T) {
+	submits := 0
+	form := NewForm("txn.save", "New transaction", []Field{TextField("Description", "Groceries", nil)},
+		func(*Form) tea.Cmd {
+			submits++
+			return nil
+		})
+
+	// The field is the form's only one, so enter submits it as well as ctrl+s.
+	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if submits != 1 {
+		t.Errorf("a second submit key while the first mutation was in flight submitted %d times, want 1", submits)
+	}
+
+	// The mutation came back rejected: the form is the user's to correct.
+	form.SetError(errors.New("duplicate transaction"))
+	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if submits != 2 {
+		t.Fatalf("submissions after a rejected save = %d, want 2", submits)
+	}
+	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if submits != 2 {
+		t.Errorf("submissions after resubmitting = %d, want 2: the guard must be back in place", submits)
 	}
 }

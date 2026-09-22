@@ -1,9 +1,14 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -32,6 +37,145 @@ func openAPIPath(ginPath string) string {
 var httpMethods = map[string]bool{
 	"get": true, "post": true, "put": true, "patch": true,
 	"delete": true, "options": true, "head": true,
+}
+
+// schemaProperties is the component-schemas half of the document: the property
+// names of each schema, which is all the model comparison needs.
+type schemaProperties struct {
+	Components struct {
+		Schemas map[string]struct {
+			Properties map[string]struct {
+				Type string `yaml:"type"`
+			} `yaml:"properties"`
+		} `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+// schemaExceptions lists property differences that are deliberate, per schema.
+// It is empty: every model-backed schema and its struct agree.
+var schemaExceptions = map[string][]string{}
+
+// TestOpenAPISchemasMatchTheModels compares every component schema that shares a
+// name with a struct in models.go against that struct's JSON fields — including
+// the ones it inherits from an embedded struct, since those are what the encoder
+// writes.
+//
+// Route parity proves the paths exist; nothing else notices when a *schema*
+// drifts from the type the handlers actually serialize. That is how the
+// Transaction schema came to advertise linkCount/linkId (fields no code has ever
+// sent) and Category a "type" it does not have, while both omitted real fields.
+//
+// A schema with no same-named struct is not compared: request bodies and the
+// handler-built dashboard payloads are hand-written. A deliberate difference
+// belongs in schemaExceptions with a reason.
+func TestOpenAPISchemasMatchTheModels(t *testing.T) {
+	var doc schemaProperties
+	require.NoError(t, yaml.Unmarshal(openAPISpec, &doc))
+	require.NotEmpty(t, doc.Components.Schemas, "openapi.yaml has no component schemas")
+
+	models := modelJSONFields(t)
+	require.NotEmpty(t, models, "no structs parsed from models.go")
+
+	compared := 0
+	for name, schema := range doc.Components.Schemas {
+		fields, ok := models[name]
+		if !ok {
+			continue // hand-written schema: a request DTO or a handler payload
+		}
+		compared++
+
+		want := map[string]bool{}
+		for _, f := range fields {
+			want[f] = true
+		}
+		got := map[string]bool{}
+		for prop := range schema.Properties {
+			got[prop] = true
+		}
+		for _, ex := range schemaExceptions[name] {
+			delete(want, ex)
+			delete(got, ex)
+		}
+
+		var missing, extra []string
+		for f := range want {
+			if !got[f] {
+				missing = append(missing, f)
+			}
+		}
+		for f := range got {
+			if !want[f] {
+				extra = append(extra, f)
+			}
+		}
+		sort.Strings(missing)
+		sort.Strings(extra)
+		assert.Emptyf(t, missing,
+			"%s: models.go has fields the schema omits: %v (document them, or list them in schemaExceptions with a reason)", name, missing)
+		assert.Emptyf(t, extra,
+			"%s: the schema advertises fields no model has: %v (remove them, or list them in schemaExceptions with a reason)", name, extra)
+	}
+
+	require.Greater(t, compared, 50,
+		"the comparison found suspiciously few model-backed schemas — did the models or the spec move?")
+}
+
+// modelJSONFields parses models.go and returns each struct's JSON field names,
+// expanding embedded structs because their fields are part of the JSON too.
+func modelJSONFields(t *testing.T) map[string][]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "models/models.go", nil, 0)
+	require.NoError(t, err)
+
+	structs := map[string]*ast.StructType{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok {
+			return true
+		}
+		if st, ok := ts.Type.(*ast.StructType); ok {
+			structs[ts.Name.Name] = st
+		}
+		return true
+	})
+
+	var collect func(name string, seen map[string]bool) []string
+	collect = func(name string, seen map[string]bool) []string {
+		st, ok := structs[name]
+		if !ok || seen[name] {
+			return nil
+		}
+		seen[name] = true
+
+		var out []string
+		for _, field := range st.Fields.List {
+			if field.Tag != nil {
+				tag, ok := reflect.StructTag(strings.Trim(field.Tag.Value, "`")).Lookup("json")
+				if !ok {
+					continue
+				}
+				if f := strings.Split(tag, ",")[0]; f != "" && f != "-" {
+					out = append(out, f)
+				}
+				continue
+			}
+			// An untagged field is an embedded struct.
+			if len(field.Names) == 0 {
+				if id, ok := field.Type.(*ast.Ident); ok {
+					out = append(out, collect(id.Name, seen)...)
+				}
+			}
+		}
+		return out
+	}
+
+	out := make(map[string][]string, len(structs))
+	for name := range structs {
+		out[name] = collect(name, map[string]bool{})
+	}
+	return out
 }
 
 // TestOpenAPICoversRegisteredRoutes fails when a handler is added or renamed

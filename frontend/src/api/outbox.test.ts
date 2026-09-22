@@ -86,6 +86,19 @@ describe("outbox", () => {
     expect(getOutboxSnapshot(USER)).toHaveLength(0);
   });
 
+  it("counts the entries the server accepted, not the queue delta", async () => {
+    enqueueCreate(USER, request("First"), "key-1");
+
+    const outcome = await flushOutbox(USER, async () => {
+      // The user keeps recording while the flush is in flight; the entry that
+      // arrives mid-flush was not sent by it, so it must not cancel out the one
+      // that was (which is what a queue-length delta does).
+      enqueueCreate(USER, request("Second"), "key-2");
+    });
+
+    expect(outcome).toEqual({ sent: 1, remaining: 1, failed: 0 });
+  });
+
   it("keeps the queue in order when the server is unreachable", async () => {
     enqueueCreate(USER, request("First"), "key-1");
     enqueueCreate(USER, request("Second"), "key-2");

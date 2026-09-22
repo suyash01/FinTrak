@@ -148,6 +148,9 @@ jobs:
         run: |
           cd statement_parser
           uv run --frozen coverage run --source=statement_parser -m unittest discover -s tests -v
+          # The same 90% the Codecov flag reports, enforced here so a coverage
+          # regression fails the build instead of only colouring a dashboard.
+          uv run --frozen coverage report --fail-under=90
           uv run --frozen coverage xml -o coverage.xml
       - name: Upload parser coverage
         if: always()
@@ -193,7 +196,7 @@ jobs:
       - name: Enforce coverage floor
         run: |
           cd backend
-          go run ./cmd/covercheck -profile ../tui/coverage.out -min 18
+          go run ./cmd/covercheck -profile ../tui/coverage.out -min 18 -root ../tui
       - name: Upload tui coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -241,7 +244,7 @@ jobs:
       - name: Enforce coverage floor
         run: |
           cd backend
-          go run ./cmd/covercheck -profile ../client/coverage.out -min 85
+          go run ./cmd/covercheck -profile ../client/coverage.out -min 85 -root ../client
       - name: Upload client coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -286,7 +289,7 @@ jobs:
       - name: Enforce coverage floor
         run: |
           cd backend
-          go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80
+          go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80 -root ../mcp
       - name: Upload mcp coverage
         if: always()
         uses: actions/upload-artifact@v7

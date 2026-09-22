@@ -587,7 +587,12 @@ func (srv *Server) GetTransferSuggestions(c *gin.Context) {
 			&s.DebitTxn.ID, &s.DebitTxn.AccountID, &s.DebitTxn.Date, &s.DebitTxn.Description, &s.DebitTxn.Amount, &s.DebitTxn.Type, &s.DebitTxn.AccountName,
 			&s.CreditTxn.ID, &s.CreditTxn.AccountID, &s.CreditTxn.Date, &s.CreditTxn.Description, &s.CreditTxn.Amount, &s.CreditTxn.Type, &s.CreditTxn.AccountName,
 		); err != nil {
-			continue
+			// A scan failure means the SELECT and the struct no longer agree;
+			// answering 200 with a silently truncated list (possibly empty)
+			// hides the drift. GetLinks and GetCashbackSuggestions report it.
+			slog.Error("GetTransferSuggestions scan", slog.String("error", err.Error()))
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
 		}
 
 		s.Score = calculateTransferScore(s.DebitTxn, s.CreditTxn)

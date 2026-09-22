@@ -957,3 +957,81 @@ func TestTransferFormReportsAFailedQuoteAndDoesNotPost(t *testing.T) {
 	default:
 	}
 }
+
+// TestDisbursementCreditLinksTheLoanItsCandidatesWereFetchedFor is a regression
+// test: the picker's link read the screen's current loan when it was opened, so
+// pressing `c` on a second loan while the first one's candidates were still in
+// flight linked the first loan's bank credit to the second loan.
+func TestDisbursementCreditLinksTheLoanItsCandidatesWereFetchedFor(t *testing.T) {
+	const (
+		unlinked = `{"sanctioned":100000.00,"processingFee":2000.00,"paidOut":0,"net":98000.00,` +
+			`"verified":false,"difference":0}`
+		credit = `{"id":"txn-9","accountId":"bank-1","date":"2026-01-06T00:00:00Z",` +
+			`"description":"Loan disbursement","amount":98000.00,"type":"credit","tags":[],"accountName":"Everyday"}`
+	)
+	linked := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/accounts/") &&
+			strings.HasSuffix(r.URL.Path, "/loan-schedule"):
+			account := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/accounts/"), "/loan-schedule")
+			fmt.Fprint(w, loanScheduleJSON(account, unlinked))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/transactions":
+			fmt.Fprintf(w, `{"data":[%s],"total":1,"page":1,"limit":100,"pages":1}`, credit)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/loan-disbursement"):
+			linked <- r.URL.Path
+			fmt.Fprint(w, loanScheduleJSON("acct-1", unlinked))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := api.New(srv.URL + "/api/v1")
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	a, modal := testAccounts(t, client,
+		api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"},
+		api.Account{ID: "acct-2", Name: "Bike loan", AccountTypeID: "loan"})
+
+	// `c` on the car loan fetches its schedule, whose answer starts the search
+	// for its candidate credits. That search is not delivered yet.
+	schedule := a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if schedule == nil {
+		t.Fatal("c did not start a schedule fetch")
+	}
+	candidates := a.Update(schedule())
+	if candidates == nil {
+		t.Fatal("the car loan's schedule did not start a candidate search")
+	}
+
+	// The user has meanwhile pressed `c` on the bike loan.
+	a.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if next := a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); next == nil {
+		t.Fatal("c on the bike loan did not start a schedule fetch")
+	}
+
+	// The car loan's candidates land: the picker is still the car loan's, and so
+	// is the credit it links.
+	run(t, a, candidates)
+	picker, ok := (*modal).(*creditPicker)
+	if !ok {
+		t.Fatalf("the car loan's candidates did not open a credit picker (got %T)", *modal)
+	}
+	if view := picker.View(a.ctx.Theme, 120, 20); !strings.Contains(view, "Car loan") || strings.Contains(view, "Bike loan") {
+		t.Errorf("the picker is not about the loan whose candidates were fetched:\n%s", view)
+	}
+
+	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	select {
+	case path := <-linked:
+		if path != "/api/v1/accounts/acct-1/loan-disbursement" {
+			t.Errorf("linked through %s, want /api/v1/accounts/acct-1/loan-disbursement", path)
+		}
+	default:
+		t.Fatal("no disbursement credit was linked")
+	}
+}

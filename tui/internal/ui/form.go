@@ -62,6 +62,11 @@ type Form struct {
 	done     bool
 	canceled bool
 	submit   func(*Form) tea.Cmd
+	// submitting is set while the mutation the submit closure started is in
+	// flight, and cleared once it reports back. The form stays open and
+	// editable until then, so without it a second ctrl+s/enter runs the same
+	// write twice (two identical transactions, two CSV writers on one path).
+	submitting bool
 }
 
 // NewForm builds a form. submit is called once validation passes and must return
@@ -130,12 +135,15 @@ func (f *Form) BoolValue(label string) bool {
 	return strings.EqualFold(f.Value(label), "yes")
 }
 
-// SetError shows a server-side failure inside the form.
+// SetError shows a server-side failure inside the form, and releases the
+// in-flight guard: the mutation has reported back rejected, so the form is the
+// user's to fix and submit again.
 func (f *Form) SetError(err error) {
 	if err == nil {
 		return
 	}
 	f.err = err.Error()
+	f.submitting = false
 }
 
 // Update handles one message.
@@ -283,8 +291,13 @@ func (f *Form) openPicker() {
 	f.picker = NewPicker(field.Label, field.Options, field.Value, field.AllowClear, field.ClearLabel)
 }
 
-// commit validates and submits.
+// commit validates and submits. A submit already in flight ignores the call: the
+// form stays live until its mutation reports back, so a repeat of ctrl+s/enter
+// would otherwise run the same write again.
 func (f *Form) commit() tea.Cmd {
+	if f.submitting {
+		return nil
+	}
 	for i, field := range f.fields {
 		if field.Validate == nil {
 			continue
@@ -300,6 +313,7 @@ func (f *Form) commit() tea.Cmd {
 		f.done = true
 		return nil
 	}
+	f.submitting = true
 	return f.submit(f)
 }
 

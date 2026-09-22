@@ -1364,7 +1364,9 @@ paths:
         satisfies ANY entry, so a single value is a one-element list. Unlike the
         per-account export it covers whatever the caller has filtered to and
         includes account/category/group/payee names. Rows come in the same
-        total order as GET /transactions.
+        total order as GET /transactions. A filter that matches more than
+        100,000 rows is refused with 400 rather than truncated, so a
+        downloaded file is never silently partial.
       operationId: exportTransactions
       security:
         - BearerAuth: []
@@ -3812,7 +3814,15 @@ components:
           format: email
         password:
           type: string
-          minLength: 6
+          minLength: 12
+          description: At least 12 characters and at most 72 bytes (bcrypt's input limit)
+        setupToken:
+          type: string
+          description: |
+            Required only when the email is listed in ADMIN_EMAILS: the shared
+            ADMIN_SETUP_TOKEN that grants the admin role. Without it such a
+            registration is refused, so an unverified registrant can neither
+            self-promote nor squat the address.
 
     LoginRequest:
       type: object
@@ -4788,6 +4798,9 @@ components:
         balance:
           type: number
           format: double
+        createdAt:
+          type: string
+          format: date-time
         billingDay:
           type: integer
           minimum: 1
@@ -4849,11 +4862,6 @@ components:
           type: string
         isLinked:
           type: boolean
-        linkCount:
-          type: integer
-        linkId:
-          type: string
-          format: uuid
         billingCycleId:
           type: string
           format: uuid
@@ -4905,8 +4913,16 @@ components:
           type: string
         color:
           type: string
-        type:
+        groupId:
           type: string
+          description: The group the category is filed under (a base group slug or a custom group id)
+        isGlobal:
+          type: boolean
+          description: True for an admin-created category shared with every user
+        groupName:
+          type: string
+        groupIsBase:
+          type: boolean
 
     Payee:
       type: object
@@ -6348,6 +6364,47 @@ components:
           nullable: true
         priority:
           type: integer
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+        filterCategoryId:
+          type: string
+          format: uuid
+          nullable: true
+        filterPayeeId:
+          type: string
+          format: uuid
+          nullable: true
+        minAmount:
+          type: number
+          nullable: true
+        maxAmount:
+          type: number
+          nullable: true
+        txnType:
+          type: string
+          enum: [debit, credit]
+        dateFrom:
+          type: string
+          format: date
+          nullable: true
+        dateTo:
+          type: string
+          format: date
+          nullable: true
+        isLinked:
+          type: boolean
+          nullable: true
+        isRecurring:
+          type: boolean
+          nullable: true
+        addTags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
 
     BackupImportResult:
       type: object

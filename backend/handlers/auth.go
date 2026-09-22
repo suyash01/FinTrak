@@ -168,6 +168,10 @@ func (srv *Server) Login(c *gin.Context) {
 		email,
 	).Scan(&user.ID, &user.Email, &passwordHash, &user.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Spend the bcrypt work a wrong-password attempt would: answering
+		// immediately made the response time tell an unknown email from a known
+		// one, enumerating accounts despite the identical 401 body.
+		auth.EqualizePasswordTiming(req.Password)
 		validation.RespondError(c, "invalid email or password", http.StatusUnauthorized)
 		return
 	}
@@ -215,7 +219,24 @@ func (srv *Server) Refresh(c *gin.Context) {
 		return
 	}
 
-	accessToken, err := auth.RenewAccess(claims, jwtSecret)
+	// Re-read the role from the database rather than trusting the refresh
+	// token's copy: there is no other revocation path, so a demoted admin would
+	// otherwise keep re-minting admin access until the refresh token expired.
+	var role string
+	err = srv.db.QueryRow(c, "SELECT role FROM users WHERE id = $1", claims.UserID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The account is gone; end the session instead of minting for it.
+		auth.ClearAuthCookies(c, cookieSecure)
+		validation.RespondAuthError(c, "session expired; please log in again")
+		return
+	}
+	if err != nil {
+		slog.Error("Refresh (role lookup)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	accessToken, err := auth.RenewAccess(claims, role, jwtSecret)
 	if err != nil {
 		// The refresh token is structurally valid but the session has reached
 		// its absolute deadline (RenewAccess refuses to mint a token whose

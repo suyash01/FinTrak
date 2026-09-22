@@ -71,6 +71,7 @@ from pdfplumber.pdf import PDF
 from pypdf import PdfReader
 
 from .limits import ensure_page_limit
+from .money import same_money
 
 #: The masked/right-aligned word blocks pdfplumber.Page.extract_words()
 #: returns. All keys are required (extract_words() always emits them);
@@ -991,7 +992,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
 
             if (
                 result.printed_deposit_total is not None
-                and abs(page_deposit_sum - result.printed_deposit_total) > 0.01
+                and not same_money(page_deposit_sum, result.printed_deposit_total)
             ):
                 validation_errors.append(
                     f"page {page_number}: deposit subtotal mismatch "
@@ -999,7 +1000,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
                 )
             if (
                 result.printed_withdrawal_total is not None
-                and abs(page_withdrawal_sum - result.printed_withdrawal_total) > 0.01
+                and not same_money(page_withdrawal_sum, result.printed_withdrawal_total)
             ):
                 validation_errors.append(
                     f"page {page_number}: withdrawal subtotal mismatch "
@@ -1039,16 +1040,16 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         closing_balance: Optional[float] = transactions[-1]["balance"] if transactions else None
 
         if final_printed is not None:
-            if final_printed.printed_deposit_total is not None and abs(
-                total_deposits - final_printed.printed_deposit_total
-            ) > 0.01:
+            if final_printed.printed_deposit_total is not None and not same_money(
+                total_deposits, final_printed.printed_deposit_total
+            ):
                 validation_errors.append(
                     f"statement deposit total mismatch (computed "
                     f"{round(total_deposits, 2)}, printed {final_printed.printed_deposit_total})"
                 )
-            if final_printed.printed_withdrawal_total is not None and abs(
-                total_withdrawals - final_printed.printed_withdrawal_total
-            ) > 0.01:
+            if final_printed.printed_withdrawal_total is not None and not same_money(
+                total_withdrawals, final_printed.printed_withdrawal_total
+            ):
                 validation_errors.append(
                     f"statement withdrawal total mismatch (computed "
                     f"{round(total_withdrawals, 2)}, printed {final_printed.printed_withdrawal_total})"
@@ -1056,7 +1057,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             if (
                 closing_balance is not None
                 and final_printed.printed_closing_balance is not None
-                and abs(closing_balance - final_printed.printed_closing_balance) > 0.01
+                and not same_money(closing_balance, final_printed.printed_closing_balance)
             ):
                 validation_errors.append(
                     f"statement closing balance mismatch (computed "

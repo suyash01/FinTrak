@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fintrak/backend/models"
@@ -24,6 +25,30 @@ func newCategoryTestRouter(srv *Server) *gin.Engine {
 	r.PUT("/categories/:id", srv.UpdateCategory)
 	r.DELETE("/categories/:id", srv.DeleteCategory)
 	return r
+}
+
+// The name column is VARCHAR(100): without the binding the over-long value
+// reached the INSERT and surfaced as a 500 instead of a validation error.
+func TestCreateCategoryRejectsAnOverLongName(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	body, err := json.Marshal(models.CreateCategoryRequest{
+		Name:    strings.Repeat("a", 101),
+		GroupID: uuid.New().String(),
+	})
+	assert.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/categories", bytes.NewReader(body))
+	newCategoryTestRouter(srv).ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestGetCategories(t *testing.T) {

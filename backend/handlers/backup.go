@@ -492,14 +492,45 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 		groupRows = append(groupRows, []any{newID, g.Name, g.Icon, g.Color, false, userID, g.SortOrder})
 	}
 
+	// A bundle can reference a group it does not contain: global (admin-created)
+	// groups are never exported, so a user who filed categories under one
+	// exports their raw ids. When the target instance does not have that group
+	// either, the category insert would violate categories_group_id_fkey and
+	// take the whole all-or-nothing restore down with it, so those categories
+	// land in a fallback group instead. It is created once, on demand, and
+	// reused for every such category.
+	const fallbackGroupName = "Imported"
+	fallbackGroupID := ""
+	fallbackGroup := func() (string, error) {
+		if fallbackGroupID != "" {
+			return fallbackGroupID, nil
+		}
+		if existing, found, err := findUserGroupID(ctx, tx, userID, fallbackGroupName); err != nil {
+			return "", err
+		} else if found {
+			fallbackGroupID = existing
+			return fallbackGroupID, nil
+		}
+		newID := newBackupGroupID()
+		fallbackGroupID = newID
+		groupRows = append(groupRows, []any{newID, fallbackGroupName, "folder", "#94a3b8", false, userID, 0})
+		return fallbackGroupID, nil
+	}
+
 	// Categories. Global rows are matched against the target instance's global
 	// categories by name+group and fall back to a user-owned copy.
 	categoryMap := map[uuid.UUID]uuid.UUID{}
 	categoryRows := make([][]any, 0, len(b.Categories))
 	for _, cat := range b.Categories {
-		groupID := cat.GroupID
-		if mapped, ok := groupMap[cat.GroupID]; ok {
-			groupID = mapped
+		groupID, known, err := backupCategoryGroupID(ctx, tx, userID, cat.GroupID, groupMap)
+		if err != nil {
+			return err
+		}
+		if !known {
+			if groupID, err = fallbackGroup(); err != nil {
+				return err
+			}
+			addBackupWarning(res, "moved a category into the \""+fallbackGroupName+"\" group: its group is not in the backup or on this instance")
 		}
 		existingID, found, err := findCategoryID(ctx, tx, userID, cat, groupID)
 		if err != nil {
@@ -856,6 +887,41 @@ func checkBackupAccountTypes(ctx context.Context, tx pgx.Tx, b *models.BackupBun
 		}
 	}
 	return nil
+}
+
+// backupCategoryGroupID resolves the group a bundle category belongs to. A
+// group carried by the bundle maps through groupMap; otherwise the raw id is
+// kept when the target instance still has it (a global group is not exported,
+// so its id travels unchanged). known=false means the id is usable on neither
+// side and the caller has to pick a fallback.
+func backupCategoryGroupID(ctx context.Context, tx pgx.Tx, userID uuid.UUID, raw string, groupMap map[string]string) (string, bool, error) {
+	if mapped, ok := groupMap[raw]; ok {
+		return mapped, true, nil
+	}
+	// The column is a VARCHAR, and the seeded groups use slug ids ("expense"),
+	// so the id must not be assumed to be a UUID.
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	exists, err := groupExists(ctx, tx, userID, raw)
+	if err != nil {
+		return "", false, err
+	}
+	if !exists {
+		return "", false, nil
+	}
+	return raw, true, nil
+}
+
+// groupExists reports whether a group id is usable on the target instance: one
+// of this user's groups, or a global (admin-created) one.
+func groupExists(ctx context.Context, tx pgx.Tx, userID uuid.UUID, groupID string) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM category_groups WHERE id = $1 AND (user_id = $2 OR user_id IS NULL))",
+		groupID, userID,
+	).Scan(&exists)
+	return exists, err
 }
 
 // findUserGroupID looks up a custom group by name for the target user.

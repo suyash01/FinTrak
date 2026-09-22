@@ -28,11 +28,13 @@ coverage:
       tui:
         # The render-heavy screens in internal/ui are barely covered, so the
         # floor sits just above the current baseline. It reads lower than it did
-        # when the shared API client lived in this module (25.25% -> 19.41%):
+        # when the shared API client lived in this module (25.25% -> 19.77%):
         # the client moved to `client/` and carries its own 85% flag now, so this
         # number measures the terminal client alone. Ratchet it up as screen
-        # tests land; `make test-tui-cover-check` enforces the same number.
-        target: 19%
+        # tests land; the enforced gate is `make test-tui-cover-check`, which
+        # passes `-min 18` to cmd/covercheck (the same number the CI job uses),
+        # so this target must stay equal to that flag.
+        target: 18%
         threshold: 1%
         flags:
           - tui

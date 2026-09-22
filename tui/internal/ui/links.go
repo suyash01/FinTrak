@@ -50,8 +50,14 @@ type Links struct {
 	selected    map[string]bool
 
 	// Suggestions pane. The suggestion endpoints carry no total, only HasMore,
-	// so the page cursor is the only way to know where the user is.
+	// so the page cursor is the only way to know where the user is. suggKind is
+	// the kind the keys ask for; suggShown is the kind the rows on screen were
+	// fetched for, which is what a confirmed row is linked as. The two differ
+	// between a kind switch and the reload it starts, and a suggestion carries
+	// no kind of its own, so confirming off suggKind would create the wrong link
+	// type for the rows the user is looking at.
 	suggKind   string
+	suggShown  string
 	sugg       api.SuggestionPage
 	suggLoaded bool
 	suggPage   int
@@ -156,6 +162,7 @@ func NewLinks(ctx *Ctx) *Links {
 		selected:     map[string]bool{},
 		suggSel:      map[int]bool{},
 		suggKind:     "transfer",
+		suggShown:    "transfer",
 		suggPage:     1,
 		typeFilter:   "",
 		lastLinkType: "transfer",
@@ -214,14 +221,25 @@ func (l *Links) reloadLinks() tea.Cmd {
 	})
 }
 
+// suggestionPage is one fetched page of suggestions together with the kind it
+// was fetched for. Rows outlive the key that changed the kind until the reload
+// lands, and a suggestion records no kind of its own, so the response is what
+// says which suggester produced these rows.
+type suggestionPage struct {
+	kind string
+	page api.SuggestionPage
+}
+
 // reloadSuggestions fetches a page of the active suggestion kind.
 func (l *Links) reloadSuggestions() tea.Cmd {
-	kind, page, limit := l.suggKind, l.suggPage, linkSuggestionLimit
-	return load("links.suggest", func(ctx context.Context) (api.SuggestionPage, error) {
+	kind, number, limit := l.suggKind, l.suggPage, linkSuggestionLimit
+	return load("links.suggest", func(ctx context.Context) (suggestionPage, error) {
 		if kind == "cashback" {
-			return l.ctx.Client.CashbackSuggestions(ctx, page, limit)
+			page, err := l.ctx.Client.CashbackSuggestions(ctx, number, limit)
+			return suggestionPage{kind: kind, page: page}, err
 		}
-		return l.ctx.Client.TransferSuggestions(ctx, page, limit)
+		page, err := l.ctx.Client.TransferSuggestions(ctx, number, limit)
+		return suggestionPage{kind: kind, page: page}, err
 	})
 }
 
@@ -252,7 +270,7 @@ func (l *Links) Update(msg tea.Msg) tea.Cmd {
 		l.applyRows()
 		return nil
 
-	case loaded[api.SuggestionPage]:
+	case loaded[suggestionPage]:
 		if m.tag != "links.suggest" {
 			break
 		}
@@ -261,7 +279,7 @@ func (l *Links) Update(msg tea.Msg) tea.Cmd {
 			l.ctx.Notify(LevelError, "%s", m.err)
 			return nil
 		}
-		l.sugg = m.data
+		l.sugg, l.suggShown = m.data.page, m.data.kind
 		// Selections are row indexes, so a new page invalidates them.
 		l.suggSel = map[int]bool{}
 		l.applyRows()
@@ -448,7 +466,10 @@ func (l *Links) suggestionKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// setSuggestionKind switches between the transfer and cashback suggesters.
+// setSuggestionKind switches between the transfer and cashback suggesters. The
+// rows stay on screen until the reload lands; confirming one in the meantime
+// links it as the kind it was fetched for, which is why the request takes
+// suggShown rather than the kind just asked for.
 func (l *Links) setSuggestionKind(kind string) tea.Cmd {
 	if l.suggKind == kind {
 		return nil
@@ -663,12 +684,13 @@ func (l *Links) selectedIDs() []string {
 }
 
 // selectedSuggestions returns the selected suggestions as create bodies, in the
-// order they appear on screen.
+// order they appear on screen. The kind comes from the rows, not from the key
+// last pressed.
 func (l *Links) selectedSuggestions() []api.CreateLinkRequest {
 	requests := make([]api.CreateLinkRequest, 0, len(l.suggSel))
 	for i, s := range l.sugg.Data {
 		if l.suggSel[i] {
-			requests = append(requests, linkSuggestionRequest(s, l.suggKind))
+			requests = append(requests, linkSuggestionRequest(s, l.suggShown))
 		}
 	}
 	return requests
@@ -870,7 +892,7 @@ func (l *Links) confirmSuggestions() tea.Cmd {
 		if !ok {
 			return nil
 		}
-		pending = []api.CreateLinkRequest{linkSuggestionRequest(suggestion, l.suggKind)}
+		pending = []api.CreateLinkRequest{linkSuggestionRequest(suggestion, l.suggShown)}
 	}
 
 	if len(pending) == 1 {

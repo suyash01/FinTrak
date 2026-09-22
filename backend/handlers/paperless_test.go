@@ -77,7 +77,7 @@ func TestFetchNameMapsPaginates(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	maps := fetchNameMaps(c, &http.Client{}, server.URL, "tok")
+	maps := fetchNameMaps(c.Request.Context(), &http.Client{}, server.URL, "tok")
 
 	// 1000 entries from page 1 + 2 from page 2 — beyond the old single-page
 	// single-fetch limit of 1000.

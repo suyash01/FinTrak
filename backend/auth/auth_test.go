@@ -103,12 +103,28 @@ func TestRenewAccess(t *testing.T) {
 		claims, err := ParseToken(refresh, testSecret, TokenTypeRefresh)
 		require.NoError(t, err)
 
-		access, err := RenewAccess(claims, testSecret)
+		access, err := RenewAccess(claims, "user", testSecret)
 		require.NoError(t, err)
 
 		renewed, err := ParseToken(access, testSecret, TokenTypeAccess)
 		require.NoError(t, err)
 		assert.Equal(t, userID, renewed.UserID)
+		assert.Equal(t, "user", renewed.Role)
+	})
+
+	t.Run("mints the role the caller resolved, not the token's copy", func(t *testing.T) {
+		// The handler reads the role from the database, so a demotion has to
+		// reach the new access token instead of the stale claim.
+		refresh, err := GenerateRefreshToken(userID, "admin", testSecret)
+		require.NoError(t, err)
+		claims, err := ParseToken(refresh, testSecret, TokenTypeRefresh)
+		require.NoError(t, err)
+
+		access, err := RenewAccess(claims, "user", testSecret)
+		require.NoError(t, err)
+
+		renewed, err := ParseToken(access, testSecret, TokenTypeAccess)
+		require.NoError(t, err)
 		assert.Equal(t, "user", renewed.Role)
 	})
 
@@ -128,7 +144,7 @@ func TestRenewAccess(t *testing.T) {
 			},
 		}
 
-		access, err := RenewAccess(claims, testSecret)
+		access, err := RenewAccess(claims, "user", testSecret)
 		require.NoError(t, err)
 		renewed, err := ParseToken(access, testSecret, TokenTypeAccess)
 		require.NoError(t, err)
@@ -146,14 +162,14 @@ func TestRenewAccess(t *testing.T) {
 			},
 		}
 
-		_, err := RenewAccess(claims, testSecret)
+		_, err := RenewAccess(claims, "user", testSecret)
 		assert.Error(t, err)
 	})
 
 	t.Run("refuses claims without an expiry", func(t *testing.T) {
-		_, err := RenewAccess(&Claims{UserID: userID}, testSecret)
+		_, err := RenewAccess(&Claims{UserID: userID}, "user", testSecret)
 		assert.Error(t, err)
-		_, err = RenewAccess(nil, testSecret)
+		_, err = RenewAccess(nil, "user", testSecret)
 		assert.Error(t, err)
 	})
 }

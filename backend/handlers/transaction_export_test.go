@@ -26,6 +26,10 @@ func TestExportTransactions(t *testing.T) {
 		AddRow(now, "Coffee", 250.5, "debit", "Checking", "Food", "Expense", "Cafe", []string{"trip"}, "morning").
 		AddRow(now.AddDate(0, 0, -1), "Salary", 50000.0, "credit", "Checking", "Income", "Income", "Acme", nil, "")
 
+	// The match count runs first: the cap has to be applied before any body.
+	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
+		WithArgs(userID, accountID.String(), []string{"trip"}).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 	mock.ExpectQuery("SELECT t.date, t.description, t.amount, t.type").
 		WithArgs(userID, accountID.String(), []string{"trip"}).
 		WillReturnRows(rows)
@@ -59,6 +63,9 @@ func TestExportTransactionsQueryError(t *testing.T) {
 	r, srv, mock := newAccountTestRouter(t)
 	r.GET("/transactions/export", srv.ExportTransactions)
 
+	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT t.date, t.description, t.amount, t.type").
 		WithArgs(testUserID()).
 		WillReturnError(assert.AnError)
@@ -68,5 +75,42 @@ func TestExportTransactionsQueryError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestExportTransactionsCountError(t *testing.T) {
+	r, srv, mock := newAccountTestRouter(t)
+	r.GET("/transactions/export", srv.ExportTransactions)
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
+		WithArgs(testUserID()).
+		WillReturnError(assert.AnError)
+
+	req, _ := http.NewRequest("GET", "/transactions/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A filter that matches more than the cap is refused, not truncated: the caller
+// cannot tell a partial CSV from a complete one.
+func TestExportTransactionsRefusesMoreThanTheCap(t *testing.T) {
+	r, srv, mock := newAccountTestRouter(t)
+	r.GET("/transactions/export", srv.ExportTransactions)
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\)`).
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(maxExportRows + 1))
+
+	req, _ := http.NewRequest("GET", "/transactions/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "export limit")
+	// No rows are streamed, so no CSV header line either.
+	assert.NotContains(t, w.Body.String(), "Date,Description")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

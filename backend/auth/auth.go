@@ -67,6 +67,20 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
+// dummyPasswordHash is a valid bcrypt hash of a value no account can hold. It
+// exists so a login for an unknown email can spend the same work as one with a
+// wrong password.
+const dummyPasswordHash = "$2a$10$5NnbSCRv/rl77g0wE7LLfOfnt/KUn4mwoOEZau5p4Or5lca4aNGV."
+
+// EqualizePasswordTiming performs the bcrypt comparison a wrong-password login
+// performs, for callers that returned early because the account does not exist.
+// Without it the response time tells an unknown email (~1 ms) from a known one
+// (~60-100 ms at the default cost) even though both answer the identical 401,
+// which enumerates accounts.
+func EqualizePasswordTiming(password string) {
+	_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
+}
+
 // NewSession mints a fresh access/refresh token pair for a new login. The
 // refresh token's expiry is the session's absolute deadline.
 func NewSession(userID uuid.UUID, role, secret string) (accessToken, refreshToken string, err error) {
@@ -94,12 +108,15 @@ func GenerateRefreshToken(userID uuid.UUID, role, secret string) (string, error)
 
 // RenewAccess mints a new access token bounded by the refresh token's expiry,
 // so refreshing near the end of a session can never produce an access token
-// that outlives the session's absolute deadline.
-func RenewAccess(claims *Claims, secret string) (string, error) {
+// that outlives the session's absolute deadline. The role comes from the caller
+// (which reads it from the database) rather than from the refresh token: the
+// token carries the role it was minted with, so re-using it would keep a
+// demoted admin's access alive for the token's whole 30-day life.
+func RenewAccess(claims *Claims, role, secret string) (string, error) {
 	if claims == nil || claims.ExpiresAt == nil {
 		return "", errors.New("refresh token has no expiry")
 	}
-	return generateToken(claims.UserID, claims.Role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time)
+	return generateToken(claims.UserID, role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time)
 }
 
 // generateToken signs a token of the given type. Its expiry is now+ttl, capped

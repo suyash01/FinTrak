@@ -18,6 +18,11 @@
 //	  }
 //	}
 //
+// A session can also be supplied as a token pair instead of a login, in
+// FINTRAK_ACCESS_TOKEN and FINTRAK_REFRESH_TOKEN. Both halves are required: the
+// pair is the only thing that can renew the session, so a lone access token
+// would simply stop working at its expiry.
+//
 // Every tool it exposes is read-only (see internal/mcpserver): the model can
 // read the ledger, the aggregates and the API's preview endpoints, and cannot
 // change anything. Because stdout carries the protocol, logs go to stderr or
@@ -144,9 +149,15 @@ func parseFlags() (options, error) {
 	}
 
 	// Without one of the two credential shapes every tool call would answer
-	// 401, so say so at startup rather than at the first question.
+	// 401, so say so at startup rather than at the first question. An access
+	// token alone is not one of those shapes: nothing here holds a refresh
+	// token, so the session would work until the token expires and then fail
+	// every call with "sign in again" while holding no credentials to do it.
 	if opts.access == "" && (opts.email == "" || opts.password == "") {
 		return opts, errors.New("set FINTRAK_EMAIL and FINTRAK_PASSWORD (or FINTRAK_ACCESS_TOKEN with FINTRAK_REFRESH_TOKEN) to sign in")
+	}
+	if opts.access != "" && opts.refresh == "" {
+		return opts, errors.New("FINTRAK_ACCESS_TOKEN needs FINTRAK_REFRESH_TOKEN (or set FINTRAK_EMAIL and FINTRAK_PASSWORD): a lone access token expires and cannot be refreshed")
 	}
 	return opts, nil
 }

@@ -47,10 +47,6 @@ const (
 	// series, which spans every range (not just the most recent). It is a
 	// safety bound, far above any realistic subscription history.
 	maxRecurringCandidates = 5000
-
-	// recurringMatchWindowDays is how close an attached transaction must fall
-	// to a projected occurrence to mark it "matched" in the forecast.
-	recurringMatchWindowDays = 3.0
 )
 
 // recurringMaxDaysOff bounds how far a candidate may fall from the nearest
@@ -1345,7 +1341,7 @@ func (srv *Server) GetRecurringForecast(c *gin.Context) {
 			Date:    occ,
 			Amount:  amount,
 			Type:    series.Type,
-			Matched: recurringOccurrenceMatched(occ, attachedTxns),
+			Matched: recurringOccurrenceMatched(occ, attachedTxns, recurringMaxDaysOff(series)),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items})
@@ -1358,11 +1354,13 @@ type recurringAttachedTxn struct {
 }
 
 // recurringOccurrenceMatched reports whether any attached transaction falls
-// within recurringMatchWindowDays of the occurrence.
-func recurringOccurrenceMatched(occ time.Time, attached []recurringAttachedTxn) bool {
+// within windowDays of the occurrence. The window is the same tolerance the
+// suggestion filter uses (recurringMaxDaysOff), so the API never proposes a
+// link its own forecast would report as unmatched.
+func recurringOccurrenceMatched(occ time.Time, attached []recurringAttachedTxn, windowDays float64) bool {
 	for _, a := range attached {
 		diffDays := math.Abs(dateOnly(a.date).Sub(dateOnly(occ)).Hours() / 24)
-		if diffDays <= recurringMatchWindowDays {
+		if diffDays <= windowDays {
 			return true
 		}
 	}

@@ -52,6 +52,24 @@ func TestMergeMonthEndRows(t *testing.T) {
 		assert.Equal(t, day(1, 10), dateOnly(got[4].Date))
 	})
 
+	t.Run("a same-day tie keeps the row after the transaction in both orders", func(t *testing.T) {
+		// The month's final day: the row lands after the transaction in
+		// ascending order and before it in descending order, so the balance
+		// still reads at the month's end either way.
+		txns := []models.Transaction{{Date: day(1, 31)}}
+		rows := []models.Transaction{{Date: day(1, 31), IsSummary: true}}
+
+		asc := mergeMonthEndRows(txns, rows, "ASC")
+		require.Len(t, asc, 2)
+		assert.False(t, asc[0].IsSummary, "the transaction comes first ascending")
+		assert.True(t, asc[1].IsSummary)
+
+		desc := mergeMonthEndRows(txns, rows, "DESC")
+		require.Len(t, desc, 2)
+		assert.True(t, desc[0].IsSummary, "the row comes first descending")
+		assert.False(t, desc[1].IsSummary)
+	})
+
 	t.Run("rows with no page transaction are dropped", func(t *testing.T) {
 		txns := []models.Transaction{{Date: day(3, 5)}}
 		rows := []models.Transaction{{Date: day(1, 31)}}

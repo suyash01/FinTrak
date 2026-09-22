@@ -320,6 +320,12 @@ func TestImportUserDataRemapsReferences(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM category_groups WHERE user_id").
 		WithArgs(testUserID(), "Custom").
 		WillReturnError(pgx.ErrNoRows)
+	// The bundle's category references the seeded "expense" group by its slug
+	// id, which the bundle does not carry: the restore verifies the target
+	// instance still has it before keeping the reference.
+	mock.ExpectQuery("SELECT EXISTS \\(SELECT 1 FROM category_groups").
+		WithArgs("expense", testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
 		WithArgs(testUserID(), "Food", "expense").
 		WillReturnError(pgx.ErrNoRows)
@@ -462,9 +468,15 @@ func TestImportUserDataFullBundle(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM category_groups WHERE user_id").
 		WithArgs(testUserID(), "Custom").
 		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT EXISTS \\(SELECT 1 FROM category_groups").
+		WithArgs("expense", testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery("SELECT id FROM categories WHERE user_id").
 		WithArgs(testUserID(), "Food", "expense").
 		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT EXISTS \\(SELECT 1 FROM category_groups").
+		WithArgs("expense", testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery("SELECT id FROM categories WHERE user_id IS NULL").
 		WithArgs("GlobalCat", "expense").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))

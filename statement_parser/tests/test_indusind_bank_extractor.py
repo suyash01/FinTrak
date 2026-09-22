@@ -177,6 +177,45 @@ def _make_page(text, words):
     return page
 
 
+class IndusindNarrationAmountTests(unittest.TestCase):
+    def test_an_amount_shaped_ref_token_is_not_booked_as_a_withdrawal(self):
+        """A reference or narration token that looks like an amount sits left of
+        the money columns: classifying by right edge alone booked it as a
+        withdrawal, inventing a debit and losing the row's real deposit."""
+        words = [
+            _w("30-Jun-2023", 31.4, 75.3, 100.0),
+            _w("NEFT", 80.9, 100.0, 100.0),
+            _w("1,000.00", 250.4, 285.0, 100.0),   # Chq No/Ref No column
+            _w("144.00", 460.0, 484.2, 100.0),     # deposit, right-aligned
+            _w("5,892.32", 530.0, 562.7, 100.0),   # balance
+        ]
+        rows, _ = _parse_page(words)
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["amount"], 144.00)
+        self.assertEqual(row["type"], "Credit")
+        self.assertEqual(row["deposit"], 144.00)
+        self.assertIsNone(row["withdrawal"])
+        self.assertEqual(row["balance"], 5892.32)
+
+    def test_a_wide_amount_inside_its_column_is_still_read(self):
+        """The left bound must not reject a legitimate amount that starts a
+        little left of the divider."""
+        words = [
+            _w("30-Jun-2023", 31.4, 75.3, 100.0),
+            _w("UPI payment", 80.9, 160.0, 100.0),
+            _w("1,00,000.00", 325.0, 405.7, 100.0),  # wide withdrawal
+            _w("5,892.32", 530.0, 562.7, 100.0),
+        ]
+        rows, _ = _parse_page(words)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["withdrawal"], 100000.00)
+        self.assertEqual(rows[0]["type"], "Debit")
+        self.assertIsNone(rows[0]["deposit"])
+
+
 class IndusindParsePageTests(unittest.TestCase):
     def test_parses_all_rows_including_bf_cf(self):
         rows, _ = _parse_page(PAGE2_WORDS)

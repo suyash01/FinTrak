@@ -153,12 +153,13 @@ export async function flushOutbox(
   send: (entry: OutboxEntry) => Promise<void>,
   options: { retryFailed?: boolean } = {},
 ): Promise<FlushOutcome> {
-  const queued = readEntries(userId).length;
+  let sent = 0;
   for (const entry of readEntries(userId)) {
     if (entry.error && !options.retryFailed) continue;
     try {
       await send(entry);
       removeEntry(userId, entry.key);
+      sent += 1;
     } catch (err) {
       // Anything that is not a definite HTTP rejection (a transport failure, or
       // an error with no status) stops the flush: the entry may not have reached
@@ -179,8 +180,11 @@ export async function flushOutbox(
 
   const remaining = readEntries(userId);
   return {
-    // Entries removed from the queue are the ones that were written.
-    sent: queued - remaining.length,
+    // Counted where the server accepted the entry: deriving this from the queue
+    // length would subtract entries the user records *during* the flush (each
+    // POST can take seconds), reporting no progress and suppressing the reload
+    // that shows the transaction just written.
+    sent,
     remaining: remaining.length,
     failed: remaining.filter((entry) => entry.error).length,
   };

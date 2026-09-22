@@ -506,6 +506,12 @@ type paperlessNameMaps struct {
 // nameMapPageSize is the page size requested for each Paperless lookup table.
 const nameMapPageSize = 1000
 
+// paperlessLookupTimeout bounds the whole lookup-table fetch (three paginated
+// resources, up to maxNameMapPages pages each) against a user-supplied host.
+// paperlessClientTimeout bounds each individual call, so without this a slow
+// instance could hold the request and its connections for hours.
+const paperlessLookupTimeout = 30 * time.Second
+
 // maxNameMapPages bounds the pagination loop so a misbehaving instance that
 // keeps returning full pages can't make the lookup hang forever.
 const maxNameMapPages = 100
@@ -515,7 +521,7 @@ const maxNameMapPages = 100
 // but not fatal — the document list still renders, just without names. Each
 // table is paginated (Paperless caps page_size at 1000) so instances with
 // more than 1000 entries are not truncated.
-func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) paperlessNameMaps {
+func fetchNameMaps(ctx context.Context, client *http.Client, base, token string) paperlessNameMaps {
 	maps := paperlessNameMaps{
 		correspondents: map[int]string{},
 		documentTypes:  map[int]string{},
@@ -530,7 +536,7 @@ func fetchNameMaps(c *gin.Context, client *http.Client, base, token string) pape
 			Name string `json:"name"`
 		}
 		for page := 1; page <= maxNameMapPages; page++ {
-			req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet,
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 				fmt.Sprintf("%s%s&page=%d", base, path, page), nil)
 			if err != nil {
 				return nil
@@ -619,7 +625,9 @@ func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
 	// name-based filters the UI sends back into Paperless IDs, (b) humanize the
 	// document list, and (c) populate the filter dropdown options in the
 	// response.
-	maps := fetchNameMaps(c, client, base, token)
+	lookupCtx, cancelLookup := context.WithTimeout(c.Request.Context(), paperlessLookupTimeout)
+	defer cancelLookup()
+	maps := fetchNameMaps(lookupCtx, client, base, token)
 
 	page := paperlessQueryInt(c, "page", 1, 1, math.MaxInt)
 	pageSize := paperlessQueryInt(c, "pageSize", defaultPaperlessPageSize, 1, maxPaperlessPageSize)

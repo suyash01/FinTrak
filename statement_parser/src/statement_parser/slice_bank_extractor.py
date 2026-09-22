@@ -90,6 +90,7 @@ import pdfplumber
 from pypdf import PdfReader
 
 from .limits import ensure_page_limit
+from .money import same_money
 
 
 class Transaction(TypedDict):
@@ -510,13 +511,17 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         # balance equation (the decisive correctness check for this template).
         for i in range(1, len(transactions)):
             prev, cur = transactions[i - 1], transactions[i]
-            if cur["balance"] is None:
+            if cur["balance"] is None or prev["balance"] is None:
+                # One side lost its balance token, so the pair cannot be
+                # checked; coercing the missing side to 0.00 reported a
+                # fabricated break built on a zero that was never printed,
+                # while the row that actually failed to parse went unreported.
                 continue
             expected = round(
-                (prev["balance"] or 0) + (cur["deposit"] or 0) - (cur["withdrawal"] or 0),
+                prev["balance"] + (cur["deposit"] or 0) - (cur["withdrawal"] or 0),
                 2,
             )
-            if abs(expected - cur["balance"]) > 0.01:
+            if not same_money(expected, cur["balance"]):
                 validation_errors.append(
                     f"balance chain broken at txn {i}: {prev['date']} "
                     f"{prev['balance']} -> {cur['date']} dep {cur['deposit']} "
@@ -531,19 +536,19 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             printed_deposits: float = round(
                 summary["total_credits"] + summary["interest_earned"], 2
             )
-            if abs(total_deposits - printed_deposits) > 0.01:
+            if not same_money(total_deposits, printed_deposits):
                 validation_errors.append(
                     f"statement deposit total mismatch (computed "
                     f"{total_deposits}, printed credits+interest {printed_deposits})"
                 )
-            if abs(total_withdrawals - summary["total_debits"]) > 0.01:
+            if not same_money(total_withdrawals, summary["total_debits"]):
                 validation_errors.append(
                     f"statement withdrawal total mismatch (computed "
                     f"{total_withdrawals}, printed {summary['total_debits']})"
                 )
             if (
                 closing_balance is not None
-                and abs(closing_balance - summary["closing_balance"]) > 0.01
+                and not same_money(closing_balance, summary["closing_balance"])
             ):
                 validation_errors.append(
                     f"closing balance mismatch (last row {closing_balance}, "
@@ -552,7 +557,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
             implied_close: float = round(
                 summary["opening_balance"] + total_deposits - total_withdrawals, 2
             )
-            if abs(summary["closing_balance"] - implied_close) > 0.01:
+            if not same_money(summary["closing_balance"], implied_close):
                 validation_errors.append(
                     f"printed summary does not balance (closing "
                     f"{summary['closing_balance']}, "

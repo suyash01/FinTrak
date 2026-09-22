@@ -39,14 +39,11 @@ type Accounts struct {
 	// asked for the data now in flight, so a slow response opens the overlay for
 	// that account even if the cursor has moved meanwhile. transferAccount is
 	// the loan that gave a balance away, whose recast table is shown once the
-	// transfer reports back. disbursementAccount is the loan whose linked credit
-	// the last fetch was about, so the picker and its link use that account even
-	// if the cursor has moved.
-	detailAccount       api.Account
-	cyclesAccount       api.Account
-	scheduleAccount     api.Account
-	transferAccount     api.Account
-	disbursementAccount api.Account
+	// transfer reports back.
+	detailAccount   api.Account
+	cyclesAccount   api.Account
+	scheduleAccount api.Account
+	transferAccount api.Account
 
 	// deletedTransactions carries DeleteAccount's count back from the mutation
 	// goroutine: the number only exists once the call has returned, and a
@@ -167,13 +164,17 @@ func (a *Accounts) Update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case loaded[api.LoanScheduleDetail]:
+		if m.tag != "accounts.schedule" {
+			break
+		}
+		if m.err != nil {
+			a.ctx.Notify(LevelError, "%s", m.err)
+			return nil
+		}
+		a.showSchedule(defaultTo(m.data.LoanAccountName, a.scheduleAccount.Name), m.data)
+
+	case loaded[loanDisbursement]:
 		switch m.tag {
-		case "accounts.schedule":
-			if m.err != nil {
-				a.ctx.Notify(LevelError, "%s", m.err)
-				return nil
-			}
-			a.showSchedule(defaultTo(m.data.LoanAccountName, a.scheduleAccount.Name), m.data)
 		case "accounts.disbursement":
 			if m.err != nil {
 				a.ctx.Notify(LevelError, "%s", m.err)
@@ -186,7 +187,7 @@ func (a *Accounts) Update(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			a.ctx.Notify(LevelSuccess, "disbursement credit linked")
-			a.showSchedule(defaultTo(m.data.LoanAccountName, a.disbursementAccount.Name), m.data)
+			a.showSchedule(defaultTo(m.data.Detail.LoanAccountName, m.data.Account.Name), m.data.Detail)
 		}
 		return nil
 
@@ -606,6 +607,16 @@ const disbursementCreditLead = 240
 // credit the window misses.
 const disbursementCreditLimit = 100
 
+// loanDisbursement is a loan together with the schedule fetched for it. The
+// account rides with the response because two fetches can overlap — the key
+// pressed on a second loan before the first answer lands — and a schedule does
+// not say which loan asked for it, so reading the screen's cursor back when the
+// response arrives can reconcile the wrong loan.
+type loanDisbursement struct {
+	Account api.Account
+	Detail  api.LoanScheduleDetail
+}
+
 // openDisbursementCredit links the bank credit that released the cursor loan, or
 // unlinks the one already linked. The loan must be a Loan/EMI account with a
 // schedule — without terms there is no disbursement to reconcile — so the
@@ -620,9 +631,9 @@ func (a *Accounts) openDisbursementCredit() tea.Cmd {
 		a.ctx.Notify(LevelError, "%s is not a loan/EMI account", account.Name)
 		return nil
 	}
-	a.disbursementAccount = account
-	return load("accounts.disbursement", func(ctx context.Context) (api.LoanScheduleDetail, error) {
-		return a.ctx.Client.LoanSchedule(ctx, account.ID)
+	return load("accounts.disbursement", func(ctx context.Context) (loanDisbursement, error) {
+		detail, err := a.ctx.Client.LoanSchedule(ctx, account.ID)
+		return loanDisbursement{Account: account, Detail: detail}, err
 	})
 }
 
@@ -630,8 +641,9 @@ func (a *Accounts) openDisbursementCredit() tea.Cmd {
 // a loan already reconciled against a credit is offered the unlink, otherwise
 // the credits that could be it — found by exact amount and by date window — are
 // fetched for the picker.
-func (a *Accounts) actOnDisbursement(detail api.LoanScheduleDetail) tea.Cmd {
-	name := a.disbursementAccount.Name
+func (a *Accounts) actOnDisbursement(disbursement loanDisbursement) tea.Cmd {
+	detail := disbursement.Detail
+	name := disbursement.Account.Name
 	if detail.Schedule == nil {
 		a.ctx.Notify(LevelError, "%s has no schedule, so it has no disbursement to reconcile", name)
 		return nil
@@ -643,16 +655,19 @@ func (a *Accounts) actOnDisbursement(detail api.LoanScheduleDetail) tea.Cmd {
 		return nil
 	}
 	if detail.Disbursement.CreditTransactionID != "" {
-		a.confirmUnlinkDisbursement(a.disbursementAccount)
+		a.confirmUnlinkDisbursement(disbursement.Account)
 		return nil
 	}
-	return a.loadCreditCandidates(detail)
+	return a.loadCreditCandidates(disbursement)
 }
 
-// creditCandidates is the merged, ranked candidate list together with the net it
-// was ranked against, so an empty result can be reported as the amount that
-// matched nothing.
+// creditCandidates is the merged, ranked candidate list for one loan's
+// disbursement, together with the loan it was searched for and the net it was
+// ranked against. The account travels with the list so the picker links the
+// chosen credit to the loan the list was built for, not to whichever loan the
+// cursor has moved to; the net is what an empty result is reported against.
 type creditCandidates struct {
+	Account api.Account
 	Net     api.Amount
 	Credits []api.Transaction
 }
@@ -694,10 +709,11 @@ func creditCandidateQueries(detail api.LoanScheduleDetail) []api.TransactionFilt
 // list. Both are sent even though either could answer alone: the window knows
 // where a credit is likely to be, the amount knows it is the right one, and a
 // credit found by both arrives once.
-func (a *Accounts) loadCreditCandidates(detail api.LoanScheduleDetail) tea.Cmd {
+func (a *Accounts) loadCreditCandidates(disbursement loanDisbursement) tea.Cmd {
+	detail := disbursement.Detail
 	filters := creditCandidateQueries(detail)
 	return load("accounts.disbursement.credits", func(ctx context.Context) (creditCandidates, error) {
-		found := creditCandidates{Net: detail.Disbursement.Net}
+		found := creditCandidates{Account: disbursement.Account, Net: detail.Disbursement.Net}
 		for _, filter := range filters {
 			page, err := a.ctx.Client.ListTransactions(ctx, filter)
 			if err != nil {
@@ -795,7 +811,7 @@ func (c *creditPicker) highlighted() (string, bool) {
 // filtered out: it is usually the transaction the user filed as an EMI payment
 // before this link existed, so hiding it left the right record invisible.
 func (a *Accounts) openCreditPicker(candidates creditCandidates) {
-	account := a.disbursementAccount
+	account := candidates.Account
 	options := make([]Option, 0, len(candidates.Credits))
 	attached := make(map[string]string, len(candidates.Credits))
 	for _, credit := range candidates.Credits {
@@ -823,8 +839,9 @@ func (a *Accounts) openCreditPicker(candidates creditCandidates) {
 		},
 	}
 	picker.OnSelect = func(transactionID string) tea.Cmd {
-		return load("accounts.disbursement.link", func(ctx context.Context) (api.LoanScheduleDetail, error) {
-			return a.ctx.Client.LinkLoanDisbursement(ctx, account.ID, transactionID)
+		return load("accounts.disbursement.link", func(ctx context.Context) (loanDisbursement, error) {
+			detail, err := a.ctx.Client.LinkLoanDisbursement(ctx, account.ID, transactionID)
+			return loanDisbursement{Account: account, Detail: detail}, err
 		})
 	}
 	a.ctx.Open(picker)

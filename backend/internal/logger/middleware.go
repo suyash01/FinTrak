@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -90,6 +91,19 @@ func capturePrefix(body io.ReadCloser, limit int) ([]byte, io.ReadCloser) {
 	}
 }
 
+// trimPartialRune drops a trailing incomplete multi-byte sequence, so a capture
+// cut off mid-rune (the body was longer than the cap) is not mistaken for a
+// binary payload. A valid encoding of U+FFFD decodes with size > 1 and is kept.
+func trimPartialRune(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax && len(b) > 0; i++ {
+		if r, size := utf8.DecodeLastRune(b); r != utf8.RuneError || size > 1 {
+			return b
+		}
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
 // RequestLogger returns a gin middleware that logs every HTTP request with its
 // method, path, status, latency, and client metadata. When the logger runs at
 // debug level (development), it additionally captures and logs the request and
@@ -116,8 +130,15 @@ func RequestLogger(l *slog.Logger, bodyLimit int) gin.HandlerFunc {
 			// it, and replace the body with a replayable reader so handlers are
 			// unaffected. The read is capped at bodyLimit+1 bytes rather than
 			// the whole payload.
+			// The declared Content-Type is a client claim, so the prefix must
+			// also be valid UTF-8 before it is logged: a binary payload sent as
+			// text/plain would otherwise land in the log sink.
 			if isTextual(c.Request.Header.Get("Content-Type")) {
-				reqCapture, c.Request.Body = capturePrefix(c.Request.Body, bodyLimit)
+				var captured []byte
+				captured, c.Request.Body = capturePrefix(c.Request.Body, bodyLimit)
+				if utf8.Valid(trimPartialRune(captured)) {
+					reqCapture = captured
+				}
 			}
 			c.Writer = &responseWriter{ResponseWriter: c.Writer, limit: bodyLimit}
 		}

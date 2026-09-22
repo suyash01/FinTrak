@@ -208,6 +208,15 @@ func (srv *Server) BulkLinkLoan(c *gin.Context) {
 // maxLoanTenureMonths mirrors the CHECK on loan_schedules.tenure_months.
 const maxLoanTenureMonths = 600
 
+// maxLoanAnnualRateBps bounds the rate for arithmetic, not for policy:
+// loanEMI raises (1+r) to the tenure, so a rate the JSON decoder accepts
+// (annual_rate_bps is a plain INTEGER) overflows float64 to +Inf — with the
+// longest tenure the EMI turns into NaN, which money.Amount converts to an
+// out-of-range int64. The threshold is ~271,000 bps (2,710%) at 600 months;
+// 100,000 bps (1,000%) leaves a 2.7x margin and still admits every rate any
+// real lender quotes.
+const maxLoanAnnualRateBps = 100000
+
 // GetLoanSchedule returns a loan account's amortization schedule: the terms, the
 // generated table (each installment split into principal and interest), and the
 // progress derived from the EMI transactions attached to the loan. The schedule
@@ -259,6 +268,10 @@ func (srv *Server) UpsertLoanSchedule(c *gin.Context) {
 	}
 	if req.AnnualRateBps < 0 {
 		validation.RespondError(c, "annualRateBps must not be negative", http.StatusBadRequest)
+		return
+	}
+	if req.AnnualRateBps > maxLoanAnnualRateBps {
+		validation.RespondError(c, fmt.Sprintf("annualRateBps must not exceed %d", maxLoanAnnualRateBps), http.StatusBadRequest)
 		return
 	}
 	if req.TenureMonths < 1 || req.TenureMonths > maxLoanTenureMonths {

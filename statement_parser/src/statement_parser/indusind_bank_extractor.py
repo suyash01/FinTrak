@@ -95,6 +95,7 @@ import pdfplumber
 from pypdf import PdfReader
 
 from .limits import ensure_page_limit
+from .money import same_money
 
 
 class Word(TypedDict):
@@ -216,6 +217,17 @@ _FALLBACK_BAL_RIGHT = 562.7
 # x1 matching tolerance around a column's right edge.
 _COL_TOL = 2.0
 
+# Left edge of the first money column (the 328.9 divider above): a token that
+# starts left of it belongs to Particulars or to Chq No/Ref No, however much it
+# looks like an amount. Without this bound the classification was by right edge
+# alone, so a narration or reference token such as "NEFT 1,000.00" was booked as
+# a withdrawal — inventing a debit and losing the row's real deposit.
+_FALLBACK_AMOUNT_MIN_X0 = 328.9
+
+# Money tokens are right-aligned, so a wide amount may start a little left of
+# its column's divider; the ref column ends 328.9 - 6.0 = 322.9 away from it.
+_AMOUNT_LEFT_TOL = 6.0
+
 # Words within this many PDF points of each other share a visual line.
 # The date cell and the FIRST particulars line of the same record are not
 # always on the same baseline: on the FY2019-20 vintage two records print
@@ -244,7 +256,12 @@ _MONTH_NUM = {
 }
 
 _DATE_RE = re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$")
-_AMOUNT_RE = re.compile(r"^\d{1,3}(,\d{3})*\.\d{2}$")
+# Any digit grouping followed by two decimals: the template prints western
+# grouping (1,000.00) but lakh grouping (1,00,000.00) is just as valid on an
+# Indian statement, and the sibling extractors accept it. Requiring 3-digit
+# groups made _is_amount reject such a token, which cost the row its amount
+# (and left the token glued into the description).
+_AMOUNT_RE = re.compile(r"^[\d,]+\.\d{2}$")
 
 
 def _parse_amount(text: Optional[str]) -> Optional[float]:
@@ -325,6 +342,19 @@ def _find_header_edges(lines: List[List[Word]]) -> Tuple[float, float, float]:
     return wd, dep, bal
 
 
+def _find_amount_min_x0(lines: List[List[Word]]) -> float:
+    """Return the left edge of the first money column: the Withdrawal header's
+    own left edge when the header line is present, otherwise the template's
+    divider."""
+    for line in lines:
+        texts = [w["text"] for w in line]
+        if "Particulars" in texts and "Withdrawal" in texts:
+            for word in line:
+                if word["text"] == "Withdrawal":
+                    return word["x0"]
+    return _FALLBACK_AMOUNT_MIN_X0
+
+
 def _is_amount(word: Word) -> bool:
     return bool(_AMOUNT_RE.match(word["text"]))
 
@@ -347,6 +377,7 @@ def _parse_page(
     """
     lines: List[List[Word]] = _group_lines(page_words)
     wd_right, dep_right, bal_right = _find_header_edges(lines)
+    amount_min_x0 = _find_amount_min_x0(lines)
 
     rows: List[Transaction] = []
     cur: Optional[Transaction] = None
@@ -373,6 +404,11 @@ def _parse_page(
                     continue
                 value = _parse_amount(word["text"])
                 if value is None:
+                    continue
+                # Right-aligned, so the right edge picks the column — but only
+                # for a token that starts inside the amount region (see
+                # _FALLBACK_AMOUNT_MIN_X0).
+                if word["x0"] < amount_min_x0 - _AMOUNT_LEFT_TOL:
                     continue
                 if word["x1"] <= wd_right + _COL_TOL:
                     withdrawal = value
@@ -590,13 +626,17 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         # Balance chain over EVERY parsed row (incl. B/F and C/F).
         for i in range(1, len(parsed)):
             prev, cur = parsed[i - 1], parsed[i]
-            if cur["balance"] is None:
+            if cur["balance"] is None or prev["balance"] is None:
+                # One side lost its balance token, so the pair cannot be
+                # checked; coercing the missing side to 0.00 reported a
+                # fabricated break built on a zero that was never printed,
+                # while the row that actually failed to parse went unreported.
                 continue
             expected = round(
-                (prev["balance"] or 0) + (cur["deposit"] or 0) - (cur["withdrawal"] or 0),
+                prev["balance"] + (cur["deposit"] or 0) - (cur["withdrawal"] or 0),
                 2,
             )
-            if abs(expected - cur["balance"]) > 0.01:
+            if not same_money(expected, cur["balance"]):
                 validation_errors.append(
                     f"balance chain broken at txn {i}: {prev['date']} "
                     f"{prev['balance']} -> {cur['date']} dep {cur['deposit']} "
@@ -616,7 +656,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> Statement
         if (
             summary_balance is not None
             and closing_balance is not None
-            and abs(summary_balance - closing_balance) > 0.01
+            and not same_money(summary_balance, closing_balance)
         ):
             validation_errors.append(
                 f"closing balance mismatch (last row {closing_balance}, "

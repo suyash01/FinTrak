@@ -536,8 +536,11 @@ func TestLogout(t *testing.T) {
 
 func TestRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	srv := newTestServer(mock)
 	r := gin.New()
-	srv := newTestServer(nil)
 	r.POST("/auth/refresh", srv.Refresh)
 
 	findCookie := func(cookies []*http.Cookie, name string) *http.Cookie {
@@ -553,6 +556,9 @@ func TestRefresh(t *testing.T) {
 		userID := uuid.New()
 		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
 		require.NoError(t, err)
+		mock.ExpectQuery("SELECT role FROM users").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"role"}).AddRow("user"))
 
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
@@ -571,6 +577,62 @@ func TestRefresh(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, userID, claims.UserID)
 		assert.Equal(t, "user", claims.Role)
+	})
+
+	t.Run("re-reads the role so a demotion reaches the new access token", func(t *testing.T) {
+		userID := uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "admin", testJWTSecret)
+		require.NoError(t, err)
+		mock.ExpectQuery("SELECT role FROM users").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"role"}).AddRow("user"))
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refresh})
+		r.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		access := findCookie(w.Result().Cookies(), auth.AccessCookieName)
+		require.NotNil(t, access)
+		claims, err := auth.ParseToken(access.Value, testJWTSecret, auth.TokenTypeAccess)
+		require.NoError(t, err)
+		assert.Equal(t, "user", claims.Role, "the database role must win over the token's claim")
+	})
+
+	t.Run("a deleted account ends the session", func(t *testing.T) {
+		userID := uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+		mock.ExpectQuery("SELECT role FROM users").
+			WithArgs(userID).
+			WillReturnError(pgx.ErrNoRows)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refresh})
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		access := findCookie(w.Result().Cookies(), auth.AccessCookieName)
+		require.NotNil(t, access)
+		assert.Less(t, access.MaxAge, 0)
+	})
+
+	t.Run("role lookup error", func(t *testing.T) {
+		userID := uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+		mock.ExpectQuery("SELECT role FROM users").
+			WithArgs(userID).
+			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{Name: auth.RefreshCookieName, Value: refresh})
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
 	})
 
 	t.Run("missing refresh cookie", func(t *testing.T) {

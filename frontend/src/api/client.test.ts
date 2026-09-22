@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import api, { getStoredUser, storeUser, downloadCSV } from "./client";
 import { NetworkError } from "./errors";
+import { readCached } from "./offlineCache";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
 import { getOutboxSnapshot } from "./outbox";
 
@@ -447,6 +448,21 @@ describe("offline behaviour", () => {
     await api.getAccounts();
 
     expect(getOfflineSnapshot().servedFromCache).toBe(false);
+  });
+
+  it("clears the cached reads when a 401 ends the session", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a1" }]));
+    await api.getAccounts();
+    expect(readCached("u1", "/accounts")).toEqual([{ id: "a1" }]);
+
+    fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));
+    await expect(api.getAccounts()).rejects.toThrow("Unauthorized");
+
+    // The cached ledger is namespaced by the id of a user the app has just
+    // forgotten, so nothing could ever read or clear it again: the sign-out has
+    // to drop it here, exactly as an explicit logout does.
+    expect(readCached("u1", "/accounts")).toBeNull();
+    expect(getStoredUser()).toBeNull();
   });
 
   it("does not keep a read that is outside the allowlist", async () => {

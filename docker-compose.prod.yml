@@ -79,7 +79,12 @@ services:
       service: statement-parser
 
 networks:
+  # Pinned so TRUSTED_PROXIES (defaulted to this subnet above) always names the
+  # network the frontend nginx proxies from. Override APP_SUBNET to move both.
   app-net:
+    ipam:
+      config:
+        - subnet: ${APP_SUBNET:-172.28.0.0/24}
 
 volumes:
   pgdata:

@@ -721,7 +721,11 @@ func TestGetCashbackSuggestionsErrors(t *testing.T) {
 	})
 }
 
-func TestGetTransferSuggestionsScanErrorIsSkipped(t *testing.T) {
+// A scan failure means the SELECT and the struct no longer agree, so the list
+// would be silently truncated: the sibling handlers (GetLinks,
+// GetCashbackSuggestions) report it as a server error, and this one now does
+// too.
+func TestGetTransferSuggestionsScanErrorFails(t *testing.T) {
 	r, srv, mock := newLinkTestRouter(t)
 	r.GET("/links/transfer-suggestions", srv.GetTransferSuggestions)
 
@@ -732,7 +736,7 @@ func TestGetTransferSuggestionsScanErrorIsSkipped(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/links/transfer-suggestions", nil))
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"hasMore":false`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NotContains(t, w.Body.String(), `"hasMore"`)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

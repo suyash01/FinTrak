@@ -803,6 +803,58 @@ func TestIntegrationUserBackupRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusConflict, status)
 }
 
+// TestIntegrationRestoreOfACategoryInAnAbsentGroup covers a bundle whose
+// category references a group the target instance does not have — what a bundle
+// looks like when a category was filed under an admin-created global group that
+// is missing on the target. The restore must not fail on
+// categories_group_id_fkey; the category lands in a fallback group instead.
+func TestIntegrationRestoreOfACategoryInAnAbsentGroup(t *testing.T) {
+	alice := newAPIClient(t)
+	alice.register("absent-group-source@example.com")
+
+	bank := alice.createAccount("Checking", "bank", nil)
+	groceries := categoryByName(t, alice.categories(), "Groceries")
+	alice.createTransaction(bank.ID, &groceries.ID, "2024-05-01", "Groceries", 200, "debit")
+
+	var bundle models.BackupBundle
+	alice.call(http.MethodGet, "/api/v1/export", nil, http.StatusOK, &bundle)
+
+	absent := uuid.New().String()
+	rewritten := false
+	for i := range bundle.Categories {
+		if bundle.Categories[i].Name == "Groceries" {
+			bundle.Categories[i].GroupID = absent
+			rewritten = true
+		}
+	}
+	require.True(t, rewritten, "the bundle must carry the Groceries category")
+
+	bob := newAPIClient(t)
+	bob.register("absent-group-target@example.com")
+
+	var result models.BackupImportResult
+	bob.call(http.MethodPost, "/api/v1/import", bundle, http.StatusOK, &result)
+	require.Equal(t, 1, result.Categories)
+	require.NotEmpty(t, result.Warnings, "substituting the group must be reported")
+
+	bobCats := bob.categories()
+	var imported *models.Category
+	for i := range bobCats {
+		if bobCats[i].Name == "Groceries" && bobCats[i].GroupName == "Imported" {
+			imported = &bobCats[i]
+		}
+	}
+	require.NotNil(t, imported, "the category must land in the fallback group")
+
+	var bobAccounts []models.Account
+	bob.call(http.MethodGet, "/api/v1/accounts", nil, http.StatusOK, &bobAccounts)
+	require.Len(t, bobAccounts, 1)
+	txns := bob.transactions(bobAccounts[0].ID)
+	require.Len(t, txns, 1)
+	require.NotNil(t, txns[0].CategoryID)
+	require.Equal(t, imported.ID, *txns[0].CategoryID, "the transaction must reference the restored category")
+}
+
 // TestIntegrationMoneyFlowGraph exercises the money-flow aggregation against
 // real PostgreSQL: the grouped queries, their GROUP BY clauses, and the
 // link-summary join are all validated by the database, which pgxmock cannot do.

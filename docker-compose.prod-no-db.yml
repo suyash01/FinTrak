@@ -33,10 +33,14 @@
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
 #   TRUSTED_PROXIES - Comma-separated proxy CIDRs whose X-Forwarded-For /
-#                     X-Real-IP headers are believed (e.g. the reverse proxy or
-#                     Docker network in front of the backend). Empty (default)
-#                     trusts no forwarded headers, so a direct client cannot
-#                     spoof its IP to evade the auth rate limit.
+#                     X-Real-IP headers are believed. Defaults to APP_SUBNET
+#                     (the app-net below), because every browser request
+#                     reaches the API through the frontend nginx: without it
+#                     gin reports that proxy's address as the client IP and all
+#                     users share one auth rate-limit bucket, so a single
+#                     unauthenticated client can lock everyone out of login and
+#                     registration. Set it empty to trust no forwarded headers
+#                     (only correct if nothing proxies to the backend).
 #   IMAGE_REPO      - Registry prefix (required; e.g. ghcr.io/your-org)
 #   IMAGE_TAG       - Released image tag to deploy (required; e.g. v1.2.3).
 #                     There is intentionally no "latest" default: pinning a
@@ -63,7 +67,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_BODY_LIMIT=${LOG_BODY_LIMIT:-0}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
-      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-${APP_SUBNET:-172.28.0.0/24}}
       - APP_ENV=production
       - STATEMENT_PARSER_URL=http://statement-parser:5000
     depends_on:
@@ -134,4 +138,9 @@ services:
       - app-net
 
 networks:
+  # Pinned so TRUSTED_PROXIES (defaulted to this subnet above) always names the
+  # network the frontend nginx proxies from. Override APP_SUBNET to move both.
   app-net:
+    ipam:
+      config:
+        - subnet: ${APP_SUBNET:-172.28.0.0/24}

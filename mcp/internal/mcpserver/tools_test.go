@@ -305,6 +305,50 @@ func TestGuardAdmitsTheSessionRoutes(t *testing.T) {
 	}
 }
 
+// TestIDToolsRejectAnEmptyID keeps a missing id from being reported as a
+// read-only refusal: an empty id reaches the client as /accounts//billing-cycles
+// or /recurring//terms, whose empty path segment the guard rejects, so the model
+// is told the server will not perform the read instead of that the argument is
+// missing — and reports a broken server rather than asking for one.
+func TestIDToolsRejectAnEmptyID(t *testing.T) {
+	cases := []struct {
+		tool    string
+		args    map[string]any
+		missing string
+	}{
+		{tool: "list_billing_cycles", args: map[string]any{"accountId": ""}, missing: "accountId is required"},
+		{tool: "get_loan_schedule", args: map[string]any{"accountId": ""}, missing: "accountId is required"},
+		{tool: "get_loan_payoff", args: map[string]any{"accountId": "", "date": "2025-01-01"}, missing: "accountId is required"},
+		{tool: "forecast_recurring", args: map[string]any{"id": ""}, missing: "id is required"},
+		{tool: "get_recurring_suggestions", args: map[string]any{"id": ""}, missing: "id is required"},
+		{tool: "list_recurring_transactions", args: map[string]any{"id": ""}, missing: "id is required"},
+		{tool: "list_recurring_terms", args: map[string]any{"id": ""}, missing: "id is required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			stub := newStubAPI(t)
+			// The guard is installed, as in production, so a missing argument
+			// would otherwise come back as the guard's refusal rather than as
+			// the validation error under test.
+			c := stub.client(t)
+			c.SetTransport(NewGuard(c, http.DefaultTransport))
+			session := connect(t, c)
+
+			res := call(t, session, tc.tool, tc.args)
+			if !res.IsError {
+				t.Fatalf("%s with an empty id succeeded, want a validation error", tc.tool)
+			}
+			if text := errorText(res); !strings.Contains(text, tc.missing) {
+				t.Errorf("%s reported %q, want it to say %q", tc.tool, text, tc.missing)
+			}
+			if requests := stub.requests(); len(requests) != 0 {
+				t.Errorf("%s sent %v, want no request for an empty id", tc.tool, requests)
+			}
+		})
+	}
+}
+
 // spec is the part of backend/openapi.yaml these tests read.
 type spec struct {
 	Paths map[string]map[string]any `yaml:"paths"`

@@ -33,7 +33,7 @@ self.addEventListener("install", (event) => {
     (async () => {
       const cache = await caches.open(SHELL_CACHE);
       await cache.addAll(SHELL_ASSETS);
-      await precacheBuildAssets(cache);
+      await precacheBuildAssets();
       // Take over on the next load instead of waiting for every tab to close:
       // a self-hosted app has no fleet of sessions to protect.
       await self.skipWaiting();
@@ -45,7 +45,7 @@ self.addEventListener("install", (event) => {
 // makes the very first controlled load work offline. Without this the shell
 // would boot to a page whose scripts are not cached yet, because the assets of
 // the visit that installed the worker were fetched before it took control.
-async function precacheBuildAssets(cache) {
+async function precacheBuildAssets() {
   try {
     const response = await fetch(SHELL_KEY, { cache: "reload" });
     const html = await response.text();
@@ -53,6 +53,10 @@ async function precacheBuildAssets(cache) {
     for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
       urls.add(match[1]);
     }
+    // These bundles are read back through cacheFirst, which owns the asset
+    // cache: precaching them anywhere else would store copies no request can
+    // ever match, and the shell would boot offline to a page without scripts.
+    const cache = await caches.open(ASSET_CACHE);
     await Promise.all(
       [...urls].map((url) => cache.add(url).catch(() => undefined)),
     );

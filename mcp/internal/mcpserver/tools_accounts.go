@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -12,6 +14,12 @@ import (
 
 // Accounts, account types, billing cycles and loan schedules
 // (backend/handlers/account.go, account_type.go, billing_cycle.go, loan.go).
+
+// errAccountIDRequired rejects an account id a tool cannot work without. The
+// client would turn an empty id into an empty path segment, which the read-only
+// guard refuses — reporting a policy refusal for what is really a missing
+// argument, and sending the model looking for a broken server instead of an id.
+var errAccountIDRequired = errors.New("accountId is required: ids come from list_accounts")
 
 // accountIDArgs is the input of a tool that operates on one account.
 type accountIDArgs struct {
@@ -86,18 +94,27 @@ func installListAccountTypes(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 
 func installListBillingCycles(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in accountIDArgs) (any, error) {
+		if strings.TrimSpace(in.AccountID) == "" {
+			return nil, errAccountIDRequired
+		}
 		return c.ListBillingCycles(ctx, in.AccountID)
 	})
 }
 
 func installGetLoanSchedule(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in accountIDArgs) (any, error) {
+		if strings.TrimSpace(in.AccountID) == "" {
+			return nil, errAccountIDRequired
+		}
 		return c.LoanSchedule(ctx, in.AccountID)
 	})
 }
 
 func installGetLoanPayoff(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in loanPayoffArgs) (any, error) {
+		if strings.TrimSpace(in.AccountID) == "" {
+			return nil, errAccountIDRequired
+		}
 		return c.LoanPayoff(ctx, in.AccountID, in.Date)
 	})
 }

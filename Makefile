@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-client test-client-cover-check vet-client build-client test-tui test-tui-cover test-tui-cover-check vet-tui build-tui test-mcp test-mcp-cover-check vet-mcp build-mcp build-backend build-frontend openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-parser-cover-check test-client test-client-cover-check vet-client build-client test-tui test-tui-cover test-tui-cover-check vet-tui build-tui test-mcp test-mcp-cover-check vet-mcp build-mcp build-backend build-frontend openapi-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -72,6 +72,12 @@ test-integration:
 test-parser:
 	cd statement_parser && uv run python -m unittest discover -s tests -v
 
+# The parser's own floor, at the same 90% the Codecov flag reports: without it
+# the documented target was aspirational, because nothing failed on a regression.
+test-parser-cover-check:
+	cd statement_parser && uv run --frozen coverage run --source=statement_parser -m unittest discover -s tests
+	cd statement_parser && uv run --frozen coverage report --fail-under=90
+
 vet:
 	cd backend && go vet ./...
 
@@ -89,7 +95,7 @@ test-client:
 # modules; the target matches the backend's library-level gate.
 test-client-cover-check:
 	cd client && go test -covermode=atomic -coverprofile=coverage.out ./...
-	cd backend && go run ./cmd/covercheck -profile ../client/coverage.out -min 85
+	cd backend && go run ./cmd/covercheck -profile ../client/coverage.out -min 85 -root ../client
 
 vet-client:
 	cd client && go vet ./...
@@ -105,12 +111,12 @@ test-tui-cover:
 
 # The floor is enforced by the backend's covercheck (stdlib-only), the same tool
 # and the same baseline the CI job uses. It sits at 18% because the shared API
-# client moved out to client/ (25.25% -> 19.41% when it left, with the client
+# client moved out to client/ (25.25% -> 19.77% when it left, with the client
 # now carrying its own 85% floor): the render-heavy screens in internal/ui are
 # what this number really measures. Ratchet it up as screen tests land.
 test-tui-cover-check:
 	cd tui && go test -covermode=atomic -coverprofile=coverage.out ./...
-	cd backend && go run ./cmd/covercheck -profile ../tui/coverage.out -min 18
+	cd backend && go run ./cmd/covercheck -profile ../tui/coverage.out -min 18 -root ../tui
 
 vet-tui:
 	cd tui && go vet ./...
@@ -125,7 +131,7 @@ test-mcp:
 # against openapi.yaml and the binary's end-to-end test keep it high.
 test-mcp-cover-check:
 	cd mcp && go test -covermode=atomic -coverprofile=coverage.out ./...
-	cd backend && go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80
+	cd backend && go run ./cmd/covercheck -profile ../mcp/coverage.out -min 80 -root ../mcp
 
 vet-mcp:
 	cd mcp && go vet ./...

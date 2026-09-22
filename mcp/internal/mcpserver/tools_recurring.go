@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -16,6 +18,12 @@ import (
 // transactions itself never, and the user matches real transactions to it by
 // hand. These tools expose the series, what it forecasts, and what the server
 // thinks fits it.
+
+// errSeriesIDRequired rejects a series id a tool cannot work without, for the
+// same reason as errAccountIDRequired: an empty id reaches the guard as an
+// empty path segment, and its refusal reports a policy decision where the real
+// answer is a missing argument.
+var errSeriesIDRequired = errors.New("id is required: ids come from list_recurring")
 
 // seriesArgs identifies one series.
 type seriesArgs struct {
@@ -86,24 +94,36 @@ func installListRecurring(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 
 func installForecastRecurring(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in forecastArgs) (any, error) {
+		if strings.TrimSpace(in.ID) == "" {
+			return nil, errSeriesIDRequired
+		}
 		return c.RecurringForecast(ctx, in.ID, in.Count)
 	})
 }
 
 func installRecurringSuggestions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in recurringSuggestionArgs) (any, error) {
+		if strings.TrimSpace(in.ID) == "" {
+			return nil, errSeriesIDRequired
+		}
 		return c.RecurringSuggestions(ctx, in.ID, in.Limit)
 	})
 }
 
 func installRecurringTransactions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in seriesArgs) (any, error) {
+		if strings.TrimSpace(in.ID) == "" {
+			return nil, errSeriesIDRequired
+		}
 		return c.RecurringTransactions(ctx, in.ID)
 	})
 }
 
 func installRecurringTerms(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in seriesArgs) (any, error) {
+		if strings.TrimSpace(in.ID) == "" {
+			return nil, errSeriesIDRequired
+		}
 		return c.ListRecurringTerms(ctx, in.ID)
 	})
 }

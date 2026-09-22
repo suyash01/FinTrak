@@ -676,6 +676,27 @@ func TestDeleteRecurringSeriesNotFound(t *testing.T) {
 // GetRecurringForecast
 // ---------------------------------------------------------------------------
 
+// The forecast and the suggestion filter must agree on whether a transaction
+// covers an occurrence: otherwise the API proposes a link its own forecast
+// reports as unmatched forever.
+func TestRecurringOccurrenceMatchedUsesTheSuggestionTolerance(t *testing.T) {
+	occ := mustDate("2026-03-15")
+	monthly := models.RecurringSeries{Frequency: recurringFreqMonthly, Interval: 1}
+	yearly := models.RecurringSeries{Frequency: recurringFreqYearly, Interval: 1}
+
+	// Five days off: inside the monthly tolerance (20 days), outside the old
+	// fixed three-day window.
+	assert.True(t, recurringOccurrenceMatched(occ,
+		[]recurringAttachedTxn{{date: mustDate("2026-03-20")}}, recurringMaxDaysOff(monthly)))
+	// A yearly series' tolerance is half its period, so a wider gap still counts.
+	assert.True(t, recurringOccurrenceMatched(occ,
+		[]recurringAttachedTxn{{date: mustDate("2026-05-30")}}, recurringMaxDaysOff(yearly)))
+	// Beyond the tolerance, and with nothing attached, nothing matches.
+	assert.False(t, recurringOccurrenceMatched(occ,
+		[]recurringAttachedTxn{{date: mustDate("2026-04-20")}}, recurringMaxDaysOff(monthly)))
+	assert.False(t, recurringOccurrenceMatched(occ, nil, recurringMaxDaysOff(monthly)))
+}
+
 func TestGetRecurringForecast(t *testing.T) {
 	r, _, mock := recurringTestRouter(t)
 	id := uuid.New()

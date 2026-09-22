@@ -403,7 +403,10 @@ func mergeMonthEndRows(transactions []models.Transaction, rows []models.Transact
 	for i < len(transactions) && j < len(rows) {
 		td, rd := dateOnly(transactions[i].Date), dateOnly(rows[j].Date)
 		if asc {
-			if td.Before(rd) {
+			// A same-day tie puts the transaction first so the month-end row
+			// still follows it (the descending branch below already puts the
+			// row first, which is the same order reversed).
+			if !td.After(rd) {
 				merged = append(merged, transactions[i])
 				i++
 			} else {

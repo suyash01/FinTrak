@@ -78,7 +78,7 @@ import type {
   ValidateTransactionsResponse,
 } from "../types";
 import { ApiError, NetworkError, isNetworkError } from "./errors";
-import { isCacheablePath, readCached, writeCached } from "./offlineCache";
+import { clearCached, isCacheablePath, readCached, writeCached } from "./offlineCache";
 import { enqueueCreate } from "./outbox";
 import { setServedFromCache } from "./offlineStatus";
 
@@ -196,6 +196,13 @@ function isSessionCheck(url: string): boolean {
 }
 
 function redirectToLogin(): void {
+  // The cached reads are the departing user's ledger, and they are namespaced
+  // by an id that is about to be forgotten: once the stored user is gone
+  // nothing can reach them again, so a session ending here has to drop them the
+  // way an explicit logout does. Queued creates are kept — they are unsent
+  // work, not a cache.
+  const departing = getStoredUser();
+  if (departing) clearCached(departing.id);
   storeUser(null);
   if (!window.location.pathname.startsWith("/login")) {
     window.location.href = "/login";
