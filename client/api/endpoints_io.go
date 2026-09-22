@@ -17,11 +17,12 @@ import (
 //
 // It is the one multipart endpoint: the bytes go as the "file" part and the
 // other fields as form values. Errors a caller must handle: 400 when no file is
-// attached or it is not a PDF, 413 above 20 MB, 401 when the PDF is
-// password-protected (retry with password), 429 when the parser is busy (retry
-// shortly), 408 when the request was cancelled, and 502 when the parser service
-// is unavailable. A non-empty ValidationErrors in the result means the parser's
-// own reconciliation failed and the rows are suspect.
+// attached or it is not a PDF, 413 above 20 MB, 422 when the PDF is
+// password-protected (retry with password) or nothing could be extracted (a
+// scanned image-only file, or a mismatched extractor), 429 when the parser is
+// busy (retry shortly), 408 when the request was cancelled, and 502 when the
+// parser service is unavailable. A non-empty ValidationErrors in the result
+// means the parser's own reconciliation failed and the rows are suspect.
 func (c *Client) ParseStatement(ctx context.Context, filename string, pdf []byte, password, extractor, dateFormat string) (StatementParseResult, error) {
 	r, err := uploadRequest("/statements/parse", map[string]string{
 		"password":    password,
@@ -130,10 +131,11 @@ func (c *Client) PaperlessDocumentFile(ctx context.Context, id int, w io.Writer)
 // the configured paperlessTag is applied to the document after the import has
 // actually written the rows.
 //
-// A document whose PDF is password-protected fails with 401 and must be retried
-// with Password set; 400 means the integration is not configured or the
-// document id is missing, 404 that Paperless has no such document, and 502 that
-// Paperless is unreachable or rejected the token.
+// A document whose PDF is password-protected fails with 422 (retry with
+// Password set) — deliberately not 401, which means the session expired; 400
+// means the integration is not configured or the document id is missing, 404
+// that Paperless has no such document, and 502 that Paperless is unreachable or
+// rejected the token.
 func (c *Client) ImportPaperlessDocument(ctx context.Context, req PaperlessImportRequest) (StatementParseResult, error) {
 	return do[StatementParseResult](ctx, c, post("/paperless/import").withJSON(req))
 }

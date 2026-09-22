@@ -3111,7 +3111,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
-          description: Password required or incorrect
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: |
+            The statement could not be parsed: the PDF is password-protected
+            (retry with `password`), it has no extractable text (a scanned
+            image-only file), or the selected extractor does not match it.
           content:
             application/json:
               schema:
@@ -3442,6 +3447,15 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: |
+            The document could not be parsed: it is password-protected (retry
+            with `password`), it has no extractable text, or the selected
+            extractor does not match it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Document not found
           content:

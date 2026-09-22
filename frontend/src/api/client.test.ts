@@ -223,6 +223,23 @@ describe("api request", () => {
       api.importPaperlessDocument({ documentId: 1 }),
     ));
 
+  it("keeps the session when the parser rejects the upload", async () => {
+    // A rejected parse (a password-protected PDF, an unextractable scan) is a
+    // business failure, not an expired session: signing the user out here was
+    // the bug that the backend's 422 exists to prevent.
+    storeUser({ id: "u1", email: "a@b.c" });
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: "password required or incorrect" }, 422),
+    );
+
+    await expect(api.parseStatement(new FormData())).rejects.toThrow(
+      "password required or incorrect",
+    );
+
+    expect(window.location.href).not.toBe("/login");
+    expect(getStoredUser()).not.toBeNull();
+  });
+
   it("clears the stored user and redirects to /login on 401", async () => {
     storeUser({ id: 1 } as any);
     fetchMock.mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401));

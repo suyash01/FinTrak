@@ -936,7 +936,7 @@ func (srv *Server) ImportPaperlessDocument(c *gin.Context) {
 		req.Extractor = "sbi_cc"
 	}
 
-	result, status, errMsg, _ := srv.forwardStatementToParser(c.Request.Context(), pdf, filename, req.Extractor, req.Password, req.DateFormat)
+	result, status, errMsg := srv.forwardStatementToParser(c.Request.Context(), pdf, filename, req.Extractor, req.Password, req.DateFormat)
 	if errMsg != "" {
 		validation.RespondError(c, errMsg, status)
 		return

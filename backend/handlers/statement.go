@@ -113,7 +113,7 @@ func (srv *Server) ParseStatement(c *gin.Context) {
 	}
 	dateFormat := c.PostForm("date_format")
 
-	result, status, errMsg, _ := srv.forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
+	result, status, errMsg := srv.forwardStatementToParser(c.Request.Context(), pdf, file.Filename, extractor, password, dateFormat)
 	if errMsg != "" {
 		validation.RespondError(c, errMsg, status)
 		return
@@ -126,7 +126,7 @@ func (srv *Server) ParseStatement(c *gin.Context) {
 // it returns the HTTP status and message the caller should surface; on success
 // status is 200 and errMsg is empty. Shared by both the manual upload path
 // (ParseStatement) and the Paperless import path (ImportPaperlessDocument).
-func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string, bool) {
+func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, filename, extractor, password, dateFormat string) (*parseStatementResult, int, string) {
 	// Bound concurrent parser work: fail fast with 429 when saturated rather
 	// than queueing unbounded expensive parses. Callers may retry shortly.
 	if srv.parseSem != nil {
@@ -134,9 +134,9 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 		case srv.parseSem <- struct{}{}:
 			defer func() { <-srv.parseSem }()
 		case <-ctx.Done():
-			return nil, http.StatusRequestTimeout, "request cancelled", false
+			return nil, http.StatusRequestTimeout, "request cancelled"
 		default:
-			return nil, http.StatusTooManyRequests, "statement parser is busy; try again shortly", false
+			return nil, http.StatusTooManyRequests, "statement parser is busy; try again shortly"
 		}
 	}
 
@@ -145,11 +145,11 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		slog.Error("forwarding statement (create form file)", slog.String("error", err.Error()))
-		return nil, http.StatusInternalServerError, "internal server error", false
+		return nil, http.StatusInternalServerError, "internal server error"
 	}
 	if _, err := part.Write(pdf); err != nil {
 		slog.Error("forwarding statement (write pdf)", slog.String("error", err.Error()))
-		return nil, http.StatusInternalServerError, "internal server error", false
+		return nil, http.StatusInternalServerError, "internal server error"
 	}
 
 	if password != "" {
@@ -166,7 +166,7 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parserURL, body)
 	if err != nil {
 		slog.Error("forwarding statement (build request)", slog.String("error", err.Error()))
-		return nil, http.StatusInternalServerError, "internal server error", false
+		return nil, http.StatusInternalServerError, "internal server error"
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -177,36 +177,41 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("forwarding statement (calling parser)", slog.String("error", err.Error()))
-		return nil, http.StatusBadGateway, "statement parser is unavailable", false
+		return nil, http.StatusBadGateway, "statement parser is unavailable"
 	}
 	defer resp.Body.Close()
 
 	respBody, err := readAllLimited(resp.Body, maxParserResponse)
 	if err != nil {
 		slog.Error("forwarding statement (read parser response)", slog.String("error", err.Error()))
-		return nil, http.StatusBadGateway, "statement parser returned an oversized response", false
+		return nil, http.StatusBadGateway, "statement parser returned an oversized response"
 	}
 
 	if resp.StatusCode >= 500 {
 		slog.Error("statement parser returned an error", slog.Int("status", resp.StatusCode), slog.String("response", string(respBody)))
-		return nil, http.StatusBadGateway, "statement parser failed to process the file", false
+		return nil, http.StatusBadGateway, "statement parser failed to process the file"
 	}
 
 	var raw rawParserResponse
 	if err := json.Unmarshal(respBody, &raw); err != nil {
 		slog.Error("forwarding statement (unmarshal parser response)", slog.String("error", err.Error()))
-		return nil, http.StatusBadGateway, "statement parser returned an invalid response", false
+		return nil, http.StatusBadGateway, "statement parser returned an invalid response"
 	}
 
 	if raw.PasswordRequired || resp.StatusCode == http.StatusUnauthorized {
-		return nil, http.StatusUnauthorized, "password required or incorrect", true
+		// 422, not 401: a document that needs a password is not an expired
+		// session. Answering 401 made every client's session logic treat it as
+		// one — the SPA redirected to the login screen, and the shared client
+		// refreshed the session and re-uploaded the whole PDF before doing so —
+		// instead of showing the password field the form already has.
+		return nil, http.StatusUnprocessableEntity, "password required or incorrect"
 	}
 	if resp.StatusCode >= 400 || raw.Error != "" {
 		msg := raw.Error
 		if msg == "" {
 			msg = "failed to parse statement"
 		}
-		return nil, resp.StatusCode, msg, false
+		return nil, resp.StatusCode, msg
 	}
 
 	result := &parseStatementResult{
@@ -230,7 +235,7 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 		})
 	}
 
-	return result, http.StatusOK, "", false
+	return result, http.StatusOK, ""
 }
 
 // normalizeParserDate converts the parser's date string to the app's

@@ -146,8 +146,8 @@ type Import struct {
 	csvMapping csvMapping
 
 	// parseForm and csvForm are the forms whose submit fetches rather than
-	// saves. They are kept so a failed fetch is reported inside the form: a 401
-	// on a password-protected PDF has to be fixable without retyping the path.
+	// saves. They are kept so a failed fetch is reported inside the form: a
+	// password-protected PDF has to be fixable without retyping the path.
 	parseForm *Form
 	csvForm   *Form
 	// docForm is the document the open parse form was opened for. It survives a
@@ -577,7 +577,7 @@ func importSummary(summary map[string]string) string {
 // acceptParse stages a finished parse. Neither parse endpoint writes, so an
 // error costs the user nothing but a retry — which is why the form stays open
 // with the message inside it, and the document it was opened for stays on the
-// screen: a password-protected PDF answers 401 until the password is filled in.
+// screen: a password-protected PDF answers 422 until the password is filled in.
 func (i *Import) acceptParse(res api.StatementParseResult, err error, batch importBatch) tea.Cmd {
 	if err != nil {
 		if f := i.parseForm; f != nil && !f.Closed() {
@@ -854,7 +854,7 @@ func (i *Import) openStatementForm() {
 		},
 		{
 			Label: "Password", Kind: FieldPassword, Width: 24,
-			Help: "only for a password-protected PDF: without it the parse answers 401",
+			Help: "only for a password-protected PDF: without it the parse answers 422",
 		},
 	}, i.parseOptionFields()...)
 	i.ctx.Open(NewForm("import.parse.form", "Parse a statement PDF", fields, func(f *Form) tea.Cmd {
@@ -929,7 +929,7 @@ func (i *Import) startPaperlessParse() tea.Cmd {
 func (i *Import) openPaperlessForm(doc api.PaperlessDocument) {
 	fields := append([]Field{{
 		Label: "Password", Kind: FieldPassword, Width: 24,
-		Help: "only for a password-protected document: without it the parse answers 401",
+		Help: "only for a password-protected document: without it the parse answers 422",
 	}}, i.parseOptionFields()...)
 	i.docForm = &doc
 	i.ctx.Open(NewForm("import.paperless.form", fmt.Sprintf("Parse document %d", doc.ID), fields, func(f *Form) tea.Cmd {
@@ -1653,9 +1653,10 @@ func (i *Import) footerLine() string {
 }
 
 // statementBody documents the statement pane: what the extractor registry holds
-// and the three refusals the user can do something about. A 401 means the PDF is
-// password-protected, a 413 that the upload is too large, and a 429 that the
-// parser is busy and the same file should be sent again shortly.
+// and the three refusals the user can do something about. A 422 naming the
+// password means the PDF is password-protected, a 413 that the upload is too
+// large, and a 429 that the parser is busy and the same file should be sent
+// again shortly.
 func (i *Import) statementBody(width int) string {
 	th := i.ctx.Theme
 	wrap := max(20, width)
@@ -1680,7 +1681,7 @@ func (i *Import) statementBody(width int) string {
 		lines = append(lines, th.Subtle.Render(wrapText("extractors: "+strings.Join(labels, " · "), wrap)))
 	}
 	lines = append(lines, "",
-		th.Subtle.Render(wrapText("A password-protected PDF answers 401, so retry with the password filled in. An upload over 20 MB is refused with 413. A 429 means the parser is busy, so send the file again in a moment.", wrap)))
+		th.Subtle.Render(wrapText("A password-protected PDF is refused with 422, so retry with the password filled in. An upload over 20 MB is refused with 413. A 429 means the parser is busy, so send the file again in a moment.", wrap)))
 	return strings.Join(lines, "\n")
 }
 

@@ -263,9 +263,12 @@ func TestParseStatementPasswordRequired(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	var respBody map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &respBody))
+	// 422, not 401: a password-protected PDF is not an expired session, and a
+	// 401 here made the SPA sign the user out (and the shared client refresh
+	// the session and re-upload the whole file) instead of showing the password
+	// field the form already has.
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	assert.Contains(t, w.Body.String(), "password required")
 }
 
 func TestParseStatementNoFile(t *testing.T) {
