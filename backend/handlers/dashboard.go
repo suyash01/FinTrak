@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/fintrak/backend/auth"
+	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -286,7 +287,13 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 
-	if err := ensureBillingCycles(ctx, srv.db, userID, accountID, *billingDay); err != nil {
+	// The regeneration detaches and recreates the account's cycles, so it runs
+	// in one transaction: an interruption between the detach and the delete
+	// would otherwise leave its transactions detached from cycles that still
+	// exist.
+	if err := db.WithTx(ctx, srv.db, func(tx pgx.Tx) error {
+		return ensureBillingCycles(ctx, tx, userID, accountID, *billingDay)
+	}); err != nil {
 		slog.Error("GetDashboardSummary (ensure billing cycles)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return

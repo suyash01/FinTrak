@@ -44,8 +44,6 @@ type flowPairTotal struct {
 // account.
 func (srv *Server) GetLinkCycles(c *gin.Context) {
 	userID := auth.GetUserID(c)
-	dateFrom := c.Query("dateFrom")
-	dateTo := c.Query("dateTo")
 	accountID := c.Query("accountId")
 
 	// Reject a malformed account id up front: the parameter is compared against
@@ -55,6 +53,18 @@ func (srv *Server) GetLinkCycles(c *gin.Context) {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
 			return
 		}
+	}
+
+	// The window bounds are compared against a date column, so they get the
+	// same 400 the money-flow endpoints sharing this helper already return
+	// instead of a Postgres parse error surfacing as a 500.
+	dateFrom, ok := parseQueryDate(c, "dateFrom", c.Query("dateFrom"))
+	if !ok {
+		return
+	}
+	dateTo, ok := parseQueryDate(c, "dateTo", c.Query("dateTo"))
+	if !ok {
+		return
 	}
 
 	rows, err := queryAccountLinkDetails(c, srv.db, userID, dateFrom, dateTo, accountID)

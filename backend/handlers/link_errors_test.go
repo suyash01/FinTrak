@@ -14,6 +14,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// A malformed txnId is compared against a uuid column, so it must be rejected
+// as a bad filter rather than surfacing as a Postgres cast error (500).
+func TestGetLinksRejectsMalformedTxnID(t *testing.T) {
+	r, srv, mock := newLinkTestRouter(t)
+	r.GET("/links", srv.GetLinks)
+
+	req, _ := http.NewRequest("GET", "/links?txnId=not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid txnId")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestGetLinksQueryError(t *testing.T) {
 	r, srv, mock := newLinkTestRouter(t)
 	r.GET("/links", srv.GetLinks)

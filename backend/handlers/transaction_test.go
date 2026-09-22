@@ -743,8 +743,8 @@ func TestGetTransactionsRejectsMalformedFilters(t *testing.T) {
 	r, srv, mock := newTransactionTestRouter(t)
 	r.GET("/transactions", srv.GetTransactions)
 
-	// A malformed date and a malformed amount are rejected before any query
-	// runs, rather than being passed to Postgres (a 500) or silently dropped.
+	// A malformed date, amount or id filter is rejected before any query runs,
+	// rather than being passed to Postgres (a 500) or silently dropped.
 	tests := []struct {
 		name      string
 		query     string
@@ -753,6 +753,13 @@ func TestGetTransactionsRejectsMalformedFilters(t *testing.T) {
 		{name: "dateFrom", query: "dateFrom=2024-1-5", errorText: "dateFrom must be YYYY-MM-DD"},
 		{name: "dateTo", query: "dateTo=yesterday", errorText: "dateTo must be YYYY-MM-DD"},
 		{name: "amount", query: "amount=abc", errorText: "invalid amount"},
+		// The id filters are bound to uuid columns: without the check they
+		// reach the database and answer 500 instead of rejecting the filter.
+		{name: "payeeId", query: "payeeId=not-a-uuid", errorText: "invalid payeeId"},
+		{name: "loanAccountId", query: "loanAccountId=not-a-uuid", errorText: "invalid loanAccountId"},
+		{name: "recurringId", query: "recurringId=not-a-uuid", errorText: "invalid recurringId"},
+		// The "none" sentinel does not excuse a malformed id next to it.
+		{name: "payeeId list", query: "payeeId=none,not-a-uuid", errorText: "invalid payeeId"},
 	}
 
 	for _, tt := range tests {
@@ -875,7 +882,8 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 			AddRow("Checking", intPtr(5)))
 
 	// ensureBillingCycles: no stale cycles, earliest txn, future max end date
-	// (nothing to generate), then back-fill.
+	// (nothing to generate), then back-fill. It runs in its own transaction.
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
@@ -896,6 +904,7 @@ func TestGetTransactionsWithAccountSummaryAnyAccountType(t *testing.T) {
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	// computeSummaryRows: one completed cycle ending today, containing the
 	// transaction above.

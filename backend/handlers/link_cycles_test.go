@@ -186,6 +186,28 @@ func TestGetLinkCyclesInvalidAccount(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// The cycle report shares its window filter with the money-flow endpoints, so a
+// malformed date must answer the same 400 they do rather than a 500.
+func TestGetLinkCyclesRejectsMalformedDates(t *testing.T) {
+	srv, _ := newMockServer(t)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.Default()
+	r.Use(testAuthMiddleware())
+	r.GET("/links/cycles", srv.GetLinkCycles)
+
+	for _, query := range []string{"dateFrom=oops", "dateTo=2024-1-5"} {
+		t.Run(query, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/links/cycles?"+query, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "must be YYYY-MM-DD")
+		})
+	}
+}
+
 func TestGetLinkCyclesQueryError(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)

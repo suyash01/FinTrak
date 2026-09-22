@@ -587,6 +587,30 @@ func TestIntegrationConcurrentSkipImportIsAtomic(t *testing.T) {
 	require.Len(t, a.transactions(acc.ID), 2)
 }
 
+// TestIntegrationMalformedFilterIDsAreRejected pins the filter validation
+// against a real database. pgx cannot encode a Go string for a uuid parameter,
+// so before the up-front checks these filters reached Postgres and answered 500
+// — something pgxmock cannot demonstrate, because the mock never encodes.
+func TestIntegrationMalformedFilterIDsAreRejected(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("malformed-filters@example.com")
+	acc := a.createAccount("Bank", "bank", nil)
+	a.createTransaction(acc.ID, nil, "2024-08-01", "Coffee", 10, "debit")
+
+	for _, path := range []string{
+		"/api/v1/transactions?payeeId=not-a-uuid",
+		"/api/v1/transactions?payeeId=none,not-a-uuid",
+		"/api/v1/transactions?loanAccountId=not-a-uuid",
+		"/api/v1/transactions?recurringId=not-a-uuid",
+		"/api/v1/transactions/export?payeeId=not-a-uuid",
+		"/api/v1/links?txnId=not-a-uuid",
+		"/api/v1/links/cycles?dateFrom=oops",
+	} {
+		status, body := a.request(http.MethodGet, path, nil)
+		require.Equal(t, http.StatusBadRequest, status, "%s -> %s", path, body)
+	}
+}
+
 // TestIntegrationConcurrentRestoreIsSerialized covers the restore guard: the
 // "user already has accounts" check is a plain read, so two simultaneous
 // imports of the same bundle would both see an empty user and each insert a

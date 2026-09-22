@@ -236,9 +236,11 @@ func TestBuildAccountSummaryRows(t *testing.T) {
 		mock.ExpectQuery("SELECT a.name, a.billing_day").
 			WithArgs(acctID, testUserID()).
 			WillReturnRows(pgxmock.NewRows([]string{"name", "billing_day"}).AddRow("Amex", intPtr(5)))
+		mock.ExpectBegin()
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, testUserID()).
 			WillReturnError(assert.AnError)
+		mock.ExpectRollback()
 
 		cycles, balances := srv.buildAccountSummaryRows(c, testUserID(), acctID, "", "")
 		assert.Nil(t, cycles)

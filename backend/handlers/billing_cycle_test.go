@@ -238,6 +238,9 @@ func TestGetBillingCycles(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 
+	// ensureBillingCycles runs in its own transaction.
+	mock.ExpectBegin()
+
 	// ensureBillingCycles: alignment check (no stale cycles).
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
@@ -267,6 +270,7 @@ func TestGetBillingCycles(t *testing.T) {
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(acctID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	// listBillingCycles.
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
@@ -313,6 +317,9 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 
+	// ensureBillingCycles runs in its own transaction.
+	mock.ExpectBegin()
+
 	// ensureBillingCycles: alignment check (no stale cycles).
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
@@ -342,6 +349,7 @@ func TestGetBillingCyclesNetOutstanding(t *testing.T) {
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(acctID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	// listBillingCycles: net activity per cycle — cycle A: 10000 purchases;
 	// cycle B: 3000 purchases − 500 refund − 8000 bill payment = −5500.

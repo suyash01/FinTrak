@@ -24,6 +24,16 @@ func (srv *Server) GetLinks(c *gin.Context) {
 	linkType := c.Query("type")
 	txnID := c.Query("txnId")
 
+	// The filter is compared against uuid columns, so a malformed value is
+	// rejected here rather than surfacing as a database error (a 500 for what
+	// is really a bad filter).
+	if txnID != "" {
+		if _, err := uuid.Parse(txnID); err != nil {
+			validation.RespondError(c, "invalid txnId", http.StatusBadRequest)
+			return
+		}
+	}
+
 	query := `SELECT l.id, l.type, l.from_txn_id, l.to_txn_id, l.notes, l.created_at,
 			  ft.date, ft.description, ft.amount, ft.type, fa.name,
 			  tt.date, tt.description, tt.amount, tt.type, ta.name

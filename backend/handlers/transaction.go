@@ -89,8 +89,10 @@ func isUUID(value string) bool {
 // linked, loan, recurring) into a txnFilter. The free-text search spans the
 // description, notes, payee name, and tags. It is used by both GetTransactions
 // and ExportTransactions so the list and the export can never disagree about
-// what a filter means. A malformed accountId, dateFrom/dateTo, or amount writes
-// a 400 and returns ok=false.
+// what a filter means. A malformed id (accountId, loanAccountId, payeeId,
+// recurringId), dateFrom/dateTo, or amount writes a 400 and returns ok=false:
+// every one of them is compared against a typed column, so letting it through
+// would answer 500 instead of rejecting the filter.
 //
 // The id parameters (accountId, loanAccountId, categoryId, groupId, payeeId,
 // tags) each take a comma-separated list and match a transaction when it
@@ -136,6 +138,12 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		accountClauses = append(accountClauses, f.clause("t.account_id = $%d", id))
 	}
 	for _, id := range loanAccountIDs {
+		// Same as accountId: compared against a uuid column, so a malformed
+		// value is rejected here rather than surfacing as a database error.
+		if _, err := uuid.Parse(id); err != nil {
+			validation.RespondError(c, "invalid loanAccountId", http.StatusBadRequest)
+			return nil, nil, false
+		}
 		accountClauses = append(accountClauses, f.clause("EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = $%d)", id))
 	}
 	f.anyOf(accountClauses)
@@ -212,6 +220,12 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 			payeeClauses = append(payeeClauses, "t.payee_id IS NULL")
 			continue
 		}
+		// Compared against a uuid column: a malformed value would otherwise
+		// reach the database and answer 500 instead of rejecting the filter.
+		if _, err := uuid.Parse(id); err != nil {
+			validation.RespondError(c, "invalid payeeId", http.StatusBadRequest)
+			return nil, nil, false
+		}
 		payeeClauses = append(payeeClauses, f.clause("t.payee_id = $%d", id))
 	}
 	f.anyOf(payeeClauses)
@@ -244,6 +258,10 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 	// attached to one series; recurring=linked|unlinked filters by whether the
 	// transaction is attached to any series.
 	if recurringID := c.Query("recurringId"); recurringID != "" {
+		if _, err := uuid.Parse(recurringID); err != nil {
+			validation.RespondError(c, "invalid recurringId", http.StatusBadRequest)
+			return nil, nil, false
+		}
 		f.param("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id AND ra.series_id = $%d)", recurringID)
 	}
 	switch c.Query("recurring") {
@@ -383,6 +401,10 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Release the list's connection before the summary rows below, which open
+	// their own transaction: the page is already in memory, so holding a second
+	// connection per request for the duration of that transaction is pure cost.
+	rows.Close()
 
 	// When a single account is filtered and sorted by date, inject computed
 	// summary rows: per-cycle "Total outstanding" rows for accounts with a

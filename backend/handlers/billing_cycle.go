@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fintrak/backend/auth"
+	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -18,7 +19,9 @@ import (
 )
 
 // cycleQueryer is the minimal query surface shared by *pgxpool.Pool (via
-// db.DBPool) and pgx.Tx so the billing-cycle helpers can run against either.
+// db.DBPool) and pgx.Tx so the billing-cycle readers can run against either.
+// The regeneration below is not a reader: it takes a pgx.Tx, so a caller cannot
+// run its multi-statement detach-and-recreate without a transaction.
 type cycleQueryer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -60,7 +63,13 @@ func (srv *Server) GetBillingCycles(c *gin.Context) {
 		return
 	}
 
-	if err := ensureBillingCycles(c, srv.db, userID, accountID, *billingDay); err != nil {
+	// The regeneration detaches and recreates the account's cycles, so it runs
+	// in one transaction: a cancellation or failure between the detach and the
+	// delete would otherwise leave the account's transactions detached from
+	// cycles that still exist.
+	if err := db.WithTx(c, srv.db, func(tx pgx.Tx) error {
+		return ensureBillingCycles(c, tx, userID, accountID, *billingDay)
+	}); err != nil {
 		slog.Error("GetBillingCycles (ensure cycles)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
@@ -85,7 +94,13 @@ func (srv *Server) GetBillingCycles(c *gin.Context) {
 // idempotent and safe to call on every request. If existing cycles no longer
 // end on the billing day (e.g. the day was changed), they are dropped first so
 // they can be regenerated.
-func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID, billingDay int) error {
+//
+// tx is the caller's transaction, which is what makes the regeneration atomic:
+// the drop path detaches transactions from their cycles before deleting and
+// recreating them, so an interrupted run without a transaction would leave the
+// account's cycles in place with every transaction detached from them (and any
+// manually assigned cycle replaced by the date-based default on the next read).
+func ensureBillingCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid.UUID, billingDay int) error {
 	// Billing days out of range fall back to the 1st of the month.
 	if billingDay <= 0 || billingDay > 31 {
 		billingDay = 1
@@ -93,7 +108,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 
 	// If the billing day changed, drop the stale cycles so they can be
 	// regenerated on the new day.
-	if err := dropMisalignedCycles(ctx, q, userID, accountID, billingDay); err != nil {
+	if err := dropMisalignedCycles(ctx, tx, userID, accountID, billingDay); err != nil {
 		return err
 	}
 
@@ -101,7 +116,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	// account has no transactions yet. COALESCE avoids a NULL scan for an empty
 	// account (MIN returns a single NULL row, not ErrNoRows).
 	var firstDate time.Time
-	err := q.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		"SELECT COALESCE(MIN(date), CURRENT_DATE) FROM transactions WHERE account_id = $1 AND user_id = $2",
 		accountID, userID).Scan(&firstDate)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -114,7 +129,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	// the first existing cycle, so late or backdated imports can still be
 	// attached to the cycle matching their transaction date.
 	coveredMonths := map[time.Time]bool{}
-	rows, err := q.Query(ctx,
+	rows, err := tx.Query(ctx,
 		"SELECT end_date FROM billing_cycles WHERE account_id = $1 AND user_id = $2",
 		accountID, userID)
 	if err != nil {
@@ -151,7 +166,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	// keeps the steady-state read path to a handful of index lookups instead of
 	// a full scan plus one INSERT per month.
 	var hasUnassigned bool
-	if err := q.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id = $1 AND user_id = $2 AND billing_cycle_id IS NULL)`,
 		accountID, userID).Scan(&hasUnassigned); err != nil {
 		return err
@@ -167,7 +182,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 			continue
 		}
 		start, end := cycleDates(ms, billingDay)
-		if _, err := q.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO billing_cycles (account_id, user_id, start_date, end_date, label)
 			 VALUES ($1, $2, $3, $4, $5)
 			 ON CONFLICT (user_id, account_id, start_date) DO NOTHING`,
@@ -184,7 +199,7 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 	// date range contains its transaction date. The cycle is scoped to the
 	// transaction's OWN account and user, so an import can never land on
 	// another account's cycle (which would corrupt that account's totals).
-	_, err = q.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`UPDATE transactions t SET billing_cycle_id = bc.id
 		 FROM billing_cycles bc
 		 WHERE t.account_id = $1 AND t.user_id = $2
@@ -198,9 +213,10 @@ func ensureBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID 
 // dropMisalignedCycles deletes any billing cycles whose end date no longer
 // matches the account's billing day (e.g. the day was changed), detaching their
 // transactions first so ensureBillingCycles can regenerate the cycles on the
-// new day. It is a no-op when all existing cycles are aligned.
-func dropMisalignedCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID, billingDay int) error {
-	rows, err := q.Query(ctx,
+// new day. It is a no-op when all existing cycles are aligned, and it runs in
+// the caller's transaction so the detach cannot outlive a failed delete.
+func dropMisalignedCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid.UUID, billingDay int) error {
+	rows, err := tx.Query(ctx,
 		`SELECT end_date FROM billing_cycles WHERE account_id = $1 AND user_id = $2`,
 		accountID, userID)
 	if err != nil {
@@ -228,13 +244,13 @@ func dropMisalignedCycles(ctx context.Context, q cycleQueryer, userID, accountID
 
 	// Detach the transactions so the date-based default can re-attach them to
 	// the regenerated cycles, then drop the stale cycles.
-	if _, err := q.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`UPDATE transactions SET billing_cycle_id = NULL
 		 WHERE user_id = $1 AND billing_cycle_id IN (SELECT id FROM billing_cycles WHERE account_id = $2 AND user_id = $1)`,
 		userID, accountID); err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`DELETE FROM billing_cycles WHERE account_id = $1 AND user_id = $2`,
 		accountID, userID)
 	return err

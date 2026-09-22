@@ -6,10 +6,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // summaryNamespace seeds the deterministic UUIDs used for synthetic summary rows
@@ -37,7 +39,13 @@ func (srv *Server) buildAccountSummaryRows(c *gin.Context, userID, accountID uui
 		return nil, srv.computeMonthEndBalanceRows(c, userID, accountID, acctName, dateFrom, dateTo)
 	}
 
-	if err := ensureBillingCycles(c, srv.db, userID, accountID, *billingDay); err != nil {
+	// The regeneration detaches and recreates the account's cycles, so it runs
+	// in one transaction: an interruption between the detach and the delete
+	// would otherwise leave its transactions detached from cycles that still
+	// exist.
+	if err := db.WithTx(c, srv.db, func(tx pgx.Tx) error {
+		return ensureBillingCycles(c, tx, userID, accountID, *billingDay)
+	}); err != nil {
 		slog.Error("buildAccountSummaryRows (ensure billing cycles)", slog.String("error", err.Error()))
 		return nil, nil
 	}

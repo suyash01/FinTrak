@@ -15,7 +15,10 @@ import (
 
 // expectBillingCyclesUpToDate sets up the ensureBillingCycles queries for an
 // account whose cycles are already present (nothing to generate or back-fill).
+// The regeneration runs in its own transaction, so the block is wrapped in the
+// Begin/Commit the handler's db.WithTx performs.
 func expectBillingCyclesUpToDate(mock pgxmock.PgxPoolIface, userID, acctID uuid.UUID, billingDay int) {
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}))
@@ -34,6 +37,7 @@ func expectBillingCyclesUpToDate(mock pgxmock.PgxPoolIface, userID, acctID uuid.
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM transactions WHERE account_id").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectCommit()
 }
 
 func TestGetDashboardSummaryErrors(t *testing.T) {
@@ -192,9 +196,11 @@ func TestGetDashboardSummaryBillingCycleErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT a.billing_day").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+		mock.ExpectBegin()
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
+		mock.ExpectRollback()
 
 		w := httptest.NewRecorder()
 		newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w,

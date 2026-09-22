@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,17 @@ func newBillingCycleTestRouter(srv *Server) *gin.Engine {
 	r.Use(testAuthMiddleware())
 	r.GET("/accounts/:id/billing-cycles", srv.GetBillingCycles)
 	return r
+}
+
+// beginTx hands the cycle helpers a transaction over the mock pool. They take a
+// pgx.Tx rather than a queryer, so the multi-statement regeneration cannot be
+// run outside a transaction by accident.
+func beginTx(t *testing.T, mock pgxmock.PgxPoolIface) pgx.Tx {
+	t.Helper()
+	mock.ExpectBegin()
+	tx, err := mock.Begin(context.Background())
+	require.NoError(t, err)
+	return tx
 }
 
 func TestGetBillingCyclesErrors(t *testing.T) {
@@ -64,9 +76,11 @@ func TestGetBillingCyclesErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT a.billing_day").
 			WithArgs(acctID, testUserID()).
 			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+		mock.ExpectBegin()
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, testUserID()).
 			WillReturnError(assert.AnError)
+		mock.ExpectRollback()
 
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/accounts/"+acctID.String()+"/billing-cycles", nil))
@@ -92,11 +106,13 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		require.NoError(t, err)
 		defer mock.Close()
 
+		tx := beginTx(t, mock)
+
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -105,12 +121,14 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		require.NoError(t, err)
 		defer mock.Close()
 
+		tx := beginTx(t, mock)
+
 		expectCleanAlignment(mock)
 		mock.ExpectQuery("MIN\\(date\\)").
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -118,6 +136,8 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		expectCleanAlignment(mock)
 		mock.ExpectQuery("MIN\\(date\\)").
@@ -127,7 +147,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -135,6 +155,8 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		expectCleanAlignment(mock)
 		mock.ExpectQuery("MIN\\(date\\)").
@@ -144,7 +166,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"end_date"}).AddRow("not-a-time"))
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -152,6 +174,8 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		expectCleanAlignment(mock)
 		mock.ExpectQuery("MIN\\(date\\)").
@@ -164,7 +188,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -172,6 +196,8 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		today := dateOnly(time.Now())
 		earliest := time.Date(today.Year(), today.Month(), 10, 0, 0, 0, 0, time.UTC)
@@ -190,7 +216,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -198,6 +224,8 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		today := dateOnly(time.Now())
 		earliest := time.Date(today.Year(), today.Month(), 10, 0, 0, 0, 0, time.UTC)
@@ -222,7 +250,7 @@ func TestEnsureBillingCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, ensureBillingCycles(context.Background(), mock, userID, acctID, 1))
+		assert.Error(t, ensureBillingCycles(context.Background(), tx, userID, acctID, 1))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
@@ -236,11 +264,13 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 		require.NoError(t, err)
 		defer mock.Close()
 
+		tx := beginTx(t, mock)
+
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, dropMisalignedCycles(context.Background(), mock, userID, acctID, 5))
+		assert.Error(t, dropMisalignedCycles(context.Background(), tx, userID, acctID, 5))
 	})
 
 	t.Run("scan error", func(t *testing.T) {
@@ -248,17 +278,21 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 		require.NoError(t, err)
 		defer mock.Close()
 
+		tx := beginTx(t, mock)
+
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, userID).
 			WillReturnRows(pgxmock.NewRows([]string{"end_date"}).AddRow("not-a-time"))
 
-		assert.Error(t, dropMisalignedCycles(context.Background(), mock, userID, acctID, 5))
+		assert.Error(t, dropMisalignedCycles(context.Background(), tx, userID, acctID, 5))
 	})
 
 	t.Run("rows error", func(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		rows := pgxmock.NewRows([]string{"end_date"}).
 			AddRow(time.Date(2024, 1, 5, 0, 0, 0, 0, time.UTC)).
@@ -267,13 +301,15 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnRows(rows)
 
-		assert.Error(t, dropMisalignedCycles(context.Background(), mock, userID, acctID, 5))
+		assert.Error(t, dropMisalignedCycles(context.Background(), tx, userID, acctID, 5))
 	})
 
 	t.Run("detach error", func(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		// End date on day 1 is misaligned with billing day 5.
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
@@ -284,7 +320,7 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 			WithArgs(userID, acctID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, dropMisalignedCycles(context.Background(), mock, userID, acctID, 5))
+		assert.Error(t, dropMisalignedCycles(context.Background(), tx, userID, acctID, 5))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -292,6 +328,8 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
+
+		tx := beginTx(t, mock)
 
 		mock.ExpectQuery("SELECT end_date FROM billing_cycles").
 			WithArgs(acctID, userID).
@@ -304,7 +342,7 @@ func TestDropMisalignedCyclesErrors(t *testing.T) {
 			WithArgs(acctID, userID).
 			WillReturnError(assert.AnError)
 
-		assert.Error(t, dropMisalignedCycles(context.Background(), mock, userID, acctID, 5))
+		assert.Error(t, dropMisalignedCycles(context.Background(), tx, userID, acctID, 5))
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

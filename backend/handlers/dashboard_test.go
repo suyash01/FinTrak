@@ -267,7 +267,8 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 
-	// 2. ensureBillingCycles internals
+	// 2. ensureBillingCycles internals (its own transaction)
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT end_date FROM billing_cycles WHERE account_id").
 		WithArgs(accountID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"end_date"}).
@@ -289,6 +290,7 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 	mock.ExpectExec("UPDATE transactions t SET billing_cycle_id").
 		WithArgs(accountID, userID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	// 3. listBillingCycles (read snapshot)
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
