@@ -42,6 +42,11 @@ vi.mock("../../context/DomainDataContext", () => ({
 vi.mock("../../context/SettingsContext", () => ({
   useSettings: () => ({ compactLayout: false }),
 }));
+// The dashboard reloads when the offline outbox drains; a page test only needs
+// the trigger value, not the provider.
+vi.mock("../../context/OfflineContext", () => ({
+  useOffline: () => ({ syncedAt: 0 }),
+}));
 
 function account(overrides: Partial<Account> = {}): Account {
   return {

@@ -97,6 +97,22 @@ describe("ThemeProvider", () => {
     });
   });
 
+  it("keeps the installed app's toolbar color in step with the mode", async () => {
+    const user = userEvent.setup();
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "theme-color");
+    meta.setAttribute("content", "#f8fafc");
+    document.head.appendChild(meta);
+
+    renderHarness();
+    expect(meta.getAttribute("content")).toBe("#f8fafc");
+
+    await user.click(screen.getByText("set-dark"));
+
+    expect(meta.getAttribute("content")).toBe("#020618");
+    meta.remove();
+  });
+
   it("sets data-theme and persists accent changes", async () => {
     const user = userEvent.setup();
     renderHarness();

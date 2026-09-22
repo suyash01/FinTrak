@@ -6,9 +6,11 @@ import ErrorBoundary, {
   PageErrorFallback,
 } from "./components/ErrorBoundary/ErrorBoundary";
 import { DomainDataProvider } from "./context/DomainDataContext";
+import { OfflineProvider } from "./context/OfflineContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import OfflineBanner from "./components/Layout/OfflineBanner";
 import { Toaster } from "@/components/ui/sonner";
 import { Spinner } from "@/components/ui/spinner";
 import "./index.css";
@@ -95,37 +97,40 @@ function Root() {
 
   return (
     <DomainDataProvider>
-      <div className="flex h-screen w-screen overflow-hidden">
-        <Sidebar onOpenCommandPalette={() => setCommandOpen(true)} />
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          <ErrorBoundary
-            key={location.pathname}
-            fallback={<PageErrorFallback onRetry={() => window.location.reload()} />}
-          >
-            <Suspense fallback={<PageFallback />}>
-              <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/money-flow" element={<MoneyFlow />} />
-                <Route
-                  path="/cash-flow-calendar"
-                  element={<CashFlowCalendar />}
-                />
-                <Route path="/import" element={<Import />} />
-                <Route path="/paperless" element={<PaperlessImport />} />
-                <Route path="/transactions" element={<Transactions />} />
-                <Route path="/accounts" element={<Accounts />} />
-                <Route path="/categories" element={<Categories />} />
-                <Route path="/payees" element={<Payees />} />
-                <Route path="/linking" element={<Linking />} />
-                <Route path="/recurring" element={<Recurring />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="*" element={<Dashboard />} />
-              </Routes>
-            </Suspense>
-          </ErrorBoundary>
-        </main>
-      </div>
-      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <OfflineProvider>
+        <div className="flex h-screen w-screen overflow-hidden">
+          <Sidebar onOpenCommandPalette={() => setCommandOpen(true)} />
+          <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <OfflineBanner />
+            <ErrorBoundary
+              key={location.pathname}
+              fallback={<PageErrorFallback onRetry={() => window.location.reload()} />}
+            >
+              <Suspense fallback={<PageFallback />}>
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/money-flow" element={<MoneyFlow />} />
+                  <Route
+                    path="/cash-flow-calendar"
+                    element={<CashFlowCalendar />}
+                  />
+                  <Route path="/import" element={<Import />} />
+                  <Route path="/paperless" element={<PaperlessImport />} />
+                  <Route path="/transactions" element={<Transactions />} />
+                  <Route path="/accounts" element={<Accounts />} />
+                  <Route path="/categories" element={<Categories />} />
+                  <Route path="/payees" element={<Payees />} />
+                  <Route path="/linking" element={<Linking />} />
+                  <Route path="/recurring" element={<Recurring />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="*" element={<Dashboard />} />
+                </Routes>
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+        </div>
+        <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      </OfflineProvider>
     </DomainDataProvider>
   );
 }

@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuthProvider, useAuth } from "./AuthContext";
+import { NetworkError } from "../api/errors";
+import { readCached, writeCached } from "../api/offlineCache";
+import { enqueueCreate, getOutboxSnapshot } from "../api/outbox";
 
 const { mockApi, mockStoreUser } = vi.hoisted(() => ({
   mockApi: {
@@ -119,6 +122,45 @@ describe("AuthProvider", () => {
     await waitFor(() =>
       expect(screen.getByTestId("user").textContent).toBe("a@b.c"),
     );
+  });
+
+  it("keeps the session when the probe never reached the server", async () => {
+    // An installed app launched offline must show its cached data instead of
+    // the sign-in screen: only a *rejected* probe is a real sign-out.
+    mockApi.me.mockRejectedValue(new NetworkError());
+    renderHarness();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("init").textContent).toBe("false"),
+    );
+    expect(screen.getByTestId("auth").textContent).toBe("true");
+    expect(screen.getByTestId("user").textContent).toBe("stored@example.com");
+    expect(mockStoreUser).not.toHaveBeenCalledWith(null);
+  });
+
+  it("drops the cached ledger on logout but keeps the unsent queue", async () => {
+    const user = userEvent.setup();
+    writeCached("1", "/accounts", [{ id: "a1" }]);
+    enqueueCreate(
+      "1",
+      {
+        accountId: "a1",
+        date: "2024-01-15",
+        description: "Coffee",
+        amount: 250.5,
+        type: "debit",
+      },
+      "key-1",
+    );
+    renderHarness();
+    await waitFor(() =>
+      expect(screen.getByTestId("init").textContent).toBe("false"),
+    );
+
+    await user.click(screen.getByText("logout"));
+
+    expect(readCached("1", "/accounts")).toBeNull();
+    expect(getOutboxSnapshot("1")).toHaveLength(1);
   });
 
   it("logout clears the session and expires the cookie", async () => {

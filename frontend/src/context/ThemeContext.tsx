@@ -49,6 +49,14 @@ interface ThemeContextValue {
 
 const STORAGE_KEY = "fintrak_theme";
 
+// The installed app's toolbar follows the resolved mode: a manifest declares one
+// theme_color, and a <meta> content value cannot read a CSS variable, so these
+// mirror --background in index.css (:root and .dark).
+const BACKGROUND_COLOR: Record<"light" | "dark", string> = {
+  light: "#f8fafc",
+  dark: "#020618",
+};
+
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 function readStored(): StoredTheme {
@@ -97,6 +105,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.classList.toggle("dark", isDark);
     root.dataset.theme = accent;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, accent }));
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute(
+        "content",
+        isDark ? BACKGROUND_COLOR.dark : BACKGROUND_COLOR.light,
+      );
   }, [mode, accent, isDark]);
 
   return (

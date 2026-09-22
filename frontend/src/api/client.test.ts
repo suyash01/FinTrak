@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import api, { getStoredUser, storeUser, downloadCSV } from "./client";
+import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
+import { getOutboxSnapshot } from "./outbox";
 
 const API_BASE = "/api/v1";
 
@@ -356,6 +358,152 @@ describe("downloadCSV", () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     await expect(downloadCSV("/transactions/export")).rejects.toThrow(
       "Export failed",
+    );
+  });
+});
+
+describe("offline behaviour", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const originalLocation = window.location;
+
+  const create = {
+    accountId: "acct-1",
+    date: "2024-01-15",
+    description: "Coffee",
+    amount: 250.5,
+    type: "debit" as const,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    setServedFromCache(false);
+    // Both the cache and the outbox are namespaced by the signed-in user, which
+    // the API layer reads from the cached user object.
+    storeUser({ id: "u1", email: "a@b.c" } as never);
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        pathname: "/transactions",
+        href: "",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+        toString: () => "",
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("serves the last payload for a read when the network is down", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a1" }]));
+    await api.getAccounts();
+    expect(getOfflineSnapshot().servedFromCache).toBe(false);
+
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(api.getAccounts()).resolves.toEqual([{ id: "a1" }]);
+
+    expect(getOfflineSnapshot().servedFromCache).toBe(true);
+  });
+
+  it("stops claiming cached data once a live response arrives", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a1" }]));
+    await api.getAccounts();
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await api.getAccounts();
+    expect(getOfflineSnapshot().servedFromCache).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "a2" }]));
+    await api.getAccounts();
+
+    expect(getOfflineSnapshot().servedFromCache).toBe(false);
+  });
+
+  it("does not keep a read that is outside the allowlist", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ nodes: [] }));
+    await api.getMoneyFlow();
+
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(api.getMoneyFlow()).rejects.toThrow(
+      "Network error: could not reach the API server",
+    );
+  });
+
+  it("reports a failed read that was never cached", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(api.getAccounts()).rejects.toThrow(
+      "Network error: could not reach the API server",
+    );
+  });
+
+  it("sends a client key with every create so a retry cannot double-post", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "txn-1" }, 201));
+
+    const result = await api.createTransaction(create);
+
+    expect(result).toEqual({ id: "txn-1", queued: false });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.clientKey).toEqual(expect.any(String));
+    expect(body.clientKey).not.toBe("");
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("reuses a supplied key so a flush replays the same create", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "txn-1" }, 201));
+
+    await api.createTransaction(create, {
+      idempotencyKey: "key-9",
+      queue: false,
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).clientKey).toBe("key-9");
+  });
+
+  it("queues a create that never reached the server", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await api.createTransaction(create);
+
+    expect(result).toEqual({ id: null, queued: true });
+    const queued = getOutboxSnapshot("u1");
+    expect(queued).toHaveLength(1);
+    // The queued body carries the same key, so the replay is recognised.
+    expect(queued[0].request.clientKey).toBe(queued[0].key);
+  });
+
+  it("surfaces a rejected create instead of queueing it", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "account is closed" }, 409));
+
+    await expect(api.createTransaction(create)).rejects.toMatchObject({
+      message: "account is closed",
+      status: 409,
+    });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("fails a flush rather than re-queueing the entry it is sending", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(
+      api.createTransaction(create, { idempotencyKey: "key-9", queue: false }),
+    ).rejects.toThrow("Network error: could not reach the API server");
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("refuses to queue without a signed-in identity", async () => {
+    storeUser(null);
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(api.createTransaction(create)).rejects.toThrow(
+      "Network error: could not reach the API server",
     );
   });
 });

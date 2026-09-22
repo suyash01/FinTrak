@@ -1052,6 +1052,18 @@ paths:
                   id:
                     type: string
                     format: uuid
+        "200":
+          description: |
+            The transaction this clientKey already created (an idempotent
+            replay); nothing was inserted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3917,6 +3929,15 @@ components:
         billingCycleId:
           type: string
           format: uuid
+        clientKey:
+          type: string
+          maxLength: 64
+          description: |
+            Optional idempotency key. A create repeating a key the user has
+            already used returns that transaction (200) instead of inserting a
+            second row, so a client may safely retry a create whose response was
+            lost — the offline outbox relies on this when it flushes on
+            reconnect.
 
     UpdateTransactionRequest:
       type: object

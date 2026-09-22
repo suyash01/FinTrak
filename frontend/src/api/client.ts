@@ -77,6 +77,10 @@ import type {
   ValidateTransactionsRequest,
   ValidateTransactionsResponse,
 } from "../types";
+import { ApiError, NetworkError, isNetworkError } from "./errors";
+import { isCacheablePath, readCached, writeCached } from "./offlineCache";
+import { enqueueCreate } from "./outbox";
+import { setServedFromCache } from "./offlineStatus";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
@@ -104,8 +108,40 @@ export function storeUser(user: User | null): void {
   }
 }
 
-interface ApiError extends Error {
-  status?: number;
+// offlineUserId is the identity that namespaces the offline cache and the
+// outbox. The cached user object is the only identity the API layer has;
+// without it a cached read cannot be attributed and a queued write cannot be
+// owned, so both are refused rather than guessed.
+function offlineUserId(): string | null {
+  return getStoredUser()?.id ?? null;
+}
+
+// readOffline answers a read from the last payload that came back for the same
+// URL, when the network failed.
+function readOffline<T>(url: string): T | null {
+  const userId = offlineUserId();
+  if (!userId || !isCacheablePath(url)) return null;
+  const cached = readCached<T>(userId, url);
+  if (cached !== null) setServedFromCache(true);
+  return cached;
+}
+
+// writeOffline records a successful read for the next offline load.
+function writeOffline(url: string, data: unknown): void {
+  const userId = offlineUserId();
+  if (userId) writeCached(userId, url, data);
+}
+
+// newClientKey identifies one create attempt. It survives the 401 refresh
+// replay and every outbox retry, which is what lets the server recognise a
+// repeat instead of inserting a second row.
+function newClientKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // crypto.randomUUID requires a secure context; a self-hosted instance reached
+  // over a LAN address without TLS is not one.
+  return `ck-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 // extractErrorMessage normalizes API error payloads. Handlers return the
@@ -218,7 +254,7 @@ async function fetchWithTimeout(
       if (timedOut) throw new Error("Request timed out");
       throw err;
     }
-    throw new Error("Network error: could not reach the API server");
+    throw new NetworkError();
   } finally {
     clearTimeout(timer);
     if (externalSignal) externalSignal.removeEventListener("abort", abort);
@@ -233,6 +269,9 @@ async function sendWithAuthRetry(
   timeout: number,
 ): Promise<Response> {
   let res = await fetchWithTimeout(url, init, timeout);
+  // Any response at all means the server was reachable, so the UI stops
+  // claiming it is showing saved data.
+  setServedFromCache(false);
   if (res.status === 401 && !isAuthEndpoint(url) && (await refreshSession())) {
     res = await fetchWithTimeout(url, init, timeout);
   }
@@ -243,21 +282,33 @@ async function request<T>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
+  const method = options.method ?? "GET";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...options.headers,
   };
 
-  const res = await sendWithAuthRetry(
-    url,
-    {
-      method: options.method,
-      body: options.body,
-      signal: options.signal,
-      headers,
-    },
-    options.timeout ?? REQUEST_TIMEOUT,
-  );
+  let res: Response;
+  try {
+    res = await sendWithAuthRetry(
+      url,
+      {
+        method: options.method,
+        body: options.body,
+        signal: options.signal,
+        headers,
+      },
+      options.timeout ?? REQUEST_TIMEOUT,
+    );
+  } catch (err) {
+    // A read that never reached the server is answered from the offline cache,
+    // so the shell shows the state the user last saw instead of an error page.
+    if (method === "GET" && isNetworkError(err)) {
+      const cached = readOffline<T>(url);
+      if (cached !== null) return cached;
+    }
+    throw err;
+  }
 
   if (res.status === 401 && !isAuthEndpoint(url) && !isSessionCheck(url)) {
     redirectToLogin();
@@ -265,15 +316,13 @@ async function request<T>(
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(
-      extractErrorMessage(error, "Request failed"),
-    ) as ApiError;
-    err.status = res.status;
-    throw err;
+    throw new ApiError(extractErrorMessage(error, "Request failed"), res.status);
   }
 
   const text = await res.text();
-  return text ? (JSON.parse(text) as T) : (null as T);
+  const data = text ? (JSON.parse(text) as T) : (null as T);
+  if (method === "GET") writeOffline(url, data);
+  return data;
 }
 
 // requestMultipart POSTs a FormData payload (multipart/form-data) without
@@ -298,11 +347,7 @@ async function requestMultipart<T>(
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: res.statusText }));
-    const err = new Error(
-      extractErrorMessage(error, "Request failed"),
-    ) as ApiError;
-    err.status = res.status;
-    throw err;
+    throw new ApiError(extractErrorMessage(error, "Request failed"), res.status);
   }
 
   return res.json() as Promise<T>;
@@ -339,6 +384,14 @@ export async function downloadFile(
 
 export async function downloadCSV(path: string): Promise<void> {
   return downloadFile(path, "export.csv");
+}
+
+// CreateTransactionResult is what a manual create resolves to: the server's id
+// for a transaction that was written, or `queued` for one the offline outbox
+// holds until the network returns.
+export interface CreateTransactionResult {
+  id: string | null;
+  queued: boolean;
 }
 
 const api = {
@@ -421,8 +474,27 @@ const api = {
     const qs = buildQuery(params);
     return request(`/transactions?${qs}`, options);
   },
-  createTransaction: (data: CreateTransactionRequest): Promise<Transaction> =>
-    request("/transactions", { method: "POST", body: JSON.stringify(data) }),
+  createTransaction: (
+    data: CreateTransactionRequest,
+    options: { idempotencyKey?: string; queue?: boolean } = {},
+  ): Promise<CreateTransactionResult> => {
+    const clientKey = options.idempotencyKey ?? newClientKey();
+    return request<{ id: string }>("/transactions", {
+      method: "POST",
+      body: JSON.stringify({ ...data, clientKey }),
+    }).then(
+      (res): CreateTransactionResult => ({ id: res.id, queued: false }),
+      (err: unknown): CreateTransactionResult => {
+        // Only a request that never reached the server may be replayed later; a
+        // rejected one is surfaced to the caller as it always was.
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        const userId = offlineUserId();
+        if (!userId) throw err;
+        enqueueCreate(userId, { ...data, clientKey }, clientKey);
+        return { id: null, queued: true };
+      },
+    );
+  },
   updateTransaction: (
     id: string,
     data: UpdateTransactionRequest,
@@ -606,9 +678,7 @@ const api = {
       redirectToLogin();
     }
     if (!res.ok) {
-      const err = new Error("Failed to load document file") as ApiError;
-      err.status = res.status;
-      throw err;
+      throw new ApiError("Failed to load document file", res.status);
     }
     return res.blob();
   },

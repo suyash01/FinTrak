@@ -519,6 +519,11 @@ type UpdateTransactionRequest struct {
 }
 
 // CreateTransactionRequest is the body for POST /api/v1/transactions.
+//
+// ClientKey is optional and makes the create idempotent: a request repeating a
+// key the user has already used returns that transaction instead of inserting a
+// second one, so a client may safely retry a create whose response was lost.
+// It is client-generated and only has to be unique within the user's ledger.
 type CreateTransactionRequest struct {
 	AccountID      uuid.UUID    `json:"accountId" binding:"required"`
 	Date           string       `json:"date" binding:"required"`
@@ -530,6 +535,7 @@ type CreateTransactionRequest struct {
 	Tags           []string     `json:"tags"`
 	Notes          string       `json:"notes"`
 	BillingCycleID *uuid.UUID   `json:"billingCycleId"`
+	ClientKey      string       `json:"clientKey"`
 }
 
 // BulkCategorizeRequest reassigns one category to many transactions at once.

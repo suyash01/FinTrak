@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // maxImportBatch caps the number of transactions accepted in a single import so
@@ -26,6 +27,11 @@ const maxImportBatch = 10000
 // maxBulkBatch caps how many IDs a single bulk operation may target, so a
 // crafted request can't force a giant ANY($1) array or a very long query.
 const maxBulkBatch = 5000
+
+// maxClientKeyLen caps the idempotency key a client may send with a create. A
+// UUID is 36 characters; the bound exists so a crafted request cannot push an
+// unbounded string into the unique index.
+const maxClientKeyLen = 64
 
 // maxPageSize caps how many transactions a single page can return, matching the
 // frontend's limit, so a crafted request can't bypass it and fetch everything.
@@ -495,8 +501,37 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 		validation.RespondError(c, "invalid date (expected YYYY-MM-DD)", http.StatusBadRequest)
 		return
 	}
+	req.ClientKey = strings.TrimSpace(req.ClientKey)
+	if len(req.ClientKey) > maxClientKeyLen {
+		validation.RespondError(c, "clientKey must be at most 64 characters", http.StatusBadRequest)
+		return
+	}
 
 	userID := auth.GetUserID(c)
+
+	// Idempotent replay. A client that repeats a create — the offline outbox
+	// flushing on reconnect, or a request whose response was lost — sends the
+	// same clientKey, and gets back the transaction it already created. Checked
+	// before the write path so a replay costs one indexed lookup and no rule
+	// evaluation. 200 (not 201) marks it as the earlier transaction rather than a
+	// new one.
+	var clientKey *string
+	if req.ClientKey != "" {
+		clientKey = &req.ClientKey
+		var existing uuid.UUID
+		err := srv.db.QueryRow(c,
+			"SELECT id FROM transactions WHERE user_id = $1 AND client_key = $2",
+			userID, req.ClientKey).Scan(&existing)
+		if err == nil {
+			c.JSON(http.StatusOK, gin.H{"id": existing})
+			return
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("CreateTransaction (checking client key)", slog.String("error", err.Error()))
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	// Run the whole write (account check, insert, billing-cycle generation and
 	// assignment) inside one database transaction so a failure never leaves a
@@ -596,17 +631,31 @@ func (srv *Server) CreateTransaction(c *gin.Context) {
 	// reject explicit cross-user references.
 	var id uuid.UUID
 	err = tx.QueryRow(c,
-		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes)
-		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		`INSERT INTO transactions (account_id, user_id, date, description, amount, type, category_id, payee_id, tags, notes, client_key)
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		 WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))
 		   AND ($8::uuid IS NULL OR EXISTS (SELECT 1 FROM payees p WHERE p.id = $8 AND p.user_id = $2))
 		 RETURNING id`,
-		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, tags, notes).Scan(&id)
+		req.AccountID, userID, req.Date, req.Description, req.Amount, req.Type, categoryID, payeeID, tags, notes, clientKey).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "referenced category or payee not found", http.StatusBadRequest)
 		return
 	}
 	if err != nil {
+		// A concurrent replay of the same key lost the race to insert it: the
+		// winner's row is the answer, not a conflict. Only the partial unique
+		// index can raise 23505 on this INSERT, and only when a key was sent.
+		var pgErr *pgconn.PgError
+		if clientKey != nil && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			_ = tx.Rollback(c)
+			var existing uuid.UUID
+			if lookupErr := srv.db.QueryRow(c,
+				"SELECT id FROM transactions WHERE user_id = $1 AND client_key = $2",
+				userID, *clientKey).Scan(&existing); lookupErr == nil {
+				c.JSON(http.StatusOK, gin.H{"id": existing})
+				return
+			}
+		}
 		slog.Error("CreateTransaction (insert)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return

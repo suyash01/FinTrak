@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import {
   Select,
   SelectContent,
@@ -192,7 +193,12 @@ export default function EditTransactionModal({
       }
 
       if (isCreate) {
-        await api.createTransaction(payload);
+        const result = await api.createTransaction(payload);
+        if (result.queued) {
+          toast.success(
+            "Saved offline — it will sync when you are back online",
+          );
+        }
       } else {
         await api.updateTransaction(transaction.id, payload);
       }

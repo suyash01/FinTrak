@@ -599,6 +599,10 @@ export interface CreateTransactionRequest {
   tags?: string[];
   notes?: string;
   billingCycleId?: string | null;
+  // clientKey makes the create idempotent: the server returns the existing
+  // transaction when it has already recorded this key, so an offline entry (or
+  // a request whose response was lost) is applied exactly once.
+  clientKey?: string;
 }
 
 export interface UpdateTransactionRequest {

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="FinTrak">
+  <!-- Same geometry as the generated PNG icons: a rounded square in the
+       light-theme primary (--primary in index.css) with three ascending bars. -->
+  <rect width="512" height="512" rx="113" fill="#0092b8" />
+  <g fill="#ffffff">
+    <rect x="107.5" y="279.8" width="73.3" height="124.7" />
+    <rect x="219.4" y="208.5" width="73.3" height="196" />
+    <rect x="331.2" y="107.5" width="73.3" height="297" />
+  </g>
+</svg>

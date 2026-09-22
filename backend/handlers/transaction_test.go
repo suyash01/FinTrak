@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 )
@@ -220,7 +222,7 @@ func TestCreateTransactionCreditCardAutoAssign(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -298,7 +300,7 @@ func TestCreateTransactionCreditCardExplicitCycle(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	// ensureBillingCycles: alignment check (no stale cycles).
@@ -1302,7 +1304,7 @@ func TestCreateTransaction(t *testing.T) {
 
 	// Insert.
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string{"food"}, "morning").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string{"food"}, "morning", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1350,7 +1352,7 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 
 	// Insert with auto-categorized category (no payee from rules).
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), ([]string)(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Zomato Order #123", money.FromFloat(500.0), "debit", &catID, (*uuid.UUID)(nil), ([]string)(nil), "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()
@@ -1363,6 +1365,160 @@ func TestCreateTransactionAutoCategorize(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A create that repeats a clientKey returns the transaction the first call
+// created instead of inserting a second row. The offline outbox depends on
+// this: its flush may repeat a create whose response was lost.
+func TestCreateTransactionReplaysClientKey(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	txnID := uuid.New()
+
+	mock.ExpectQuery("SELECT id FROM transactions WHERE user_id").
+		WithArgs(userID, "offline-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+
+	body, _ := json.Marshal(models.CreateTransactionRequest{
+		AccountID:   accountID,
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      money.FromFloat(250.5),
+		Type:        "debit",
+		ClientKey:   "offline-1",
+	})
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// 200, not 201: this is the transaction the key already created. No INSERT
+	// is expected, so a second write would fail the mock.
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), txnID.String())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A key the ledger has not seen is stored with the new row, which is what makes
+// the next replay of it findable.
+func TestCreateTransactionStoresClientKey(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	txnID := uuid.New()
+	key := "offline-2"
+
+	mock.ExpectQuery("SELECT id FROM transactions WHERE user_id").
+		WithArgs(userID, key).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT user_id, billing_day").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
+	// No rules, so the transaction stays uncategorized.
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
+		WithArgs(userID).
+		WillReturnRows(ruleEntryRows())
+	mock.ExpectQuery("INSERT INTO transactions").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string(nil), "", &key).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+	mock.ExpectCommit()
+
+	body, _ := json.Marshal(models.CreateTransactionRequest{
+		AccountID:   accountID,
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      money.FromFloat(250.5),
+		Type:        "debit",
+		ClientKey:   key,
+	})
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Contains(t, w.Body.String(), txnID.String())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Two replays of one key racing each other: the loser of the insert race
+// answers with the winner's row instead of reporting a conflict.
+func TestCreateTransactionClientKeyRace(t *testing.T) {
+	r, srv, mock := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	userID := testUserID()
+	accountID := uuid.New()
+	txnID := uuid.New()
+	key := "offline-3"
+
+	mock.ExpectQuery("SELECT id FROM transactions WHERE user_id").
+		WithArgs(userID, key).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT user_id, billing_day").
+		WithArgs(accountID).
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
+	// No rules, so the transaction stays uncategorized.
+	mock.ExpectQuery("SELECT pattern, match_type, category_id, payee_id").
+		WithArgs(userID).
+		WillReturnRows(ruleEntryRows())
+	mock.ExpectQuery("INSERT INTO transactions").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", (*uuid.UUID)(nil), (*uuid.UUID)(nil), []string(nil), "", &key).
+		WillReturnError(&pgconn.PgError{Code: "23505", ConstraintName: "transactions_user_client_key"})
+	// The handler rolls the failed write back before looking the winner up; the
+	// second rollback is the deferred one that runs as the handler returns.
+	mock.ExpectRollback()
+	mock.ExpectQuery("SELECT id FROM transactions WHERE user_id").
+		WithArgs(userID, key).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
+	mock.ExpectRollback()
+
+	body, _ := json.Marshal(models.CreateTransactionRequest{
+		AccountID:   accountID,
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      money.FromFloat(250.5),
+		Type:        "debit",
+		ClientKey:   key,
+	})
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), txnID.String())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An over-long key is refused before any query runs, so a crafted request can
+// never push an unbounded string into the unique index.
+func TestCreateTransactionRejectsLongClientKey(t *testing.T) {
+	r, srv, _ := newTransactionTestRouter(t)
+	r.POST("/transactions", srv.CreateTransaction)
+
+	body, _ := json.Marshal(models.CreateTransactionRequest{
+		AccountID:   uuid.New(),
+		Date:        "2024-01-15",
+		Description: "Coffee",
+		Amount:      money.FromFloat(250.5),
+		Type:        "debit",
+		ClientKey:   strings.Repeat("k", maxClientKeyLen+1),
+	})
+	req, _ := http.NewRequest("POST", "/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "clientKey")
 }
 
 func TestCreateTransactionValidation(t *testing.T) {
@@ -1737,7 +1893,7 @@ func TestCreateTransactionCategoryNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -1774,7 +1930,7 @@ func TestCreateTransactionPayeeNotOwned(t *testing.T) {
 		WithArgs(accountID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "billing_day", "closed", "account_type_id"}).AddRow(userID, nil, false, "bank"))
 	mock.ExpectQuery("INSERT INTO transactions").
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &catID, &payeeID, []string(nil), "", (*string)(nil)).
 		WillReturnError(pgx.ErrNoRows)
 
 	body, _ := json.Marshal(reqBody)
@@ -2125,7 +2281,7 @@ func TestCreateTransactionWithGlobalCategory(t *testing.T) {
 	// the matcher pins the exact predicate so a future revert to a
 	// user-only check fails this test.
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id = $7 AND (c.user_id = $2 OR c.user_id IS NULL)))")).
-		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "").
+		WithArgs(accountID, userID, "2024-01-15", "Coffee", money.FromFloat(250.5), "debit", &globalCatID, (*uuid.UUID)(nil), []string(nil), "", (*string)(nil)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(txnID))
 
 	mock.ExpectCommit()

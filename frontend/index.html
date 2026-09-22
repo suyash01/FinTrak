@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FinTrak</title>
+    <!-- Installable shell: the manifest and the icons it points at are served
+         from public/ and cached by public/sw.js. theme-color is set here as the
+         pre-mount default and re-applied by ThemeContext once the resolved
+         light/dark mode is known. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="theme-color" content="#f8fafc" />
     <script src="/theme-init.js"></script>
   </head>
   <body>

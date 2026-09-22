@@ -18,6 +18,7 @@ import api from "../../api/client";
 import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
+import { useOffline } from "../../context/OfflineContext";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -119,6 +120,9 @@ export default function Dashboard() {
     return PERIOD_LAST_12_MONTHS;
   });
   const { compactLayout } = useSettings();
+  // syncedAt changes when the offline outbox writes something, which is what
+  // makes the summary reload entries recorded while it showed saved data.
+  const { syncedAt } = useOffline();
 
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const isBillingCycleMode = groupBy === "billing_cycle";
@@ -248,7 +252,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadSummary();
-  }, [loadSummary]);
+    // syncedAt is a trigger, not an input: reload once the outbox has written
+    // entries recorded while the dashboard was showing saved data.
+  }, [loadSummary, syncedAt]);
 
   const recentColumns = useMemo<ColumnDef<Transaction, any>[]>(() => {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";

@@ -56,6 +56,11 @@ vi.mock("../../context/DomainDataContext", () => ({
 vi.mock("../../context/SettingsContext", () => ({
   useSettings: () => ({ compactLayout: false }),
 }));
+// The list reloads when the offline outbox drains; a page test only needs the
+// trigger value, not the provider.
+vi.mock("../../context/OfflineContext", () => ({
+  useOffline: () => ({ syncedAt: 0 }),
+}));
 
 const accounts: Account[] = [
   {

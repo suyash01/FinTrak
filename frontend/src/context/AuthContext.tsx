@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import api, { getStoredUser, storeUser } from "../api/client";
+import { isNetworkError } from "../api/errors";
+import { clearCached } from "../api/offlineCache";
 import type { AuthResponse, User } from "../types";
 
 interface AuthContextValue {
@@ -37,8 +39,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(current);
         storeUser(current);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
+        // A probe that never reached the server must not sign the user out:
+        // the cached user and the offline cache are what an installed app shows
+        // until the connection returns. A rejected probe is a real sign-out.
+        if (isNetworkError(err) && getStoredUser()) return;
         setUser(null);
         storeUser(null);
       })
@@ -72,11 +78,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
+    const current = user;
     setUser(null);
     storeUser(null);
+    // The cached reads are the user's ledger and must not outlive the session.
+    // Queued creates are kept: they are unsent work, not a cache.
+    if (current) clearCached(current.id);
     // Expire the httpOnly session cookie server-side; best-effort.
     api.logout().catch(() => {});
-  }, []);
+  }, [user]);
 
   const value: AuthContextValue = {
     isAuthenticated: !!user,

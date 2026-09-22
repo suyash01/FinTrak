@@ -16,6 +16,7 @@ import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
+import { useOffline } from "../../context/OfflineContext";
 import type {
   Transaction,
   BillingCycle,
@@ -69,6 +70,9 @@ export default function Transactions() {
   const [billingCycles, setBillingCycles] = useState<BillingCycle[]>([]);
   const [loadingCycles, setLoadingCycles] = useState(false);
   const { compactLayout } = useSettings();
+  // syncedAt changes when the offline outbox writes something, which is what
+  // makes this page reload entries recorded while it showed offline data.
+  const { syncedAt } = useOffline();
 
   useCommandIntent("new-transaction", () => setCreating(true));
 
@@ -300,7 +304,9 @@ export default function Transactions() {
   useEffect(() => {
     const timer = setTimeout(loadTransactions, 300);
     return () => clearTimeout(timer);
-  }, [loadTransactions]);
+    // syncedAt is a trigger, not an input: reload once the outbox has written
+    // entries that were recorded while this page was showing offline data.
+  }, [loadTransactions, syncedAt]);
 
   // Pre-fill the account filter with the user's default account once the shared
   // account list is available and no account filter was explicitly requested.

@@ -332,6 +332,37 @@ func TestIntegrationImportDeduplicatesAgainstPostgres(t *testing.T) {
 	require.Len(t, a.transactions(acc.ID), 4)
 }
 
+// A create that repeats a clientKey is applied exactly once and the replay
+// answers with the same id — the offline outbox's flush depends on it. Only a
+// real server can prove the partial unique index and the replay lookup agree.
+func TestIntegrationCreateIsIdempotentByClientKey(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("idempotent@example.com")
+	acc := a.createAccount("Checking", "bank", nil)
+
+	body := map[string]any{
+		"accountId":   acc.ID,
+		"date":        "2024-06-10",
+		"description": "Offline coffee",
+		"amount":      12.5,
+		"type":        "debit",
+		"clientKey":   "offline-flush-1",
+	}
+
+	var first, replay struct {
+		ID uuid.UUID `json:"id"`
+	}
+	a.call(http.MethodPost, "/api/v1/transactions", body, http.StatusCreated, &first)
+	a.call(http.MethodPost, "/api/v1/transactions", body, http.StatusOK, &replay)
+	require.Equal(t, first.ID, replay.ID)
+
+	// The same payload under a new key is a genuinely new transaction.
+	body["clientKey"] = "offline-flush-2"
+	a.call(http.MethodPost, "/api/v1/transactions", body, http.StatusCreated, nil)
+
+	require.Len(t, a.transactions(acc.ID), 2)
+}
+
 // TestIntegrationDeleteNonTransferLinkPreservesCategory guards SEC-C2: deleting
 // a cashback link must not wipe the user's own category on either transaction.
 func TestIntegrationDeleteNonTransferLinkPreservesCategory(t *testing.T) {

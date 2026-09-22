@@ -362,6 +362,10 @@ type CreatePayeeRequest struct {
 // is omitted the transaction is auto-categorized by the rules engine, and for
 // an account with a billing day it is attached to the cycle covering its date
 // unless BillingCycleID overrides that.
+//
+// ClientKey makes the create idempotent: a request repeating a key the user has
+// already used returns that transaction instead of inserting a second one, so a
+// caller may retry a create whose response was lost.
 type CreateTransactionRequest struct {
 	AccountID      string   `json:"accountId"`
 	Date           string   `json:"date"`
@@ -373,6 +377,7 @@ type CreateTransactionRequest struct {
 	Tags           []string `json:"tags,omitempty"`
 	Notes          string   `json:"notes,omitempty"`
 	BillingCycleID *string  `json:"billingCycleId"`
+	ClientKey      string   `json:"clientKey,omitempty"`
 }
 
 // UpdateTransactionRequest is a partial update: a nil pointer leaves a field
