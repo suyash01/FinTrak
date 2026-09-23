@@ -94,7 +94,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
 import pdfplumber
 from pypdf import PdfReader
 
-from .limits import close_pdf, ensure_page_limit
+from .limits import PdfPasswordRequired, close_pdf, ensure_page_limit
 from .money import same_money
 
 
@@ -139,10 +139,6 @@ class StatementResult(TypedDict):
     validation_errors: List[str]
     summary: Dict[str, str]
     page_count: int
-
-
-class PdfPasswordRequired(Exception):
-    """Raised when the PDF is encrypted and no/incorrect password was supplied."""
 
 
 def _decrypt_if_needed(path: str, password: Optional[str]) -> None:

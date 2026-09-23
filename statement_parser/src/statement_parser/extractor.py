@@ -10,34 +10,29 @@ registered for different statement formats.
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from .limits import PageLimitExceeded
+from .limits import PageLimitExceeded, PdfPasswordRequired
 
 from .icici_cc_extractor import (
-    PdfPasswordRequired,
     extract_transactions as _icici_extract_transactions,
     to_csv_bytes as _icici_to_csv_bytes,
 )
 
 from .sbi_cc_extractor import (
-    PdfPasswordRequired,
     extract_transactions as _sbi_extract_transactions,
     to_csv_bytes as _sbi_to_csv_bytes,
 )
 
 from .icici_bank_extractor import (
-    PdfPasswordRequired,
     extract_transactions as _icici_bank_extract_transactions,
     to_csv_bytes as _icici_bank_to_csv_bytes,
 )
 
 from .slice_bank_extractor import (
-    PdfPasswordRequired,
     extract_transactions as _slice_bank_extract_transactions,
     to_csv_bytes as _slice_bank_to_csv_bytes,
 )
 
 from .indusind_bank_extractor import (
-    PdfPasswordRequired,
     extract_transactions as _indusind_bank_extract_transactions,
     to_csv_bytes as _indusind_bank_to_csv_bytes,
 )

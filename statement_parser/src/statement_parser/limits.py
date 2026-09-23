@@ -22,6 +22,10 @@ class PageLimitExceeded(Exception):
     """Raised when a PDF has more pages than the configured maximum."""
 
 
+class PdfPasswordRequired(Exception):
+    """Raised when the PDF is encrypted and needs a (correct) password."""
+
+
 def max_pages() -> int:
     """Return the configured page cap, falling back to the default."""
     raw = os.environ.get("MAX_PAGES", "").strip()

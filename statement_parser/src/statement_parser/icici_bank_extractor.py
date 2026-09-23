@@ -70,7 +70,7 @@ from pdfplumber.page import Page
 from pdfplumber.pdf import PDF
 from pypdf import PdfReader
 
-from .limits import close_pdf, ensure_page_limit
+from .limits import PdfPasswordRequired, close_pdf, ensure_page_limit
 from .money import same_money
 
 #: The masked/right-aligned word blocks pdfplumber.Page.extract_words()
@@ -150,10 +150,6 @@ class _RawRecord(TypedDict):
     withdrawal_raw: Optional[str]
     balance_raw: Optional[str]
     particulars_lines: Dict[float, str]
-
-
-class PdfPasswordRequired(Exception):
-    """Raised when the PDF is encrypted and needs a (correct) password."""
 
 
 def _decrypt_if_needed(path: str, password: Optional[str]) -> None:

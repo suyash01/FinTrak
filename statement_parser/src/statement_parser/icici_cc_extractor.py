@@ -48,7 +48,7 @@ from typing import Any, List, Optional
 import pdfplumber
 from pypdf import PdfReader
 
-from .limits import close_pdf, ensure_page_limit
+from .limits import PdfPasswordRequired, close_pdf, ensure_page_limit
 
 
 # A transaction line looks like:
@@ -86,10 +86,6 @@ SKIP_PREFIXES = (
     "#",
     "International Spends",
 )
-
-
-class PdfPasswordRequired(Exception):
-    """Raised when the PDF is encrypted and no/incorrect password was supplied."""
 
 
 @dataclass

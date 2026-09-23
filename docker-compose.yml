@@ -11,7 +11,7 @@
 # name or a `pgdata` volume with the production stacks (docker-compose.prod*.yml
 # use `fintrak-prod`), so `make prod` on a machine that has run `make dev` starts
 # its own database instead of reusing the dev one.
-name: fintrak-dev
+name: fintrak
 #
 # The optional log viewer (dozzle) mounts the Docker socket, so it is behind
 # the "debug" profile and is not started by default:

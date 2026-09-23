@@ -197,7 +197,9 @@ func TestCrossSiteGetGuard(t *testing.T) {
 	writePaths := []string{
 		"/api/v1/accounts/" + token + "/billing-cycles",
 		"/api/v1/accounts/" + token + "/export",
+		"/api/v1/export",
 		"/api/v1/transactions",
+		"/api/v1/transactions/export",
 		"/api/v1/dashboard/summary",
 		"/api/v1/dashboard/money-flow",
 		"/api/v1/dashboard/money-flow/timeline",

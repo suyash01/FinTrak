@@ -185,8 +185,7 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
 		FROM billing_cycles bc
-		LEFT JOIN transactions t ON t.account_id = bc.account_id AND t.user_id = bc.user_id
-		     AND t.date >= bc.start_date AND t.date <= bc.end_date
+		LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
 		WHERE bc.account_id = $1 AND bc.user_id = $2
 		  AND bc.end_date >= $3 AND bc.end_date <= $4
 		GROUP BY bc.id, bc.start_date, bc.end_date, bc.label

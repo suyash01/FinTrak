@@ -363,15 +363,22 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	return r
 }
 
-// stateChangingGETs are the GET routes that write. Their handlers materialize
-// billing cycles (INSERT) and back-fill transactions' cycle assignment
-// (UPDATE), or re-seal a legacy Paperless token in place, so "GET is safe" is
-// not true for them. Kept in step with mcp/internal/readonly.SideEffectingGETs,
-// which enumerates the same routes for the MCP guard.
+// stateChangingGETs are the GET routes crossSiteGetGuard refuses for a
+// `cross-site` Sec-Fetch-Site claim. It covers two kinds of route: GETs that
+// write (their handlers materialize billing cycles — INSERT — and back-fill
+// transactions' cycle assignment — UPDATE —, or re-seal a legacy Paperless
+// token in place, so "GET is safe" is not true for them) and sensitive
+// pure-read downloads (the account/transaction CSVs and the full-backup JSON)
+// that a cross-site top-level navigation must not silently trigger. The
+// write-on-GET subset is mirrored in mcp/internal/readonly.SideEffectingGETs;
+// the download routes are not writes and belong here only because the guard is
+// about the cookie, not about writing.
 var stateChangingGETs = map[string]bool{
 	"GET /api/v1/accounts/:id/billing-cycles":   true,
 	"GET /api/v1/accounts/:id/export":           true,
+	"GET /api/v1/export":                        true,
 	"GET /api/v1/transactions":                  true,
+	"GET /api/v1/transactions/export":           true,
 	"GET /api/v1/dashboard/summary":             true,
 	"GET /api/v1/dashboard/money-flow":          true,
 	"GET /api/v1/dashboard/money-flow/timeline": true,

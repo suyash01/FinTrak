@@ -363,14 +363,13 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	}
 
 	// Window totals (stat cards): income, expense, and transaction count across
-	// every displayed cycle, so the headline numbers agree with the trend chart
-	// and category breakdowns.
+	// every displayed cycle, attributed by the stored cycle assignment so the
+	// headline numbers agree with the trend chart and the billing-cycles page.
 	cycleStatsQuery := `SELECT COUNT(t.id),
 			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
 			 FROM transactions t
-			 JOIN billing_cycles bc ON t.account_id = bc.account_id AND t.user_id = bc.user_id
-			      AND t.date >= bc.start_date AND t.date <= bc.end_date
+			 JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
 			 WHERE t.user_id = $1 AND t.account_id = $2
 			   AND bc.end_date >= $3 AND bc.end_date <= $4`
 	if err := q.QueryRow(ctx, cycleStatsQuery, userID, accountID, windowStart, windowEnd).
@@ -385,8 +384,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
 			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
 			 FROM billing_cycles bc
-			 LEFT JOIN transactions t ON t.account_id = bc.account_id AND t.user_id = bc.user_id
-			      AND t.date >= bc.start_date AND t.date <= bc.end_date
+			 LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
 			 WHERE bc.account_id = $1 AND bc.user_id = $2
 			   AND bc.end_date >= $3 AND bc.end_date <= $4
 			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date

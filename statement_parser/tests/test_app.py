@@ -1,3 +1,4 @@
+import importlib
 import io
 import sys
 import unittest
@@ -122,6 +123,33 @@ class AppTests(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data["password_required"])
         self.assertIn("password", data["error"].lower())
+
+    def test_api_extract_password_required_from_every_extractor(self):
+        # Every extractor must raise the SAME PdfPasswordRequired class the app
+        # catches; otherwise a password-protected PDF from that issuer falls
+        # through to the generic 422 instead of the documented 401.
+        extractors = [
+            "sbi_cc_extractor",
+            "icici_cc_extractor",
+            "icici_bank_extractor",
+            "slice_bank_extractor",
+            "indusind_bank_extractor",
+        ]
+        for name in extractors:
+            with self.subTest(extractor=name):
+                mod = importlib.import_module(f"statement_parser.{name}")
+                self.assertIs(mod.PdfPasswordRequired, PdfPasswordRequired)
+                with mock.patch(
+                    "statement_parser.app.extract_transactions",
+                    side_effect=mod.PdfPasswordRequired("needs a password"),
+                ):
+                    resp = self.client.post(
+                        "/api/extract",
+                        data=_pdf_upload(),
+                        content_type="multipart/form-data",
+                    )
+                self.assertEqual(resp.status_code, 401)
+                self.assertTrue(resp.get_json()["password_required"])
 
     @mock.patch("statement_parser.app.extract_transactions")
     def test_api_extract_unsupported_extractor(self, mock_extract):
