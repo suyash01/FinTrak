@@ -91,6 +91,7 @@ from pypdf import PdfReader
 
 from .limits import PdfPasswordRequired, close_pdf, ensure_page_limit
 from .money import same_money
+from .text import csv_cell
 
 
 class Transaction(TypedDict):
@@ -609,7 +610,9 @@ def to_csv_bytes(transactions: Iterable[Transaction]) -> bytes:
     writer = csv.DictWriter(buffer, fieldnames=_CSV_FIELDS, extrasaction="ignore")
     writer.writeheader()
     for tx in transactions:
-        writer.writerow(tx)
+        row = dict(tx)
+        row["description"] = csv_cell(tx["description"])
+        writer.writerow(row)
     return buffer.getvalue().encode("utf-8")
 
 

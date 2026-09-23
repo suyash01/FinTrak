@@ -49,6 +49,7 @@ import pdfplumber
 from pypdf import PdfReader
 
 from .limits import PdfPasswordRequired, close_pdf, ensure_page_limit
+from .text import csv_cell
 
 
 # A transaction line looks like:
@@ -304,7 +305,9 @@ def to_csv_bytes(transactions: List[dict[str, Any]]) -> bytes:
     )
     writer.writeheader()
     for t in transactions:
-        writer.writerow(t)
+        row = dict(t)
+        row["description"] = csv_cell(t["description"])
+        writer.writerow(row)
     return buf.getvalue().encode("utf-8")
 
 

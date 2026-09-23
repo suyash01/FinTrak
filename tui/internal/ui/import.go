@@ -579,6 +579,14 @@ func importSummary(summary map[string]string) string {
 // with the message inside it, and the document it was opened for stays on the
 // screen: a password-protected PDF answers 422 until the password is filled in.
 func (i *Import) acceptParse(res api.StatementParseResult, err error, batch importBatch) tea.Cmd {
+	// Dismissing the form (esc) while the parse was in flight drops the result:
+	// nothing has been written, and staging a preview the user already cancelled
+	// would resurrect the document they left. The upload still completes
+	// server-side, but its result is discarded here.
+	if f := i.parseForm; f != nil && f.Canceled() {
+		i.parseForm, i.docForm = nil, nil
+		return nil
+	}
 	if err != nil {
 		if f := i.parseForm; f != nil && !f.Closed() {
 			f.SetError(err)

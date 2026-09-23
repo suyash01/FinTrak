@@ -252,8 +252,13 @@ func paperlessTransport(appEnv string, logBodyLimit int) http.RoundTripper {
 	if cached, ok := paperlessTransports.Load(key); ok {
 		return cached.(http.RoundTripper)
 	}
+	// Proxy is deliberately nil: an HTTP(S)_PROXY environment variable would
+	// make net/http dial the proxy instead of the Paperless host, so the
+	// DialContext below — the SSRF boundary — would validate the proxy rather
+	// than the target. The shipped compose files set no proxy; a deployment
+	// that needs one must re-validate the target in the request path instead.
 	wrapped := logger.LoggingRoundTripper(&http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil,
 		DialContext:           paperlessDialContext(appEnv),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,

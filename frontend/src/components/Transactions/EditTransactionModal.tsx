@@ -97,7 +97,7 @@ function formFromTransaction(t: Transaction): TransactionForm {
   return {
     date: String(t.date).split("T")[0],
     description: t.description || "",
-    amount: String(t.amount || ""),
+    amount: String(t.amount ?? ""),
     type: t.type || "debit",
     accountId: t.accountId || "",
     categoryId: t.categoryId || "",

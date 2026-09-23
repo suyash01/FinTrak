@@ -406,11 +406,11 @@ func (srv *Server) ExportAccount(c *gin.Context) {
 
 		record := []string{
 			date.Format("2006-01-02"),
-			description,
+			csvCell(description),
 			amount.String(),
 			txnType,
-			strings.Join(tags, ";"),
-			notes,
+			csvCell(strings.Join(tags, ";")),
+			csvCell(notes),
 		}
 
 		if err := writer.Write(record); err != nil {

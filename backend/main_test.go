@@ -201,7 +201,6 @@ func TestCrossSiteGetGuard(t *testing.T) {
 		"/api/v1/transactions",
 		"/api/v1/transactions/export",
 		"/api/v1/dashboard/summary",
-		"/api/v1/dashboard/money-flow",
 		"/api/v1/dashboard/money-flow/timeline",
 		"/api/v1/dashboard/cash-flow-calendar",
 		"/api/v1/paperless/documents",

@@ -87,6 +87,10 @@ func Migrate(databaseURL string) error {
 	if err != nil {
 		return fmt.Errorf("initialize migrate instance: %w", err)
 	}
+	// Close releases the driver connection the migrate instance opened. This
+	// path is also exercised once per test-container boot by the integration
+	// suite, so without it repeated calls accumulate un-closed connections.
+	defer m.Close()
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err

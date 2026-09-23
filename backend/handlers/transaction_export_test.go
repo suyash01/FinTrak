@@ -49,6 +49,17 @@ func TestExportTransactions(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCSVCell(t *testing.T) {
+	assert.Equal(t, "'=SUM(A1:A2)", csvCell("=SUM(A1:A2)"))
+	assert.Equal(t, "'+cmd", csvCell("+cmd"))
+	assert.Equal(t, "'-2+3", csvCell("-2+3"))
+	assert.Equal(t, "'@cmd", csvCell("@cmd"))
+	assert.Equal(t, "'\tx", csvCell("\tx"))
+	assert.Equal(t, "'\rx", csvCell("\rx"))
+	assert.Equal(t, "plain text", csvCell("plain text"))
+	assert.Equal(t, "", csvCell(""))
+}
+
 func TestExportTransactionsInvalidAccount(t *testing.T) {
 	r, srv, _ := newAccountTestRouter(t)
 	r.GET("/transactions/export", srv.ExportTransactions)

@@ -116,6 +116,29 @@ describe("EditTransactionModal — default date", () => {
   });
 });
 
+describe("EditTransactionModal — zero amount", () => {
+  beforeEach(() => {
+    apiMocks.getBillingCycles.mockReset();
+    apiMocks.getBillingCycles.mockResolvedValue({ data: [] });
+  });
+
+  it('pre-fills a stored zero amount as "0", not an empty field', () => {
+    render(
+      <EditTransactionModal
+        transaction={{ ...baseTransaction, amount: 0 }}
+        accounts={[account]}
+        categories={noCategories}
+        groups={noGroups}
+        payees={noPayees}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText("Amount")).toHaveValue(0);
+  });
+});
+
 describe("EditTransactionModal — billing cycle dropdown", () => {
   beforeEach(() => {
     apiMocks.getBillingCycles.mockReset();

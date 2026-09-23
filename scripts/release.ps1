@@ -36,6 +36,11 @@ if ($branch -ne 'master') { throw "Releases must be cut from 'master' (currently
 git diff --quiet --exit-code
 if ($LASTEXITCODE -ne 0) { throw "Working tree is dirty - commit or stash changes first" }
 
+# `git diff` only compares the working tree to the index: a `git add`ed change
+# would be invisible here and silently omitted from the tag (which points at HEAD).
+git diff --cached --quiet --exit-code
+if ($LASTEXITCODE -ne 0) { throw "Staged changes exist - commit them before tagging a release" }
+
 # The tag is pushed on its own, and CI validates whatever commit it points at, so
 # nothing else checks that the released commit is on the remote branch. Without
 # this a stale or diverged local master publishes a tag whose code origin/master

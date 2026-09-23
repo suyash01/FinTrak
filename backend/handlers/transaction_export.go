@@ -29,6 +29,24 @@ const exportFrom = ` FROM transactions t
 	          LEFT JOIN category_groups g ON c.group_id = g.id
 	          LEFT JOIN payees p ON t.payee_id = p.id`
 
+// csvCell renders a cell so a spreadsheet treats it as literal text. A leading
+// =, +, -, @, tab or carriage return makes Excel/LibreOffice/Google Sheets
+// evaluate the cell as a formula or DDE command, so a description imported from
+// a bank statement could execute or exfiltrate data when the user opens their
+// own export. Prefixing a single quote forces literal text; the quote is not
+// shown in the spreadsheet. Amounts are numbers and must not pass through here
+// (a negative amount is "-12.34", not a formula).
+func csvCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 // ExportTransactions streams the user's transactions as a CSV attachment,
 // honoring the exact same filter grammar as GET /transactions (account,
 // category/group, payee, tag, free-text over description/notes/payee/tags, date
@@ -114,15 +132,15 @@ func (srv *Server) ExportTransactions(c *gin.Context) {
 
 		if err := writer.Write([]string{
 			date.Format("2006-01-02"),
-			description,
+			csvCell(description),
 			amount.String(),
 			txnType,
-			accountName,
-			category,
-			group,
-			payee,
-			strings.Join(tags, ";"),
-			notes,
+			csvCell(accountName),
+			csvCell(category),
+			csvCell(group),
+			csvCell(payee),
+			csvCell(strings.Join(tags, ";")),
+			csvCell(notes),
 		}); err != nil {
 			writer.Flush()
 			slog.Error("writing CSV record", slog.String("error", err.Error()))

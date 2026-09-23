@@ -209,6 +209,30 @@ func TestParseStatementSuccess(t *testing.T) {
 	assert.JSONEq(t, `[]`, string(envelope["validationErrors"]))
 }
 
+// TestParseStatementRejectsOutOfRangeAmount pins the parser-amount boundary: a
+// crafted statement can make the parser emit a finite float far beyond
+// money.MaxMinorUnits, and converting it would wrap the int64 into a garbage
+// negative amount. It must be rejected, not surfaced in the preview.
+func TestParseStatementRejectsOutOfRangeAmount(t *testing.T) {
+	parser, closeParser := startFakeParser(t, http.StatusOK, `{
+		"transactions": [
+			{"date":"18 May 26","description":"=1e300","amount":1e300,"type":"Credit"}
+		],
+		"page_count":1,
+		"transaction_count":1
+	}`)
+	defer closeParser()
+
+	r := newStatementTestRouter(NewServer(nil, parser.URL, 0))
+	body, ct := multipartUpload(t, "")
+	req := httptest.NewRequest(http.MethodPost, "/statements/parse", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
 // TestParseStatementCarriesValidationErrors verifies the parser's per-page
 // consistency warnings reach the client instead of being dropped, so a drifted
 // parse is never presented to the user as clean.

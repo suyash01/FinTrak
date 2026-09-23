@@ -156,15 +156,16 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		if a.modal != nil {
-			return a, a.modal.Update(m)
-		}
-		// ctrl+c quits from anywhere, before any model can swallow it: while
-		// signed out the login form owns every key, and its own ctrl+c merely
-		// closes the form — which left the process unquittable from the sign-in
-		// screen.
+		// ctrl+c quits from anywhere, before any model or modal can swallow it:
+		// while signed out the login form owns every key, and its own ctrl+c
+		// merely closes the form — which left the process unquittable from the
+		// sign-in screen; an open overlay also handles ctrl+c as "close", which
+		// would otherwise demand a second ctrl+c to quit.
 		if m.String() == "ctrl+c" {
 			return a, tea.Quit
+		}
+		if a.modal != nil {
+			return a, a.modal.Update(m)
 		}
 		// A screen that is reading text owns the keyboard: `r`, `g`, `[`/`]` and
 		// the digits are characters in a search box there, not navigation.

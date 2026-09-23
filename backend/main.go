@@ -380,7 +380,6 @@ var stateChangingGETs = map[string]bool{
 	"GET /api/v1/transactions":                  true,
 	"GET /api/v1/transactions/export":           true,
 	"GET /api/v1/dashboard/summary":             true,
-	"GET /api/v1/dashboard/money-flow":          true,
 	"GET /api/v1/dashboard/money-flow/timeline": true,
 	"GET /api/v1/dashboard/cash-flow-calendar":  true,
 	"GET /api/v1/paperless/documents":           true,

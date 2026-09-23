@@ -80,6 +80,22 @@ func TestCtrlCQuitsWhileSignedOut(t *testing.T) {
 	}
 }
 
+// TestCtrlCQuitsWithModalOpen is a regression test: an open overlay used to
+// swallow ctrl+c as "close", so the documented "ctrl+c quits from anywhere"
+// needed a second press. The quit check must run before the modal branch.
+func TestCtrlCQuitsWithModalOpen(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.modal = NewHelp(nil, nil)
+
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c must quit even while an overlay is open")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
 // TestGlobalKeysYieldToAScreenReadingText covers the search-box defect: the App
 // consumed `r`, `g`, the digits and `[`/`]` before the active screen, so those
 // characters never reached an inline search box and the query silently lost them.

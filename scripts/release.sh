@@ -42,8 +42,16 @@ if [[ "$branch" != "master" ]]; then
     exit 1
 fi
 
+# A clean tree means no unstaged AND no staged changes: `git diff` only
+# compares the working tree to the index, so a `git add`ed change would
+# otherwise be invisible here and silently omitted from the tag (which points
+# at HEAD).
 if ! git diff --quiet --exit-code; then
     echo "Error: working tree is dirty - commit or stash changes first" >&2
+    exit 1
+fi
+if ! git diff --cached --quiet --exit-code; then
+    echo "Error: staged changes exist - commit them before tagging a release" >&2
     exit 1
 fi
 

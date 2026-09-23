@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -227,6 +228,13 @@ func (srv *Server) forwardStatementToParser(ctx context.Context, pdf []byte, fil
 		result.ValidationErrors = []string{}
 	}
 	for _, t := range raw.Transactions {
+		// The parser extracts amounts with float(), so a crafted statement can
+		// yield a finite float far beyond MaxMinorUnits; converting it wraps the
+		// int64 and surfaces a garbage amount. Reject it at the boundary, exactly
+		// as Parse/UnmarshalJSON do, rather than wrapping into the int64.
+		if math.IsNaN(t.Amount) || math.IsInf(t.Amount, 0) || math.Abs(t.Amount) > float64(money.MaxMinorUnits)/100 {
+			return nil, http.StatusBadGateway, "statement parser returned an out-of-range amount"
+		}
 		result.Transactions = append(result.Transactions, models.ImportTransaction{
 			Date:        normalizeParserDate(t.Date, dateFormat),
 			Description: t.Description,
