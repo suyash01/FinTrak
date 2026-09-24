@@ -433,7 +433,9 @@ func rejectPaperlessRedirect(c *gin.Context, status int) bool {
 
 // GetPaperlessSettings returns the current user's Paperless-ngx integration
 // settings. The API token is never returned; HasToken reports whether one is
-// configured so the Settings page can render a masked state.
+// configured so the Settings page can render a masked state. Reading the
+// configuration can re-seal a legacy token in place, so the route is guarded
+// against cross-site navigations just like the document-list route.
 func (srv *Server) GetPaperlessSettings(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	settings, err := srv.paperlessConfig(c, userID)
@@ -871,8 +873,10 @@ func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
 }
 
 // GetPaperlessDocumentFile proxies a document's original file from the user's
-// Paperless-ngx instance so it can be viewed in the browser. The bytes are
-// returned with the upstream content type; oversized files are rejected.
+// Paperless-ngx instance so it can be viewed in the browser. The response is
+// pinned to application/pdf and oversized files are rejected. Reading the
+// Paperless configuration can re-seal a legacy token in place, so this route
+// is guarded against cross-site navigations as well.
 func (srv *Server) GetPaperlessDocumentFile(c *gin.Context) {
 	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {

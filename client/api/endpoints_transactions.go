@@ -42,9 +42,9 @@ type TransactionFilter struct {
 	LoanAccountID string
 	// ExcludeAttached drops transactions already attached to a loan account.
 	// The backend implements the loan case only — a transaction attached to a
-	// recurring series is still returned — and the parameter is not part of
-	// backend/openapi.yaml, so a caller must not read it as a general
-	// "hide anything already filed" switch.
+	// recurring series is still returned — so this is not a general
+	// "hide anything already filed" switch. The parameter is documented in
+	// backend/openapi.yaml and accepted by both transaction list and export.
 	ExcludeAttached bool
 	// RecurringID filters by recurring series; Recurring is "linked" or
 	// "unlinked".

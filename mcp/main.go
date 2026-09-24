@@ -25,11 +25,12 @@
 //
 // Every tool it exposes is a read (see internal/mcpserver): the model can read
 // the ledger, the aggregates and the API's preview endpoints, and cannot create,
-// change or delete anything. A few of those reads write derived rows — a
-// credit-card account's missing billing cycles, or a legacy Paperless token
-// re-sealed in place — and the affected tools disclose that in their description
-// and in their readOnlyHint. Because stdout carries the protocol, logs go to
-// stderr or -log-file and never to stdout.
+// change or delete anything. A few of those reads write derived rows — an
+// account with a configured billing day may have its missing billing cycles
+// generated, or a legacy Paperless token may be re-sealed in place — and the
+// affected tools disclose that in their description and in their readOnlyHint.
+// Because stdout carries the protocol, logs go to stderr or -log-file and never
+// to stdout.
 package main
 
 import (

@@ -86,7 +86,7 @@ export interface Transaction {
   categoryColor?: string;
   isLinked?: boolean;
   isSummary?: boolean;
-  // Billing cycle attachment (credit cards)
+  // Billing cycle attachment for an account with a configured billing day.
   billingCycleId?: string | null;
   billingCycleLabel?: string;
   // Loan/EMI attachment: the loan account this transaction is linked to as an

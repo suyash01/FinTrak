@@ -431,6 +431,9 @@ func TestLogoutClearsSessionLocally(t *testing.T) {
 		if r.URL.Path != "/api/v1/auth/logout" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
+		if got := r.Header.Get("Cookie"); got != RefreshCookieName+"=refresh-1" {
+			t.Errorf("logout Cookie header = %q, want the refresh token", got)
+		}
 		_, _ = w.Write([]byte(`{"message":"logged out"}`))
 	})
 
@@ -440,6 +443,49 @@ func TestLogoutClearsSessionLocally(t *testing.T) {
 	}
 	if c.HasSession() {
 		t.Error("logout must clear the session")
+	}
+}
+
+// TestLogoutRevokesRefreshTokenForAnotherClient proves that the shared client
+// presents the refresh cookie the backend needs to revoke the rotation family.
+// A second client with a copy of the same tokens must not be able to refresh
+// after the first client logs out.
+func TestLogoutRevokesRefreshTokenForAnotherClient(t *testing.T) {
+	var revoked atomic.Bool
+	c := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/logout":
+			if got := r.Header.Get("Cookie"); got != RefreshCookieName+"=refresh-1" {
+				t.Errorf("logout Cookie header = %q, want the refresh token", got)
+			}
+			revoked.Store(true)
+			_, _ = w.Write([]byte(`{"message":"logged out"}`))
+		case "/api/v1/auth/refresh":
+			if revoked.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"errors":[{"message":"refresh token revoked"}]}`))
+				return
+			}
+			t.Errorf("refresh unexpectedly reached the server after logout")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"unexpected refresh"}]}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+
+	other, err := New(c.BaseURL())
+	if err != nil {
+		t.Fatalf("New second client: %v", err)
+	}
+	c.SetTokens("access-1", "refresh-1")
+	other.SetTokens("access-1", "refresh-1")
+
+	if err := c.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if err := other.RefreshSession(context.Background()); !Unauthorized(err) {
+		t.Fatalf("copied refresh token error = %v, want unauthorized", err)
 	}
 }
 

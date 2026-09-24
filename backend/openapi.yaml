@@ -207,6 +207,8 @@ paths:
         spent. Refreshing does not extend the session's original 30-day
         deadline. On failure both cookies are cleared.
       operationId: refresh
+      security:
+        - RefreshCookie: []
       responses:
         "200":
           description: Access token refreshed; both session cookies are re-issued
@@ -236,6 +238,8 @@ paths:
         Revocation is best-effort: a database failure still answers 200 with
         the cookies cleared.
       operationId: logout
+      security:
+        - RefreshCookie: []
       responses:
         "200":
           description: Logged out
@@ -250,6 +254,7 @@ paths:
       description: Returns the authenticated user for the current session cookie.
       operationId: getMe
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -270,6 +275,7 @@ paths:
       description: Get all accounts belonging to the authenticated user
       operationId: getAccounts
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -289,9 +295,10 @@ paths:
       tags:
         - Accounts
       summary: Create a new account
-      description: Create a new bank or credit-card account
+      description: Create a new account using a built-in or administrator-defined account type
       operationId: createAccount
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -321,6 +328,7 @@ paths:
       description: Update account details (name, type, bank, currency, color, default status)
       operationId: updateAccount
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -359,6 +367,7 @@ paths:
       description: Delete an account and its associated payee
       operationId: deleteAccount
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -374,7 +383,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                type: object
+                properties:
+                  message:
+                    type: string
+                  transactionsDeleted:
+                    type: integer
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -396,6 +410,7 @@ paths:
         materialize billing cycles, so a cross-site request is refused.
       operationId: exportAccount
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -432,20 +447,21 @@ paths:
     get:
       tags:
         - Accounts
-      summary: Get billing cycles for a credit card account
+      summary: Get billing cycles for an account
       description: >
-        List all billing cycles for a credit-card account with transaction
-        counts and outstanding totals. Cycles are auto-generated one per month,
-        ending on the account's billingDay. totalOutstanding is the account's
-        running balance at the cycle's end date (all debits minus all credits —
-        purchases, payments, refunds, cashbacks — posted up to that date).
-        Non-credit-card accounts return an empty list.
+        List all billing cycles for an account with a configured billingDay.
+        Accounts without a billing day return an empty list. Cycles are
+        auto-generated one per month, ending on the account's billingDay.
+        totalOutstanding is the account's running balance at the cycle's end date
+        (all debits minus all credits — purchases, payments, refunds, cashbacks
+        — posted up to that date).
 
         This is not a pure read: answering materializes the account's missing
         billing cycles (one INSERT per elapsed month) and back-fills
         transactions' cycle assignment, so a cross-site request is refused.
       operationId: getBillingCycles
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -513,6 +529,7 @@ paths:
         account.
       operationId: getLoanSchedule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -553,6 +570,7 @@ paths:
         schedule per loan account; an existing one is replaced.
       operationId: upsertLoanSchedule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -592,6 +610,7 @@ paths:
         `deleted: 0`.
       operationId: deleteLoanSchedule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -650,6 +669,7 @@ paths:
         removes the target's schedule too when this transfer is what created it.
       operationId: transferLoanBalance
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -701,6 +721,7 @@ paths:
         account. Idempotent: reports `deleted: 0` when no such transfer exists.
       operationId: deleteLoanTransfer
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -749,6 +770,7 @@ paths:
         already settled by a transfer.
       operationId: getLoanPayoff
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -800,6 +822,7 @@ paths:
         first.
       operationId: linkLoanDisbursement
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -843,6 +866,7 @@ paths:
         when the loan has none.
       operationId: unlinkLoanDisbursement
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -874,9 +898,10 @@ paths:
       tags:
         - Account Types
       summary: List account types
-      description: Get all available account types (e.g., bank, credit_card)
+      description: Get all built-in and administrator-defined account types
       operationId: getAccountTypes
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -901,6 +926,7 @@ paths:
         across custom and built-in types; re-using one is a 409.
       operationId: createAccountType
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -938,6 +964,7 @@ paths:
       description: Update a custom account type (admin only)
       operationId: updateAccountType
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -977,6 +1004,7 @@ paths:
       description: Delete a custom account type (admin only)
       operationId: deleteAccountType
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -1031,6 +1059,7 @@ paths:
         refused.
       operationId: getTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -1042,6 +1071,21 @@ paths:
             accounts. Loan accounts are passed in loanAccountId instead, which
             matches their attached EMI payments.
         - in: query
+          name: loanAccountId
+          schema:
+            type: string
+          description: >
+            Filter by loan account ID, comma-separated to match any of several
+            loan accounts and their attached EMI payments. Combines with
+            accountId as one OR-ed account filter.
+        - in: query
+          name: excludeAttached
+          schema:
+            type: boolean
+          description: >
+            Exclude transactions attached to a loan account. Recurring-series
+            attachments are not excluded by this parameter.
+        - in: query
           name: categoryId
           schema:
             type: string
@@ -1049,6 +1093,14 @@ paths:
             Filter by category ID (or a group id/slug, which matches every
             category in that group), comma-separated to match any of several.
             The "uncategorized" sentinel matches transactions with no category.
+        - in: query
+          name: groupId
+          schema:
+            type: string
+          description: >
+            Filter by category group id or slug, comma-separated to match any of
+            several groups. Combines with categoryId as one OR-ed category
+            filter.
         - in: query
           name: payeeId
           schema:
@@ -1189,6 +1241,7 @@ paths:
         between.
       operationId: createTransaction
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1242,6 +1295,7 @@ paths:
         the same 400 otherwise — a PATCH must not bypass the create-path check.
       operationId: updateTransaction
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -1279,6 +1333,7 @@ paths:
       summary: Delete a transaction
       operationId: deleteTransaction
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -1317,6 +1372,7 @@ paths:
         nothing is imported.
       operationId: importTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1354,6 +1410,7 @@ paths:
         violating row is rejected with 400 prefixed by its 1-based position.
       operationId: validateTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1386,6 +1443,7 @@ paths:
       summary: Bulk categorize transactions
       operationId: bulkCategorize
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1417,6 +1475,7 @@ paths:
       summary: Bulk update payees
       operationId: bulkUpdatePayee
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1448,6 +1507,7 @@ paths:
       summary: Bulk update billing cycles
       operationId: bulkUpdateBillingCycle
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1487,6 +1547,7 @@ paths:
         as paid to the loan. Detaching leaves payees unchanged.
       operationId: bulkLinkLoan
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1534,9 +1595,13 @@ paths:
         includes account/category/group/payee names. Rows come in the same
         total order as GET /transactions. A filter that matches more than
         100,000 rows is refused with 400 rather than truncated, so a
-        downloaded file is never silently partial.
+        downloaded file is never silently partial. CSV columns are `Date,
+        Description, Amount, Type, Account, Category, Group, Payee, Tags,
+        Notes`; textual cells are escaped so spreadsheet applications treat
+        statement values as literal text rather than formulas.
       operationId: exportTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -1545,6 +1610,13 @@ paths:
           description: >
             Filter by account ID, comma-separated to match any of several.
             Loan accounts are passed in loanAccountId instead.
+        - in: query
+          name: excludeAttached
+          schema:
+            type: boolean
+          description: >
+            Exclude transactions attached to a loan account. Recurring-series
+            attachments are not excluded by this parameter.
         - in: query
           name: categoryId
           schema: { type: string }
@@ -1612,6 +1684,15 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            Same-origin and same-site requests, and clients that send no
+            `Sec-Fetch-*` header, are unaffected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1626,6 +1707,7 @@ paths:
         collapsed. At least one of add/remove is required.
       operationId: bulkUpdateTags
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1657,6 +1739,7 @@ paths:
       summary: Bulk delete transactions
       operationId: bulkDeleteTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1691,6 +1774,7 @@ paths:
       description: The immutable base groups plus the user's custom groups.
       operationId: getGroups
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -1720,6 +1804,7 @@ paths:
       summary: Create a custom group
       operationId: createGroup
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1750,6 +1835,7 @@ paths:
       summary: Update a custom group
       operationId: updateGroup
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -1782,6 +1868,7 @@ paths:
       summary: Delete a custom group
       operationId: deleteGroup
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -1804,6 +1891,7 @@ paths:
       description: Get all categories for the authenticated user
       operationId: getCategories
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -1825,6 +1913,7 @@ paths:
       summary: Create a new category
       operationId: createCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1853,6 +1942,7 @@ paths:
       summary: Update a category
       operationId: updateCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -1882,6 +1972,7 @@ paths:
       description: Uncategorizes its transactions and removes rules pointing at it.
       operationId: deleteCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -1908,6 +1999,7 @@ paths:
         a row (categories per group, transactions per category).
       operationId: getAdminCatalog
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -1952,6 +2044,7 @@ paths:
       summary: Create a global group
       operationId: createGlobalGroup
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -1984,6 +2077,7 @@ paths:
       summary: Create a global category
       operationId: createGlobalCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2010,6 +2104,7 @@ paths:
       summary: Update a global category
       operationId: updateGlobalCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -2040,6 +2135,7 @@ paths:
       summary: Delete a global category
       operationId: deleteGlobalCategory
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: id
@@ -2064,6 +2160,7 @@ paths:
       summary: List all payees
       operationId: getPayees
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -2085,6 +2182,7 @@ paths:
       summary: Create a new payee
       operationId: createPayee
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2124,6 +2222,7 @@ paths:
       summary: Update a payee
       operationId: updatePayee
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2171,6 +2270,7 @@ paths:
       summary: Delete a payee
       operationId: deletePayee
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2206,6 +2306,7 @@ paths:
         every distinct tag and how many transactions carry it, most-used first.
       operationId: getTags
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -2237,6 +2338,7 @@ paths:
         a 200 with an empty body.
       operationId: renameTag
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2275,6 +2377,7 @@ paths:
       summary: List all rules
       operationId: getRules
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -2302,6 +2405,7 @@ paths:
         without tags answers `[]` (never `null`).
       operationId: createRule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2339,6 +2443,7 @@ paths:
         stored list.
       operationId: updateRule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2375,6 +2480,7 @@ paths:
       summary: Delete a rule
       operationId: deleteRule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2406,6 +2512,7 @@ paths:
       summary: Apply all rules to uncategorized transactions
       operationId: applyRules
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -2433,6 +2540,7 @@ paths:
         how many currently-uncategorized transactions it would categorize.
       operationId: previewRule
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2465,6 +2573,7 @@ paths:
       summary: List all transaction links
       operationId: getLinks
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -2500,6 +2609,7 @@ paths:
       description: Link two transactions (e.g., transfer between accounts, cashback, refund, bill payment)
       operationId: createLink
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2536,6 +2646,7 @@ paths:
       summary: Delete a link
       operationId: deleteLink
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2567,6 +2678,7 @@ paths:
       summary: Create multiple links at once
       operationId: bulkCreateLinks
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2598,6 +2710,7 @@ paths:
       summary: Delete multiple links at once
       operationId: bulkDeleteLinks
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2632,6 +2745,7 @@ paths:
       description: Get suggested transfers between accounts based on matching amounts
       operationId: getTransferSuggestions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: page
@@ -2692,6 +2806,7 @@ paths:
         window (before netting).
       operationId: getLinkCycles
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -2738,6 +2853,7 @@ paths:
       description: Get suggested cashback links based on matching amounts
       operationId: getCashbackSuggestions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - name: page
@@ -2791,6 +2907,7 @@ paths:
       summary: List recurring series
       operationId: getRecurringSeries
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -2815,6 +2932,7 @@ paths:
       summary: Create a recurring series
       operationId: createRecurringSeries
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -2843,6 +2961,7 @@ paths:
       summary: Update a recurring series
       operationId: updateRecurringSeries
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2879,6 +2998,7 @@ paths:
       summary: Delete a recurring series
       operationId: deleteRecurringSeries
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2910,6 +3030,7 @@ paths:
       summary: Forecast the next occurrences of a series
       operationId: getRecurringForecast
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -2961,6 +3082,7 @@ paths:
         linked.
       operationId: getRecurringSuggestions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3006,6 +3128,7 @@ paths:
       summary: List transactions attached to a series
       operationId: getRecurringTransactions
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3042,6 +3165,7 @@ paths:
       summary: List a series' date-ranged amount/account entries
       operationId: getRecurringTerms
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3082,6 +3206,7 @@ paths:
         occurrence/transaction date.
       operationId: createRecurringTerm
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3122,6 +3247,7 @@ paths:
         not overlap another entry of the same series.
       operationId: updateRecurringTerm
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3167,6 +3293,7 @@ paths:
         that matches no transaction until it is replaced.
       operationId: deleteRecurringTerm
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3204,6 +3331,7 @@ paths:
       summary: Link transactions to a recurring series
       operationId: attachRecurring
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -3243,6 +3371,7 @@ paths:
       summary: Unlink transactions from their recurring series
       operationId: detachRecurring
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -3275,9 +3404,14 @@ paths:
       summary: Parse a bank statement PDF
       description: |
         Upload a bank or credit-card statement PDF for automatic extraction.
-        The PDF is forwarded to the standalone statement-parser service.
+        The PDF is forwarded to the standalone statement-parser service. The
+        backend has a four-slot parse semaphore and fails fast with 429 when it
+        is saturated. It normalizes parser dates, transaction types, and money
+        before returning preview rows; parser reconciliation warnings are carried
+        in `validationErrors`.
       operationId: parseStatement
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -3331,6 +3465,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "408":
+          description: Request cancelled while waiting for the parser
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Statement parser is busy; retry shortly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "502":
           description: Statement parser service unavailable
           content:
@@ -3348,6 +3494,7 @@ paths:
       description: Get the list of available parsers from the statement-parser service
       operationId: listStatementExtractors
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -3383,9 +3530,17 @@ paths:
       tags:
         - Paperless
       summary: Get Paperless settings
-      description: Retrieve the current user's Paperless-ngx integration configuration
+      description: |
+        Retrieve the current user's Paperless-ngx integration configuration. The
+        API token is never returned; `hasToken` reports whether one is configured.
+
+        Reading the configuration can transparently re-seal a legacy-format
+        Paperless token under the current key derivation and persist it. The
+        write is a compare-and-swap, so it cannot overwrite a newer token. This
+        route is refused for cross-site navigations.
       operationId: getPaperlessSettings
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -3396,6 +3551,12 @@ paths:
                 $ref: "#/components/schemas/PaperlessSettingsResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Cross-site request refused because this GET can re-seal a legacy Paperless token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3403,9 +3564,15 @@ paths:
       tags:
         - Paperless
       summary: Update Paperless settings
-      description: Update Paperless-ngx configuration (URL, API token, tag label, page size)
+      description: |
+        Partially update the current user's Paperless-ngx configuration. Only
+        fields present in the request are changed; an explicit null clears a
+        nullable field. The API token is write-only and is never returned. The
+        response echoes the non-secret settings and `hasToken` indicates whether
+        a token is configured.
       operationId: updatePaperlessSettings
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -3453,6 +3620,7 @@ paths:
         holds a current token. A cross-site request is refused.
       operationId: listPaperlessDocuments
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -3615,9 +3783,14 @@ paths:
       tags:
         - Paperless
       summary: Download a Paperless document file
-      description: Download the original file for a Paperless document
+      description: |
+        Download the original PDF for a Paperless document. The response is
+        capped at 20 MB and its content type is pinned to `application/pdf`.
+        Reading the Paperless configuration can re-seal a legacy token, so a
+        cross-site request is refused.
       operationId: getPaperlessDocumentFile
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: path
@@ -3630,7 +3803,7 @@ paths:
         "200":
           description: Document file
           content:
-            application/octet-stream:
+            application/pdf:
               schema:
                 type: string
                 format: binary
@@ -3642,8 +3815,20 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Cross-site request refused because this GET can re-seal a legacy Paperless token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Document file exceeds the 20 MB limit
           content:
             application/json:
               schema:
@@ -3665,6 +3850,7 @@ paths:
       description: Download and parse a document from Paperless-ngx for import
       operationId: importPaperlessDocument
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -3702,6 +3888,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Document file exceeds the 20 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Statement parser is busy; retry shortly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "502":
           description: Paperless or parser service unavailable
           content:
@@ -3725,6 +3923,7 @@ paths:
         refused.
       operationId: getDashboardSummary
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -3809,6 +4008,7 @@ paths:
         cross-site request is refused.
       operationId: getMoneyFlow
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -3884,6 +4084,7 @@ paths:
         refused.
       operationId: getMoneyFlowTimeline
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -3974,6 +4175,7 @@ paths:
         cross-site request is refused.
       operationId: getCashFlowCalendar
       security:
+        - AccessCookie: []
         - BearerAuth: []
       parameters:
         - in: query
@@ -4035,7 +4237,8 @@ paths:
       description: |
         Download a complete, versioned JSON snapshot of everything the
         authenticated user owns: accounts, category groups and categories,
-        payees, billing cycles, transactions, links, loan attachments,
+        payees, billing cycles, transactions, links, loan attachments, loan
+        schedules, loan balance transfers, loan disbursement credits,
         recurring series/terms/attachments, rules, and non-secret settings.
         The Paperless API token and password hash are never included. This is
         the user-level counterpart to `GET /accounts/{id}/export`, which only
@@ -4050,6 +4253,7 @@ paths:
         warning; see `POST /import`.
       operationId: exportUserData
       security:
+        - AccessCookie: []
         - BearerAuth: []
       responses:
         "200":
@@ -4060,6 +4264,15 @@ paths:
                 $ref: "#/components/schemas/BackupBundle"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Refused because the request carried `Sec-Fetch-Site: cross-site`.
+            The backup download is a pure read but is guarded because a
+            cross-site navigation must not silently download authenticated data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4102,6 +4315,7 @@ paths:
         truncated — it can therefore hold 101 entries.
       operationId: importUserData
       security:
+        - AccessCookie: []
         - BearerAuth: []
       requestBody:
         required: true
@@ -4181,7 +4395,7 @@ components:
           format: email
         password:
           type: string
-          minLength: 6
+          description: Existing-account password; login does not apply the registration minimum-length rule and caps input at 72 UTF-8 bytes.
 
     CreateAccountRequest:
       type: object
@@ -4210,8 +4424,8 @@ components:
           type: integer
           minimum: 1
           maximum: 31
-          default: 1
-          description: Credit-card billing day on which each billing cycle ends; only meaningful for credit-card accounts (defaults to 1)
+          nullable: true
+          description: Day of month on which billing cycles end; omit or send null to disable billing cycles.
 
     UpdateAccountRequest:
       type: object
@@ -4238,7 +4452,8 @@ components:
           type: integer
           minimum: 1
           maximum: 31
-          description: Credit-card billing day on which each billing cycle ends; omitted keeps the current value
+          nullable: true
+          description: Day of month on which billing cycles end; omitted keeps the current value, while null clears it and disables billing cycles.
 
     CreateAccountTypeRequest:
       type: object
@@ -5133,7 +5348,7 @@ components:
         role:
           type: string
           enum: [user, admin]
-          description: The user's role (admin when their email is in the configured admin allowlist)
+          description: The user's persisted role (`user` or `admin`); the admin email allowlist controls registration eligibility and does not dynamically change an existing user's role.
 
     Account:
       type: object
@@ -5168,7 +5383,8 @@ components:
           type: integer
           minimum: 1
           maximum: 31
-          description: Credit-card billing day on which each billing cycle ends (default 1)
+          nullable: true
+          description: Day of month on which billing cycles end; null means no billing cycles are generated.
 
     AccountType:
       type: object
@@ -6877,6 +7093,21 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   securitySchemes:
+    AccessCookie:
+      type: apiKey
+      in: cookie
+      name: fintrak_token
+      description: |
+        Short-lived JWT access token delivered in the httpOnly `fintrak_token`
+        cookie. Browser clients receive this cookie from register, login, or
+        refresh; non-browser clients may use the bearer scheme instead.
+    RefreshCookie:
+      type: apiKey
+      in: cookie
+      name: fintrak_refresh
+      description: |
+        Server-recorded, rotating refresh token. It is used only by the refresh
+        and logout endpoints; logout revokes the token's whole rotation family.
     BearerAuth:
       type: http
       scheme: bearer

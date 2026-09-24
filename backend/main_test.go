@@ -204,6 +204,8 @@ func TestCrossSiteGetGuard(t *testing.T) {
 		"/api/v1/dashboard/money-flow/timeline",
 		"/api/v1/dashboard/cash-flow-calendar",
 		"/api/v1/paperless/documents",
+		"/api/v1/paperless/settings",
+		"/api/v1/paperless/documents/" + token + "/file",
 	}
 
 	t.Run("cross-site is refused before authentication", func(t *testing.T) {

@@ -370,9 +370,11 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 // token in place, so "GET is safe" is not true for them) and sensitive
 // pure-read downloads (the account/transaction CSVs and the full-backup JSON)
 // that a cross-site top-level navigation must not silently trigger. The
-// write-on-GET subset is mirrored in mcp/internal/readonly.SideEffectingGETs;
-// the download routes are not writes and belong here only because the guard is
-// about the cookie, not about writing.
+// write-on-GET subset exposed to MCP is mirrored in
+// mcp/internal/readonly.SideEffectingGETs; the download routes are not writes
+// and belong here only because the guard is about the cookie, not about
+// writing. The Paperless settings and file routes are included because their
+// configuration read can also re-seal a legacy token.
 var stateChangingGETs = map[string]bool{
 	"GET /api/v1/accounts/:id/billing-cycles":   true,
 	"GET /api/v1/accounts/:id/export":           true,
@@ -383,6 +385,8 @@ var stateChangingGETs = map[string]bool{
 	"GET /api/v1/dashboard/money-flow/timeline": true,
 	"GET /api/v1/dashboard/cash-flow-calendar":  true,
 	"GET /api/v1/paperless/documents":           true,
+	"GET /api/v1/paperless/settings":            true,
+	"GET /api/v1/paperless/documents/:id/file":  true,
 }
 
 // crossSiteGetGuard refuses a cross-site request to a GET route that writes.

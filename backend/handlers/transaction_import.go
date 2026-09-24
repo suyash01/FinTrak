@@ -23,8 +23,9 @@ import (
 // account. It enforces payload bounds and ownership of the account, billing
 // cycle, and any explicit payees, deduplicates rows when duplicateAction is
 // "skip", applies categorization rules in memory, and commits everything in one
-// transaction. Credit-card imports are attached to billing cycles, and source
-// Paperless documents are tagged only after the commit succeeds.
+// transaction. Imports for an account with a configured billing day are attached
+// to billing cycles, and source Paperless documents are tagged only after the
+// commit succeeds.
 func (srv *Server) ImportTransactions(c *gin.Context) {
 	var req models.ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -484,8 +485,9 @@ func (srv *Server) ValidateTransactions(c *gin.Context) {
 }
 
 // attachTransactionsToCycle attaches the given transaction IDs to a billing
-// cycle. Used by credit-card imports when the client chose an explicit cycle so
-// every imported transaction lands in it, overriding the date-based default.
+// cycle. Used by imports for an account with a configured billing day when the
+// client chose an explicit cycle so every imported transaction lands in it,
+// overriding the date-based default.
 // The cycle must belong to the user and to the target account, so the update
 // re-checks ownership rather than relying only on the caller's pre-check.
 func attachTransactionsToCycle(ctx context.Context, q cycleQueryer, cycleID, accountID uuid.UUID, ids []uuid.UUID, userID uuid.UUID) error {

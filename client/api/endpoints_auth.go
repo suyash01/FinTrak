@@ -48,10 +48,18 @@ func (c *Client) RefreshSession(ctx context.Context) error {
 	return err
 }
 
-// Logout clears the session server-side and locally.
+// Logout revokes the server-side refresh-session family and clears the local
+// session. The refresh cookie must be sent explicitly: the backend identifies
+// the family to revoke from that cookie, not from the access token.
 func (c *Client) Logout(ctx context.Context) error {
+	refresh := c.refreshToken()
 	defer c.ClearSession()
-	_, err := do[MessageResult](ctx, c, post("/auth/logout"))
+
+	r := post("/auth/logout").withoutAuth()
+	if refresh != "" {
+		r = r.withCookie(RefreshCookieName + "=" + refresh)
+	}
+	_, err := do[MessageResult](ctx, c, r)
 	return err
 }
 

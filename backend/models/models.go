@@ -27,14 +27,15 @@ type ErrorResponse struct {
 // AccountType describes how an account category behaves. PositiveTxnType
 // ("credit" or "debit") defines which transaction type is added when computing
 // an account's balance/outstanding. Types are shared reference data across all
-// users; the built-in "bank" and "credit_card" types are immutable.
+// users; the built-in "bank", "credit_card", and "loan" types are immutable.
 type AccountType struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	PositiveTxnType string `json:"positiveTxnType"`
 }
 
-// Account is a user's bank account or credit card.
+// Account is a user's financial account, such as a bank account, credit card,
+// wallet, or loan/EMI account.
 type Account struct {
 	ID              uuid.UUID `json:"id"`
 	Name            string    `json:"name"`
@@ -119,7 +120,7 @@ type Transaction struct {
 	CategoryColor string `json:"categoryColor,omitempty"`
 	IsLinked      bool   `json:"isLinked"`
 	IsSummary     bool   `json:"isSummary,omitempty"`
-	// Billing cycle attachment (credit cards)
+	// Billing cycle attachment for an account with a configured billing day.
 	BillingCycleID    *uuid.UUID `json:"billingCycleId,omitempty"`
 	BillingCycleLabel string     `json:"billingCycleLabel,omitempty"`
 	// Loan/EMI attachment: the loan account this transaction is linked to as
@@ -823,13 +824,14 @@ type DeleteLoanScheduleResult struct {
 
 // ImportRequest is the body for POST /api/v1/transactions/import. DuplicateAction
 // is "skip" (drop rows that already exist) or "keep" (insert everything);
-// BillingCycleID attaches credit-card imports to a specific cycle; and
+// BillingCycleID attaches imports for an account with a configured billing day
+// to a specific cycle; and
 // PaperlessDocumentIDs are tagged after a successful import.
 type ImportRequest struct {
 	AccountID            uuid.UUID           `json:"accountId"`
 	Transactions         []ImportTransaction `json:"transactions"`
 	DuplicateAction      string              `json:"duplicateAction"`      // "skip" | "keep"
-	BillingCycleID       *uuid.UUID          `json:"billingCycleId"`       // credit-card imports: attach every imported transaction to this cycle
+	BillingCycleID       *uuid.UUID          `json:"billingCycleId"`       // imports for an account with a billing day: attach every imported transaction to this cycle
 	PaperlessDocumentIDs []int               `json:"paperlessDocumentIds"` // tag these Paperless docs after a successful import
 }
 

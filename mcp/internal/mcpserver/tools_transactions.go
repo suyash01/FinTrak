@@ -36,7 +36,7 @@ type listTransactionsArgs struct {
 	Linked          *bool    `json:"linked,omitempty" jsonschema:"true for linked transactions, false for unlinked; omit to leave unfiltered"`
 	Uncategorized   bool     `json:"uncategorized,omitempty" jsonschema:"keep only transactions without a category"`
 	LoanAccountID   string   `json:"loanAccountId,omitempty" jsonschema:"keep only transactions attached to this loan/EMI account"`
-	ExcludeAttached bool     `json:"excludeAttached,omitempty" jsonschema:"drop transactions already attached to a loan or a recurring series"`
+	ExcludeAttached bool     `json:"excludeAttached,omitempty" jsonschema:"drop transactions already attached to a loan account; recurring-series attachments are not excluded"`
 	RecurringID     string   `json:"recurringId,omitempty" jsonschema:"keep only transactions attached to this recurring series id"`
 	Recurring       string   `json:"recurring,omitempty" jsonschema:"\"linked\" or \"unlinked\" recurring state"`
 

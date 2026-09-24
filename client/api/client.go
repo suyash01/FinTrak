@@ -182,8 +182,9 @@ type request struct {
 	// the credential-carrying auth endpoints, where a 401 is a rejection of the
 	// credentials the caller just sent rather than an expired session.
 	noAuth bool
-	// cookie, when set, is sent verbatim instead of the access token, so the
-	// refresh call can present the refresh token without leaking it elsewhere.
+	// cookie, when set, is sent verbatim instead of the access token, so auth
+	// calls that require a particular session cookie can present it without
+	// leaking it elsewhere.
 	cookie string
 
 	// timeout, when non-zero, replaces the 60s JSON default for this call.
@@ -208,6 +209,14 @@ func patch(path string) *request {
 // attached and a 401 is reported as-is instead of triggering a refresh.
 func (r *request) withoutAuth() *request {
 	r.noAuth = true
+	return r
+}
+
+// withCookie sends one explicit Cookie header instead of the normal access
+// token. It is used for the refresh and logout endpoints, which need the
+// refresh cookie but must not send it with ordinary authenticated requests.
+func (r *request) withCookie(cookie string) *request {
+	r.cookie = cookie
 	return r
 }
 

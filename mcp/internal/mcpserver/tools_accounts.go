@@ -46,14 +46,14 @@ func accountTools() []Tool {
 			Name:  "list_account_types",
 			Title: "List account types",
 			Description: "The account types the ledger knows (bank, credit card, loan/EMI, cash and any the user added), " +
-				"with their ids and whether each carries a billing day.",
+				"with their ids and the transaction-side convention used to compute balances.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/account-types"},
 			install: installListAccountTypes,
 		},
 		{
 			Name:  "list_billing_cycles",
 			Title: "List billing cycles",
-			Description: "One account's statement periods, newest first, each with its total outstanding and whether it is closed. " +
+			Description: "One account's statement periods, newest first, each with its date range, total outstanding, and transaction count. " +
 				"Accounts without a billing day return an empty list.",
 			SideEffect: "Not a pure read: the account's missing statement periods are generated, and its transactions are " +
 				"re-assigned to them, as part of answering.",

@@ -44,8 +44,8 @@ func (r Route) String() string { return r.Method + " " + r.Path }
 // SideEffectingGETs are the GET operations that are not pure reads. Two
 // families are on the list:
 //
-//   - The billing-cycle ones reach ensureBillingCycles, which materializes a
-//     credit-card account's statement periods (INSERT) and back-fills
+//   - The billing-cycle ones reach ensureBillingCycles, which materializes an
+//     account's statement periods (INSERT) and back-fills
 //     transactions' cycle assignment (UPDATE transactions ... SET
 //     billing_cycle_id = ...), dropping and recreating the account's cycles when
 //     its billing day changed.
