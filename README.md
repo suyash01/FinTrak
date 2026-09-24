@@ -44,7 +44,7 @@
 - **Close Accounts**: Mark an account closed and its transactions become immutable — no manual add/edit/remove, no bulk action (categorize, payee, billing cycle, tags, delete), no tag rename and no rule re-run can rewrite them; linking stays possible.
 - **Bulk Operations**: Apply a category, payee, billing cycle or tag add/remove to a selection, delete many at once, or attach/detach the whole selection to a loan account or a recurring series.
 - **Command Palette**: Ctrl/Cmd-K jumps to any page, opens the right record dialog, applies rules to uncategorized transactions, or toggles the theme.
-- **Agent Access (MCP)**: `fintrak-mcp` serves the ledger to a model client (Claude Desktop, Claude Code, an IDE) over the Model Context Protocol, as **27 read-only tools**: the ledger, the aggregates, the rule and series definitions and the read-only preview endpoints the app itself uses. It cannot create, change or delete anything — the surface is checked against the OpenAPI document and enforced by a transport guard — so a model's suggestions are always confirmed in the app.
+- **Agent Access (MCP)**: `fintrak-mcp` serves the ledger to a model client (Claude Desktop, Claude Code, an IDE) over the Model Context Protocol, as a **read-only tool surface** covering the ledger, aggregates, rule and series definitions, and the app's read-only preview endpoints. It cannot create, change or delete anything — the surface is checked against the OpenAPI document and enforced by a transport guard — so a model's suggestions are always confirmed in the app.
 - **Admin Console**: An admin-only Settings card curates the shared global catalog of groups and categories, showing the category and transaction usage counts needed before editing or retiring one.
 
 ---
@@ -95,7 +95,7 @@
 ### MCP server (`mcp/`)
 
 - **Protocol**: [Model Context Protocol](https://modelcontextprotocol.io/) over stdio (the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk)), so an MCP client (Claude Desktop, Claude Code, an IDE) launches it as a subprocess
-- **Surface**: 27 **read-only** tools over the same REST API and the same client the TUI uses — the ledger, its reference data, the aggregates, and the API's read-only preview endpoints
+- **Surface**: a read-only tool set over the same REST API and the same client the TUI uses — the ledger, its reference data, the aggregates, and the API's read-only preview endpoints
 - **Guarantee**: every tool declares the API operation it performs, a test checks each against `backend/openapi.yaml`, and a transport guard refuses any other request before it can leave the process
 
 ---
@@ -113,8 +113,8 @@ Compose file below), or Docker Compose directly:
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/your-username/fintrak.git
-    cd fintrak
+    git clone https://github.com/suyash01/FinTrak.git
+    cd FinTrak
     ```
 2.  **Start the services**:
     ```bash
@@ -139,15 +139,18 @@ make test                   # backend unit tests (no database needed)
 make test-cover-check       # backend tests + the 85% coverage floor
 make test-integration       # backend integration tests (Docker + testcontainers)
 make test-parser            # statement parser tests (uv/unittest)
+make test-parser-cover-check  # parser tests + its 90% coverage floor
 make test-client            # shared API client tests
 make test-client-cover-check  # client tests + its 85% coverage floor
 make test-tui               # terminal client tests
+make test-tui-cover         # TUI tests with a coverage profile
 make test-tui-cover-check   # TUI tests + its 18% coverage floor
 make test-mcp               # MCP server tests
 make test-mcp-cover-check   # MCP tests + its 80% coverage floor
 make vet / make vet-client / make vet-tui / make vet-mcp   # go vet
 make build-backend / make build-frontend / make build-client / make build-tui / make build-mcp
 make openapi-check          # every registered route is in backend/openapi.yaml
+make docs-check             # Markdown links, Mermaid, Makefile and OpenAPI docs
 make release VERSION=v1.2.3 # run CI's whole gate on master-at-origin, then tag and push
 ```
 
@@ -306,13 +309,14 @@ The server signs in lazily with its first tool call and refreshes the session fr
 │   └── main.go          # Entry point + setupRouter (all route registration)
 ├── frontend             # React + TypeScript + Vite SPA (bun)
 │   ├── src
-│   │   ├── api          # The single API client (client.ts)
+│   │   ├── api          # client.ts, offlineCache.ts, outbox.ts, offlineStatus.ts
 │   │   ├── components   # PascalCase feature dirs (<Feature>/<Feature>.tsx)
 │   │   │   └── ui       # shadcn/ui primitives
-│   │   ├── context      # Auth, Theme, Settings, DomainData providers
-│   │   ├── lib          # Shared helpers (cn, tables, categories, intents)
+│   │   ├── context      # Auth, Theme, Settings, DomainData, Offline providers
+│   │   ├── lib          # Shared helpers, dates, serviceWorker, prefetchRoutes
 │   │   ├── utils        # Formatters and small display helpers
 │   │   └── types.ts     # API models
+│   ├── public            # PWA manifest, service worker, theme bootstrap
 │   └── Dockerfile       # Build + nginx runtime (reverse-proxies /api/v1)
 ├── client               # Shared Go REST client (own module, used by tui and mcp)
 │   └── api              # The one hand-written API client

@@ -4,7 +4,7 @@
 # Extends docker-compose.prod-no-db.yml and adds a managed database service.
 #
 # Same Compose project (`fintrak-prod`) as the no-db file, and a different one
-# from the dev stack (`fintrak-dev`): the named volume here is
+# from the dev stack (`fintrak`): the named volume here is
 # `fintrak-prod_pgdata`, so running `make prod` on a machine that has run
 # `make dev` starts a fresh database instead of adopting the dev volume (and a
 # distinct project also means two stacks can be up at once without a container
@@ -36,7 +36,7 @@
 #                     release keeps redeploys reproducible and rollbacks
 #                     deterministic.
 
-# `fintrak-dev`), so the two can never share a container name or a database
+# `fintrak`), so the two can never share a container name or a database
 # volume. See the header note in docker-compose.prod.yml.
 name: fintrak-prod
 

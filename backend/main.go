@@ -160,8 +160,9 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	r.Use(crossSiteGetGuard())
 
 	// Structured request logging. Emits an access line for every request and,
-	// at debug level (development), captures and logs request/response bodies.
-	// Skipped under test mode to keep unit test output quiet.
+	// at debug level with a positive body limit, captures and logs bounded
+	// request/response bodies. Skipped under test mode to keep unit test output
+	// quiet.
 	if gin.Mode() != gin.TestMode {
 		r.Use(logger.RequestLogger(slog.Default(), cfg.LogBodyLimit))
 	}
@@ -186,13 +187,16 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	// API Routes
 	api := r.Group("/api/v1")
 
-	// Health check endpoint for Docker/orchestrators
+	// Process-liveness endpoint for Docker/orchestrators. It deliberately does
+	// not probe PostgreSQL or the statement parser; startup already fails if
+	// the database cannot be reached.
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// Public API contract. openapi_test.go keeps this in lockstep with the
-	// registered routes.
+	// Public API contract. openapi_test.go keeps the registered method/path
+	// surface in lockstep with the document; schemas and descriptions still
+	// require review when the contract changes.
 	api.GET("/openapi.yaml", serveOpenAPISpec)
 
 	// Public: authentication. /auth/refresh is public because it is what a

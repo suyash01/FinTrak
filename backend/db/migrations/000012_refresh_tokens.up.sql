@@ -21,8 +21,11 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     replaced_by UUID
 );
 
--- Lookups are by hash (unique index above) and revocations are by family;
--- the user index serves the per-user cleanup path.
+-- Lookups are by hash (unique index above) and revocations are by family.
+-- Expired and revoked rows are retained so reuse detection can distinguish a
+-- spent token from an unknown one. The application does not currently run an
+-- automatic cleanup job; any future pruning must preserve that retention
+-- window and be operated as a reviewed maintenance task.
 CREATE INDEX IF NOT EXISTS refresh_tokens_family_id_idx ON refresh_tokens (family_id);
 CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens (user_id);
 

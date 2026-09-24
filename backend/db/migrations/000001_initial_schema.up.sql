@@ -1,17 +1,17 @@
--- FinTrak canonical schema (squashed).
--- Single baseline migration merging the full migration history:
+-- FinTrak canonical baseline schema (squashed).
+-- This baseline is followed by the incremental migrations in this directory;
+-- it is not the final schema by itself. Later migrations add or repair data
+-- including per-owner payee-name uniqueness, loan schedules, recurring term
+-- history, refresh sessions, and client-key idempotency.
 --   * composite tenant keys: accounts and payees are keyed by (user_id, id),
 --     and every FK that targets them carries the user_id so a row can never
 --     reference another user's account/payee
---   * users, account types, accounts (incl. billing_day and closed),
---     billing cycles, category groups (replacing the legacy categories.type
---     column and the never-used categories.parent_id), categories, payees,
---     transactions, rules, links
+--   * users, account types, accounts (including billing_day and closed),
+--     billing cycles, category groups, categories, payees, transactions,
+--     rules, and links
 --   * loan/EMI accounts: a closed flag and the loan_attachments junction that
 --     attaches a transaction to exactly one loan account; a trigger rejects
 --     writes that would place a transaction on a loan account
---   * per-owner payee name uniqueness ((user_id, name)) instead of the
---     column-wide UNIQUE on payees.name
 --   * foreign keys with cascade/set-null semantics: transactions.account_id ->
 --     accounts, links.from_txn_id/to_txn_id -> transactions, and the
 --     category/payee references on transactions/rules/payees; links also
@@ -20,9 +20,8 @@
 --     account (composite FK to billing_cycles (id, account_id))
 --   * rules.match_type without the never-implemented 'regex' value
 --   * transaction amounts stored as integer minor units (BIGINT cents)
---   * recurring/subscription tracking: recurring_series plus the
---     recurring_attachments junction and the recurring_series_terms
---     effective-dated amount/account range history
+--   * the baseline recurring_series and recurring_attachments tables; later
+--     migrations add effective-dated recurring_series_terms history
 --   * the query and performance indexes added for the dominant
 --     listing/aggregate/suggestion patterns
 -- The historical orphan-cleanup, duplicate-collapse, and backfill statements
@@ -94,7 +93,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS categories_user_id_uq
     ON categories (id, user_id) WHERE user_id IS NOT NULL;
 
 -- Accounts
--- billing_day configures the credit-card statement day (NULL otherwise).
+-- billing_day configures the statement period for any account type when set.
 -- closed marks an account as closed: transactions can no longer be added,
 -- removed, or edited on it (linking remains possible).
 CREATE TABLE IF NOT EXISTS accounts (
@@ -113,10 +112,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     PRIMARY KEY (user_id, id)
 );
 
--- Billing cycles (credit-card accounts)
+-- Billing cycles (accounts with a configured billing day)
 -- An explicit, persisted period (start_date..end_date) that transactions are
--- attached to via transactions.billing_cycle_id. Cycles are auto-generated on
--- the 1st of each month; the assignment can be changed manually.
+-- attached to via transactions.billing_cycle_id. Cycles are generated from the
+-- account's configured billing day; the assignment can be changed manually.
 -- The composite UNIQUE (id, account_id) backs the transactions composite FK
 -- that keeps a transaction's cycle and account in agreement.
 CREATE TABLE IF NOT EXISTS billing_cycles (
@@ -167,6 +166,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount BIGINT NOT NULL,
     type VARCHAR(10) NOT NULL CHECK (type IN ('debit', 'credit')),
     category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+    -- The current application writes a non-null array; 000013 backfills legacy
+    -- NULLs and enforces the invariant at the database boundary.
     tags TEXT[] DEFAULT '{}',
     notes TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),

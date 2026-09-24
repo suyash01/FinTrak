@@ -1,0 +1,42 @@
+name: Documentation Checks
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - "backend/openapi.yaml"
+      - "statement_parser/openapi.yaml"
+      - "Makefile"
+      - "scripts/check-docs.py"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - "backend/openapi.yaml"
+      - "statement_parser/openapi.yaml"
+      - "Makefile"
+      - "scripts/check-docs.py"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate documentation links, Mermaid, Makefile, and OpenAPI descriptions
+        run: python scripts/check-docs.py
+      - name: Verify backend OpenAPI route parity
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+      - run: make openapi-check

@@ -8,9 +8,10 @@ import (
 )
 
 // openAPISpec is the embedded OpenAPI document served at GET /api/v1/openapi.yaml.
-// It is generated/maintained by hand alongside the handlers; openapi_test.go
-// fails the build when a registered route is missing from the document, so the
-// contract cannot silently drift from the router.
+// It is maintained by hand alongside the handlers. openapi_test.go fails when
+// a registered route is missing or the document advertises a route that no
+// longer exists; schemas, defaults, status codes, and descriptions still need
+// semantic review when the contract changes.
 //
 //go:embed openapi.yaml
 var openAPISpec []byte

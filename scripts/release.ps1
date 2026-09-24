@@ -92,9 +92,9 @@ try {
         Pop-Location
     }
 
-    Write-Host "==> Enforcing coverage floors and the OpenAPI route parity"
-    make test-cover-check test-client-cover-check test-tui-cover-check test-mcp-cover-check test-parser-cover-check openapi-check
-    if ($LASTEXITCODE -ne 0) { throw "A coverage floor or the OpenAPI route check failed" }
+    Write-Host "==> Enforcing coverage floors, OpenAPI parity, and documentation checks"
+    make test-cover-check test-client-cover-check test-tui-cover-check test-mcp-cover-check test-parser-cover-check openapi-check docs-check
+    if ($LASTEXITCODE -ne 0) { throw "A coverage floor, OpenAPI route check, or documentation check failed" }
 
     # 5. Backend integration tests (Docker required; catches SQL pgxmock cannot)
     Write-Host "==> Running backend integration tests (Docker required)"

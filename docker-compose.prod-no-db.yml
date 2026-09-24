@@ -17,7 +17,7 @@
 # supported topology.
 #
 # Project name and container names are deliberately distinct from the dev stack
-# (docker-compose.yml uses `fintrak-dev`), so this stack can never adopt the dev
+# (docker-compose.yml uses `fintrak`), so this stack can never adopt the dev
 # database: the named volume is `fintrak-prod_pgdata`, not the dev `pgdata`, and
 # no container name is shared. `make prod` on a machine that has run `make dev`
 # therefore starts its own database instead of crash-looping on a volume whose
@@ -75,7 +75,7 @@
 #                     deterministic.
 
 # Distinct project name and volumes from the dev stack (docker-compose.yml is
-# `fintrak-dev`), so the two can never share a container name or a database
+# `fintrak`), so the two can never share a container name or a database
 # volume. See the header note in docker-compose.prod.yml.
 name: fintrak-prod
 

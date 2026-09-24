@@ -103,8 +103,8 @@ make vet vet-client vet-tui vet-mcp
 echo "==> Verifying uv.lock is up to date"
 (cd "$ROOT/statement_parser" && uv lock --check)
 
-echo "==> Enforcing coverage floors and the OpenAPI route parity"
-make test-cover-check test-client-cover-check test-tui-cover-check test-mcp-cover-check test-parser-cover-check openapi-check
+echo "==> Enforcing coverage floors, OpenAPI parity, and documentation checks"
+make test-cover-check test-client-cover-check test-tui-cover-check test-mcp-cover-check test-parser-cover-check openapi-check docs-check
 
 # 5. Backend integration tests (Docker required; catches SQL pgxmock cannot)
 echo "==> Running backend integration tests (Docker required)"

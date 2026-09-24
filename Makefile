@@ -1,4 +1,4 @@
-.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-parser-cover-check test-client test-client-cover-check vet-client build-client test-tui test-tui-cover test-tui-cover-check vet-tui build-tui test-mcp test-mcp-cover-check vet-mcp build-mcp build-backend build-frontend openapi-check release
+.PHONY: help dev dev-down prod prod-no-db prod-down test test-cover test-cover-check test-integration test-parser test-parser-cover-check test-client test-client-cover-check vet build-client test-tui test-tui-cover test-tui-cover-check vet-client vet-tui build-tui test-mcp test-mcp-cover-check vet-mcp build-mcp build-backend build-frontend openapi-check docs-check release
 
 ifeq ($(OS),Windows_NT)
 RELEASE_CMD = powershell -ExecutionPolicy Bypass -File scripts/release.ps1 $(VERSION)
@@ -18,6 +18,7 @@ help:
 	@echo "  make test-cover-check   Run backend tests and enforce the coverage floor"
 	@echo "  make test-integration   Run backend integration tests (Docker + testcontainers)"
 	@echo "  make test-parser        Run statement parser tests"
+	@echo "  make test-parser-cover-check  Run parser tests and enforce the coverage floor"
 	@echo "  make test-client        Run shared API client tests"
 	@echo "  make test-client-cover-check  Run client tests and enforce the coverage floor"
 	@echo "  make test-tui           Run TUI tests"
@@ -35,6 +36,7 @@ help:
 	@echo "  make build-tui          Verify the TUI compiles"
 	@echo "  make build-mcp          Verify the MCP server compiles"
 	@echo "  make openapi-check      Verify openapi.yaml covers every registered route"
+	@echo "  make docs-check         Validate Markdown links, Mermaid, Makefile and OpenAPI docs"
 	@echo "  make release VERSION=v1.2.3  Test, tag, and push a release"
 
 dev:
@@ -143,7 +145,11 @@ build-frontend:
 	cd frontend && bun run build
 
 openapi-check:
-	cd backend && go test . -run 'TestOpenAPI|TestServeOpenAPISpec' -count=1
+	cd backend && go test . -run TestOpenAPI -count=1
+	cd backend && go test . -run TestServeOpenAPISpec -count=1
+
+docs-check:
+	python scripts/check-docs.py
 
 release:
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v1.2.3"; exit 1; fi

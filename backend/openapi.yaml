@@ -23,7 +23,10 @@ info:
     ```
     Authorization: Bearer <token>
     ```
-  version: 0.1.0-alpha.0
+
+    This document's `version` is the API contract version. It is independent
+    of the FinTrak application/image release version injected into the server.
+  version: 0.1.0
   contact:
     name: FinTrak
   license:
