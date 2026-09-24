@@ -8,7 +8,7 @@ import (
 // Accounts, account types, billing cycles, and loan schedules
 // (backend/handlers/account.go, account_type.go, billing_cycle.go, loan.go).
 
-// ListAccounts returns every account the user owns, default first.
+// ListAccounts returns every account the user owns, newest first.
 func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
 	return do[[]Account](ctx, c, get("/accounts"))
 }
@@ -60,8 +60,8 @@ func (c *Client) UpdateAccountType(ctx context.Context, id string, req UpdateAcc
 	return do[AccountType](ctx, c, put("/account-types/"+pathEscape(id)).withJSON(req))
 }
 
-// DeleteAccountType removes an account type (admin only). The built-in "bank"
-// and "credit_card" types are refused with 403.
+// DeleteAccountType removes an account type (admin only). The built-in "bank",
+// "credit_card", and "loan" types are refused with 403.
 func (c *Client) DeleteAccountType(ctx context.Context, id string) error {
 	_, err := do[MessageResult](ctx, c, del("/account-types/"+pathEscape(id)))
 	return err
@@ -96,12 +96,14 @@ func (c *Client) LoanPayoff(ctx context.Context, accountID, date string) (LoanPa
 	return do[LoanPayoff](ctx, c, get("/accounts/"+pathEscape(accountID)+"/loan-payoff").addQuery("date", date))
 }
 
-// TransferLoanBalance moves a loan's remaining balance to another loan: the
+// TransferLoanBalance moves a loan's remaining payoff to another loan: the
 // source is settled at its payoff on the transfer date — outstanding principal
-// plus the interest accrued since its last EMI payment, which LoanPayoff quotes
-// — and the target's remaining installments are recast over the larger amount. A
-// target with no schedule of its own is started from the request's target terms,
-// which the API requires in that case and ignores otherwise.
+// plus accrued interest, which LoanPayoff quotes — and the target is handled
+// according to the request mode: recast its remaining installments, take over
+// the source from its disbursement, or open a schedule when it has no terms of
+// its own. A target with no schedule of its own is started from the request's
+// target terms in opens mode, which the API requires in that case and ignores
+// for the other modes.
 func (c *Client) TransferLoanBalance(ctx context.Context, sourceAccountID string, req LoanTransferRequest) (LoanTransferResult, error) {
 	return do[LoanTransferResult](ctx, c, post("/accounts/"+pathEscape(sourceAccountID)+"/loan-transfer").withJSON(req))
 }

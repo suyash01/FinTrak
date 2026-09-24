@@ -50,8 +50,9 @@ const (
 	// stops the process rather than falling back to development: a deployment
 	// that forgets the variable, or typos it (APP_ENV=prod, staging,
 	// Production), would otherwise run on the built-in development JWT secret
-	// and encryption key, with a non-Secure cookie, body logging enabled and the
-	// permissive SSRF branch selected.
+	// and encryption key, with a non-Secure cookie, development defaults, and the
+	// permissive SSRF branch selected. Body capture still requires both debug
+	// logging and a positive LOG_BODY_LIMIT.
 	envDevelopment = "development"
 	envProduction  = "production"
 

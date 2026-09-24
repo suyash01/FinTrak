@@ -40,6 +40,7 @@ from .indusind_bank_extractor import (
 
 @dataclass(frozen=True)
 class ExtractorSpec:
+    """The registered callable pair and display metadata for one issuer."""
     name: str
     display_name: str
     # Extractors return different dict shapes (some TypedDicts like
@@ -58,7 +59,12 @@ def register_extractor(
     extractor: Callable[..., Any],
     to_csv: Callable[..., bytes],
 ) -> None:
-    """Register a new statement extractor implementation."""
+    """Register a new statement extractor implementation.
+
+    Names are normalized to lower case. Registering the same name again
+    replaces the previous entry; this registry is intended for startup module
+    configuration, not concurrent mutation while requests are being served.
+    """
     _EXTRACTORS[name.lower()] = ExtractorSpec(
         name=name.lower(),
         display_name=display_name,

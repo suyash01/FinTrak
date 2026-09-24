@@ -15,6 +15,7 @@ from typing import Any, Optional
 from pdfminer.pdfpage import PDFPage
 from pdfminer.pdftypes import resolve1
 
+# Default page cap applied when MAX_PAGES is unset, malformed, or non-positive.
 DEFAULT_MAX_PAGES = 500
 
 

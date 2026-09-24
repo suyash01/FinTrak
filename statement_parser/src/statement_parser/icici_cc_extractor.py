@@ -290,6 +290,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> dict[str,
 
 
 def to_csv_bytes(transactions: List[dict[str, Any]]) -> bytes:
+    """Serialize ICICI credit-card transactions as UTF-8 CSV bytes."""
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
@@ -312,6 +313,7 @@ def to_csv_bytes(transactions: List[dict[str, Any]]) -> bytes:
 
 
 def main():
+    """Run the module-local ICICI credit-card command-line extractor."""
     parser = argparse.ArgumentParser(
         description="Extract the transaction table from an ICICI Bank Credit Card statement PDF."
     )

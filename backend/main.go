@@ -55,8 +55,9 @@ func main() {
 
 	cfg := config.Load()
 
-	// Structured logging: debug level (with request/response body capture) in
-	// development, info + JSON in production.
+	// Structured logging: development defaults to debug text output, while
+	// production defaults to info JSON output. Body capture is enabled only at
+	// debug level with a positive LOG_BODY_LIMIT.
 	logger.New(cfg.Env, cfg.LogLevel)
 
 	// Connect to database
@@ -224,8 +225,10 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		accounts.PUT("/:id/loan-schedule", srv.UpsertLoanSchedule)
 		accounts.DELETE("/:id/loan-schedule", srv.DeleteLoanSchedule)
 		// Balance transfer between two loan accounts: the source is settled at
-		// its outstanding principal and the target absorbs that amount, which
-		// recasts its remaining installments. Deleting the transfer reverts
+		// its payoff (outstanding principal plus accrued interest) and the
+		// target absorbs that amount. Depending on the mode, the target either
+		// recasts its installments, opens from the amount, or records a
+		// takeover paid from its disbursement. Deleting the transfer reverts
 		// both loans, since every derived figure comes from the transfer row.
 		accounts.POST("/:id/loan-transfer", srv.TransferLoanBalance)
 		accounts.DELETE("/:id/loan-transfer/:transferId", srv.DeleteLoanTransfer)

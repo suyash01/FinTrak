@@ -28,6 +28,7 @@ type APIError struct {
 	Body   string
 }
 
+// Error renders the API status and the one-line error message.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("%d %s: %s", e.Status, http.StatusText(e.Status), e.Message())
 }
@@ -58,7 +59,9 @@ func (e *APIError) Message() string {
 	return strings.Join(strings.Fields(body), " ")
 }
 
-// StatusIs reports whether the error is an APIError with the given status.
+// StatusIs reports whether err is directly an *APIError with the given status.
+// It does not walk an Unwrap chain; use Unauthorized or inspect the wrapped
+// error when callers may have added context.
 func StatusIs(err error, status int) bool {
 	ae, ok := err.(*APIError)
 	return ok && ae.Status == status

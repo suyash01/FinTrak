@@ -191,7 +191,10 @@ func digitsOnly(s string) bool {
 
 // UnmarshalJSON keeps the raw decimal text. The wire value is a JSON number
 // (money.Amount marshals with MarshalJSON), but a quoted number is accepted too
-// so the TUI can decode bundles and fixtures that quote amounts.
+// so the TUI can decode bundles and fixtures that quote amounts. This decoder
+// is intentionally more permissive than ParseAmount: it accepts the structural
+// decimal forms used by stored fixtures and does not apply the API's strict
+// user-input grammar or MaxMinorUnits bound.
 func (a *Amount) UnmarshalJSON(b []byte) error {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 || string(b) == "null" {
@@ -223,7 +226,8 @@ func (a *Amount) UnmarshalJSON(b []byte) error {
 
 // MarshalJSON emits the amount as an unquoted JSON number so request bodies
 // match what the backend's money.Amount expects on the way in. An unset amount
-// is sent as 0 — call sites that require one validate through ParseAmount
+// is sent as 0. This method checks decimal structure, not the MaxMinorUnits
+// bound; call sites accepting user input should validate through ParseAmount
 // first.
 func (a Amount) MarshalJSON() ([]byte, error) {
 	s := strings.TrimSpace(a.String())
@@ -236,7 +240,9 @@ func (a Amount) MarshalJSON() ([]byte, error) {
 	return []byte(s), nil
 }
 
-// isDecimal reports whether b is a JSON number literal with at most one dot.
+// isDecimal reports whether b is a decimal-shaped token with at most one dot.
+// It is a structural guard for JSON amounts, not a strict JSON-number parser;
+// values such as `.5` and `1.` pass here, while ParseAmount rejects them.
 func isDecimal(b []byte) bool {
 	if len(b) == 0 {
 		return false

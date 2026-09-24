@@ -1,8 +1,8 @@
 // Package logger centralizes structured logging for the FinTrak backend. It
 // builds an slog.Logger whose level and format follow the runtime environment:
-// development defaults to debug level with human-friendly text output (so HTTP
-// request/response bodies are captured), while production uses JSON output at
-// info level.
+// development defaults to debug level with human-friendly text output, while
+// production uses JSON output at info level. Request/response body capture is
+// separate: it occurs only at debug level when LOG_BODY_LIMIT is positive.
 package logger
 
 import (

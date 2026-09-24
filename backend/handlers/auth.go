@@ -1,8 +1,3 @@
-// Package handlers implements the HTTP handlers backing every /api/v1 route.
-// Handlers read the authenticated user from the context (see auth.RequireAuth),
-// validate request bodies, run SQL against the Server's database pool, and render JSON via the
-// validation helpers. This package deliberately keeps its dependencies on a
-// single db.DBPool global so the whole surface can be tested with pgxmock.
 package handlers
 
 import (

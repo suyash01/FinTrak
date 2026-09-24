@@ -311,9 +311,10 @@ func cycleDates(ms time.Time, billingDay int) (time.Time, time.Time) {
 
 // listBillingCycles returns the account's billing cycles ordered by start date.
 // Each row carries the net activity of its attached transactions (debits minus
-// credits) and the transaction count; TotalOutstanding is the running balance
-// through each cycle end — the cumulative sum of net activity — matching the
-// account's balance at that date.
+// credits) and the transaction count; TotalOutstanding is the running
+// debit-minus-credit total through each cycle end. It is not necessarily the
+// same sign/value as GET /accounts, whose balance sign follows the account
+// type's positiveTxnType.
 func listBillingCycles(ctx context.Context, q cycleQueryer, userID, accountID uuid.UUID) ([]models.BillingCycle, error) {
 	rows, err := q.Query(ctx,
 		`SELECT bc.id, bc.start_date, bc.end_date, bc.label,

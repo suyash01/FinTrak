@@ -643,14 +643,15 @@ paths:
     post:
       tags:
         - Accounts
-      summary: Transfer a loan's remaining principal to another loan
+      summary: Transfer a loan's payoff to another loan
       description: >-
-        Settle this loan (the source) at its outstanding principal on
-        `transferDate` and move that amount onto `toLoanAccountId`, which
-        absorbs it: the target's installments still due after the transfer date
-        are recast over the larger balance, so its EMI changes from then on and
-        those installments come back marked `recast`. The source's unpaid
-        installments come back marked `cancelled`, with nothing outstanding.
+        Settle this loan (the source) at its payoff on `transferDate` — its
+        outstanding principal plus interest accrued since the last EMI payment
+        — and move that amount onto `toLoanAccountId`. In `recast` mode the
+        target's installments still due after the transfer date are recast over
+        the larger balance; `takeover` pays the source out of the target's
+        disbursement; `opens` starts a schedule for a target that has no terms of
+        its own. The source's unpaid installments come back marked `cancelled`.
 
         The amount is not a request field — it is the source's payoff, the
         figure `GET /accounts/{id}/loan-payoff` quotes for the same date: the

@@ -1,3 +1,8 @@
+// Package handlers implements the HTTP handlers backing every /api/v1 route.
+// Handlers read the authenticated user from the request context, validate
+// request bodies, run SQL against the Server's explicitly injected database
+// pool, and render JSON through the validation helpers. The Server dependency
+// keeps production wiring and pgxmock-based tests isolated from package globals.
 package handlers
 
 import "github.com/fintrak/backend/db"
@@ -24,8 +29,10 @@ type Server struct {
 }
 
 // NewServer builds a Server over the given database pool, statement-parser base
-// URL, and outbound log body limit (bytes; <= 0 disables truncation). parserURL
-// may be empty, in which case the parser endpoints report a configuration error.
+// URL, and outbound log body limit. A limit <= 0 disables body capture entirely;
+// it does not merely avoid truncating captured bodies. An empty parserURL is
+// retained as configuration, but statement forwarding then fails because no
+// usable upstream URL can be built.
 func NewServer(pool db.DBPool, parserURL string, logBodyLimit int) *Server {
 	return &Server{
 		db:           pool,

@@ -15,11 +15,19 @@ info:
     metadata (`bank`, `account_holder`, `accounts`, balances, ...) and a
     `validation_errors` list.
 
+    ## Security
+    This service has no authentication. It parses attacker-controlled PDFs and
+    must remain on a private network reachable only by the FinTrak backend.
+    Never publish it to the public internet.
+
     ## Errors
     Responses that fail carry `{"error": "<message>"}`. A password-protected PDF
     without a (correct) password additionally sets `password_required: true` and
     returns `401`.
-  version: 0.1.0-alpha.0
+
+    The `version` below is the standalone service's API contract version; it
+    is independent of the FinTrak application/image release tag.
+  version: 0.1.0
   contact:
     name: FinTrak
   license:
@@ -180,7 +188,7 @@ paths:
             statement — a scanned PDF without a text layer, or a mis-selected
             extractor). A file that *was* recognised but yielded no importable
             rows is answered 200 with an empty `transactions` list and a note in
-            `validationErrors`, so the caller can tell "this is not a statement"
+            `validation_errors`, so the caller can tell "this is not a statement"
             from "this statement has no rows".
           content:
             application/json:

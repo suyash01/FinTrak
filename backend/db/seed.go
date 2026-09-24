@@ -29,9 +29,9 @@ type SeedCategory struct {
 }
 
 // SeedDefaultCategories inserts the stock income/expense/transfer/cashback
-// categories for a user, but only when the user has none yet (so it is safe to
-// call on every registration and boot). It returns any database error so
-// callers can run it inside the user-creation transaction and roll back rather
+// categories for a user, but only when the user has none yet. It runs during
+// registration inside the user-creation transaction, not on every boot. It
+// returns any database error so a failed seed rolls back the new user rather
 // than leaving an account without its default categories.
 func SeedDefaultCategories(ctx context.Context, store categoryStore, userID uuid.UUID) error {
 	var count int

@@ -224,9 +224,9 @@ type Rule struct {
 }
 
 // RulePreview reports how many currently-uncategorized transactions a
-// hypothetical rule (or rule edit) would categorize, and which of those would
-// be changed by its extra actions. It powers the rule editor's live
-// "N transactions match" hint without writing anything.
+// hypothetical rule (or rule edit) would categorize. It powers the rule
+// editor's live "N transactions match" hint without writing anything; it does
+// not describe which individual actions would be applied.
 type RulePreview struct {
 	Matched int `json:"matched"`
 }
@@ -665,7 +665,8 @@ type LoanScheduleEntry struct {
 }
 
 // Loan transfer modes. A transfer always settles the source loan at its
-// outstanding principal; the mode decides what it does to the target.
+// payoff — outstanding principal plus accrued interest; the mode decides what
+// it does to the target.
 const (
 	// LoanTransferRecast adds the amount to the target's installments still due
 	// after the transfer, so the target's debt grows by it.
@@ -680,9 +681,9 @@ const (
 )
 
 // LoanPrincipalTransfer is one balance transfer between two loan accounts: the
-// source loan's outstanding principal (Amount) on TransferDate is settled by the
-// target loan, in the way Mode describes. Both sides are derived from this row,
-// so deleting it reverts them.
+// source loan's payoff on TransferDate — Principal plus AccruedInterest — is
+// settled by the target loan in the way Mode describes. Both sides are derived
+// from this row, so deleting it reverts them.
 type LoanPrincipalTransfer struct {
 	ID                  uuid.UUID `json:"id"`
 	FromLoanAccountID   uuid.UUID `json:"fromLoanAccountId"`

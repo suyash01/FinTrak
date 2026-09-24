@@ -38,6 +38,7 @@
 #                     with the 'admin' role. Empty disables admin self-registration
 #                     entirely.
 #   LOG_LEVEL       - debug|info|warn|error (default: info in production)
+#                     Body capture additionally requires LOG_BODY_LIMIT > 0.
 #   COOKIE_SECURE   - Mark the session cookie Secure (default: true). Set false
 #                     only for plain-HTTP deployments with no TLS terminator.
 #   TRUSTED_PROXIES - Comma-separated proxy CIDRs whose X-Forwarded-For /

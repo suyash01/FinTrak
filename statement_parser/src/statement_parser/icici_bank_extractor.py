@@ -1103,8 +1103,11 @@ _CSV_FIELDS: List[str] = ["date", "mode", "particulars", "deposit", "withdrawal"
 
 
 def to_csv_bytes(transactions: Iterable[Transaction]) -> bytes:
-    """Serialize an iterable of transaction dicts (the 'transactions' key
-    from extract_transactions()) to CSV bytes."""
+    """Serialize an iterable of transaction dicts to CSV bytes.
+
+    Particulars are passed through the spreadsheet-safety formatter before
+    writing, so a statement value cannot become a formula on open.
+    """
     buffer: io.StringIO = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_CSV_FIELDS, extrasaction="ignore")
     writer.writeheader()

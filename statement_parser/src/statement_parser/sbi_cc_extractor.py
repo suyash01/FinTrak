@@ -163,6 +163,7 @@ def extract_transactions(path: str, password: Optional[str] = None) -> dict[str,
 
 
 def to_csv_bytes(transactions: List[dict[str, Any]]) -> bytes:
+    """Serialize SBI transactions as UTF-8 CSV bytes."""
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=["date", "description", "amount", "type"])
     writer.writeheader()
@@ -174,6 +175,7 @@ def to_csv_bytes(transactions: List[dict[str, Any]]) -> bytes:
 
 
 def main():
+    """Run the module-local SBI command-line extractor."""
     parser = argparse.ArgumentParser(
         description="Extract the transaction table from an SBI Card statement PDF."
     )

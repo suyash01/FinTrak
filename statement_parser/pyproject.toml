@@ -1,7 +1,7 @@
 [project]
 name = "statement-parser"
 version = "0.1.0-alpha.0"
-description = "Add your description here"
+description = "Standalone FinTrak bank and credit-card PDF statement parser and extractor registry"
 readme = "README.md"
 authors = [
     { name = "Suyash Mittal", email = "suyash8514@gmail.com" }

@@ -372,17 +372,19 @@ func (srv *Server) DeleteLoanSchedule(c *gin.Context) {
 	c.JSON(http.StatusOK, models.DeleteLoanScheduleResult{Deleted: res.RowsAffected()})
 }
 
-// TransferLoanBalance moves a loan's remaining principal to another loan: the
-// source is settled at its outstanding balance and the target absorbs that
-// amount, recasting the installments it still owes over the larger balance. A
-// target that has no schedule yet has nothing to recast, so the transferred
-// amount starts one from the terms in the request instead.
+// TransferLoanBalance moves a loan's remaining payoff to another loan: the
+// source is settled at its outstanding principal plus interest accrued since
+// the last EMI payment, and the target absorbs that payoff. Depending on the
+// requested mode, the target either recasts the installments it still owes,
+// opens a schedule from the amount, or records a takeover paid out of its
+// disbursement. A target that has no schedule yet has nothing to recast, so
+// the `opens` mode starts one from the terms in the request instead.
 //
-// The amount is never taken from the caller — a balance transfer moves what the
-// source still owes, the same figure its detail reports as the outstanding
-// principal — and the source's settled state, the target's recast, and every
-// cancelled installment are derived from the single transfer row, so the
-// operation is reversible by deleting it.
+// The amount is never taken from the caller — a balance transfer moves the
+// source's quoted payoff, split into principal and accrued interest — and the
+// source's settled state, the target's derived schedule, and every cancelled
+// installment are derived from the single transfer row, so the operation is
+// reversible by deleting it.
 func (srv *Server) TransferLoanBalance(c *gin.Context) {
 	sourceID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
