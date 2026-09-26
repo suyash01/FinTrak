@@ -54,7 +54,9 @@ func csvCell(s string) string {
 // it is a report over whatever the caller has filtered to, and unlike the JSON
 // backup it is flat and spreadsheet-friendly.
 func (srv *Server) ExportTransactions(c *gin.Context) {
-	f, _, ok := txnQueryFilter(c, auth.GetUserID(c))
+	// The same builder as the list, so the CSV can never disagree with the table.
+	// Ignored terms are not reported: a CSV has nowhere to render a banner.
+	f, _, _, ok := txnQueryFilter(c, auth.GetUserID(c))
 	if !ok {
 		return
 	}

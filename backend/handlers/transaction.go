@@ -12,6 +12,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/internal/money"
+	"github.com/fintrak/backend/internal/query"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -100,7 +101,7 @@ func isUUID(value string) bool {
 // account and category dimensions each combine two parameters (an account's
 // transactions and a loan account's attached EMI payments; a group's categories
 // and individual categories), because the UI picks both in one control.
-func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, bool) {
+func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, []query.Diagnostic, bool) {
 	accountIDs := splitCSVFilter(c.Query("accountId"))
 	loanAccountIDs := splitCSVFilter(c.Query("loanAccountId"))
 	categoryIDs := splitCSVFilter(c.Query("categoryId"))
@@ -114,11 +115,11 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 	// malformed value up front instead of letting it surface as a 500.
 	dateFrom, ok := parseQueryDate(c, "dateFrom", c.Query("dateFrom"))
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	dateTo, ok := parseQueryDate(c, "dateTo", c.Query("dateTo"))
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	f := newTxnFilter(userID)
@@ -133,7 +134,7 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		// rejected here rather than surfacing as a database error.
 		if _, err := uuid.Parse(id); err != nil {
 			validation.RespondError(c, "invalid accountId", http.StatusBadRequest)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		accountClauses = append(accountClauses, f.clause("t.account_id = $%d", id))
 	}
@@ -142,7 +143,7 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		// value is rejected here rather than surfacing as a database error.
 		if _, err := uuid.Parse(id); err != nil {
 			validation.RespondError(c, "invalid loanAccountId", http.StatusBadRequest)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		accountClauses = append(accountClauses, f.clause("EXISTS (SELECT 1 FROM loan_attachments la WHERE la.transaction_id = t.id AND la.loan_account_id = $%d)", id))
 	}
@@ -224,7 +225,7 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		// reach the database and answer 500 instead of rejecting the filter.
 		if _, err := uuid.Parse(id); err != nil {
 			validation.RespondError(c, "invalid payeeId", http.StatusBadRequest)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		payeeClauses = append(payeeClauses, f.clause("t.payee_id = $%d", id))
 	}
@@ -234,7 +235,7 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		amount, err := money.Parse(amountStr)
 		if err != nil {
 			validation.RespondError(c, "invalid amount", http.StatusBadRequest)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		f.param("t.amount = $%d", amount)
 	}
@@ -260,7 +261,7 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 	if recurringID := c.Query("recurringId"); recurringID != "" {
 		if _, err := uuid.Parse(recurringID); err != nil {
 			validation.RespondError(c, "invalid recurringId", http.StatusBadRequest)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		f.param("EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id AND ra.series_id = $%d)", recurringID)
 	}
@@ -271,7 +272,12 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, b
 		f.raw("NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)")
 	}
 
-	return f, accountUUID, true
+	// q= is compiled last, after every other clause above, so its placeholders
+	// follow the existing ones and the argument order the other tests pin is
+	// unchanged for a request with no q. It is never a 4xx: an unusable term is
+	// dropped and returned as a diagnostic, because a dropped constraint would
+	// otherwise widen the result set with nothing to tell the user.
+	return f, accountUUID, compileQuery(c.Query("q"), f), true
 }
 
 // GetTransactions returns a paginated, filterable list of the user's
@@ -329,13 +335,13 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	// `transactions t` (using correlated EXISTS subqueries where a join would
 	// otherwise be required), so the list and count queries share the exact same
 	// clause and args and can never drift apart.
-	f, accountUUID, ok := txnQueryFilter(c, userID)
+	f, accountUUID, qDiags, ok := txnQueryFilter(c, userID)
 	if !ok {
 		return
 	}
 
 	where := f.where()
-	query := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
+	listQuery := `SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type, t.category_id,
 				COALESCE(t.tags, '{}') as tags, t.notes, t.payee_id, COALESCE(p.name, '') as payee, t.created_at, a.name as account_name,
 				COALESCE(c.name, '') as category_name, COALESCE(c.icon, '') as category_icon,
 			  COALESCE(c.color, '') as category_color,
@@ -375,10 +381,10 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	if sortBy == "date" {
 		orderBy = txnOrderByDate(sortOrder == "ASC")
 	}
-	query += fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, paramIdx, paramIdx+1)
+	listQuery += fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, paramIdx, paramIdx+1)
 	args := append(f.args, limit, offset)
 
-	rows, err := srv.db.Query(c, query, args...)
+	rows, err := srv.db.Query(c, listQuery, args...)
 	if err != nil {
 		slog.Error("GetTransactions", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -426,13 +432,19 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	pages := 1
 	pages = int(math.Ceil(float64(total) / float64(limit)))
 
-	c.JSON(http.StatusOK, gin.H{
+	body := gin.H{
 		"data":  transactions,
 		"total": total,
 		"page":  page,
 		"limit": limit,
 		"pages": pages,
-	})
+	}
+	// Omitted rather than sent as an empty array, so a caller can tell "nothing
+	// was ignored" without a null check.
+	if len(qDiags) > 0 {
+		body["queryDiagnostics"] = qDiags
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // txnFilter accumulates the WHERE predicates shared by GetTransactions' list
