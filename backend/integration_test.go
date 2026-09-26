@@ -314,6 +314,104 @@ func TestIntegrationAuthAndSeededCategories(t *testing.T) {
 	require.NotEmpty(t, categoryByName(t, cats, "Groceries"))
 }
 
+// TestIntegrationCategoryCreationRunsAgainstPostgres covers the category create
+// edge, which answers 500 for every user. Both create statements name the group
+// id in the SELECT list and again in the EXISTS guard, so the server deduces
+// the parameter as `text` in one place and `character varying` in the other and
+// rejects the statement (42P08) before a row is ever inserted - so the whole
+// feature is unreachable, not just an edge case. pgxmock cannot catch it: the
+// mock matches a string and never asks the server to resolve parameter types.
+// The guard's rejection path is asserted too, since a cast that made $5
+// constant everywhere would turn an unknown group into a 500 FK violation
+// instead of the 400 the client relies on.
+func TestIntegrationCategoryCreationRunsAgainstPostgres(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("creator@example.com")
+
+	var groups []models.CategoryGroup
+	a.call(http.MethodGet, "/api/v1/groups", nil, http.StatusOK, &groups)
+	base := ""
+	for _, g := range groups {
+		if g.IsBase && g.ID == "expense" {
+			base = g.ID
+		}
+	}
+	require.NotEmpty(t, base, "the seeded base groups should be readable")
+
+	var created models.Category
+	a.call(http.MethodPost, "/api/v1/categories", models.CreateCategoryRequest{
+		Name:    "Coffee",
+		Icon:    "coffee",
+		Color:   "#06b6d4",
+		GroupID: base,
+	}, http.StatusCreated, &created)
+	require.NotEqual(t, uuid.Nil, created.ID)
+	require.Equal(t, base, created.GroupID)
+
+	// The new category is readable and user-owned.
+	got := categoryByName(t, a.categories(), "Coffee")
+	require.Equal(t, created.ID, got.ID)
+	require.False(t, got.IsGlobal)
+
+	// The EXISTS guard still rejects an unknown group as a 400, not a 500.
+	a.call(http.MethodPost, "/api/v1/categories", models.CreateCategoryRequest{
+		Name:    "Ghost",
+		GroupID: "no-such-group",
+	}, http.StatusBadRequest, nil)
+
+	// Editing the new category takes the same group id through the same column.
+	var updated models.Category
+	a.call(http.MethodPut, "/api/v1/categories/"+created.ID.String(), models.UpdateCategoryRequest{
+		Name:    "Coffee & Tea",
+		GroupID: base,
+	}, http.StatusOK, &updated)
+	require.Equal(t, "Coffee & Tea", updated.Name)
+}
+
+// TestIntegrationGlobalCategoryCreationRunsAgainstPostgres is the admin half of
+// the same defect: CreateGlobalCategory repeats the pattern with $4, so the
+// global catalog was equally uncreatable.
+func TestIntegrationGlobalCategoryCreationRunsAgainstPostgres(t *testing.T) {
+	ctx := context.Background()
+
+	a := newAPIClient(t)
+	a.register("admin@example.com")
+
+	var me models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &me)
+	_, err := db.Pool.Exec(ctx, `UPDATE users SET role = 'admin' WHERE id = $1`, me.ID)
+	require.NoError(t, err)
+
+	// The role travels in the access token, so the promotion only takes effect
+	// once the user signs in again and the handler mints a session from the
+	// role it reads on the users row.
+	a.call(http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    "admin@example.com",
+		"password": "integration-pass-123",
+	}, http.StatusOK, nil)
+
+	var created models.Category
+	a.call(http.MethodPost, "/api/v1/admin/categories", models.CreateCategoryRequest{
+		Name:    "Global Groceries",
+		Icon:    "cart",
+		Color:   "#22c55e",
+		GroupID: "expense",
+	}, http.StatusCreated, &created)
+	require.NotEqual(t, uuid.Nil, created.ID)
+
+	// A global category must land with a NULL user_id so it is shared.
+	var userID *uuid.UUID
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT user_id FROM categories WHERE id = $1`, created.ID).Scan(&userID))
+	require.Nil(t, userID, "a global category must not be owned by the admin")
+
+	// The guard still rejects a group that is not global.
+	a.call(http.MethodPost, "/api/v1/admin/categories", models.CreateCategoryRequest{
+		Name:    "Bad Global",
+		GroupID: "no-such-group",
+	}, http.StatusBadRequest, nil)
+}
+
 // TestIntegrationRefreshSessionLifecycle drives rotation, reuse detection and
 // logout revocation against real Postgres, where the refresh_tokens rows and
 // the rotation transaction are actually exercised (pgxmock cannot validate the

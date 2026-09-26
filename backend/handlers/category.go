@@ -63,8 +63,17 @@ func (srv *Server) CreateCategory(c *gin.Context) {
 
 	var cat models.Category
 	err := srv.db.QueryRow(c,
+		// $5 is cast because it is named in two typed contexts: the SELECT list,
+		// where an untyped parameter resolves to text, and g.id, which is
+		// character varying. Without the cast the server deduces both and
+		// rejects the statement (42P08) before inserting anything, so creating a
+		// category answered 500 for every user. The other parameters are left
+		// uncast on purpose: they appear only in the SELECT list, where the
+		// assignment to the target column already applies, and casting them to
+		// varchar(n) would silently truncate an over-long value instead of
+		// raising the 22001 the request binding exists to pre-empt.
 		`INSERT INTO categories (user_id, name, icon, color, group_id)
-		 SELECT $1, $2, $3, $4, $5
+		 SELECT $1, $2, $3, $4, $5::varchar
 		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $5 AND (g.user_id IS NULL OR g.user_id = $1))
 		 RETURNING id, name, icon, color, group_id`,
 		auth.GetUserID(c), req.Name, req.Icon, req.Color, req.GroupID,
@@ -252,8 +261,11 @@ func (srv *Server) CreateGlobalCategory(c *gin.Context) {
 
 	var cat models.Category
 	err := srv.db.QueryRow(c,
+		// $4 is cast for the same reason as $5 in CreateCategory: it is named
+		// both in the SELECT list (untyped, so text) and against g.id
+		// (character varying), which made the statement undeducible.
 		`INSERT INTO categories (user_id, name, icon, color, group_id)
-		 SELECT NULL, $1, $2, $3, $4
+		 SELECT NULL, $1, $2, $3, $4::varchar
 		 WHERE EXISTS (SELECT 1 FROM category_groups g WHERE g.id = $4 AND g.user_id IS NULL)
 		 RETURNING id, name, icon, color, group_id`,
 		req.Name, req.Icon, req.Color, req.GroupID,
