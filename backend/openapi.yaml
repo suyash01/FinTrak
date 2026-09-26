@@ -1067,6 +1067,30 @@ paths:
         - BearerAuth: []
       parameters:
         - in: query
+          name: q
+          schema:
+            type: string
+            maxLength: 2000
+          description: >
+            A transaction query expression, evaluated server-side. A space-
+            separated, AND-ed list of terms; a term is `field:value`
+            (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
+            linked, recurring), optionally prefixed with `not`, or
+            `field<op>value` where op is one of = != > >= < <= ~. A comma-
+            separated value matches any of them, and a bare word is the same
+            free-text search `search` performs. Values are ids, not names: `cat`,
+            `group`, `acct` and `payee` take a uuid (or the sentinels
+            "uncategorized" / "none"), `tag` takes a tag name because tags have
+            no ids, `amt` is in major units ("50", "50.75") and `date` is
+            YYYY-MM-DD. At most 32 terms.
+
+
+            An unusable term is never an error: it is dropped, and the export
+            silently omits it. Because a dropped constraint widens the result
+            set, a caller that lets a user type `q` here should parse it first
+            (or read the list endpoint's `queryDiagnostics`) so the user is told
+            what was ignored.
+        - in: query
           name: accountId
           schema:
             type: string
@@ -1608,6 +1632,30 @@ paths:
         - AccessCookie: []
         - BearerAuth: []
       parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+            maxLength: 2000
+          description: >
+            A transaction query expression, evaluated server-side. A space-
+            separated, AND-ed list of terms; a term is `field:value`
+            (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
+            linked, recurring), optionally prefixed with `not`, or
+            `field<op>value` where op is one of = != > >= < <= ~. A comma-
+            separated value matches any of them, and a bare word is the same
+            free-text search `search` performs. Values are ids, not names: `cat`,
+            `group`, `acct` and `payee` take a uuid (or the sentinels
+            "uncategorized" / "none"), `tag` takes a tag name because tags have
+            no ids, `amt` is in major units ("50", "50.75") and `date` is
+            YYYY-MM-DD. At most 32 terms.
+
+
+            An unusable term is never an error: it is dropped, and the export
+            silently omits it. Because a dropped constraint widens the result
+            set, a caller that lets a user type `q` here should parse it first
+            (or read the list endpoint's `queryDiagnostics`) so the user is told
+            what was ignored.
         - in: query
           name: accountId
           schema: { type: string }
@@ -5483,6 +5531,41 @@ components:
           type: integer
         pages:
           type: integer
+        queryDiagnostics:
+          type: array
+          description: >
+            Present only when at least one term of the `q` expression was
+            dropped, and omitted entirely otherwise. Each entry names the
+            offending term and says why, so a caller can show the user exactly
+            what was ignored instead of presenting a silently widened result
+            set as the answer. Terms that could not be parsed, resolved or
+            converted are dropped rather than rejected, so this key appearing
+            means the results are BROADER than the expression asked for.
+          items:
+            $ref: "#/components/schemas/QueryDiagnostic"
+
+    QueryDiagnostic:
+      type: object
+      description: >
+        One dropped (or ambiguous) term of a `q` expression. `code` is a stable
+        machine-readable classification: unknown_field, bad_operator,
+        missing_value, unresolved_value, malformed_amount, malformed_date,
+        ambiguous_value or too_long.
+      properties:
+        term:
+          type: string
+          description: The term as the user wrote it, quoted back verbatim.
+        code:
+          type: string
+          description: The classification above.
+        message:
+          type: string
+          description: A human-readable explanation, safe to show as-is.
+        position:
+          type: integer
+          description: >
+            Byte offset of the term within the raw `q` text, so a UI can
+            highlight it in the input.
 
     Category:
       type: object
