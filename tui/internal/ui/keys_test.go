@@ -35,3 +35,17 @@ func TestSpaceSelectBindingsMatchTheSpaceKey(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyStringCarvesOutSpace pins the v2 behaviour behind every space-rename
+// bug this migration could have shipped. ultraviolet's Key.String returns Text
+// unless Text is a single space, in which case it returns Keystroke() -- the
+// literal "space". That carve-out is why form.go's `case " "` and the
+// key.WithKeys(" ") declarations both stopped matching, and it is invisible
+// until a key binding silently stops working: the help line keeps advertising
+// the key, and no test fails. If ultraviolet ever changes the carve-out, the
+// rename below is no longer what the app needs.
+func TestKeyStringCarvesOutSpace(t *testing.T) {
+	if got := press(' ').String(); got != "space" {
+		t.Errorf("a space press stringifies as %q, want %q", got, "space")
+	}
+}
