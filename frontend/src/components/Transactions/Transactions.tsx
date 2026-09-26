@@ -16,6 +16,8 @@ import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
+import { useQueryLanguage, type ServerDiagnostics } from "@/lib/query/useQueryLanguage";
+import type { QueryDiagnostic } from "@/lib/query/parse";
 import { useOffline } from "../../context/OfflineContext";
 import type {
   Transaction,
@@ -54,6 +56,26 @@ export default function Transactions() {
     refreshAccounts,
   } = useDomainData();
   const [searchParams, setSearchParams] = useSearchParams();
+  // The query language. The URL holds what the user TYPED (`?q=`), so a link is
+  // shareable and the back button works; the request carries the RESOLVED value
+  // (names to ids, a period to dates, an amount to minor units). Keeping the two
+  // apart is the point: the box must show what was typed, and the server must
+  // only ever see ids, because it resolves nothing.
+  const [queryInProgress, setQueryInProgress] = useState<string | null>(null);
+  const [queryFinalized, setQueryFinalized] = useState(false);
+  const [queryServer, setQueryServer] = useState<ServerDiagnostics>({ q: "", list: [] });
+  // Declared here rather than beside the other page-local lists because the query
+  // box resolves tag names, and the hook that needs them has to exist before the
+  // loader that reports the server's diagnostics.
+  const [tags, setTags] = useState<TagCount[]>([]);
+  const refreshTags = useCallback(() => {
+    api
+      .getTags()
+      .then((res) => setTags(res.data || []))
+      .catch(() => {
+        /* the tag filter/actions are simply not offered */
+      });
+  }, []);
   const [data, setData] = useState<TransactionsResponse>({
     data: [],
     total: 0,
@@ -157,6 +179,22 @@ export default function Transactions() {
       return { ...urlToFilters, limit: pageSize || 0 };
     },
   );
+
+  // The query language, resolved against the reference data the page already
+  // holds. `query` is the resolved value to send; `queryDiagnostics` is the
+  // banner's content, and the local half of it needed no request.
+  const queryText = typeof filters.q === "string" ? filters.q : "";
+  const querySource = useMemo(
+    () => ({ accounts, categories, groups, payees, tags: tags.map((t) => t.name) }),
+    [accounts, categories, groups, payees, tags],
+  );
+  const { q: query, diagnostics: queryDiagnostics } = useQueryLanguage({
+    source: querySource,
+    text: queryText,
+    inProgress: queryInProgress,
+    finalized: queryFinalized,
+    server: queryServer,
+  });
 
   // Keep the URL in sync with user-driven filter changes (browser back/forward
   // friendly). Only non-default filters are written, so an empty URL and the
@@ -291,16 +329,28 @@ export default function Transactions() {
         if (v !== "" && v !== null && v !== undefined) params[k] = v;
       });
       splitAccountFilter(params);
+      // The URL holds the text the user typed; the server gets the resolved
+      // value, so it only ever sees ids.
+      if (query) params.q = query;
+      else delete params.q;
       const res = await api.getTransactions(params, {
         signal: controller.signal,
       });
       if (abortRef.current === controller) setData(res);
+      // Terms the server could not use come back with the rows. The local half of
+      // the banner needed no request, so this only adds what only the server saw.
+      if (abortRef.current === controller) {
+        setQueryServer({
+          q: query,
+          list: (res as { queryDiagnostics?: QueryDiagnostic[] }).queryDiagnostics ?? [],
+        });
+      }
     } catch (err) {
       if ((err as Error).name !== "AbortError") toastApiError(err);
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
-  }, [filters, splitAccountFilter]);
+  }, [filters, query, splitAccountFilter]);
 
   useEffect(() => {
     const timer = setTimeout(loadTransactions, 300);
@@ -338,17 +388,9 @@ export default function Transactions() {
   );
   // Recurring subscriptions for the bulk "Link to subscription" action.
   const [recurringSeries, setRecurringSeries] = useState<RecurringSeries[]>([]);
-  // Tag vocabulary (name + usage count) powering the tag filter and the bulk
-  // add/remove actions. Derived from transactions.tags server-side.
-  const [tags, setTags] = useState<TagCount[]>([]);
-  const refreshTags = useCallback(() => {
-    api
-      .getTags()
-      .then((res) => setTags(res.data || []))
-      .catch(() => {
-        /* the tag filter/actions are simply not offered */
-      });
-  }, []);
+  // Tag vocabulary (name + usage count) powering the tag filter, the bulk
+  // add/remove actions and the query box. Declared above, next to the other
+  // reference data, because the query hook needs it before the loader does.
   // Account id -> closed flag, so row actions can hide editing/deleting on
   // closed accounts (only linking stays possible).
   const closedById = useMemo(() => {
@@ -704,6 +746,12 @@ export default function Transactions() {
       delete params.limit;
       delete params.sortBy;
       delete params.sortOrder;
+      // The URL holds the query as TYPED; the API takes the resolved value, the
+      // same one the list request just used. Copying the text through unchanged
+      // would make the server drop the name and silently export a wider set than
+      // the table shows.
+      if (query) params.q = query;
+      else delete params.q;
       splitAccountFilter(params);
       await api.exportTransactions(params);
     } catch (err) {
@@ -794,6 +842,12 @@ export default function Transactions() {
           onPresetChange={handlePresetChange}
           onCustomInputChange={setCustomInput}
           onCommitCustom={commitCustom}
+          query={queryText}
+          categories={categories}
+          groups={groups}
+          queryDiagnostics={queryDiagnostics}
+          onQueryInProgressChange={setQueryInProgress}
+          onQueryCommit={() => setQueryFinalized(true)}
         />
 
         {selected.size > 0 && (

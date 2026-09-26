@@ -464,3 +464,52 @@ describe("Transactions recurring badge", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("the query language on the page", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getTransactions.mockResolvedValue({ data: [], total: 0, page: 1, pages: 1 });
+    apiMock.getTags.mockResolvedValue({ data: [] });
+  });
+
+  // The CSV must not drift from the table. handleExport copies the filter set, so
+  // the query travels with it; this pins that it does.
+  // The CSV must not drift from the table. Both take the RESOLVED query, not the
+  // text the user typed: a name sent raw would be dropped by the server, and the
+  // export would quietly contain more rows than the table shows.
+  it("sends the resolved query to both the list and the export", async () => {
+    renderPage("/transactions?q=cat%3AFood%2FGroceries+amt%3E50");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+    expect(apiMock.getTransactions.mock.calls[0][0]).toMatchObject({
+      q: "cat:c1 amt>5000",
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: /export/i }));
+    await waitFor(() => expect(apiMock.exportTransactions).toHaveBeenCalled());
+    expect(apiMock.exportTransactions.mock.calls[0][0]).toMatchObject({
+      q: "cat:c1 amt>5000",
+    });
+  });
+
+  it("shows the typed text in the box, not the resolved ids", async () => {
+    renderPage("/transactions?q=cat%3AFood%2FGroceries");
+    expect(await screen.findByRole("combobox", { name: /transaction query/i })).toHaveValue(
+      "cat:Food/Groceries",
+    );
+  });
+
+  it("surfaces the diagnostics the server returned with the rows", async () => {
+    apiMock.getTransactions.mockResolvedValue({
+      data: [],
+      total: 0,
+      page: 1,
+      pages: 1,
+      queryDiagnostics: [
+        { term: "payee:bogus", code: "unresolved_value", message: "no payee named bogus", position: 0 },
+      ],
+    });
+    renderPage("/transactions?q=payee%3Abogus");
+    expect(await screen.findByText(/term was ignored/)).toBeInTheDocument();
+    expect(screen.getByText("payee:bogus")).toBeInTheDocument();
+  });
+});

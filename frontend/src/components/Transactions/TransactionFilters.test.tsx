@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -58,7 +59,7 @@ const categorySections = [
 ] as unknown as CategorySection[];
 
 const baseFilters: Record<string, string | number> = {
-  search: "",
+  q: "",
   accountId: "",
   categoryId: "",
   groupId: "",
@@ -87,9 +88,31 @@ function renderFilters(
     onPresetChange: vi.fn(),
     onCustomInputChange: vi.fn(),
     onCommitCustom: vi.fn(),
+    query: "",
+    categories: [],
+    groups: [],
+    queryDiagnostics: [],
+    onQueryInProgressChange: vi.fn(),
+    onQueryCommit: vi.fn(),
     ...overrides,
   };
-  const view = render(<TransactionFilters {...props} />);
+  // The box is controlled by `query`, so the harness has to behave like the page
+  // and feed the text back. Without this the prop stays "" and every keystroke
+  // overwrites the last, which is not how the component is ever used.
+  const Wrapper = () => {
+    const [query, setQuery] = useState(props.query);
+    return (
+      <TransactionFilters
+        {...props}
+        query={query}
+        onFilterChange={(key, value) => {
+          props.onFilterChange(key, value);
+          if (key === "q") setQuery(value);
+        }}
+      />
+    );
+  };
+  const view = render(<Wrapper />);
   return { ...view, props };
 }
 
@@ -102,12 +125,49 @@ function comboBoxWithText(text: string): HTMLElement {
 }
 
 describe("TransactionFilters", () => {
-  it("emits search changes", () => {
+  // The search box is now the query box. It is controlled by `query`, writes the
+  // text on every keystroke, and reports a submit separately — the resolved
+  // expression is derived from the text by the page, not written back here.
+  it("writes the text as it is typed", async () => {
+    const user = userEvent.setup();
     const { props } = renderFilters();
-    fireEvent.change(screen.getByPlaceholderText("Search descriptions, notes, payees, tags..."), {
-      target: { value: "coffee" },
+    const box = screen.getByRole("combobox", { name: /transaction query/i });
+    await user.type(box, "coffee");
+    expect(props.onFilterChange).toHaveBeenLastCalledWith("q", "coffee");
+  });
+
+  it("reports a submit separately, without rewriting the text", async () => {
+    const user = userEvent.setup();
+    const { props } = renderFilters();
+    const box = screen.getByRole("combobox", { name: /transaction query/i });
+    await user.type(box, "coffee{Enter}");
+    expect(props.onQueryCommit).toHaveBeenCalledTimes(1);
+    // A submitted name must stay a name in the box: the id goes to the server.
+    expect(props.onFilterChange).not.toHaveBeenCalledWith("q", expect.stringContaining("-"));
+  });
+
+  it("shows the text it is given, so a shared link opens the same query", () => {
+    renderFilters({ query: "acct:Checking amt>50" });
+    expect(screen.getByRole("combobox", { name: /transaction query/i })).toHaveValue(
+      "acct:Checking amt>50",
+    );
+  });
+
+  it("shows the diagnostics it is handed, so an ignored term is never silent", () => {
+    renderFilters({
+      queryDiagnostics: [
+        { term: "payee:Costco", code: "unresolved_value", message: 'no payee named "Costco"', position: 0 },
+      ],
     });
-    expect(props.onFilterChange).toHaveBeenCalledWith("search", "coffee");
+    expect(screen.getByText("payee:Costco")).toBeTruthy();
+  });
+
+  it("reports the trailing token as in-progress, so typing is not diagnosed", async () => {
+    const user = userEvent.setup();
+    const { props } = renderFilters();
+    const box = screen.getByRole("combobox", { name: /transaction query/i });
+    await user.type(box, "cat");
+    expect(props.onQueryInProgressChange).toHaveBeenLastCalledWith("cat");
   });
 
   it("emits an account selection as a one-element list", async () => {
