@@ -1,3 +1,5 @@
+import { PERIOD_CURRENT_FY, PERIOD_LAST_12_MONTHS } from "@/lib/dates";
+
 // The field table: the single definition of every field, the parser, the
 // autocomplete and the grammar sheet all read this. A field therefore cannot be
 // suggested that the parser will reject, and the documented syntax cannot drift
@@ -54,3 +56,17 @@ export function userField(name: string): FieldDef | undefined {
 export function allowsOp(def: FieldDef, op: QueryOp): boolean {
   return def.ops.includes(op);
 }
+
+/**
+ * The named periods `date:` accepts, and the only ones it should offer.
+ *
+ * PERIOD_CUSTOM is deliberately absent. periodRange("custom") falls back to the
+ * rolling twelve months, so offering it would tell the user they had set a custom
+ * range and hand them twelve months instead. A period that cannot mean what it
+ * says should not be a suggestion.
+ *
+ * It lives here, not in resolve.ts, because both the parser (which must accept a
+ * period as valid input) and the resolver (which expands one) need it, and
+ * fields.ts is below both.
+ */
+export const DATE_PERIODS = [PERIOD_LAST_12_MONTHS, PERIOD_CURRENT_FY] as const;

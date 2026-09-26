@@ -1,4 +1,4 @@
-import { allowsOp, userField, type FieldDef, type QueryOp } from "./fields";
+import { allowsOp, DATE_PERIODS, userField, type FieldDef, type QueryOp } from "./fields";
 
 // The query grammar, in TypeScript. It is a mirror of
 // backend/internal/query/parse.go, and the two are pinned against each other by
@@ -331,14 +331,11 @@ function validate(def: FieldDef, field: string, values: string[]): { code: strin
       case "text":
         break;
       case "uuid":
-        // The sentinels the existing filters already use.
-        if (v === "none" || v === "uncategorized") break;
-        if (!UUID_RE.test(v)) {
-          return {
-            code: DIAG.unresolved,
-            message: `${field}: ${JSON.stringify(v)} is not an id; resolve the name first (ids are a uuid, "none" or "uncategorized")`,
-          };
-        }
+        // Deliberately no resolvability check. The server rejects a name here
+        // (backend/internal/query/parse.go, kindUUID), because on the server that
+        // IS its job. This parser runs on the user's keystrokes, where a name is
+        // the normal input and resolving it is resolveQuery's job. The two
+        // corpus cases that pin the server's refusal are marked serverOnly.
         break;
       case "enum":
         if (!def.enum?.includes(v)) {
@@ -354,10 +351,15 @@ function validate(def: FieldDef, field: string, values: string[]): { code: strin
         }
         break;
       case "date":
+        // A named period is legitimate input here: the box offers them, and
+        // resolveQuery expands them into concrete bounds. Anything else must be
+        // a real, in-window date, so a typo is reported as the user types rather
+        // than at the server.
+        if (DATE_PERIODS.includes(v as (typeof DATE_PERIODS)[number])) break;
         if (!DATE_RE.test(v) || !isInDateWindow(v)) {
           return {
             code: DIAG.malformedDate,
-            message: `${field}: ${JSON.stringify(v)} is not a usable date (must be between 1900-01-01 and one year from today)`,
+            message: `${field}: ${JSON.stringify(v)} is not a usable date (must be YYYY-MM-DD, or one of ${DATE_PERIODS.join(", ")}, between 1900-01-01 and one year from today)`,
           };
         }
         break;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseQuery, FIELD_PLAIN } from "./parse";
+import { DATE_PERIODS } from "./fields";
 
 /**
  * locateCorpus walks up from the working directory to find the shared corpus.
@@ -39,6 +40,13 @@ interface CorpusCase {
   name: string;
   surface: string;
   canonical: string;
+  /**
+   * True for a case that pins behaviour only the server has. The browser parser
+   * runs on keystrokes, where a category *name* is the normal input and
+   * resolving it is resolveQuery's job; the server resolves nothing, so it must
+   * refuse a name. Those cases are asserted by the Go suite alone.
+   */
+  serverOnly?: boolean;
   terms: CorpusTerm[];
   diagnostics: Array<{ term: string; code: string; message: string; position: number }>;
 }
@@ -48,7 +56,13 @@ describe("parseQuery corpus contract", () => {
     expect(CORPUS.cases.length).toBeGreaterThan(0);
   });
 
-  for (const tc of CORPUS.cases) {
+  const shared = CORPUS.cases.filter((c) => !c.serverOnly);
+  it("has cases both suites run, so the corpus is a real two-way guard", () => {
+    expect(shared.length).toBeGreaterThan(0);
+    expect(shared.length).toBeLessThan(CORPUS.cases.length);
+  });
+
+  for (const tc of shared) {
     it(`matches the corpus: ${tc.name}`, () => {
       const got = parseQuery(tc.surface);
       expect(
@@ -117,5 +131,31 @@ describe("parseQuery in isolation", () => {
   it("returns nothing for an empty query, with no diagnostics", () => {
     expect(parseQuery("")).toEqual({ terms: [], diagnostics: [] });
     expect(parseQuery("   ")).toEqual({ terms: [], diagnostics: [] });
+  });
+
+  // The counterpart to the two serverOnly corpus cases: the browser parser must
+  // ACCEPT a name, because turning it into an id is this side's job.
+  it("accepts a category name and a quoted payee name as valid input", () => {
+    const cat = parseQuery("cat:Food/Groceries");
+    expect(cat.diagnostics).toEqual([]);
+    expect(cat.terms[0].values).toEqual(["Food/Groceries"]);
+
+    const payee = parseQuery('payee:"Whole Foods"');
+    expect(payee.diagnostics).toEqual([]);
+    expect(payee.terms[0].values).toEqual(["Whole Foods"]);
+  });
+
+  it("accepts a named period as a date value, since the box offers them", () => {
+    for (const period of DATE_PERIODS) {
+      const got = parseQuery(`date:${period}`);
+      expect(got.diagnostics, period).toEqual([]);
+      expect(got.terms[0].values, period).toEqual([period]);
+    }
+  });
+
+  it("still rejects a date that is neither a real date nor a period", () => {
+    const got = parseQuery("date:2026-13-45");
+    expect(got.terms).toEqual([]);
+    expect(got.diagnostics[0].code).toBe("malformed_date");
   });
 });
