@@ -292,14 +292,33 @@ func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// session is drawn on.
 	env := sessionEnv(sess)
 	// The profile is named explicitly rather than left to the program's own
-	// detection, and that is not a workaround: colorprofile.Detect gates its whole
-	// result on the output being a terminal, and an ssh.Session is an io.Writer
-	// rather than a file descriptor, so detection answers NoTTY and the door is
-	// monochrome again — the exact regression v1's per-session renderer existed to
-	// prevent. colorprofile.Env is the same, environment-only detection the v1
-	// renderer performed (and the only half of Detect that means anything over
-	// SSH), so this is the v1 profile per session, now consumed by the program
-	// that downsamples.
+	// detection (which tea only performs when it was given no profile), and the
+	// reason is that both kinds of PTY should land on one answer — not that the
+	// door would otherwise be monochrome.
+	//
+	// wish's MakeOptions branches, so there are three cases. With an emulated PTY
+	// the output is the ssh.Session itself, an io.Writer rather than a term.File,
+	// and wish already forces tea.WithColorProfile(colorprofile.Env(envs)) for
+	// exactly that reason; its options are appended after ours
+	// (tea.NewProgram(m, append(opts, MakeOptions(s)...))), so on that branch
+	// wish's value is the one that lands and this call is redundant — the same
+	// answer either way. With a real PTY wish passes pty.Slave, which is a
+	// term.File, so colorprofile.Detect would work and this call deliberately
+	// overrides it. A session with no PTY never reaches here at all: wish's
+	// middleware refuses it before the handler runs.
+	//
+	// So the asymmetry is the point. An emulated PTY and a real one get the same
+	// answer, derived from the client's own TERM and COLORTERM, rather than
+	// depending on which kind of PTY the client happened to be given. What that
+	// gives up is the other half of Detect — terminfo and tmux — which a
+	// real-PTY session would have contributed. Detect takes the maximum of the
+	// environment, terminfo and tmux, so answering with colorprofile.Env alone
+	// can only lower the profile, never raise it: a client on a direct-colour
+	// terminal that advertises it through terminfo but not COLORTERM gets a
+	// shallower palette, not a wrong one. It is also the same environment-only
+	// detection the v1 session renderer performed, so this is the v1 profile per
+	// session, named by the door and consumed by the program that downsamples
+	// to it.
 	opts := []tea.ProgramOption{
 		tea.WithEnvironment(env),
 		tea.WithColorProfile(colorprofile.Env(env)),
