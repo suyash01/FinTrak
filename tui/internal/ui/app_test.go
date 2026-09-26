@@ -315,6 +315,53 @@ func TestDeliberateJumpEntersTheScreen(t *testing.T) {
 	}
 }
 
+// TestKeyReleasesAreNotBroadcast covers the routing rule for the message v2
+// added. tea.KeyMsg is an interface over presses and releases, so matching only
+// KeyPressMsg would drop a release into the broadcast branch and move every
+// screen's cursor. The app never requests releases -- it does not ask for the
+// ReportEventTypes enhancement -- so nothing else would catch it.
+func TestKeyReleasesAreNotBroadcast(t *testing.T) {
+	a, active, other := newAppForTest(t)
+
+	a.Update(tea.KeyReleaseMsg{Code: 'j', Text: "j"})
+
+	if active.keys != 1 {
+		t.Errorf("the release did not reach the active screen: keys = %d, want 1", active.keys)
+	}
+	if other.keys != 0 {
+		t.Errorf("the release was broadcast to another screen: keys = %d, want 0", other.keys)
+	}
+	if active.dataMsg != 0 || other.dataMsg != 0 {
+		t.Errorf("a release was counted as a data message: active %d, other %d",
+			active.dataMsg, other.dataMsg)
+	}
+}
+
+// TestTheWorkspaceDoesNotWaitForTheBackgroundAnswer covers a terminal that
+// never replies to the background-colour query. The workspace renders in the
+// dark theme meanwhile and stays fully usable, because blocking on the answer
+// would leave such a client on a blank screen forever.
+func TestTheWorkspaceDoesNotWaitForTheBackgroundAnswer(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.width, a.height = 120, 40
+
+	view := a.view()
+	if view == "" {
+		t.Fatal("the workspace rendered nothing before the background answer arrived")
+	}
+	if !strings.Contains(ansi.Strip(view), "Active") {
+		t.Errorf("the active screen is missing from the first frame:\n%s", ansi.Strip(view))
+	}
+
+	_, cmd := a.Update(ctrlPress('c'))
+	if cmd == nil {
+		t.Fatal("ctrl+c must still quit before the background answer arrives")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
 // TestStatusLineGivesTheHintsRoomAndASeparator checks the reported defect: the
 // separator was only added for informational messages, so "signed in" run into
 // "f filter" and read as "signed inf filter".

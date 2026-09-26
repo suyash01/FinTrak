@@ -17,6 +17,21 @@ import (
 // two-field sign-in form showing one field and a fifty-entry category chooser
 // showing one entry.
 
+// TestDigitIndexUnderV2KeyStrings pins the assumption the digit shortcuts rest
+// on: v2 stringifies a digit keypress as that digit alone. If this stops
+// holding, `digitIndex` returns -1 for every digit and the 1..9 and 0 jumps
+// silently do nothing.
+func TestDigitIndexUnderV2KeyStrings(t *testing.T) {
+	for r, want := range map[rune]int{'1': 0, '5': 4, '9': 8, '0': 9} {
+		if got := digitIndex(press(r).String()); got != want {
+			t.Errorf("digitIndex(%q) = %d, want %d", press(r).String(), got, want)
+		}
+	}
+	if got := digitIndex(press('a').String()); got != -1 {
+		t.Errorf("digitIndex(%q) = %d, want -1", press('a').String(), got)
+	}
+}
+
 // TestLoginFormShowsAllFields is the reported case: the login card used to hand
 // the form a height of zero, so even two fields did not fit.
 func TestLoginFormShowsAllFields(t *testing.T) {

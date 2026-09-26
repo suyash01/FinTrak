@@ -10,6 +10,55 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// TestSpaceTogglesABoolField pins the v2 stringification of the space bar.
+// form.go matched " " in v1 and must match "space" in v2; a mismatch is silent,
+// because the toggle simply stops happening and the form still submits.
+// BoolField stores "yes"/"no" rather than a bool, which is the stored value the
+// assertion reads.
+func TestSpaceTogglesABoolField(t *testing.T) {
+	form := NewForm("t", "Edit", []Field{
+		BoolField("Closed", false),
+	}, nil)
+
+	form.Update(press(' '))
+	if form.fields[0].Value != "yes" {
+		t.Errorf("space did not toggle the field on: Value = %q, want %q",
+			form.fields[0].Value, "yes")
+	}
+
+	form.Update(press(' '))
+	if form.fields[0].Value != "no" {
+		t.Errorf("space did not toggle the field back off: Value = %q, want %q",
+			form.fields[0].Value, "no")
+	}
+}
+
+// TestTextFieldsKeepTheirWidth pins SetWidth. textinput.Width became
+// write-only in v2, so a form that forgets to set it renders a field too narrow
+// to read, with no error anywhere. TextField's third argument is a validator,
+// not a width, so the width is set on the Field; NewForm falls back to 32 when
+// it is zero.
+//
+// The assertion is on the input model's own width, not on the width of the
+// rendered line. A field line is `Label: value` and is padded by the layout, so
+// its width is dominated by the label and would stay above 24 even if the input
+// had collapsed to a single character — a line-width assertion here would pass
+// while the bug it is meant to catch was present.
+func TestTextFieldsKeepTheirWidth(t *testing.T) {
+	field := TextField("Name", "hello", nil)
+	field.Width = 24
+	form := NewForm("t", "Edit", []Field{field}, nil)
+
+	if got := form.inputs[0].Width(); got != 24 {
+		t.Errorf("the input's width is %d, want the configured 24", got)
+	}
+
+	body := ansi.Strip(form.View(DefaultTheme(), 60, 12))
+	if !strings.Contains(body, "hello") {
+		t.Errorf("the field value is not visible:\n%s", body)
+	}
+}
+
 // TestFormScrollsToKeepTheFocusedFieldVisible is a regression test for the
 // reported overflow: the form rendered every field regardless of the height it
 // was given, so on a short terminal the App clipped the box and the upper fields
