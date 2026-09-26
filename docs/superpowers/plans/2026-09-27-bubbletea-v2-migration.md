@@ -81,7 +81,7 @@ The steps below are small and ordered so the compiler drives the work; the unit 
   - `func (a *App) setTheme(isDark bool)`
   - `func (a *App) view() string` — the old `View` body, unexported
   - `type Theme struct { …; InputStyles textinput.Styles; … }` with `Primary/Muted/Danger/Success/Warn/Border` as `color.Color`
-  - test helpers `press(code rune) tea.KeyPressMsg`, `ctrlPress(code rune) tea.KeyPressMsg` (Task 2 adds the release helper it needs)
+  - test helpers `press(r rune) tea.KeyPressMsg`, `ctrlPress(r rune) tea.KeyPressMsg`, and `runes(s string) tea.KeyPressMsg` (Task 2 uses the first two)
 
 - [ ] **Step 1: Swap the modules in `go.mod`**
 
@@ -111,11 +111,29 @@ $map = [ordered]@{
 }
 $files = git grep -l 'github.com/charmbracelet' -- .
 foreach ($f in $files) {
-  $text = Get-Content -Raw $f
+  $text = Get-Content -Raw -Encoding UTF8 $f
   foreach ($k in $map.Keys) { $text = $text.Replace($k, $map[$k]) }
-  Set-Content -NoNewline -Path $f -Value $text
+  [System.IO.File]::WriteAllText((Resolve-Path $f), $text, (New-Object System.Text.UTF8Encoding $false))
 }
 ```
+
+The explicit UTF-8 read and write are not optional. Several of these files contain
+box-drawing and ellipsis characters (`─ █ ░ … │ ▌`) in their string literals, and
+PowerShell's default encoding is the ANSI code page, so a default
+`Get-Content`/`Set-Content` round-trip can mangle every one of them into mojibake
+— a silent corruption of the rendered UI that no compiler would catch. `WriteAllText`
+with a BOM-less UTF-8 encoder is what Go source is.
+
+Verify the rewrite did not corrupt anything before moving on:
+
+```powershell
+cd tui
+gofmt -l .
+```
+
+Expected: no output. Any file listed was damaged by the rewrite — check it with
+`git diff` and restore it with `git checkout -- <file>` before retrying with the
+UTF-8 form above.
 
 `github.com/charmbracelet/x/ansi` and `github.com/charmbracelet/colorprofile` are **not** in the map and must be left alone. `links.go` imports bubbletea without an alias; a path-based rewrite is safe because the v2 package is still named `tea`.
 
@@ -126,7 +144,12 @@ cd tui
 go mod tidy
 ```
 
-Expected: `muesli/termenv` disappears from `go.mod`. If it does not, a `termenv` import survives somewhere — find it with `git grep -n 'muesli/termenv'`.
+Expected: `go.mod` gains the v2 requires and keeps the `replace` for `../client`.
+
+`muesli/termenv` will **still be listed** at this point, and that is correct: three
+test files (`app_test.go`, `theme_test.go`, `table_test.go`) still import it for the
+renderer-based tests that Steps 12 and 13 delete. It drops out on the `go mod tidy`
+in Step 16, which is the authoritative check.
 
 - [ ] **Step 4: Survey the damage the compiler reports**
 
@@ -752,13 +775,18 @@ Delete `TestAppStylesWithTheSessionRenderer` from `app_test.go:439` and replace 
 // TestSetThemeRepublishesOnTheContext covers the propagation a session's
 // background answer depends on: screens read ctx.Theme at render time, so the
 // App has to republish the rebuilt theme there or every screen keeps the old one.
+//
+// The comparison is on a rendered style, not on the Theme value: Theme embeds
+// lipgloss.Style, which holds a func and a slice, so Theme is not comparable
+// with == and such an assertion would not compile. Rendering is also the
+// stronger check, since it is the rendered bytes a screen would actually use.
 func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 	a, _, _ := newAppForTest(t)
 
 	a.Update(tea.BackgroundColorMsg{Color: color.White})
 
-	if a.ctx.Theme != a.theme {
-		t.Error("setTheme did not republish the theme on the shared context")
+	if got, want := a.ctx.Theme.Negative.Render("x"), a.theme.Negative.Render("x"); got != want {
+		t.Errorf("ctx.Theme was not republished: got %q, want %q", got, want)
 	}
 	lightPrimary, _, _, _ := ThemeFor(false).Primary.RGBA()
 	gotPrimary, _, _, _ := a.theme.Primary.RGBA()
@@ -867,7 +895,7 @@ never asserted, and each fails silently if it regresses.
 - Modify: `tui/internal/ui/app_test.go`, `tui/internal/ui/form_test.go`, `tui/internal/ui/layout_test.go`
 
 **Interfaces:**
-- Consumes: `press`, `ctrlPress`, `newAppForTest`, `stubScreen` (Task 1); `Digit` keys via `tea.KeyPressMsg{Code: '1', Text: "1"}`.
+- Consumes: `press`, `ctrlPress`, `runes`, `newAppForTest`, `stubScreen`, `App.view()`, `DefaultTheme`, `BoolField`, `TextField`, `Field.Width`, `digitIndex` (all from Task 1, or unchanged in the tree).
 - Produces: nothing; this task only adds tests.
 
 - [ ] **Step 1: A key release must not be broadcast**
@@ -977,27 +1005,31 @@ Add to `form_test.go`:
 // to read, with no error anywhere. TextField's third argument is a validator,
 // not a width, so the width is set on the Field; NewForm falls back to 32 when
 // it is zero.
+//
+// The assertion is on the input model's own width, not on the width of the
+// rendered line. A field line is `Label: value` and is padded by the layout, so
+// its width is dominated by the label and would stay above 24 even if the input
+// had collapsed to a single character — a line-width assertion here would pass
+// while the bug it is meant to catch was present.
 func TestTextFieldsKeepTheirWidth(t *testing.T) {
 	field := TextField("Name", "hello", nil)
 	field.Width = 24
 	form := NewForm("t", "Edit", []Field{field}, nil)
 
+	if got := form.inputs[0].Width(); got != 24 {
+		t.Errorf("the input's width is %d, want the configured 24", got)
+	}
+
 	body := ansi.Strip(form.View(DefaultTheme(), 60, 12))
 	if !strings.Contains(body, "hello") {
-		t.Fatalf("the field value is not visible:\n%s", body)
+		t.Errorf("the field value is not visible:\n%s", body)
 	}
-	for _, line := range strings.Split(body, "\n") {
-		if !strings.Contains(line, "hello") {
-			continue
-		}
-		if w := ansi.StringWidth(line); w < 24 {
-			t.Errorf("field line is %d wide, want at least the configured 24: %q", w, line)
-		}
-		return
-	}
-	t.Fatalf("no line carried the field value:\n%s", body)
 }
 ```
+
+Run this test **before** the migration's `SetWidth` change as well, to confirm it
+fails there: on v1 the field is 24 wide through the exported field, so the model
+read is the assertion that distinguishes "width set" from "width forgotten".
 
 - [ ] **Step 5: A terminal that never answers still gets a working TUI**
 
@@ -1095,11 +1127,11 @@ A keyboard-driven terminal client lives in `tui/` (Go + [Bubble Tea](https://git
 
 - [ ] **Step 3: `AGENTS.md` — the SSH door bullet**
 
-The existing bullet's last sentence is still true and should stay:
+Keep the bullet's existing middleware sentence — it is still true:
 
 > wish composes middleware so the **last entry is outermost**: the session cap must be listed last to hold its slot for a whole session.
 
-Replace the sentence about middleware with one that records what the migration changed, appended to the same bullet:
+Append one more sentence to the same bullet, recording what the migration changed:
 
 > Each session gets its own `tea.Program`, which detects that client's colour profile from the environment `WithEnvironment` hands it and downsamples at its own output layer — so there is no per-session lipgloss renderer to build, and no colour floor to set. Background lightness is the app's: `Init` asks with `tea.RequestBackgroundColor`, `tea.BackgroundColorMsg` rebuilds the `Theme` through `lipgloss.LightDark`, and `App.setTheme` republishes it on `Ctx` because every screen reads `ctx.Theme` at render time. The workspace never waits for that answer.
 
