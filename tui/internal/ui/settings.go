@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -209,14 +209,14 @@ func (s *Settings) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return s.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (s *Settings) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (s *Settings) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if s.pane == settingsCatalog {
 		return s.handleCatalogKey(msg)
 	}
@@ -246,7 +246,7 @@ func (s *Settings) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleCatalogKey routes a key press while the account-type catalog is open.
-func (s *Settings) handleCatalogKey(msg tea.KeyMsg) tea.Cmd {
+func (s *Settings) handleCatalogKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(s.keys.Back, msg):
 		s.pane = settingsOverview

@@ -28,7 +28,14 @@
 
 The spec is a vision document; its silence on an input is not permission to break it. These are the five failure modes most likely to bite a real user, each pinned by a test in the task that owns the code:
 
-1. **Space stops toggling a boolean form field.** `form.go` matches `case " ":` today; v2 stringifies space as `"space"`. A user pressing space on a "closed" or "active" toggle gets nothing — no error, no visual change, and the form still submits the old value. The whole suite stays green, because nothing asserts the toggle.
+1. **Space stops toggling a boolean form field, and stops selecting rows.**
+   v2 stringifies the space bar as `"space"`, so the rename has two halves and
+   both are silent. The **call site** is `form.go`'s `case " ":` on a `BoolField`.
+   The **declaration** is `key.WithKeys(" ")` in `transactions.go` and
+   `links.go`: `key.Matches` compares `msg.String()`, and a binding on the bare
+   character can never match, so bulk multi-select and Links row selection die
+   while the status bar still advertises "space". Nothing asserts either, which
+   is why the suite stays green.
 2. **A form's text inputs collapse to one character wide.** `textinput.Width` became private, so a dropped `SetWidth` leaves the field rendering at its default. The user cannot read what they typed and cannot tell which field is focused. A write-only accessor fails silently in exactly the way a removed exported field cannot.
 3. **A light-background terminal renders with dark colours, or one SSH client's colours leak to another.** This is the theme seam. The user sees an unreadable or wrong-looking TUI. The leak direction is the dangerous one: it is the exact failure `app.go:69-78` documents the current design as preventing, so a regression here is invisible locally and only shows with two clients on one door.
 4. **ctrl+c stops quitting.** The App intercepts it before any modal or the sign-in screen can swallow it, and three existing regression tests exist because it broke before. v2 moves the interception site (`tea.KeyMsg` struct → `tea.KeyPressMsg`); if the interception is left after the modal branch, the process becomes unquittable from the sign-in screen and from any open overlay.
@@ -81,7 +88,7 @@ The steps below are small and ordered so the compiler drives the work; the unit 
   - `func (a *App) setTheme(isDark bool)`
   - `func (a *App) view() string` — the old `View` body, unexported
   - `type Theme struct { …; InputStyles textinput.Styles; … }` with `Primary/Muted/Danger/Success/Warn/Border` as `color.Color`
-  - test helpers `press(code rune) tea.KeyPressMsg`, `ctrlPress(code rune) tea.KeyPressMsg` (Task 2 adds the release helper it needs)
+  - test helpers `press(r rune) tea.KeyPressMsg`, `ctrlPress(r rune) tea.KeyPressMsg`, and `runes(s string) tea.KeyPressMsg` (Task 2 uses the first two)
 
 - [ ] **Step 1: Swap the modules in `go.mod`**
 
@@ -111,11 +118,29 @@ $map = [ordered]@{
 }
 $files = git grep -l 'github.com/charmbracelet' -- .
 foreach ($f in $files) {
-  $text = Get-Content -Raw $f
+  $text = Get-Content -Raw -Encoding UTF8 $f
   foreach ($k in $map.Keys) { $text = $text.Replace($k, $map[$k]) }
-  Set-Content -NoNewline -Path $f -Value $text
+  [System.IO.File]::WriteAllText((Resolve-Path $f), $text, (New-Object System.Text.UTF8Encoding $false))
 }
 ```
+
+The explicit UTF-8 read and write are not optional. Several of these files contain
+box-drawing and ellipsis characters (`─ █ ░ … │ ▌`) in their string literals, and
+PowerShell's default encoding is the ANSI code page, so a default
+`Get-Content`/`Set-Content` round-trip can mangle every one of them into mojibake
+— a silent corruption of the rendered UI that no compiler would catch. `WriteAllText`
+with a BOM-less UTF-8 encoder is what Go source is.
+
+Verify the rewrite did not corrupt anything before moving on:
+
+```powershell
+cd tui
+gofmt -l .
+```
+
+Expected: no output. Any file listed was damaged by the rewrite — check it with
+`git diff` and restore it with `git checkout -- <file>` before retrying with the
+UTF-8 form above.
 
 `github.com/charmbracelet/x/ansi` and `github.com/charmbracelet/colorprofile` are **not** in the map and must be left alone. `links.go` imports bubbletea without an alias; a path-based rewrite is safe because the v2 package is still named `tea`.
 
@@ -126,7 +151,12 @@ cd tui
 go mod tidy
 ```
 
-Expected: `muesli/termenv` disappears from `go.mod`. If it does not, a `termenv` import survives somewhere — find it with `git grep -n 'muesli/termenv'`.
+Expected: `go.mod` gains the v2 requires and keeps the `replace` for `../client`.
+
+`muesli/termenv` will **still be listed** at this point, and that is correct: three
+test files (`app_test.go`, `theme_test.go`, `table_test.go`) still import it for the
+renderer-based tests that Steps 12 and 13 delete. It drops out on the `go mod tidy`
+in Step 16, which is the authoritative check.
 
 - [ ] **Step 4: Survey the damage the compiler reports**
 
@@ -536,6 +566,7 @@ func (a *App) setTheme(isDark bool) {
 
 ```go
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"charm.land/ssh"
 	"charm.land/wish/v2"
 	wishtea "charm.land/wish/v2/bubbletea"
@@ -544,7 +575,10 @@ func (a *App) setTheme(isDark bool) {
 	"github.com/fintrak/tui/internal/ui"
 ```
 
-`colorprofile`, `lipgloss` and `termenv` are all dropped: they existed only to build the per-session renderer, which is deleted below.
+`lipgloss` and `termenv` are dropped: they existed only to build the per-session
+renderer, which is deleted below. `colorprofile` **stays** — the door still has to
+name the profile itself, which is the whole point of the `WithColorProfile` line
+in `model`.
 
 The middleware block, with its colour-floor comment rewritten because the floor's meaning changed:
 
@@ -554,14 +588,12 @@ The middleware block, with its colour-floor comment rewritten because the floor'
 		// it has to hold its slot for the whole session, wrapping the bubbletea
 		// middleware rather than sitting inside it.
 		//
-		// No colour floor is set here, and that is a change rather than an
-		// omission. v1 passed MiddlewareWithColorProfile(..., termenv.TrueColor)
-		// because wish's default was Ascii and a session renderer was forced down
-		// to that floor, so without an explicit TrueColor floor every client got a
-		// monochrome TUI. In v2 each tea.Program detects its own profile from the
-		// session environment handed to it by WithEnvironment below, and
-		// downsamples at its own output layer, so each client gets the depth it
-		// actually advertises and no floor is wanted.
+		// No colour floor is set here, and that is deliberate. v1 passed
+		// MiddlewareWithColorProfile(..., termenv.TrueColor) because a fixed floor
+		// was the only way to stop wish's Ascii default reaching the client through
+		// a renderer that had to be told what it could do. v2 names the profile per
+		// session instead, in model() below, so each client gets the depth it
+		// actually advertises rather than a floor imposed on all of them.
 		wish.WithMiddleware(
 			wishtea.Middleware(s.model),
 			s.logSession,
@@ -574,10 +606,21 @@ The middleware block, with its colour-floor comment rewritten because the floor'
 ```go
 func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// The program's own environment is the client's too: bubbletea reads TERM
-	// from it for terminal handling and for colour-profile detection, and the
-	// door process's TERM (usually unset in a container) is not the one the
-	// session is drawn on.
-	opts := []tea.ProgramOption{tea.WithEnvironment(sessionEnv(sess))}
+	// from it for terminal handling, and the door process's TERM (usually unset in
+	// a container) is not the one the session is drawn on.
+	env := sessionEnv(sess)
+	opts := []tea.ProgramOption{
+		tea.WithEnvironment(env),
+		// The profile must be named, not detected. bubbletea calls
+		// colorprofile.Detect(p.output, p.environ), and Detect gates its whole
+		// answer on term.IsTerminal(out.Fd()) — but MakeOptions sets
+		// WithOutput(sess), and an ssh.Session is an io.Writer, not a term.File, so
+		// Detect answers NoTTY and the door renders monochrome. colorprofile.Env
+		// is the same computation with the isatty question pinned true, i.e. the
+		// only half of Detect that means anything over SSH. This is the call v1's
+		// sessionRenderer made, so the per-session guarantee is unchanged.
+		tea.WithColorProfile(colorprofile.Env(env)),
+	}
 
 	client, _ := sess.Context().Value(clientContextKey{}).(*api.Client)
 	if client != nil {
@@ -752,13 +795,18 @@ Delete `TestAppStylesWithTheSessionRenderer` from `app_test.go:439` and replace 
 // TestSetThemeRepublishesOnTheContext covers the propagation a session's
 // background answer depends on: screens read ctx.Theme at render time, so the
 // App has to republish the rebuilt theme there or every screen keeps the old one.
+//
+// The comparison is on a rendered style, not on the Theme value: Theme embeds
+// lipgloss.Style, which holds a func and a slice, so Theme is not comparable
+// with == and such an assertion would not compile. Rendering is also the
+// stronger check, since it is the rendered bytes a screen would actually use.
 func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 	a, _, _ := newAppForTest(t)
 
 	a.Update(tea.BackgroundColorMsg{Color: color.White})
 
-	if a.ctx.Theme != a.theme {
-		t.Error("setTheme did not republish the theme on the shared context")
+	if got, want := a.ctx.Theme.Negative.Render("x"), a.theme.Negative.Render("x"); got != want {
+		t.Errorf("ctx.Theme was not republished: got %q, want %q", got, want)
 	}
 	lightPrimary, _, _, _ := ThemeFor(false).Primary.RGBA()
 	gotPrimary, _, _, _ := a.theme.Primary.RGBA()
@@ -770,29 +818,27 @@ func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 
 That test needs `"image/color"` in `app_test.go`'s import block. Deleting the old test also orphans two imports it was the only user of — `"io"` and `"github.com/muesli/termenv"`, both used for the `lipgloss.NewRenderer(io.Discard)` it built. Remove them or the package will not compile.
 
-`table_test.go`'s `stylePrefix` helper asserted the escape prefix a `termenv.TrueColor` renderer produced. Colour downsampling is now the program's, so those assertions are the door's end-to-end test's job — it already checks for `\x1b[38;5;` and `\x1b[38;2;` over a real session. Replace `table_test.go`'s escape-sequence assertions with a check that the cell roles still select the right styles, and drop the `lipgloss`/`termenv` imports. Note `SetColumns` is variadic, not a slice:
+`table_test.go`'s `stylePrefix` helper is a third case, and it **keeps its
+assertions**. The premise that it lost its subject is wrong: lipgloss v2's
+package-level `Render` does not downsample —
+`Foreground(Color("#f87171")).Render("x")` emits `\x1b[38;2;248;113;113mx\x1b[m`
+— because downsampling moved to the program. An escape prefix from a style is
+therefore still a statement about which style the table chose, which is the app's
+behaviour and what the test exists to pin. Only the dead helper goes:
 
-```go
-// TestTableAppliesCellRoles checks the part of the table the app owns: each
-// cell's role picks its own style, and the selected row's background is applied
-// over the gaps. Which escape codes that ultimately emits is the tea.Program's
-// business, not the table's.
-func TestTableAppliesCellRoles(t *testing.T) {
-	th := DefaultTheme()
-	tbl := &Table{}
-	tbl.SetColumns(Column{Title: "Amount", Width: 10, Align: AlignRight})
-	tbl.SetRows([][]Cell{{Money("12.00")}, {Money("12.00")}})
-	tbl.SetCursor(0)
+- **Delete** `colourTheme(t *testing.T) Theme`, whose whole body was
+  `lipgloss.NewRenderer(io.Discard)` + `SetColorProfile(termenv.TrueColor)` +
+  `SetHasDarkBackground(true)`, and `lipgloss.Renderer` no longer exists.
+- **Replace both call sites** with `DefaultTheme()`, which is the dark palette and
+  renders the same colours the helper forced.
+- **Keep** `stylePrefix` (it still needs the `lipgloss` import, for its parameter
+  type) and keep both tests —
+  `TestTableAppliesCellRoles` and `TestTableKeepsTheRoleColourOnTheSelectedRow` —
+  with their assertions and comments unchanged.
+- **Drop** only the `termenv` import.
 
-	lines := strings.Split(ansi.Strip(tbl.View(th, 12, 6, "none")), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected a header and a row, got %d lines", len(lines))
-	}
-	if !strings.Contains(lines[1], "12.00") {
-		t.Errorf("the amount is missing from the row: %q", lines[1])
-	}
-}
-```
+Escape bytes at the session level stay covered end to end by `sshd/server_test.go`,
+which asserts `\x1b[38;5;` / `\x1b[38;2;` over a real SSH connection.
 
 - [ ] **Step 14: Build**
 
@@ -867,7 +913,7 @@ never asserted, and each fails silently if it regresses.
 - Modify: `tui/internal/ui/app_test.go`, `tui/internal/ui/form_test.go`, `tui/internal/ui/layout_test.go`
 
 **Interfaces:**
-- Consumes: `press`, `ctrlPress`, `newAppForTest`, `stubScreen` (Task 1); `Digit` keys via `tea.KeyPressMsg{Code: '1', Text: "1"}`.
+- Consumes: `press`, `ctrlPress`, `runes`, `newAppForTest`, `stubScreen`, `App.view()`, `DefaultTheme`, `BoolField`, `TextField`, `Field.Width`, `digitIndex` (all from Task 1, or unchanged in the tree).
 - Produces: nothing; this task only adds tests.
 
 - [ ] **Step 1: A key release must not be broadcast**
@@ -977,27 +1023,31 @@ Add to `form_test.go`:
 // to read, with no error anywhere. TextField's third argument is a validator,
 // not a width, so the width is set on the Field; NewForm falls back to 32 when
 // it is zero.
+//
+// The assertion is on the input model's own width, not on the width of the
+// rendered line. A field line is `Label: value` and is padded by the layout, so
+// its width is dominated by the label and would stay above 24 even if the input
+// had collapsed to a single character — a line-width assertion here would pass
+// while the bug it is meant to catch was present.
 func TestTextFieldsKeepTheirWidth(t *testing.T) {
 	field := TextField("Name", "hello", nil)
 	field.Width = 24
 	form := NewForm("t", "Edit", []Field{field}, nil)
 
+	if got := form.inputs[0].Width(); got != 24 {
+		t.Errorf("the input's width is %d, want the configured 24", got)
+	}
+
 	body := ansi.Strip(form.View(DefaultTheme(), 60, 12))
 	if !strings.Contains(body, "hello") {
-		t.Fatalf("the field value is not visible:\n%s", body)
+		t.Errorf("the field value is not visible:\n%s", body)
 	}
-	for _, line := range strings.Split(body, "\n") {
-		if !strings.Contains(line, "hello") {
-			continue
-		}
-		if w := ansi.StringWidth(line); w < 24 {
-			t.Errorf("field line is %d wide, want at least the configured 24: %q", w, line)
-		}
-		return
-	}
-	t.Fatalf("no line carried the field value:\n%s", body)
 }
 ```
+
+Run this test **before** the migration's `SetWidth` change as well, to confirm it
+fails there: on v1 the field is 24 wide through the exported field, so the model
+read is the assertion that distinguishes "width set" from "width forgotten".
 
 - [ ] **Step 5: A terminal that never answers still gets a working TUI**
 
@@ -1095,11 +1145,11 @@ A keyboard-driven terminal client lives in `tui/` (Go + [Bubble Tea](https://git
 
 - [ ] **Step 3: `AGENTS.md` — the SSH door bullet**
 
-The existing bullet's last sentence is still true and should stay:
+Keep the bullet's existing middleware sentence — it is still true:
 
 > wish composes middleware so the **last entry is outermost**: the session cap must be listed last to hold its slot for a whole session.
 
-Replace the sentence about middleware with one that records what the migration changed, appended to the same bullet:
+Append one more sentence to the same bullet, recording what the migration changed:
 
 > Each session gets its own `tea.Program`, which detects that client's colour profile from the environment `WithEnvironment` hands it and downsamples at its own output layer — so there is no per-session lipgloss renderer to build, and no colour floor to set. Background lightness is the app's: `Init` asks with `tea.RequestBackgroundColor`, `tea.BackgroundColorMsg` rebuilds the `Theme` through `lipgloss.LightDark`, and `App.setTheme` republishes it on `Ctx` because every screen reads `ctx.Theme` at render time. The workspace never waits for that answer.
 

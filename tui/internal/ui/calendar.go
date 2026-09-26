@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -141,7 +141,7 @@ func (c *Calendar) Update(msg tea.Msg) tea.Cmd {
 		c.selectCursor()
 		return nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return c.handleKey(m)
 	}
 	return nil
@@ -149,7 +149,7 @@ func (c *Calendar) Update(msg tea.Msg) tea.Cmd {
 
 // handleKey routes a key press. Arrows move the cursor day by day and the drawn
 // month follows the cursor; m/M are the only way to leave the current grid.
-func (c *Calendar) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (c *Calendar) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(c.keys.Window, msg):
 		c.openWindowForm()

@@ -4,22 +4,22 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
-// press delivers one key to a picker as the App would.
-func press(p *Picker, key string) {
-	var msg tea.KeyMsg
+// pressKey delivers one key to a picker as the App would.
+func pressKey(p *Picker, key string) {
+	var msg tea.KeyPressMsg
 	switch key {
 	case "enter":
-		msg = tea.KeyMsg{Type: tea.KeyEnter}
+		msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
-		msg = tea.KeyMsg{Type: tea.KeyEsc}
+		msg = tea.KeyPressMsg{Code: tea.KeyEsc}
 	case "up":
-		msg = tea.KeyMsg{Type: tea.KeyUp}
+		msg = tea.KeyPressMsg{Code: tea.KeyUp}
 	default:
-		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+		msg = runes(key)
 	}
 	p.Update(msg)
 }
@@ -36,12 +36,12 @@ func TestPickerClearRowSelectsEmptyValue(t *testing.T) {
 
 	// The cursor starts on the current value (Beta); Alpha sits between it and the
 	// clear row, so walk up twice.
-	press(p, "up")
+	pressKey(p, "up")
 	if p.Closed() {
 		t.Fatal("moving the cursor must not close the picker")
 	}
-	press(p, "up")
-	press(p, "enter")
+	pressKey(p, "up")
+	pressKey(p, "enter")
 
 	if !p.Closed() {
 		t.Fatal("enter on the clear row must close the picker")
@@ -56,8 +56,8 @@ func TestPickerClearRowSelectsEmptyValue(t *testing.T) {
 
 func TestPickerSelectsAnOption(t *testing.T) {
 	p := NewPicker("Category", options(), "a", false, "")
-	press(p, "down")
-	press(p, "enter")
+	pressKey(p, "down")
+	pressKey(p, "enter")
 
 	if !p.Closed() || p.Value() != "b" {
 		t.Fatalf("closed=%v value=%q, want b", p.Closed(), p.Value())
@@ -72,9 +72,9 @@ func TestPickerSelectsAnOption(t *testing.T) {
 func TestPickerFilterThenSelect(t *testing.T) {
 	p := NewPicker("Payee", options(), "", false, "")
 	for _, r := range "gam" {
-		press(p, string(r))
+		pressKey(p, string(r))
 	}
-	press(p, "enter")
+	pressKey(p, "enter")
 
 	if !p.Closed() || p.Value() != "c" {
 		t.Fatalf("closed=%v value=%q, want c", p.Closed(), p.Value())
@@ -83,7 +83,7 @@ func TestPickerFilterThenSelect(t *testing.T) {
 
 func TestPickerEscapeCancels(t *testing.T) {
 	p := NewPicker("Payee", options(), "a", false, "")
-	press(p, "esc")
+	pressKey(p, "esc")
 
 	if !p.Closed() {
 		t.Fatal("esc must close the picker")
@@ -98,9 +98,9 @@ func TestPickerEscapeCancels(t *testing.T) {
 func TestPickerEnterOnEmptyListClosesForNullableFields(t *testing.T) {
 	p := NewPicker("Payee", options(), "", true, "none")
 	for _, r := range "zzz" {
-		press(p, string(r))
+		pressKey(p, string(r))
 	}
-	press(p, "enter")
+	pressKey(p, "enter")
 
 	if !p.Closed() {
 		t.Fatal("enter with no matches must not leave the picker open")
@@ -120,8 +120,8 @@ func TestPickerOnSelectFiresOnceWithTheChosenValue(t *testing.T) {
 		return nil
 	}
 
-	press(p, "enter")
-	press(p, "enter") // a closed picker must not act again
+	pressKey(p, "enter")
+	pressKey(p, "enter") // a closed picker must not act again
 
 	if len(got) != 1 || got[0] != "a" {
 		t.Fatalf("OnSelect calls = %v, want exactly [a]", got)
@@ -134,8 +134,8 @@ func TestPickerOnSelectFiresOnceWithTheChosenValue(t *testing.T) {
 func TestPickerReachesTheFirstOptionWhenClearable(t *testing.T) {
 	p := NewPicker("Category", options(), "b", true, "none")
 
-	press(p, "up")
-	press(p, "enter")
+	pressKey(p, "up")
+	pressKey(p, "enter")
 
 	if !p.Closed() || p.Value() != "a" {
 		t.Fatalf("closed=%v value=%q, want the first option a", p.Closed(), p.Value())
@@ -172,12 +172,12 @@ func TestPickerGroupsAndSkipsHeadings(t *testing.T) {
 	}
 
 	// Walking down must skip the "Income" heading and land on Salary.
-	press(p, "down")
-	press(p, "down")
+	pressKey(p, "down")
+	pressKey(p, "down")
 	if p.rows()[p.cursor].header() {
 		t.Fatal("down landed on a heading")
 	}
-	press(p, "enter")
+	pressKey(p, "enter")
 	if p.Value() != "3" {
 		t.Errorf("selected %q, want the option after the heading (3)", p.Value())
 	}

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -115,14 +115,14 @@ func (p *Payees) Update(msg tea.Msg) tea.Cmd {
 			return p.reload()
 		}
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return p.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (p *Payees) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (p *Payees) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if p.filtering {
 		switch msg.String() {
 		case "enter":
@@ -190,7 +190,7 @@ func (p *Payees) startFilter() tea.Cmd {
 	previous := p.query()
 	p.filter = textinput.New()
 	p.filter.Placeholder = "filter by name"
-	p.filter.Width = 32
+	p.filter.SetWidth(32)
 	p.filter.SetValue(previous)
 	p.filter.Focus()
 	return textinput.Blink

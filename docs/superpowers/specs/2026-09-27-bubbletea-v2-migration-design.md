@@ -171,10 +171,20 @@ none. The guard is written for correctness by construction rather than relying
 on that, and Section 8 adds a test that sends one anyway.
 
 One silent behaviour change to make explicitly: **v2's `Key.String()` returns
-`"space"`, not `" "`.** `form.go:199` matches `case " ":` to toggle a
-`BoolField`, so it becomes `case "space":`. Nothing else in the tree matches a
-literal space. The ctrl+c interception at `app.go:165` uses
-`m.String() == "ctrl+c"` and is unaffected.
+`"space"`, not `" "`.** The rename has **two halves**, and both matter because
+`key.Matches` compares `msg.String()` against the strings a binding declares:
+
+- The **call site**: `form.go:199` matches `case " ":` to toggle a `BoolField`,
+  and becomes `case "space":`.
+- The **declaration**: `transactions.go:73` and `links.go:141` declare
+  `key.WithKeys(" ")`, and become `key.WithKeys("space")`. A binding left on the
+  bare character can never match, because `uv.Key.String()` returns `Keystroke()`
+  — the literal `"space"` — whenever `Text` is a single space. That silently kills
+  multi-row selection for bulk actions and Links row selection while the status
+  bar still advertises "space".
+
+The ctrl+c interception at `app.go:165` uses `m.String() == "ctrl+c"` and is
+unaffected.
 
 `digitIndex(key.String())` (`app.go:336`) is assumed unchanged for `"1"`..`"9"`
 and `"0"`; Section 8 pins it with a test rather than trusting the assumption.
@@ -186,11 +196,17 @@ and `"0"`; Section 8 pins it with a test rather than trusting the assumption.
 The v1 `lipgloss.Renderer` served two unrelated jobs, and conflating them is
 what made the plumbing feel necessary:
 
-1. **Colour profile** — how many colours the terminal can show. v2 gives this
-   to the `tea.Program`, per program, detected from that program's environment.
-   The SSH door gets correct per-session profiles for free, which is why
-   `sessionRenderer` (`server.go:319-328`) and the `colorprofile.Env` call are
-   deleted rather than ported.
+1. **Colour profile** — how many colours the terminal can show. v2 moves the
+   *downsampling* to the `tea.Program`, per program, at its own output layer, so
+   the renderer object itself is unnecessary and `sessionRenderer`
+   (`server.go:319-328`) is deleted. But the *detection* is not free over SSH:
+   `colorprofile.Detect` gates its whole answer on `term.IsTerminal(out.Fd())`,
+   and wish's `MakeOptions` sets `WithOutput(sess)`, where an `ssh.Session` is an
+   `io.Writer` and not a `term.File` — so `Detect` returns `NoTTY` and the door
+   goes monochrome. The door therefore still names the profile explicitly, with
+   `tea.WithColorProfile(colorprofile.Env(env))` in the options its handler
+   returns, which is the same call v1's `sessionRenderer` made. `colorprofile`
+   stays a direct dependency.
 2. **Background lightness** — light or dark terminal, which is what
    `AdaptiveColor` needs. v2 does *not* decide this for us; the app asks.
 
@@ -342,13 +358,17 @@ their own boolean, not bubbles' focus state.
   program. It becomes `charm.land/wish/v2/bubbletea`, and
   `github.com/charmbracelet/ssh` becomes `charm.land/ssh`.
 - `wishtea.MiddlewareWithColorProfile(s.model, termenv.TrueColor)`
-  (`server.go:174`) becomes `bubbletea.Middleware(s.model)`. The "colour floor
-  is TrueColor, not wish's default Ascii" comment is rewritten: the floor
-  concept changes meaning, because in v2 the profile is detected per program
-  from that session's environment, and `tea.WithColorProfile` is available in
-  the options `s.model` returns (`server.go:299`) for an explicit override.
-- `sessionRenderer` (`server.go:319-328`) and its `colorprofile.Env` call are
-  deleted (Section 5.1).
+  (`server.go:174`) becomes `bubbletea.Middleware(s.model)`, and the profile moves
+  into the options `s.model` returns (`server.go:299`) as
+  `tea.WithColorProfile(colorprofile.Env(env))` — per Section 5.1 this is
+  required, not an override, because detection cannot see through an
+  `ssh.Session`. The "colour floor is TrueColor, not wish's default Ascii"
+  comment is deleted rather than rewritten: a fixed floor was the v1 workaround
+  for a renderer that had to be told, and the per-client profile replaces it.
+- `sessionRenderer` (`server.go:319-328`) is deleted in full. The `lipgloss` and
+  `termenv` imports go with it; `colorprofile` does not, because the
+  `colorprofile.Env` call it made moves into `model`'s options rather than
+  disappearing (Section 5.1).
 - `tea.WithEnvironment(sessionEnv(sess))` (`server.go:299`) still exists and is
   kept — it is what lets bubbletea read the *client's* `TERM` rather than the
   door container's.
@@ -389,15 +409,22 @@ hand across 5 test files. A `press(code, mod)` / `runes(s)` helper collapses
 them and gives the four new tests something to call. `picker_test.go:11-25`
 already has a local equivalent to repoint.
 
-**The renderer tests lose their subject and are redesigned, not deleted.**
-`theme_test.go`, `TestAppStylesWithTheSessionRenderer` (`app_test.go:439`) and
-`table_test.go`'s `stylePrefix` all assert *rendered escape sequences under a
-chosen profile* — which was lipgloss v1's job and is now the program's. They
-become assertions about the theme itself: that `ThemeFor(true)` and
-`ThemeFor(false)` resolve each of the six palette entries to the intended hex.
-That is the behaviour the app actually owns. Escape-byte output stays covered
-end to end by `sshd/server_test.go:400`, which already asserts `\x1b[38;5;` /
-`\x1b[38;2;` over a real SSH session.
+**The renderer tests lose their *subject*, but not all three.** `theme_test.go`
+and `TestAppStylesWithTheSessionRenderer` (`app_test.go:439`) asserted a
+`termenv.Ascii` or `termenv.ANSI256` *renderer* choosing to emit escapes or not,
+and the renderer is gone, so both become assertions about the theme itself: that
+`ThemeFor(true)` and `ThemeFor(false)` resolve each palette entry to the intended
+hex, and that a background reply reaches `Ctx`.
+
+`table_test.go` is different and keeps its assertions. lipgloss v2's package-level
+`Render` does **not** downsample — `Foreground(Color("#f87171")).Render("x")`
+emits `\x1b[38;2;248;113;113mx\x1b[m` — because downsampling moved to the
+program. So an escape prefix from a style is still a statement about which style
+the table chose, which is the app's behaviour and the subject of that test. Only
+its `colourTheme` helper is deleted, since it existed to build a renderer;
+its call sites become `DefaultTheme()`. Escape bytes at the session level stay
+covered end to end by `sshd/server_test.go`, which asserts `\x1b[38;5;` /
+`\x1b[38;2;` over a real SSH connection.
 
 The TUI's 18% coverage floor is held, not re-based. If the mechanical test
 rewrite allows coverage to rise, the floor is raised deliberately; the number is

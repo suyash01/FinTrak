@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -366,14 +366,14 @@ func (i *Import) Update(msg tea.Msg) tea.Cmd {
 		}
 		return i.acceptImport(m.data, m.err)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return i.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (i *Import) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (i *Import) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	// A staged batch owns the keyboard: it is the only thing the screen can act
 	// on until it is committed or discarded.
 	if i.pending != nil {
@@ -453,7 +453,7 @@ func (i *Import) handleKey(msg tea.KeyMsg) tea.Cmd {
 		i.searching = true
 		i.search = textinput.New()
 		i.search.Placeholder = "search document titles"
-		i.search.Width = 44
+		i.search.SetWidth(44)
 		i.search.SetValue(i.query.Search)
 		i.search.Focus()
 		return textinput.Blink

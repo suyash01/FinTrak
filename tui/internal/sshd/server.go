@@ -27,13 +27,11 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/ssh"
+	"charm.land/wish/v2"
+	wishtea "charm.land/wish/v2/bubbletea"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/ssh"
-	"github.com/charmbracelet/wish"
-	wishtea "github.com/charmbracelet/wish/bubbletea"
-	"github.com/muesli/termenv"
 
 	"github.com/fintrak/client/api"
 	"github.com/fintrak/tui/internal/ui"
@@ -165,13 +163,16 @@ func newServer(cfg Config) (*server, error) {
 		// it has to hold its slot for the whole session, wrapping the bubbletea
 		// middleware rather than sitting inside it.
 		//
-		// The colour floor is TrueColor, not wish's default Ascii: the floor is
-		// what MakeRenderer forces a session's renderer DOWN to, so an Ascii floor
-		// hands every client a monochrome TUI no matter what its terminal
-		// supports. With no floor above what the client reports, the profile comes
-		// from the client's own TERM/COLORTERM.
+		// No colour floor is set here, and that is a change rather than an
+		// omission. v1 passed MiddlewareWithColorProfile(..., termenv.TrueColor)
+		// because wish's default was Ascii and a session renderer was forced down
+		// to that floor, so without an explicit TrueColor floor every client got a
+		// monochrome TUI. In v2 wish ships no colour-profile option at all — there
+		// is no MiddlewareWithColorProfile left to pass — and each tea.Program
+		// downsamples at its own output layer, so the depth a client gets is the
+		// depth its own environment asks for — see model.
 		wish.WithMiddleware(
-			wishtea.MiddlewareWithColorProfile(s.model, termenv.TrueColor),
+			wishtea.Middleware(s.model),
 			s.logSession,
 			s.limitSessions,
 		),
@@ -285,25 +286,43 @@ func (s *server) logSession(next ssh.Handler) ssh.Handler {
 // model hands a session its TUI. A session that authenticated with the FinTrak
 // credentials reuses the client parked during authentication and starts signed
 // in; a key-authenticated session gets a fresh client and the sign-in screen.
-//
-// The model is built with a renderer for THIS session's terminal: one door
-// process serves many clients, and the door's own environment describes the
-// container it runs in, not the terminal on the other end. Every style in the
-// session comes from that renderer, so the colours a client sees match what its
-// terminal can actually display.
 func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
-	renderer := sessionRenderer(sess)
-	// The program's own environment is the client's too: bubbletea reads TERM
-	// from it for its terminal handling, and the door process's TERM (usually
-	// unset in a container) is not the one the session is drawn on.
-	opts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithEnvironment(sessionEnv(sess))}
+	// The client's own environment is the one the profile below is derived from:
+	// the door process's TERM (usually unset in a container) is not the terminal
+	// the session is drawn on.
+	env := sessionEnv(sess)
+	// The profile is named explicitly rather than left to the program, which runs
+	// colorprofile.Detect only when it was given no profile. The point is that the
+	// answer follows the client's environment rather than the PTY branch, and the
+	// cost is the half of Detect that colorprofile.Env does not read.
+	//
+	// On the Unix build wish already names a profile on the emulated branch, because
+	// there the output is the ssh.Session itself — an io.Writer, not a term.File —
+	// and Detect gates on the output being a terminal. Its options are appended
+	// after ours (tea.NewProgram(m, append(opts, MakeOptions(s)...))), so on that
+	// branch its assignment is the one that lands and this call has no effect there.
+	// What this call decides is the real-PTY branch, where wish names no profile and
+	// hands the program pty.Slave: a real term.File, so on a real PTY that
+	// advertises a TERM the program would have run Detect and read terminfo and
+	// tmux as well as the environment. Answering with Env instead is what keeps that
+	// branch from answering on different grounds than the emulated one, so the depth
+	// a client gets follows what the client said — its TERM and COLORTERM — rather
+	// than which kind of pty it happened to be handed.
+	//
+	// The cost: Detect takes the maximum of the environment, terminfo and tmux, so
+	// overriding it with Env can only lower the profile, never raise it. A terminal
+	// that is direct-colour by terminfo but says nothing in COLORTERM gets a
+	// shallower palette than Detect would have allowed, not a wrong one.
+	opts := []tea.ProgramOption{
+		tea.WithColorProfile(colorprofile.Env(env)),
+	}
 
 	client, _ := sess.Context().Value(clientContextKey{}).(*api.Client)
 	if client != nil {
 		// The credentials were exchanged for a session during authentication; the
 		// client keeps those tokens for the life of the connection, exactly as a
 		// locally-run TUI would, so the session starts signed in.
-		return ui.NewWithRenderer(client, renderer), opts
+		return ui.New(client), opts
 	}
 
 	// Public-key authentication opened the door but cannot be traded for an API
@@ -313,18 +332,7 @@ func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 		s.logger.Error("ssh session: bad API URL", slog.String("error", err.Error()))
 		return errorModel{text: "This TUI is misconfigured (bad API URL). Ask the operator to check the logs."}, opts
 	}
-	return ui.NewWithRenderer(fresh, renderer), opts
-}
-
-// sessionRenderer builds the lipgloss renderer for one session's terminal.
-// MakeRenderer wires it to the session (its pty, and its own environment), and
-// the colour profile is then set explicitly from what the client reported, so a
-// terminal that says nothing about itself gets no colour rather than the colour
-// some other session or the door's own environment happened to ask for.
-func sessionRenderer(sess ssh.Session) *lipgloss.Renderer {
-	r := wishtea.MakeRenderer(sess)
-	r.SetColorProfile(termenv.Profile(colorprofile.Env(sessionEnv(sess))))
-	return r
+	return ui.New(fresh), opts
 }
 
 // sessionEnv is the environment the client's terminal runs in: what the client
@@ -346,13 +354,21 @@ type errorModel struct{ text string }
 func (m errorModel) Init() tea.Cmd { return nil }
 
 func (m errorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := msg.(tea.KeyMsg); ok {
+	if _, ok := msg.(tea.KeyPressMsg); ok {
 		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m errorModel) View() string { return m.text }
+// View renders the message. AltScreen is set for the same reason the real App
+// sets it: v2 declares terminal modes on the View, and a misconfigured door
+// that skipped the alternate screen would leave the message on the scrollback
+// instead of replacing it.
+func (m errorModel) View() tea.View {
+	v := tea.NewView(m.text)
+	v.AltScreen = true
+	return v
+}
 
 // authPassword authenticates an SSH session against the FinTrak API. The SSH
 // username is the account email and the password is the account password; the

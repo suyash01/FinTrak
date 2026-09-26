@@ -2,15 +2,13 @@ package ui
 
 import (
 	"errors"
-	"io"
+	"image/color"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"github.com/fintrak/client/api"
 )
@@ -34,12 +32,31 @@ func (s *stubScreen) Keys() []key.Binding  { return s.bindings }
 func (s *stubScreen) CapturesText() bool { return s.capturesText }
 
 func (s *stubScreen) Update(msg tea.Msg) tea.Cmd {
-	if _, ok := msg.(tea.KeyMsg); ok {
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.KeyReleaseMsg:
 		s.keys++
 		return nil
 	}
 	s.dataMsg++
 	return nil
+}
+
+// press builds a key press for a printable rune.
+func press(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+// ctrlPress builds a ctrl-modified key press.
+func ctrlPress(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
+}
+
+// runes builds a key press carrying several runes, which is how v1 spelled a
+// typed string. Almost every call site is a single character and should use
+// press; this exists for the few that are not, such as a picker test that feeds
+// an arbitrary label.
+func runes(s string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
 }
 
 // newAppForTest builds an App with two stub screens and a working context.
@@ -71,7 +88,7 @@ func TestCtrlCQuitsWhileSignedOut(t *testing.T) {
 	a.screens = nil
 	a.login = NewLoginModel(a.client)
 
-	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := a.Update(ctrlPress('c'))
 	if cmd == nil {
 		t.Fatal("ctrl+c must quit from the sign-in screen")
 	}
@@ -87,7 +104,7 @@ func TestCtrlCQuitsWithModalOpen(t *testing.T) {
 	a, _, _ := newAppForTest(t)
 	a.modal = NewHelp(nil, nil)
 
-	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := a.Update(ctrlPress('c'))
 	if cmd == nil {
 		t.Fatal("ctrl+c must quit even while an overlay is open")
 	}
@@ -103,7 +120,7 @@ func TestGlobalKeysYieldToAScreenReadingText(t *testing.T) {
 	a, active, _ := newAppForTest(t)
 
 	// With no search box open, `r` is the refresh binding.
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	a.Update(press('r'))
 	if active.refreshes != 1 {
 		t.Fatalf("refreshes = %d, want 1", active.refreshes)
 	}
@@ -113,7 +130,7 @@ func TestGlobalKeysYieldToAScreenReadingText(t *testing.T) {
 
 	// With one open, the same key is a character in the query.
 	active.capturesText = true
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	a.Update(press('r'))
 	if active.refreshes != 1 {
 		t.Errorf("a typed character was consumed as a refresh: refreshes = %d", active.refreshes)
 	}
@@ -122,7 +139,7 @@ func TestGlobalKeysYieldToAScreenReadingText(t *testing.T) {
 	}
 
 	// A digit jumps screens globally; inside a search box it is text.
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	a.Update(press('2'))
 	if a.nav != 0 {
 		t.Errorf("a digit jumped screens while a search box was open: nav = %d", a.nav)
 	}
@@ -149,7 +166,7 @@ func TestSessionExpiryLetsTheUserSignInAgain(t *testing.T) {
 		t.Fatal("the sign-in screen still reports the expired session as signed in")
 	}
 	// Any key afterwards must not re-complete the stale sign-in.
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	a.Update(press('x'))
 	if a.signedIn {
 		t.Error("the expired session was completed again instead of signing in")
 	}
@@ -164,8 +181,8 @@ func TestLoginFormSurvivesEsc(t *testing.T) {
 	a.screens = nil
 	a.login = NewLoginModel(a.client)
 
-	a.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	a.Update(press('a'))
 
 	if got := a.login.form().Value("Email"); got != "a" {
 		t.Errorf("the sign-in form ignored input after esc: email = %q", got)
@@ -179,7 +196,7 @@ func TestLoginFormSurvivesEsc(t *testing.T) {
 func TestKeysReachOnlyTheActiveScreen(t *testing.T) {
 	a, active, other := newAppForTest(t)
 
-	if _, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); cmd != nil {
+	if _, cmd := a.Update(press('n')); cmd != nil {
 		t.Fatalf("unexpected command: %v", cmd)
 	}
 	if active.keys != 1 {
@@ -196,7 +213,7 @@ func TestKeysAreIgnoredWhileTheSidebarHasFocus(t *testing.T) {
 	a, active, other := newAppForTest(t)
 	a.focus = FocusNav
 
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	a.Update(press('x'))
 
 	if active.keys != 0 || other.keys != 0 {
 		t.Errorf("screens saw keys while the sidebar had focus: active=%d other=%d", active.keys, other.keys)
@@ -249,7 +266,7 @@ func TestSidebarArrowsKeepFocusInTheSidebar(t *testing.T) {
 	a.focus = FocusNav
 	a.nav = 0
 
-	a.Update(tea.KeyMsg{Type: tea.KeyDown})
+	a.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 
 	if a.nav != 1 {
 		t.Errorf("sidebar selection = %d, want 1", a.nav)
@@ -259,8 +276,8 @@ func TestSidebarArrowsKeepFocusInTheSidebar(t *testing.T) {
 	}
 
 	// Walking further down and back up stays in the sidebar.
-	a.Update(tea.KeyMsg{Type: tea.KeyDown})
-	a.Update(tea.KeyMsg{Type: tea.KeyUp})
+	a.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	a.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if a.focus != FocusNav || a.nav != 1 {
 		t.Errorf("focus=%v nav=%d, want the sidebar still focused on 1", a.focus, a.nav)
 	}
@@ -272,7 +289,7 @@ func TestTabTogglesBetweenSidebarAndContent(t *testing.T) {
 	if a.focus != FocusContent {
 		t.Fatalf("a fresh app should focus the content pane, got %v", a.focus)
 	}
-	tab := tea.KeyMsg{Type: tea.KeyTab}
+	tab := tea.KeyPressMsg{Code: tea.KeyTab}
 
 	a.Update(tab)
 	if a.focus != FocusNav {
@@ -292,9 +309,56 @@ func TestDeliberateJumpEntersTheScreen(t *testing.T) {
 	a.focus = FocusNav
 	a.nav = 0
 
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	a.Update(press('2'))
 	if a.nav != 1 || a.focus != FocusContent {
 		t.Errorf("digit jump left nav=%d focus=%v, want 1 and content", a.nav, a.focus)
+	}
+}
+
+// TestKeyReleasesAreNotBroadcast covers the routing rule for the message v2
+// added. tea.KeyMsg is an interface over presses and releases, so matching only
+// KeyPressMsg would drop a release into the broadcast branch and move every
+// screen's cursor. The app never requests releases -- it does not ask for the
+// ReportEventTypes enhancement -- so nothing else would catch it.
+func TestKeyReleasesAreNotBroadcast(t *testing.T) {
+	a, active, other := newAppForTest(t)
+
+	a.Update(tea.KeyReleaseMsg{Code: 'j', Text: "j"})
+
+	if active.keys != 1 {
+		t.Errorf("the release did not reach the active screen: keys = %d, want 1", active.keys)
+	}
+	if other.keys != 0 {
+		t.Errorf("the release was broadcast to another screen: keys = %d, want 0", other.keys)
+	}
+	if active.dataMsg != 0 || other.dataMsg != 0 {
+		t.Errorf("a release was counted as a data message: active %d, other %d",
+			active.dataMsg, other.dataMsg)
+	}
+}
+
+// TestTheWorkspaceDoesNotWaitForTheBackgroundAnswer covers a terminal that
+// never replies to the background-colour query. The workspace renders in the
+// dark theme meanwhile and stays fully usable, because blocking on the answer
+// would leave such a client on a blank screen forever.
+func TestTheWorkspaceDoesNotWaitForTheBackgroundAnswer(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.width, a.height = 120, 40
+
+	view := a.view()
+	if view == "" {
+		t.Fatal("the workspace rendered nothing before the background answer arrived")
+	}
+	if !strings.Contains(ansi.Strip(view), "Active") {
+		t.Errorf("the active screen is missing from the first frame:\n%s", ansi.Strip(view))
+	}
+
+	_, cmd := a.Update(ctrlPress('c'))
+	if cmd == nil {
+		t.Fatal("ctrl+c must still quit before the background answer arrives")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c produced %T, want tea.QuitMsg", cmd())
 	}
 }
 
@@ -432,28 +496,49 @@ func TestFailedWriteLeavesEveryScreenFresh(t *testing.T) {
 	}
 }
 
-// TestAppStylesWithTheSessionRenderer pins the App half of the SSH colour fix: the
-// model builds its palette (and the one its screens share through the context)
-// from the renderer handed in for the session's terminal, rather than from the
-// process-wide default.
-func TestAppStylesWithTheSessionRenderer(t *testing.T) {
-	client, err := api.New("http://127.0.0.1:1/api/v1")
-	if err != nil {
-		t.Fatalf("api.New: %v", err)
-	}
-	r := lipgloss.NewRenderer(io.Discard)
-	r.SetColorProfile(termenv.ANSI256)
-	r.SetHasDarkBackground(true)
+// TestSetThemeRepublishesOnTheContext covers the propagation a session's
+// background answer depends on: screens read ctx.Theme at render time, so the
+// App has to republish the rebuilt theme there or every screen keeps the old one.
+//
+// The comparison is on a rendered style, not on the Theme value: Theme embeds
+// lipgloss.Style, which holds a func and a slice, so Theme is not comparable
+// with == and such an assertion would not compile. Note that the first assertion
+// cannot fail on its own — both sides are written by the same setTheme call — so
+// what makes this test load-bearing is the light-palette assertion below it, which
+// compares against a theme built independently.
+func TestSetThemeRepublishesOnTheContext(t *testing.T) {
+	a, _, _ := newAppForTest(t)
 
-	a, ok := NewWithRenderer(client, r).(*App)
-	if !ok {
-		t.Fatal("NewWithRenderer did not return *App")
+	a.Update(tea.BackgroundColorMsg{Color: color.White})
+
+	if got, want := a.ctx.Theme.Negative.Render("x"), a.theme.Negative.Render("x"); got != want {
+		t.Errorf("ctx.Theme was not republished: got %q, want %q", got, want)
 	}
-	if got := a.theme.Negative.Render("x"); !strings.Contains(got, "\x1b[") {
-		t.Errorf("the App did not style with the session renderer: %q", got)
+	lightPrimary, _, _, _ := ThemeFor(false).Primary.RGBA()
+	gotPrimary, _, _, _ := a.theme.Primary.RGBA()
+	if lightPrimary != gotPrimary {
+		t.Error("a light background did not produce the light palette")
 	}
-	if a.ctx.Theme.Negative.Render("x") != a.theme.Negative.Render("x") {
-		t.Error("the screens' context does not carry the session's theme")
+}
+
+// TestOpenedFormsGetTheThemesInputStyles pins the one place a form adopts the
+// palette. bubbles reads each input's own styles at View() time, so a ctx.Open
+// hook that stops pushing them leaves every field on bubbles' dark default with
+// nothing failing.
+//
+// The assertion is on rendered bytes, not on the styles: lipgloss.Style holds a
+// func and a slice, so it is not comparable with == and comparing them would not
+// compile.
+func TestOpenedFormsGetTheThemesInputStyles(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.setTheme(false) // a light terminal
+
+	f := NewForm("t", "Edit", []Field{TextField("Name", "hello", nil)}, nil)
+	a.ctx.Open(f)
+
+	if got, want := f.inputs[0].Styles().Blurred.Text.Render("x"),
+		a.theme.InputStyles.Blurred.Text.Render("x"); got != want {
+		t.Errorf("the form kept bubbles' default input styles: got %q, want %q", got, want)
 	}
 }
 
@@ -472,7 +557,7 @@ func TestFailedReferenceDataLoadIsRetryable(t *testing.T) {
 		t.Fatal("the failed load was not recorded, so there is nothing to retry")
 	}
 
-	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	_, cmd := a.Update(press('r'))
 	if cmd == nil {
 		t.Fatal("`r` did nothing after a failed reference-data load: the session is a dead end")
 	}
@@ -496,7 +581,7 @@ func TestSignOutWorksWithoutScreens(t *testing.T) {
 	a.screens = nil
 	a.refErr = errors.New("backend restarting")
 
-	a.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	a.Update(ctrlPress('o'))
 
 	if a.signedIn {
 		t.Fatal("ctrl+o did not sign out of a session with no screens")
@@ -521,7 +606,7 @@ func TestSessionExpiryDropsTheOpenOverlay(t *testing.T) {
 		t.Fatal("the overlay survived the session expiry: it keeps consuming keys")
 	}
 	// The keys reach the sign-in form again.
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	a.Update(press('a'))
 	if got := a.login.form().Value("Email"); got != "a" {
 		t.Errorf("the sign-in form did not receive the key: email = %q", got)
 	}
@@ -536,7 +621,7 @@ func TestQuitWorksFromEitherPane(t *testing.T) {
 		a, _, _ := newAppForTest(t)
 		a.focus = focus
 
-		_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		_, cmd := a.Update(press('q'))
 		if cmd == nil {
 			t.Fatalf("`q` did not quit with focus=%v", focus)
 		}
@@ -550,7 +635,7 @@ func TestQuitWorksFromEitherPane(t *testing.T) {
 	a.screens = nil
 	a.refErr = errors.New("backend restarting")
 
-	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := a.Update(press('q'))
 	if cmd == nil {
 		t.Fatal("`q` did not quit from the reference-data error card")
 	}
