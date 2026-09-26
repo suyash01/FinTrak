@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/fintrak/client/api"
 )
 
@@ -25,12 +23,12 @@ func TestFailedSignInReleasesTheGuardOnTheSubmittingForm(t *testing.T) {
 	m.login.inputs[0].SetValue("user@example.com")
 	m.login.inputs[1].SetValue("correct horse battery")
 
-	if cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd == nil {
+	if cmd := m.Update(ctrlPress('s')); cmd == nil {
 		t.Fatal("the sign-in form did not submit")
 	}
 
 	// The user toggles to the register view while the request is in flight.
-	m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m.Update(ctrlPress('r'))
 	if m.mode != "register" {
 		t.Fatalf("mode = %q, want register", m.mode)
 	}
@@ -43,7 +41,7 @@ func TestFailedSignInReleasesTheGuardOnTheSubmittingForm(t *testing.T) {
 
 	// Back on the sign-in form, the failure is shown where the user can see it —
 	// the form that submitted is the one that reports it.
-	m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m.Update(ctrlPress('r'))
 	if m.mode != "login" {
 		t.Fatalf("mode = %q, want login", m.mode)
 	}
@@ -52,7 +50,7 @@ func TestFailedSignInReleasesTheGuardOnTheSubmittingForm(t *testing.T) {
 	}
 
 	// And submitting works again: the guard was released on the form that had it.
-	if cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd == nil {
+	if cmd := m.Update(ctrlPress('s')); cmd == nil {
 		t.Error("the sign-in form swallowed the submit: its in-flight guard was never released")
 	}
 }

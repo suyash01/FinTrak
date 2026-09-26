@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -134,7 +134,7 @@ func TestTransferFormSendsTargetTermsOnlyWithoutATargetSchedule(t *testing.T) {
 
 			// `t` on a loan account opens the transfer form, whose target
 			// defaults to the only other loan account.
-			a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+			a.handleKey(press('t'))
 			form, ok := modal.(*Form)
 			if !ok {
 				t.Fatalf("t did not open a form (got %T)", modal)
@@ -142,16 +142,16 @@ func TestTransferFormSendsTargetTermsOnlyWithoutATargetSchedule(t *testing.T) {
 			// Fill the target terms in, walking past the target account, the
 			// mode (left on the automatic choice) and the transfer date (which
 			// defaults to today, a valid date).
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
-			form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("950")})
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
-			form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("60")})
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
-			form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2026-02-01")})
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			form.Update(runes("950"))
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			form.Update(runes("60"))
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			form.Update(runes("2026-02-01"))
 
-			run(t, a, form.Update(tea.KeyMsg{Type: tea.KeyCtrlS}))
+			run(t, a, form.Update(ctrlPress('s')))
 
 			if got := atomic.LoadInt32(&fetched); got != 1 {
 				t.Errorf("the target's schedule was fetched %d times, want 1", got)
@@ -329,7 +329,7 @@ func TestDisbursementCreditKeyLinksACandidate(t *testing.T) {
 	a, modal := testAccounts(t, client, api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"})
 
 	// `c` fetches the schedule, then the candidates, and opens the picker.
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	picker, ok := (*modal).(*creditPicker)
 	if !ok {
 		t.Fatalf("c did not open a credit picker (got %T)", *modal)
@@ -370,7 +370,7 @@ func TestDisbursementCreditKeyLinksACandidate(t *testing.T) {
 	}
 
 	// Choosing the candidate links it and shows the refreshed detail.
-	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	run(t, a, picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	var body map[string]any
 	select {
 	case body = <-posted:
@@ -417,12 +417,12 @@ func TestDisbursementCreditKeyUnlinksALinkedCredit(t *testing.T) {
 	}
 	a, modal := testAccounts(t, client, api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"})
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	confirm, ok := (*modal).(*Confirm)
 	if !ok {
 		t.Fatalf("c did not ask to unlink the linked credit (got %T)", *modal)
 	}
-	run(t, a, confirm.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	run(t, a, confirm.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	if got := atomic.LoadInt32(&unlinks); got != 1 {
 		t.Errorf("unlink calls = %d, want 1", got)
 	}
@@ -470,7 +470,7 @@ func TestDisbursementCreditCandidatesWidenTheWindowWithoutADisbursalDate(t *test
 	}
 	a, modal := testAccounts(t, client, api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"})
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	picker, ok := (*modal).(*creditPicker)
 	if !ok {
 		t.Fatalf("c did not open a credit picker (got %T)", *modal)
@@ -542,7 +542,7 @@ func TestDisbursementCreditCandidatesMergeRankAndDropLoanAccounts(t *testing.T) 
 	a, modal := testAccounts(t, client, carLoan, otherLoan)
 	a.ctx.Ref.AccountsByID = map[string]api.Account{carLoan.ID: carLoan, otherLoan.ID: otherLoan}
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	picker, ok := (*modal).(*creditPicker)
 	if !ok {
 		t.Fatalf("c did not open a credit picker (got %T)", *modal)
@@ -616,7 +616,7 @@ func TestDisbursementCreditKeyShowsAnAttachedCreditWithoutLinkingIt(t *testing.T
 		api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"},
 		api.Account{ID: "acct-2", Name: "Home loan", AccountTypeID: "loan"})
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	picker, ok := (*modal).(*creditPicker)
 	if !ok {
 		t.Fatalf("c did not open a credit picker (got %T)", *modal)
@@ -628,7 +628,7 @@ func TestDisbursementCreditKeyShowsAnAttachedCreditWithoutLinkingIt(t *testing.T
 
 	// The attached row is highlighted first: enter must report the refusal and
 	// keep the list open instead of posting a link.
-	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	run(t, a, picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	select {
 	case id := <-linkedTo:
 		t.Fatalf("linked %s, want nothing: an attached credit must not be selectable", id)
@@ -642,8 +642,8 @@ func TestDisbursementCreditKeyShowsAnAttachedCreditWithoutLinkingIt(t *testing.T
 	}
 
 	// The linkable row below it still is selectable.
-	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyDown}))
-	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	run(t, a, picker.Update(tea.KeyPressMsg{Code: tea.KeyDown}))
+	run(t, a, picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	select {
 	case id := <-linkedTo:
 		if id != "txn-8" {
@@ -685,7 +685,7 @@ func TestDisbursementCreditKeyReportsAnEmptyResult(t *testing.T) {
 		notes = append(notes, fmt.Sprintf(format, args...))
 	}, api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"})
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	if got := atomic.LoadInt32(&queries); got != 2 {
 		t.Errorf("candidate queries = %d, want 2 (the amount and the window)", got)
 	}
@@ -753,18 +753,18 @@ func TestTransferFormSendsTheChosenMode(t *testing.T) {
 			target := api.Account{ID: "acct-2", Name: "Home loan", AccountTypeID: "loan"}
 			a, modal := testAccounts(t, client, source, target)
 
-			a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+			a.handleKey(press('t'))
 			form, ok := (*modal).(*Form)
 			if !ok {
 				t.Fatalf("t did not open a form (got %T)", *modal)
 			}
 			// Mode is the second field: the automatic choice is its empty value
 			// and each right press steps to the next option.
-			form.Update(tea.KeyMsg{Type: tea.KeyTab})
+			form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 			for range tc.picks {
-				form.Update(tea.KeyMsg{Type: tea.KeyRight})
+				form.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 			}
-			run(t, a, form.Update(tea.KeyMsg{Type: tea.KeyCtrlS}))
+			run(t, a, form.Update(ctrlPress('s')))
 
 			var body map[string]any
 			select {
@@ -814,7 +814,7 @@ func TestDisbursementCreditKeyWithoutASchedule(t *testing.T) {
 	}
 	a, modal := testAccounts(t, client, api.Account{ID: "acct-1", Name: "Car loan", AccountTypeID: "loan"})
 
-	run(t, a, a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}))
+	run(t, a, a.handleKey(press('c')))
 	if *modal != nil {
 		t.Errorf("c opened %T for a loan with no schedule", *modal)
 	}
@@ -861,23 +861,23 @@ func TestTransferFormQuotesThePayoffBeforePosting(t *testing.T) {
 	target := api.Account{ID: "acct-2", Name: "Home loan", AccountTypeID: "loan"}
 	a, modal := testAccounts(t, client, source, target)
 
-	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	a.handleKey(press('t'))
 	form, ok := (*modal).(*Form)
 	if !ok {
 		t.Fatalf("t did not open a form (got %T)", *modal)
 	}
 	// Walk to the transfer date, which starts at today, and replace it with a
 	// date of the test's own so the quote proves it read the field.
-	form.Update(tea.KeyMsg{Type: tea.KeyTab})
-	form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	for range nowDate() {
-		form.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		form.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	for _, r := range "2026-02-01" {
-		form.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		form.Update(press(r))
 	}
 
-	cmd := form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	cmd := form.Update(ctrlPress('s'))
 	if cmd == nil {
 		t.Fatal("submitting the transfer produced no command: the form did not validate")
 	}
@@ -929,12 +929,12 @@ func TestTransferFormReportsAFailedQuoteAndDoesNotPost(t *testing.T) {
 	target := api.Account{ID: "acct-2", Name: "Home loan", AccountTypeID: "loan"}
 	a, modal := testAccounts(t, client, source, target)
 
-	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	a.handleKey(press('t'))
 	form, ok := (*modal).(*Form)
 	if !ok {
 		t.Fatalf("t did not open a form (got %T)", *modal)
 	}
-	cmd := form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	cmd := form.Update(ctrlPress('s'))
 	if cmd == nil {
 		t.Fatal("submitting the transfer produced no command: the form did not validate")
 	}
@@ -999,7 +999,7 @@ func TestDisbursementCreditLinksTheLoanItsCandidatesWereFetchedFor(t *testing.T)
 
 	// `c` on the car loan fetches its schedule, whose answer starts the search
 	// for its candidate credits. That search is not delivered yet.
-	schedule := a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	schedule := a.handleKey(press('c'))
 	if schedule == nil {
 		t.Fatal("c did not start a schedule fetch")
 	}
@@ -1009,8 +1009,8 @@ func TestDisbursementCreditLinksTheLoanItsCandidatesWereFetchedFor(t *testing.T)
 	}
 
 	// The user has meanwhile pressed `c` on the bike loan.
-	a.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	if next := a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); next == nil {
+	a.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	if next := a.handleKey(press('c')); next == nil {
 		t.Fatal("c on the bike loan did not start a schedule fetch")
 	}
 
@@ -1025,7 +1025,7 @@ func TestDisbursementCreditLinksTheLoanItsCandidatesWereFetchedFor(t *testing.T)
 		t.Errorf("the picker is not about the loan whose candidates were fetched:\n%s", view)
 	}
 
-	run(t, a, picker.Update(tea.KeyMsg{Type: tea.KeyEnter}))
+	run(t, a, picker.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	select {
 	case path := <-linked:
 		if path != "/api/v1/accounts/acct-1/loan-disbursement" {

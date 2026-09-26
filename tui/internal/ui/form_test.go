@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -46,7 +46,7 @@ func TestFormScrollsToKeepTheFocusedFieldVisible(t *testing.T) {
 
 	// Walking to the end must scroll the focused field into view.
 	for range len(fields) - 1 {
-		form.Update(tea.KeyMsg{Type: tea.KeyTab})
+		form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	}
 	body = ansi.Strip(form.View(DefaultTheme(), width, height))
 	assertFits(t, body)
@@ -59,7 +59,7 @@ func TestFormScrollsToKeepTheFocusedFieldVisible(t *testing.T) {
 
 	// And walking back brings the top back.
 	for range len(fields) - 1 {
-		form.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		form.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	}
 	body = ansi.Strip(form.View(DefaultTheme(), width, height))
 	if !strings.Contains(body, "▸ Field 00") {
@@ -129,7 +129,7 @@ func TestOversizedModalCannotEscapeTheScreen(t *testing.T) {
 	a.focus = FocusContent
 	a.modal = oversizedModal{}
 
-	out := a.View()
+	out := a.view()
 	lines := strings.Split(out, "\n")
 	if len(lines) > 24 {
 		t.Errorf("the frame is %d lines tall for a 24-row terminal", len(lines))
@@ -161,7 +161,7 @@ func TestHelpOverlayFitsAShortTerminal(t *testing.T) {
 	// Scrolling reveals the rest: reaching the end means the last row of the second
 	// section is on screen (its heading has scrolled past by then, which is fine).
 	for range 40 {
-		help.Update(tea.KeyMsg{Type: tea.KeyDown})
+		help.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	body = ansi.Strip(help.View(DefaultTheme(), 60, 12))
 	if lines := strings.Count(body, "\n") + 1; lines > 12 {
@@ -221,7 +221,7 @@ func TestSmallTerminalModalShowsSeveralFormFields(t *testing.T) {
 		a.focus = FocusContent
 		a.modal = NewForm("tall", "Tall form", fields, nil)
 
-		frame := ansi.Strip(a.View())
+		frame := ansi.Strip(a.view())
 		shown := 0
 		for _, label := range labels {
 			if strings.Contains(frame, label) {
@@ -250,19 +250,19 @@ func TestFormIgnoresASecondSubmitWhileTheFirstIsInFlight(t *testing.T) {
 		})
 
 	// The field is the form's only one, so enter submits it as well as ctrl+s.
-	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	form.Update(ctrlPress('s'))
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if submits != 1 {
 		t.Errorf("a second submit key while the first mutation was in flight submitted %d times, want 1", submits)
 	}
 
 	// The mutation came back rejected: the form is the user's to correct.
 	form.SetError(errors.New("duplicate transaction"))
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if submits != 2 {
 		t.Fatalf("submissions after a rejected save = %d, want 2", submits)
 	}
-	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	form.Update(ctrlPress('s'))
 	if submits != 2 {
 		t.Errorf("submissions after resubmitting = %d, want 2: the guard must be back in place", submits)
 	}

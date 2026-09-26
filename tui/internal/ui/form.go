@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -81,7 +81,7 @@ func NewForm(tag, title string, fields []Field, submit func(*Form) tea.Cmd) *For
 		}
 		ti := textinput.New()
 		ti.Placeholder = field.Placeholder
-		ti.Width = width
+		ti.SetWidth(width)
 		ti.CharLimit = 256
 		if field.Kind == FieldPassword {
 			ti.EchoMode = textinput.EchoPassword
@@ -146,12 +146,24 @@ func (f *Form) SetError(err error) {
 	f.submitting = false
 }
 
+// SetStyles pushes the theme's text-input styles into every field. bubbles
+// renders each input from its own copy of the styles, so a form cannot adopt
+// the palette by holding a field — the copy has to happen here, after NewForm
+// has built the inputs. The App calls this from ctx.Open, which is the one
+// place every form passes through; threading the background through NewForm
+// instead would touch its ~60 call sites for one grey colour.
+func (f *Form) SetStyles(s textinput.Styles) {
+	for i := range f.inputs {
+		f.inputs[i].SetStyles(s)
+	}
+}
+
 // Update handles one message.
 func (f *Form) Update(msg tea.Msg) tea.Cmd {
 	if f.done {
 		return nil
 	}
-	if key, ok := msg.(tea.KeyMsg); ok && f.picker != nil {
+	if key, ok := msg.(tea.KeyPressMsg); ok && f.picker != nil {
 		if f.picker.handle(key) && f.picker.Closed() {
 			if !f.picker.Canceled() {
 				f.fields[f.index].Value = f.picker.Value()
@@ -161,7 +173,7 @@ func (f *Form) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return f.updateInputs(msg)
 	}
@@ -196,7 +208,7 @@ func (f *Form) Update(msg tea.Msg) tea.Cmd {
 		}
 		f.move(1)
 		return nil
-	case " ":
+	case "space":
 		if f.fields[f.index].Kind == FieldBool {
 			f.toggle()
 			return nil

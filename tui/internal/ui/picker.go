@@ -3,7 +3,7 @@ package ui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -80,7 +80,7 @@ func (p *Picker) Label() string {
 
 // Update implements the modal interface.
 func (p *Picker) Update(msg tea.Msg) tea.Cmd {
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
 	}
@@ -94,7 +94,7 @@ func (p *Picker) Update(msg tea.Msg) tea.Cmd {
 }
 
 // handle processes one key press, reporting whether it changed state.
-func (p *Picker) handle(msg tea.KeyMsg) bool {
+func (p *Picker) handle(msg tea.KeyPressMsg) bool {
 	if p.closed {
 		return false
 	}
@@ -121,10 +121,10 @@ func (p *Picker) handle(msg tea.KeyMsg) bool {
 			p.filter()
 		}
 	default:
-		if len(msg.Runes) == 0 {
+		if msg.Text == "" {
 			return false
 		}
-		p.query += string(msg.Runes)
+		p.query += msg.Text
 		p.filter()
 	}
 	return true

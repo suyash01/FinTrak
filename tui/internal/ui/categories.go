@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -236,14 +236,14 @@ func (s *Categories) Update(msg tea.Msg) tea.Cmd {
 		s.syncRows()
 		return nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return s.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press to the active pane.
-func (s *Categories) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (s *Categories) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(s.keys.Switch, msg):
 		s.switchPane()

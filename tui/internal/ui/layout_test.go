@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -87,7 +87,7 @@ func TestCategoryChooserInAFormShowsManyCategories(t *testing.T) {
 	form := NewForm("t", "Edit transaction", []Field{
 		SelectField("Category", "", ctx.Ref.CategoryOptions(), false),
 	}, nil)
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opens the chooser
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // opens the chooser
 	if form.picker == nil {
 		t.Fatal("the select field did not open a chooser")
 	}

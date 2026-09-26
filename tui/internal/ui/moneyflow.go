@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -246,7 +246,7 @@ func (m *MoneyFlow) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(v)
 	}
 	return nil
@@ -254,7 +254,7 @@ func (m *MoneyFlow) Update(msg tea.Msg) tea.Cmd {
 
 // handleKey routes a key press, first to the timeline when it holds focus and
 // otherwise to the graph.
-func (m *MoneyFlow) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (m *MoneyFlow) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(m.keys.Trace, msg):
 		if m.timelineFocus {
@@ -365,7 +365,7 @@ func (m *MoneyFlow) billingCycleReady() bool {
 }
 
 // movePeriod walks the strip's cursor.
-func (m *MoneyFlow) movePeriod(msg tea.KeyMsg) {
+func (m *MoneyFlow) movePeriod(msg tea.KeyPressMsg) {
 	count := len(m.timeline.Periods)
 	if count == 0 {
 		return
@@ -392,7 +392,7 @@ func (m *MoneyFlow) movePeriod(msg tea.KeyMsg) {
 
 // moveNode walks the graph cursor. The stage headings are skipped, so every step
 // lands on a node the trace can act on.
-func (m *MoneyFlow) moveNode(msg tea.KeyMsg) {
+func (m *MoneyFlow) moveNode(msg tea.KeyPressMsg) {
 	switch msg.String() {
 	case "up", "k":
 		m.step(-1)

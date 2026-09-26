@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -140,14 +140,14 @@ func (t *Tags) Update(msg tea.Msg) tea.Cmd {
 		}
 		return t.reload()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return t.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (t *Tags) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (t *Tags) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if t.searching {
 		switch msg.String() {
 		case "enter":
@@ -208,7 +208,7 @@ func (t *Tags) startSearch() tea.Cmd {
 	t.searching = true
 	t.search = textinput.New()
 	t.search.Placeholder = "filter tag names"
-	t.search.Width = 32
+	t.search.SetWidth(32)
 	t.search.SetValue(t.filt)
 	t.search.Focus()
 	return textinput.Blink

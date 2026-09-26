@@ -18,8 +18,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -125,7 +125,7 @@ func (m *LoginModel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	if key, ok := msg.(tea.KeyMsg); ok {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.String() {
 		case "ctrl+r", "f2":
 			if m.mode == "login" {

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -162,14 +162,14 @@ func (d *Dashboard) Update(msg tea.Msg) tea.Cmd {
 			return d.reload()
 		}
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return d.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (d *Dashboard) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (d *Dashboard) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(d.keys.Window, msg):
 		d.openWindowForm()

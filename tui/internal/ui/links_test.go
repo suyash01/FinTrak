@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/fintrak/client/api"
 )
 
@@ -64,13 +62,13 @@ func TestSuggestionConfirmLinksTheRowOnScreenAfterAKindSwitch(t *testing.T) {
 
 	// The user asks for the cashback suggester and confirms the row they are
 	// still looking at — a transfer pair — before that reload lands.
-	if cmd := l.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")}); cmd == nil {
+	if cmd := l.handleKey(press('C')); cmd == nil {
 		t.Fatal("C did not start the cashback reload")
 	}
 	if l.suggKind != "cashback" {
 		t.Fatalf("suggKind = %q after the switch, want cashback", l.suggKind)
 	}
-	run(t, l, l.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}))
+	run(t, l, l.handleKey(press('y')))
 
 	select {
 	case body := <-posted:

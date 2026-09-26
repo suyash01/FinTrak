@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -66,16 +66,14 @@ type App struct {
 	quitting bool
 }
 
-// New builds the root model for a locally run terminal, where lipgloss's
-// package-level renderer already describes the terminal the process writes to.
-func New(client *api.Client) tea.Model { return NewWithRenderer(client, nil) }
-
-// NewWithRenderer builds the root model with a renderer for the terminal it will
-// draw on. The SSH door serves many terminals from one process, so each session
-// passes the renderer wishtea made for its own pty: the door's own environment is
-// not the client's, and a shared package-level renderer would let one session's
-// colour profile leak into another's. A nil renderer means the local terminal.
-func NewWithRenderer(client *api.Client, r *lipgloss.Renderer) tea.Model {
+// New builds the root model.
+//
+// There is no renderer parameter. v1 needed one per SSH session so that one
+// client's colour profile could not leak into another's, because lipgloss
+// downsampled inside Style.Render using the renderer's profile. v2 downsamples
+// at each tea.Program's own output layer, so the door gets per-session colour
+// from the program itself and the door's MakeRenderer plumbing is deleted.
+func New(client *api.Client) tea.Model {
 	ref := &RefData{}
 	ctx := &Ctx{Client: client, Ref: ref}
 	ctx.Notify = func(level Level, format string, args ...any) {
@@ -87,7 +85,7 @@ func NewWithRenderer(client *api.Client, r *lipgloss.Renderer) tea.Model {
 	a := &App{
 		client:  client,
 		keys:    DefaultKeyMap(),
-		theme:   ThemeFor(r),
+		theme:   DefaultTheme(),
 		login:   NewLoginModel(client),
 		ref:     ref,
 		ctx:     ctx,
@@ -101,7 +99,15 @@ func NewWithRenderer(client *api.Client, r *lipgloss.Renderer) tea.Model {
 	}
 	ctx.Theme = a.theme
 	ctx.Notify = a.notify
-	ctx.Open = func(m Modal) { a.modal = m }
+	ctx.Open = func(m Modal) {
+		// A form is constructed by its screen, before this hook runs, so its text
+		// inputs still carry bubbles' own styles. Pushing the theme's here is the
+		// one place every form passes through.
+		if f, ok := m.(*Form); ok {
+			f.SetStyles(a.theme.InputStyles)
+		}
+		a.modal = m
+	}
 	return a
 }
 
@@ -111,13 +117,35 @@ func (a *App) notify(level Level, format string, args ...any) {
 	a.level = level
 }
 
+// setTheme rebuilds the palette for a light or dark terminal and republishes it
+// on the shared context. Ctx is a pointer and every screen reads ctx.Theme at
+// render time rather than caching a copy, so screens pick the new theme up on
+// their next frame without being told — which is why nothing else has to change.
+func (a *App) setTheme(isDark bool) {
+	a.theme = ThemeFor(isDark)
+	a.ctx.Theme = a.theme
+}
+
 // Init starts the first fetch: the reference data if a session already exists
-// (an embedded token, say), otherwise the login screen.
+// (an embedded token, say), otherwise the login screen — alongside a request for
+// the terminal's background colour, so the palette can resolve for a light or a
+// dark terminal.
+//
+// req is the paren-less function value: RequestBackgroundColor is declared
+// func() Msg, and because Msg is an alias that value already has type tea.Cmd.
+// Calling it (RequestBackgroundColor()) yields a Msg, which is what upstream's
+// own doc comment shows and which does not compile here.
+//
+// The workspace never waits for the answer. A client whose terminal ignores the
+// query would otherwise sit on an unstyled — or, if this blocked, a blank —
+// screen indefinitely, and the dark theme in force meanwhile is a far better
+// failure than a hang.
 func (a *App) Init() tea.Cmd {
+	req := tea.RequestBackgroundColor
 	if a.client.HasSession() {
-		return a.startSession()
+		return tea.Batch(req, a.startSession())
 	}
-	return a.login.Init()
+	return tea.Batch(req, a.login.Init())
 }
 
 // refDataMsg carries a refreshed reference-data snapshot.
@@ -155,7 +183,11 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width, a.height = m.Width, m.Height
 		return a, nil
 
-	case tea.KeyMsg:
+	case tea.BackgroundColorMsg:
+		a.setTheme(m.IsDark())
+		return a, nil
+
+	case tea.KeyPressMsg:
 		// ctrl+c quits from anywhere, before any model or modal can swallow it:
 		// while signed out the login form owns every key, and its own ctrl+c
 		// merely closes the form — which left the process unquittable from the
@@ -248,7 +280,14 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// broadcasting it would move every screen's cursor and let two screens
 	// answer the same press; data messages, which are tagged, are still
 	// broadcast so a load that finishes while the user is elsewhere lands.
-	if _, isKey := msg.(tea.KeyMsg); isKey {
+	//
+	// tea.KeyMsg is an interface in v2 and covers releases as well as presses,
+	// so both are matched. A release is not one this app asks for — it never
+	// requests the ReportEventTypes keyboard enhancement — but matching only
+	// KeyPressMsg here would let a release fall through to the broadcast below
+	// and break the rule for every screen at once.
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.KeyReleaseMsg:
 		return a, a.updateActive(msg)
 	}
 	return a, tea.Batch(a.forward(msg)...)
@@ -276,7 +315,7 @@ func (a *App) forward(msg tea.Msg) []tea.Cmd {
 // consumed. Unconsumed keys move the sidebar cursor or fall through to the active
 // screen. ctrl+c is handled by update before this runs, so it reaches the program
 // even while a modal or the sign-in screen owns the keyboard.
-func (a *App) handleGlobalKey(key tea.KeyMsg) (tea.Cmd, bool) {
+func (a *App) handleGlobalKey(key tea.KeyPressMsg) (tea.Cmd, bool) {
 	// Quit, retry and sign-out are live before the screens exist, because that is
 	// the state a failed reference-data load leaves behind: the session is signed
 	// in but has no screens, so every binding used to be swallowed by the guard
@@ -435,8 +474,18 @@ func capturesText(screens []Screen, i int) bool {
 	return i >= 0 && i < len(screens) && screens[i].CapturesText()
 }
 
-// View renders the whole program: either the login screen or the workspace.
-func (a *App) View() string {
+// View renders the program. v2's Model returns a tea.View rather than a string,
+// which is also where the alternate screen is declared: tea.WithAltScreen is
+// gone, so the flag that used to be a program option is set here instead.
+func (a *App) View() tea.View {
+	v := tea.NewView(a.view())
+	v.AltScreen = true
+	return v
+}
+
+// view renders either the login screen or the workspace into a string. The
+// layout, the sidebar, the status bar and the overlay compositing are unchanged.
+func (a *App) view() string {
 	if a.width == 0 || a.height == 0 {
 		return "loading…"
 	}

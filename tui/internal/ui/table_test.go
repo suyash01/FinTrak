@@ -1,30 +1,22 @@
 package ui
 
 import (
-	"io"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 )
-
-// colourTheme builds the palette on a renderer with a forced colour profile, so a
-// test can see the escape codes the styles produce. The renderer the tests would
-// otherwise get detects its profile from the process's stdout, which is not a
-// terminal under `go test`, and drops every colour.
-func colourTheme(t *testing.T) Theme {
-	t.Helper()
-	r := lipgloss.NewRenderer(io.Discard)
-	r.SetColorProfile(termenv.TrueColor)
-	r.SetHasDarkBackground(true)
-	return ThemeFor(r)
-}
 
 // stylePrefix is the escape sequence a style emits before its text. Comparing
 // against it lets a test assert that a row carries a role's style without
 // restating the column padding the table applied first.
+//
+// lipgloss v2 downsamples at each tea.Program's output layer rather than here,
+// so a style renders its full-colour escape whether or not a terminal asked for
+// it. That makes the prefix a statement about the colour the table chose, which
+// is what these tests are about; whether the session's terminal can display it
+// is the program's decision and the door's end-to-end test's to check.
 func stylePrefix(style lipgloss.Style) string {
 	const marker = "\x00"
 	rendered := style.Render(marker)
@@ -39,7 +31,7 @@ func stylePrefix(style lipgloss.Style) string {
 // table ever coloured a cell — the amounts, negative balances and muted rows that
 // six screens carefully mark rendered as plain text.
 func TestTableAppliesCellRoles(t *testing.T) {
-	th := colourTheme(t)
+	th := DefaultTheme()
 	table := &Table{}
 	table.SetColumns(
 		Column{Title: "Payee", Width: 12},
@@ -90,7 +82,7 @@ func TestTableAppliesCellRoles(t *testing.T) {
 // each other: the cursor row carries the selection background as well as its
 // cell's role colour, and a role's reset must not clear the highlight.
 func TestTableKeepsTheRoleColourOnTheSelectedRow(t *testing.T) {
-	th := colourTheme(t)
+	th := DefaultTheme()
 	table := &Table{}
 	table.SetColumns(Column{Title: "Payee", Width: 12}, Column{Title: "Amount", Width: 12, Align: AlignRight})
 	table.SetRows([][]Cell{
