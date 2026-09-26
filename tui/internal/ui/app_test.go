@@ -502,8 +502,10 @@ func TestFailedWriteLeavesEveryScreenFresh(t *testing.T) {
 //
 // The comparison is on a rendered style, not on the Theme value: Theme embeds
 // lipgloss.Style, which holds a func and a slice, so Theme is not comparable
-// with == and such an assertion would not compile. Rendering is also the
-// stronger check, since it is the rendered bytes a screen would actually use.
+// with == and such an assertion would not compile. Note that the first assertion
+// cannot fail on its own — both sides are written by the same setTheme call — so
+// what makes this test load-bearing is the light-palette assertion below it, which
+// compares against a theme built independently.
 func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 	a, _, _ := newAppForTest(t)
 
@@ -516,6 +518,27 @@ func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 	gotPrimary, _, _, _ := a.theme.Primary.RGBA()
 	if lightPrimary != gotPrimary {
 		t.Error("a light background did not produce the light palette")
+	}
+}
+
+// TestOpenedFormsGetTheThemesInputStyles pins the one place a form adopts the
+// palette. bubbles reads each input's own styles at View() time, so a ctx.Open
+// hook that stops pushing them leaves every field on bubbles' dark default with
+// nothing failing.
+//
+// The assertion is on rendered bytes, not on the styles: lipgloss.Style holds a
+// func and a slice, so it is not comparable with == and comparing them would not
+// compile.
+func TestOpenedFormsGetTheThemesInputStyles(t *testing.T) {
+	a, _, _ := newAppForTest(t)
+	a.setTheme(false) // a light terminal
+
+	f := NewForm("t", "Edit", []Field{TextField("Name", "hello", nil)}, nil)
+	a.ctx.Open(f)
+
+	if got, want := f.inputs[0].Styles().Blurred.Text.Render("x"),
+		a.theme.InputStyles.Blurred.Text.Render("x"); got != want {
+		t.Errorf("the form kept bubbles' default input styles: got %q, want %q", got, want)
 	}
 }
 

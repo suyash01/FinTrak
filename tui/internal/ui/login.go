@@ -176,6 +176,18 @@ func (m *LoginModel) Reset() {
 
 // View renders the sign-in card.
 func (m *LoginModel) View(th Theme, width, height int) string {
+	// The sign-in card is the one form that never passes through ctx.Open, which
+	// is where every other form adopts the palette, so the styles are pushed here
+	// instead. At render time rather than in NewLoginModel or Reset, because those
+	// run before the terminal answers the background query: a style captured there
+	// would be the pre-answer dark palette and would stay wrong forever.
+	//
+	// It matters because the field NewForm does not focus is the one whose
+	// Blurred.Text carries a foreground: bubbles' dark default paints it Color("7"),
+	// which on a light background is a barely-visible grey. Only the focused field
+	// is readable, so a user on a light terminal typing a password sees nothing.
+	m.form().SetStyles(th.InputStyles)
+
 	var footer string
 	switch m.mode {
 	case "register":
