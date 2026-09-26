@@ -67,6 +67,20 @@ the two sentinels the API already has (`uncategorized` for a null category,
 `none` for a null payee) keep working unchanged. `not` binds to the whole term,
 so `not cat:a,b` is "neither a nor b", not "not a, and not b" spelled twice.
 
+**A sentinel is per-field, and only where the column is nullable.** `cat` and
+`payee` may take `none` / `uncategorized`, because the compiler turns one into
+`IS NULL`. `acct` and `group` may not: their columns are not nullable, so a
+sentinel there would bind the literal string against a uuid column and the
+database would answer with a type error — a 500 from a parameter that is supposed
+to be incapable of failing. Such a term is refused with a diagnostic that names
+what the field does accept, and the grammar sheet does not advertise it.
+
+**`not` on a multi-word plain term negates the whole term.** `not coffee shop` is
+"not (coffee AND shop)", so the `NOT` wraps the conjunction once. Wrapping each
+word would be "neither coffee nor shop", which is a much broader request than
+the one made. This was a real bug: the plain-search branch computed the negation
+and then ignored it, so `not coffee` returned exactly the coffee rows.
+
 **A token that is not `field:value` shaped is plain search.** It is compiled to
 the existing 4-way OR over description, notes, payee name and tags. So `coffee`
 works, and a typo in a *field name* is loud while a typo in a *value* is quiet.
@@ -80,9 +94,12 @@ quoted value when the value contains whitespace, so this is only reachable by
 hand-typing.
 
 **Caps.** `q` is capped at 2000 characters and 32 terms. Terms past either cap
-are dropped with code `too_long`. The cap matters because the compiler emits one
-SQL fragment and one bound argument per term; it bounds the statement a single
-request can produce.
+are dropped with code `too_long`. The cap is counted in **characters (runes)**
+and the cut lands on a character boundary; slicing the raw string at a byte
+offset split multi-byte characters, and the invalid UTF-8 went into a bound
+argument and came back from the database as an encoding error. The cap matters
+because the compiler emits one SQL fragment and one bound argument per term, so
+it bounds the statement a single request can produce.
 
 ### Fields
 
@@ -108,11 +125,18 @@ emits, so the compiler is a re-targeting of `txnQueryFilter`, not new SQL.
 text in `transactions.tags`. This is the same limitation the current CSV `tags`
 parameter has, documented at `frontend/src/components/Transactions/transactionConstants.ts:37`.
 
-**`amt` is a decimal in the query, minor units on the wire.** `amt>50` is fifty
-dollars; the term serializes as `amt>=5000`. The conversion uses integer
-arithmetic on the decimal text and never `parseFloat`, mirroring the grammar
-`money.Parse` (`backend/internal/money`) and `client/api.ParseAmount` already
-share. `.`, `-`, `.5`, `5.` and `--1` are errors, not zeroes.
+**`amt` is a decimal in major units, in the query and on the wire.** `amt>50` is
+fifty dollars and is sent as `amt>=50`. The single conversion to the column's
+integer minor units happens on the server, with `money.Parse`
+(`backend/internal/money`), whose grammar `client/api.ParseAmount` already
+mirrors. `.`, `-`, `.5`, `5.` and `--1` are errors, not zeroes.
+
+> **Corrected after review.** This section originally said the wire carried minor
+> units and that the client converted. Both were wrong in the same direction: the
+> client converted *and* the server converted, so `amt>50` filtered above $5,000.
+> The wire carries major units, like the JSON boundary everywhere else in this
+> API, and only the server converts. A client that resolves a name must NOT also
+> normalise a unit — one conversion, in one place.
 
 **`acct` does not cover loan accounts.** The existing API splits them into
 `accountId` and `loanAccountId` because a loan account matches through
