@@ -325,7 +325,7 @@ The server signs in lazily with its first tool call and refreshes the session fr
 │       ├── mcpserver    # Tool registry, handlers and the lazy sign-in
 │       └── readonly     # Transport guard behind the read-only guarantee
 ├── statement_parser     # Standalone Python PDF statement parser (own module)
-├── tui                  # Go terminal client (Bubble Tea), local or over SSH
+├── tui                  # Go terminal client (Bubble Tea v2), local or over SSH
 ├── scripts              # release.sh / release.ps1 guardrails
 ├── .github/workflows    # CI: tests, coverage upload, validate gate, GHCR publish
 ├── Makefile             # dev / test / vet / build / openapi / release targets

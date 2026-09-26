@@ -167,9 +167,10 @@ func newServer(cfg Config) (*server, error) {
 		// omission. v1 passed MiddlewareWithColorProfile(..., termenv.TrueColor)
 		// because wish's default was Ascii and a session renderer was forced down
 		// to that floor, so without an explicit TrueColor floor every client got a
-		// monochrome TUI. In v2 wish's plain Middleware sets no profile at all, and
-		// each tea.Program downsamples at its own output layer, so the depth a
-		// client gets is the depth its own environment asks for — see model.
+		// monochrome TUI. In v2 wish ships no colour-profile option at all — there
+		// is no MiddlewareWithColorProfile left to pass — and each tea.Program
+		// downsamples at its own output layer, so the depth a client gets is the
+		// depth its own environment asks for — see model.
 		wish.WithMiddleware(
 			wishtea.Middleware(s.model),
 			s.logSession,
@@ -296,16 +297,23 @@ func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// reason is that both kinds of PTY should land on one answer — not that the
 	// door would otherwise be monochrome.
 	//
-	// wish's MakeOptions branches, so there are three cases. With an emulated PTY
-	// the output is the ssh.Session itself, an io.Writer rather than a term.File,
-	// and wish already forces tea.WithColorProfile(colorprofile.Env(envs)) for
-	// exactly that reason; its options are appended after ours
-	// (tea.NewProgram(m, append(opts, MakeOptions(s)...))), so on that branch
-	// wish's value is the one that lands and this call is redundant — the same
-	// answer either way. With a real PTY wish passes pty.Slave, which is a
-	// term.File, so colorprofile.Detect would work and this call deliberately
-	// overrides it. A session with no PTY never reaches here at all: wish's
-	// middleware refuses it before the handler runs.
+	// wish's MakeOptions branches, and both branches a session can reach decide
+	// the profile. With an emulated PTY the output is the ssh.Session itself, an
+	// io.Writer rather than a term.File, so wish already forces
+	// tea.WithColorProfile(colorprofile.Env(envs)) for exactly that reason; its
+	// options are appended after ours (tea.NewProgram(m, append(opts,
+	// MakeOptions(s)...))), so on that branch wish's assignment is the one that
+	// lands and this call is redundant — both are the same environment-only
+	// detection over the client's own environment, with the pty's TERM appended
+	// last so that it wins the lookup, which is what sessionEnv does and what
+	// wish's own copy of the environment does. With a real PTY wish passes
+	// pty.Slave, which is a term.File, so colorprofile.Detect would work and this
+	// call deliberately overrides it. A session with no PTY never reaches
+	// MakeOptions, but it does reach this handler: wish calls the handler first
+	// and checks for the PTY afterwards, so such a session gets its model built
+	// and then dropped, the options below are never used, and no program runs.
+	// Nothing here may assume otherwise — model is not only ever called for a
+	// session that will run.
 	//
 	// So the asymmetry is the point. An emulated PTY and a real one get the same
 	// answer, derived from the client's own TERM and COLORTERM, rather than
