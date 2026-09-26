@@ -707,3 +707,47 @@ describe("offline behaviour", () => {
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 });
+
+describe("the query language and the offline cache", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storeUser({ id: "u1", email: "a@b.c" } as any);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps a queried read out of the cache, so exploring queries cannot evict the default view", async () => {
+    // The cache is keyed on the full URL, so every distinct q would take one of
+    // the 40 slots and compete for the 2MB cap. A user trying a few queries
+    // would push out the unfiltered view they actually want offline.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [], total: 0, page: 1, pages: 1 }));
+    await api.getTransactions({ q: "amt>50" });
+
+    expect(readCached("u1", "/transactions?q=amt>50")).toBeNull();
+  });
+
+  it("still caches the unfiltered ledger read", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [{ id: "t1" }], total: 1, page: 1, pages: 1 }));
+    await api.getTransactions({});
+
+    // The key is the full request URL, which getTransactions builds as
+    // `/transactions?${qs}` — so it keeps the trailing "?" even with no params.
+    expect(readCached("u1", "/transactions?")).toEqual({
+      data: [{ id: "t1" }],
+      total: 1,
+      page: 1,
+      pages: 1,
+    });
+  });
+
+  it("leaves the dashboard reads alone: they carry no q", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ days: [], markers: [] }));
+    await api.getCashFlowCalendar({ accountId: "a1" });
+
+    expect(readCached("u1", "/dashboard/cash-flow-calendar?accountId=a1")).not.toBeNull();
+  });
+});

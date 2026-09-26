@@ -10,6 +10,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/internal/money"
+	"github.com/fintrak/backend/internal/query"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -481,9 +482,11 @@ func ruleMatchSQL(matchType, pattern string, paramIdx int) (expr string, arg str
 
 // escapeLikePattern escapes LIKE wildcards and the escape character itself so a
 // user-supplied pattern matches literally (same semantics as strings.Contains).
-func escapeLikePattern(p string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(p)
-}
+//
+// The implementation now lives in the query package, which the q= query language
+// also needs, so the rules engine and the query compiler cannot drift. Aliased
+// rather than removed so every existing call site and test is untouched.
+var escapeLikePattern = query.EscapeLikePattern
 
 // ruleEntry is the in-memory representation used for matching during
 // transaction creation, imports, and ApplyRules. Its optional fields are the

@@ -193,7 +193,10 @@ describe("Transactions", () => {
     await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
 
     expect(lastTransactionParams()).toMatchObject({ accountId: "a1" });
-    expect(screen.getByText(/2 transactions across all accounts|2 transactions matching your filters/)).toBeInTheDocument();
+    // Strict: an accountId IS a filter, so this must be the "matching your
+    // filters" wording. An earlier version of this assertion accepted either
+    // phrasing, which is what let a bug through - see the isFiltered test below.
+    expect(screen.getByText(/2 transactions matching your filters/)).toBeInTheDocument();
   });
 
   it("sends a lone loan account as loanAccountId", async () => {
@@ -462,5 +465,89 @@ describe("Transactions recurring badge", () => {
     expect(
       await screen.findByTitle("Linked to Netflix subscription"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("the query language on the page", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getTransactions.mockResolvedValue({ data: [], total: 0, page: 1, pages: 1 });
+    apiMock.getTags.mockResolvedValue({ data: [] });
+  });
+
+  // The CSV must not drift from the table. handleExport copies the filter set, so
+  // the query travels with it; this pins that it does.
+  // The CSV must not drift from the table. Both take the RESOLVED query, not the
+  // text the user typed: a name sent raw would be dropped by the server, and the
+  // export would quietly contain more rows than the table shows.
+  it("sends the resolved query to both the list and the export", async () => {
+    renderPage("/transactions?q=cat%3AFood%2FGroceries+amt%3E50");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+    expect(apiMock.getTransactions.mock.calls[0][0]).toMatchObject({
+      q: "cat:c1 amt>50",
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: /export/i }));
+    await waitFor(() => expect(apiMock.exportTransactions).toHaveBeenCalled());
+    expect(apiMock.exportTransactions.mock.calls[0][0]).toMatchObject({
+      q: "cat:c1 amt>50",
+    });
+  });
+
+  it("shows the typed text in the box, not the resolved ids", async () => {
+    renderPage("/transactions?q=cat%3AFood%2FGroceries");
+    expect(await screen.findByRole("combobox", { name: /transaction query/i })).toHaveValue(
+      "cat:Food/Groceries",
+    );
+  });
+
+  it("surfaces the diagnostics the server returned with the rows", async () => {
+    apiMock.getTransactions.mockResolvedValue({
+      data: [],
+      total: 0,
+      page: 1,
+      pages: 1,
+      queryDiagnostics: [
+        { term: "payee:bogus", code: "unresolved_value", message: "no payee named bogus", position: 0 },
+      ],
+    });
+    renderPage("/transactions?q=payee%3Abogus");
+    expect(await screen.findByText(/term was ignored/)).toBeInTheDocument();
+    expect(screen.getByText("payee:bogus")).toBeInTheDocument();
+  });
+});
+
+describe("the header's filtered wording", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getTransactions.mockResolvedValue({ data: [], total: 0, page: 1, pages: 1 });
+    apiMock.getTags.mockResolvedValue({ data: [] });
+  });
+
+  // isFiltered used to test `filters.search`, which no longer exists after the
+  // query language replaced the free-text parameter. `undefined !== ""` is true,
+  // so the header claimed "matching your filters" no matter what was set.
+  //
+  // The default account pre-fill is itself a filter, so this isolates isFiltered
+  // by removing the default account: with no filter at all the header must say
+  // "across all accounts".
+  it("says across all accounts when nothing is filtered", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      ...defaultDomain(),
+      accounts: accounts.map((a) => ({ ...a, isDefault: false })),
+    });
+    renderPage("/transactions");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+    expect(lastTransactionParams().accountId).toBeUndefined();
+    expect(screen.getByText(/across all accounts/)).toBeInTheDocument();
+  });
+
+  it("counts a query as a filter", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      ...defaultDomain(),
+      accounts: accounts.map((a) => ({ ...a, isDefault: false })),
+    });
+    renderPage("/transactions?q=coffee");
+    expect(await screen.findByText(/matching your filters/)).toBeInTheDocument();
   });
 });

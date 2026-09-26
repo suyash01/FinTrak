@@ -1,5 +1,5 @@
 export const URL_PARAMS = [
-  "search",
+  "q",
   "accountId",
   "categoryId",
   "groupId",
@@ -15,7 +15,7 @@ export const URL_PARAMS = [
 ];
 
 export const DEFAULT_FILTERS: Record<string, string | number> = {
-  search: "",
+  q: "",
   accountId: "",
   categoryId: "",
   groupId: "",

@@ -24,6 +24,22 @@ type TransactionFilter struct {
 	// Search is a case-insensitive substring of description, notes, payee name
 	// or tags.
 	Search string
+	// Query is the transaction query language, evaluated server-side: a
+	// space-separated, AND-ed list of `field:value` terms (cat, group, acct,
+	// payee, tag, type, amt, date, linked, recurring, desc, note), optionally
+	// prefixed with `not`, or `field<op>value` where op is one of
+	// = != > >= < <= ~. A bare word is the same free-text search Search does. A
+	// comma-separated value matches any of them.
+	//
+	// Values are IDS, NOT NAMES: the server resolves no names, so a caller must
+	// turn "Groceries" into a category id first (cat:none and payee:none are the
+	// sentinels; tag takes a name, because tags have no ids). amt is in major
+	// units, so "50" is fifty dollars.
+	//
+	// An unusable term is never an error: it is dropped and reported in the
+	// response's queryDiagnostics, so an over-broad term widens the result set
+	// and the caller is told what was ignored.
+	Query string
 	// Type is "debit" or "credit".
 	Type string
 	// PayeeID accepts a payee id or the sentinel NoPayee.
@@ -73,6 +89,7 @@ func (f TransactionFilter) apply(r *request) *request {
 		setQuery("categoryId", f.CategoryID).
 		setQuery("groupId", f.GroupID).
 		setQuery("search", f.Search).
+		setQuery("q", f.Query).
 		setQuery("type", f.Type).
 		setQuery("payeeId", f.PayeeID).
 		setQuery("amount", f.Amount).
@@ -98,6 +115,13 @@ func (f TransactionFilter) applyPaged(r *request) *request {
 	r.setQuery("sortBy", f.SortBy).setQuery("sortOrder", f.SortOrder).
 		setQueryInt("page", f.Page).setQueryInt("limit", f.Limit)
 	return r
+}
+
+// SetQuery sets the q= query language and returns the filter for chaining,
+// matching the fluent style of the other filter builders.
+func (f *TransactionFilter) SetQuery(q string) *TransactionFilter {
+	f.Query = q
+	return f
 }
 
 // ListTransactions returns one page of transactions. Page defaults to 1 and

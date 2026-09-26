@@ -138,6 +138,21 @@ function readOffline<T>(owner: string | null, url: string): T | null {
   return cached;
 }
 
+// isQueriedLedgerRead reports whether this GET is a transaction read carrying a
+// typed query (q=), rather than the plain filtered or unfiltered list.
+//
+// Such a read is not cached. The cache is keyed on the full URL, so every
+// distinct expression would take one of the 40 slots in offlineCache.ts and
+// compete for the 2MB total cap: a user trying a few queries would evict the
+// default unfiltered view, which is the one actually worth having offline. This
+// is not a correctness hazard — a cached body is only ever served for the exact
+// URL that produced it — it is a budget one.
+function isQueriedLedgerRead(url: string): boolean {
+  const [path = "", search = ""] = url.split("?");
+  if (path !== "/transactions") return false;
+  return new URLSearchParams(search).has("q");
+}
+
 // writeOffline records a successful read for the next offline load, attributed
 // to the session that asked for it.
 function writeOffline(
@@ -370,7 +385,7 @@ async function request<T>(
 
   const text = await res.text();
   const data = text ? (JSON.parse(text) as T) : (null as T);
-  if (method === "GET") writeOffline(owner, url, data);
+  if (method === "GET" && !isQueriedLedgerRead(url)) writeOffline(owner, url, data);
   return data;
 }
 

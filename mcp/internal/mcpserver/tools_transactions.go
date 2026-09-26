@@ -23,6 +23,10 @@ type listTransactionsArgs struct {
 	CategoryID string `json:"categoryId,omitempty" jsonschema:"a category id from list_categories, the sentinel \"uncategorized\", or a category group id/slug"`
 	GroupID    string `json:"groupId,omitempty" jsonschema:"match every category in this group id, from list_groups"`
 	Search     string `json:"search,omitempty" jsonschema:"case-insensitive substring of description, notes, payee name or tags"`
+	// Query is the transaction query language, and the one argument whose values
+	// are ids rather than names. The server resolves no names, so the model must
+	// pass the id it got from list_categories / list_payees / list_accounts.
+	Query string `json:"q,omitempty" jsonschema:"a query expression: space-separated AND-ed terms, each 'field:value' or 'field<op>value' (op is one of = != > >= < <= ~); fields are cat, group, acct, payee, tag, type, amt, date, linked, recurring, desc, note; a comma-separated value matches any of them; a bare word is a free-text substring search. Values are IDS, not names - use the ids from list_categories, list_payees, list_accounts. tag takes a tag name. amt is in major units, e.g. \"50.75\". Unusable terms are dropped rather than rejected, which silently widens the result set, so prefer the named arguments above whenever one of them expresses the filter"`
 
 	Type string `json:"type,omitempty" jsonschema:"\"debit\" or \"credit\""`
 	// PayeeID takes the sentinel "none" for transactions without a payee.
@@ -69,7 +73,10 @@ func transactionTools() []Tool {
 			Description: "One page of transactions, newest first by default, with the same filters the app's transaction list offers " +
 				"(account, category or group, payee, tags, amount, date range, type, linked, recurring, attachment state, " +
 				"uncategorized). Amounts are the ledger's own decimal values; totals are not computed here — use " +
-				"get_dashboard_summary or list_billing_cycles for aggregates.",
+				"get_dashboard_summary or list_billing_cycles for aggregates. It also accepts a typed query expression (q) " +
+				"for filters the named arguments cannot express — amount ranges, several categories at once, or negated " +
+				"terms. That expression takes ids rather than names, and a term it cannot use is dropped rather than " +
+				"rejected, so prefer the named arguments whenever one of them fits.",
 			SideEffect: "With an accountId and the default date sort this is not a pure read: that account's missing billing " +
 				"cycles are generated, and its transactions' cycle assignments back-filled, as part of answering.",
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/transactions"},
@@ -94,6 +101,7 @@ func installListTransactions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 			CategoryID:      in.CategoryID,
 			GroupID:         in.GroupID,
 			Search:          in.Search,
+			Query:           in.Query,
 			Type:            in.Type,
 			PayeeID:         in.PayeeID,
 			Amount:          in.Amount,

@@ -1144,6 +1144,21 @@ type DataList[T any] struct {
 	Data []T `json:"data"`
 }
 
+// QueryDiagnostic reports one term of a `q` expression the server could not use.
+// The parser drops an unusable term rather than failing the request, so a dropped
+// constraint widens the result set; this is how the caller finds out.
+//
+// Code is a stable classification: unknown_field, bad_operator, missing_value,
+// unresolved_value, malformed_amount, malformed_date, ambiguous_value or
+// too_long. Message is safe to show as-is. Position is the byte offset of the
+// term within the raw q text.
+type QueryDiagnostic struct {
+	Term     string `json:"term"`
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+	Position int    `json:"position"`
+}
+
 // TransactionPage is the paginated GET /transactions response.
 type TransactionPage struct {
 	Data  []Transaction `json:"data"`
@@ -1151,6 +1166,10 @@ type TransactionPage struct {
 	Page  int           `json:"page"`
 	Limit int           `json:"limit"`
 	Pages int           `json:"pages"`
+	// QueryDiagnostics is present only when the `q` expression had a term the
+	// server dropped, and empty otherwise. When it is non-empty the rows are
+	// BROADER than the expression asked for.
+	QueryDiagnostics []QueryDiagnostic `json:"queryDiagnostics,omitempty"`
 }
 
 // SuggestionPage is the paginated suggestion response. Unlike the transaction
