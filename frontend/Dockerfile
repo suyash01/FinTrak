@@ -12,7 +12,7 @@ ENV VITE_API_URL=${VITE_API_URL}
 RUN bun run build
 
 # --- Runtime Stage ---
-FROM nginxinc/nginx-unprivileged:1.31.5-alpine3.24
+FROM nginxinc/nginx-unprivileged:1.31.6-alpine3.24
 
 COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
 COPY --chown=nginx:nginx nginx.conf /etc/nginx/conf.d/default.conf
