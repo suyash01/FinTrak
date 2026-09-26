@@ -70,7 +70,7 @@ func newTxKeys() txKeys {
 		Edit:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		Detail:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "detail + links")),
-		Select:     key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select")),
+		Select:     key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "select")),
 		SelectAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "select all/none")),
 		Clear:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear selection")),
 		Sort:       key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort field")),

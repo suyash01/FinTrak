@@ -138,7 +138,7 @@ type linkKeys struct {
 func newLinkKeys() linkKeys {
 	return linkKeys{
 		Pane:      key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pane")),
-		Select:    key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select")),
+		Select:    key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "select")),
 		SelectAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all/none")),
 		New:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 		BulkNew:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "bulk from ids")),
