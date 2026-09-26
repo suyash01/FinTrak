@@ -241,13 +241,17 @@ canonical token. Most diagnostics are therefore correct before the request lands
 
 ### Response shape
 
-`TransactionListResponse` gains one field:
+`GetTransactions` renders its response from an inline `gin.H`
+(`backend/handlers/transaction.go`), not a `models` struct, so there is no
+`TransactionListResponse` type to extend. The handler gains one key, omitted
+when the slice is empty:
 
 ```json
 {
   "data": [ ... ],
   "total": 22,
   "page": 1,
+  "limit": 50,
   "pages": 1,
   "queryDiagnostics": [
     { "term": "payee:costo", "code": "unresolved_value",
@@ -256,8 +260,8 @@ canonical token. Most diagnostics are therefore correct before the request lands
 }
 ```
 
-Omitted entirely when empty. `position` is the byte offset of the term in the
-raw `q` text, so the UI can highlight it.
+`position` is the byte offset of the term in the raw `q` text, so the UI can
+highlight it.
 
 ## 6. Backend architecture
 
@@ -311,13 +315,19 @@ New directory `src/lib/query/`:
 the banner. `api/client.ts` needs no change — `getTransactions` already takes a
 flat `QueryParams`.
 
-### The offline cache must not store diagnostics
+### The offline cache skips queried reads
 
-`offlineCache.ts:49` keys on path with the query stripped, and `/transactions` is
-on the allowlist — so `?q=a` and `?q=b&page=2` share one cached body. Diagnostics
-are inherently per-request and that cache is per-path, so **`client.ts` strips
-`queryDiagnostics` before the response is written to the cache.** Offline you
-still get the banner, because the locally-resolved half of it needs no network.
+`readCached`/`writeCached` are keyed on the **full URL**, so a query is not a
+correctness hazard here — `?q=a` and `?q=b` are separate entries and cannot serve
+each other's rows. The real cost is **entry proliferation**: every distinct `q`
+occupies one of the 40 slots in `offlineCache.ts` and competes for the 2 MB total
+cap, so a user exploring queries can evict the default unfiltered view they would
+otherwise want offline.
+
+Policy: `client.ts` skips the offline cache write for a `/transactions` read that
+carries a `q`. A power user's exploratory queries therefore cannot displace the
+last-known-good default view, and the offline experience stays "show me what I
+last looked at" rather than becoming an unbounded query log.
 
 ## 8. Parity obligations
 
@@ -330,8 +340,7 @@ these or not at all:
   `crossSiteGetGuard` (`main.go:389`); adding a parameter does not change that, and
   the guard list and `readonly.SideEffectingGETs` stay as they are.
 - `client/api/endpoints_transactions.go` — `TransactionFilter.Query` and
-  `setQuery`, mirroring the existing field/sentinel pattern.
-- `mcp/internal/mcpserver/tools_transactions.go` — a `q` argument with
+  `setQuery`, mirroring the existing field/sentinel pattern.- `mcp/internal/mcpserver/tools_transactions.go` — a `q` argument with
   jsonschema prose stating that values are ids, not names.
   `tools_test.go` audits every argument, so it fails until this lands.
 - `tui/` — nothing required. Route parity is per-route, and the shared client
