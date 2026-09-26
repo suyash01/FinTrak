@@ -577,14 +577,12 @@ The middleware block, with its colour-floor comment rewritten because the floor'
 		// it has to hold its slot for the whole session, wrapping the bubbletea
 		// middleware rather than sitting inside it.
 		//
-		// No colour floor is set here, and that is a change rather than an
-		// omission. v1 passed MiddlewareWithColorProfile(..., termenv.TrueColor)
-		// because wish's default was Ascii and a session renderer was forced down
-		// to that floor, so without an explicit TrueColor floor every client got a
-		// monochrome TUI. In v2 each tea.Program detects its own profile from the
-		// session environment handed to it by WithEnvironment below, and
-		// downsamples at its own output layer, so each client gets the depth it
-		// actually advertises and no floor is wanted.
+		// No colour floor is set here, and that is deliberate. v1 passed
+		// MiddlewareWithColorProfile(..., termenv.TrueColor) because a fixed floor
+		// was the only way to stop wish's Ascii default reaching the client through
+		// a renderer that had to be told what it could do. v2 names the profile per
+		// session instead, in model() below, so each client gets the depth it
+		// actually advertises rather than a floor imposed on all of them.
 		wish.WithMiddleware(
 			wishtea.Middleware(s.model),
 			s.logSession,
@@ -597,10 +595,21 @@ The middleware block, with its colour-floor comment rewritten because the floor'
 ```go
 func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// The program's own environment is the client's too: bubbletea reads TERM
-	// from it for terminal handling and for colour-profile detection, and the
-	// door process's TERM (usually unset in a container) is not the one the
-	// session is drawn on.
-	opts := []tea.ProgramOption{tea.WithEnvironment(sessionEnv(sess))}
+	// from it for terminal handling, and the door process's TERM (usually unset in
+	// a container) is not the one the session is drawn on.
+	env := sessionEnv(sess)
+	opts := []tea.ProgramOption{
+		tea.WithEnvironment(env),
+		// The profile must be named, not detected. bubbletea calls
+		// colorprofile.Detect(p.output, p.environ), and Detect gates its whole
+		// answer on term.IsTerminal(out.Fd()) — but MakeOptions sets
+		// WithOutput(sess), and an ssh.Session is an io.Writer, not a term.File, so
+		// Detect answers NoTTY and the door renders monochrome. colorprofile.Env
+		// is the same computation with the isatty question pinned true, i.e. the
+		// only half of Detect that means anything over SSH. This is the call v1's
+		// sessionRenderer made, so the per-session guarantee is unchanged.
+		tea.WithColorProfile(colorprofile.Env(env)),
+	}
 
 	client, _ := sess.Context().Value(clientContextKey{}).(*api.Client)
 	if client != nil {
@@ -798,29 +807,27 @@ func TestSetThemeRepublishesOnTheContext(t *testing.T) {
 
 That test needs `"image/color"` in `app_test.go`'s import block. Deleting the old test also orphans two imports it was the only user of — `"io"` and `"github.com/muesli/termenv"`, both used for the `lipgloss.NewRenderer(io.Discard)` it built. Remove them or the package will not compile.
 
-`table_test.go`'s `stylePrefix` helper asserted the escape prefix a `termenv.TrueColor` renderer produced. Colour downsampling is now the program's, so those assertions are the door's end-to-end test's job — it already checks for `\x1b[38;5;` and `\x1b[38;2;` over a real session. Replace `table_test.go`'s escape-sequence assertions with a check that the cell roles still select the right styles, and drop the `lipgloss`/`termenv` imports. Note `SetColumns` is variadic, not a slice:
+`table_test.go`'s `stylePrefix` helper is a third case, and it **keeps its
+assertions**. The premise that it lost its subject is wrong: lipgloss v2's
+package-level `Render` does not downsample —
+`Foreground(Color("#f87171")).Render("x")` emits `\x1b[38;2;248;113;113mx\x1b[m`
+— because downsampling moved to the program. An escape prefix from a style is
+therefore still a statement about which style the table chose, which is the app's
+behaviour and what the test exists to pin. Only the dead helper goes:
 
-```go
-// TestTableAppliesCellRoles checks the part of the table the app owns: each
-// cell's role picks its own style, and the selected row's background is applied
-// over the gaps. Which escape codes that ultimately emits is the tea.Program's
-// business, not the table's.
-func TestTableAppliesCellRoles(t *testing.T) {
-	th := DefaultTheme()
-	tbl := &Table{}
-	tbl.SetColumns(Column{Title: "Amount", Width: 10, Align: AlignRight})
-	tbl.SetRows([][]Cell{{Money("12.00")}, {Money("12.00")}})
-	tbl.SetCursor(0)
+- **Delete** `colourTheme(t *testing.T) Theme`, whose whole body was
+  `lipgloss.NewRenderer(io.Discard)` + `SetColorProfile(termenv.TrueColor)` +
+  `SetHasDarkBackground(true)`, and `lipgloss.Renderer` no longer exists.
+- **Replace both call sites** with `DefaultTheme()`, which is the dark palette and
+  renders the same colours the helper forced.
+- **Keep** `stylePrefix` (it still needs the `lipgloss` import, for its parameter
+  type) and keep both tests —
+  `TestTableAppliesCellRoles` and `TestTableKeepsTheRoleColourOnTheSelectedRow` —
+  with their assertions and comments unchanged.
+- **Drop** only the `termenv` import.
 
-	lines := strings.Split(ansi.Strip(tbl.View(th, 12, 6, "none")), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected a header and a row, got %d lines", len(lines))
-	}
-	if !strings.Contains(lines[1], "12.00") {
-		t.Errorf("the amount is missing from the row: %q", lines[1])
-	}
-}
-```
+Escape bytes at the session level stay covered end to end by `sshd/server_test.go`,
+which asserts `\x1b[38;5;` / `\x1b[38;2;` over a real SSH connection.
 
 - [ ] **Step 14: Build**
 
