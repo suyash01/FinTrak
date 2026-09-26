@@ -69,7 +69,7 @@ func TestParseAcceptsTheDocumentedForms(t *testing.T) {
 }
 
 func TestParseDropsAndReportsInsteadOfFailing(t *testing.T) {
-	expr, diags := Parse("catgory:food amt>>50 cat:"+uuidA)
+	expr, diags := Parse("catgory:food amt>>50 cat:" + uuidA)
 	if len(expr.Terms) != 1 || expr.Terms[0].Field != "cat" {
 		t.Fatalf("expected only the valid term to survive, got %+v", expr.Terms)
 	}
