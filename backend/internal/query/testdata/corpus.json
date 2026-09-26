@@ -11,7 +11,7 @@
     {
       "name": "amount greater than",
       "surface": "amt>50",
-      "canonical": "amt>=5000",
+      "canonical": "amt>5000",
       "terms": [{ "field": "amt", "op": ">", "values": ["50"], "negated": false, "position": 0 }],
       "diagnostics": [],
       "sql": { "clauses": ["(t.amount > $2)"], "args": [5000] }
