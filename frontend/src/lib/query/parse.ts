@@ -62,7 +62,6 @@ const OPERATORS: Array<[string, QueryOp]> = [
   ["=", "="],
 ];
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // One optional sign, digits on both sides of the point, at most two fraction
 // digits: the same grammar money.Parse accepts, mirrored so the box cannot

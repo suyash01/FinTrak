@@ -152,6 +152,20 @@ func emitTags(t Term, sink Sink, negate bool) *Diagnostic {
 	if len(t.Values) == 0 {
 		return &Diagnostic{Term: t.Raw, Code: CodeMissingValue, Message: "tag: needs a value", Position: t.Position}
 	}
+	// Re-checked here rather than trusted from the parser. This is the one place
+	// the compiler puts user text into a statement instead of binding it, so the
+	// refusal belongs at the point of interpolation: Compile is exported and takes
+	// an Expr, and a caller that built a Term directly would otherwise get an
+	// injected literal. The parser makes this unreachable through Parse; this
+	// makes it unreachable period.
+	for _, v := range t.Values {
+		if strings.Contains(v, "'") {
+			return &Diagnostic{
+				Term: t.Raw, Code: CodeUnresolved,
+				Message: "tag: a tag name cannot contain a quote", Position: t.Position,
+			}
+		}
+	}
 	literal := "ARRAY[" + quoteAll(t.Values) + "]::text[]"
 	if negate {
 		sink.Raw("NOT (t.tags && " + literal + ")")

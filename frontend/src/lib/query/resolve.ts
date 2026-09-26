@@ -1,6 +1,6 @@
 import { periodRange } from "@/lib/dates";
 import type { Account, Category, CategoryGroup, Payee } from "@/types";
-import { FIELD_PLAIN, type ParsedQuery, type QueryDiagnostic, type QueryTerm } from "./parse";
+import { FIELD_PLAIN, DIAG, type ParsedQuery, type QueryDiagnostic, type QueryTerm } from "./parse";
 import { DATE_PERIODS, FIELD_TABLE } from "./fields";
 
 // Re-exported so the autocomplete and the grammar sheet read the period list from
@@ -42,7 +42,7 @@ export function resolveQuery(
     if (!def) {
       diagnostics.push({
         term: term.raw,
-        code: "unknown_field",
+        code: DIAG.unknownField,
         message: `unknown field ${term.field}`,
         position: term.position,
       });
@@ -106,7 +106,7 @@ function resolveIds(term: QueryTerm, src: ResolveSource, diagnostics: QueryDiagn
     if (hits.length === 0) {
       diagnostics.push({
         term: term.raw,
-        code: "unresolved_value",
+        code: DIAG.unresolved,
         message: `no ${labelFor(term.field)} named ${JSON.stringify(value)}`,
         position: term.position,
       });
@@ -119,7 +119,7 @@ function resolveIds(term: QueryTerm, src: ResolveSource, diagnostics: QueryDiagn
   if (ambiguous.length > 0) {
     diagnostics.push({
       term: term.raw,
-      code: "ambiguous_value",
+      code: DIAG.ambiguous,
       message:
         `${ambiguous.map((v) => JSON.stringify(v)).join(", ")} matched more than one ` +
         `${labelFor(term.field)}; keeping all of them. Use ${term.field}:Group/Name to pick one.`,
@@ -195,7 +195,7 @@ function expandDates(term: QueryTerm, diagnostics: QueryDiagnostic[]): QueryTerm
   if (!range) {
     diagnostics.push({
       term: term.raw,
-      code: "malformed_date",
+      code: DIAG.malformedDate,
       message: `${JSON.stringify(term.values[0])} is not a known period`,
       position: term.position,
     });
