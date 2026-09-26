@@ -1,0 +1,173 @@
+{
+  "cases": [
+    {
+      "name": "single field equality",
+      "surface": "cat:11111111-1111-4111-8111-111111111111",
+      "canonical": "cat:11111111-1111-4111-8111-111111111111",
+      "terms": [{ "field": "cat", "op": "=", "values": ["11111111-1111-4111-8111-111111111111"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "clauses": ["(t.category_id = $2)"], "args": ["11111111-1111-4111-8111-111111111111"] }
+    },
+    {
+      "name": "amount greater than",
+      "surface": "amt>50",
+      "canonical": "amt>=5000",
+      "terms": [{ "field": "amt", "op": ">", "values": ["50"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "clauses": ["t.amount > $2"], "args": [5000] }
+    },
+    {
+      "name": "fractional amount is exact",
+      "surface": "amt>=50.75",
+      "canonical": "amt>=5075",
+      "terms": [{ "field": "amt", "op": ">=", "values": ["50.75"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "clauses": ["t.amount >= $2"], "args": [5075] }
+    },
+    {
+      "name": "csv is an or set",
+      "surface": "cat:11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222",
+      "canonical": "cat:11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222",
+      "terms": [{ "field": "cat", "op": "=", "values": ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"], "negated": false, "position": 0 }],
+      "diagnostics": []
+    },
+    {
+      "name": "not binds to the whole term",
+      "surface": "not cat:11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222",
+      "canonical": "not cat:11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222",
+      "terms": [{ "field": "cat", "op": "=", "values": ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"], "negated": true, "position": 0 }],
+      "diagnostics": [],
+      "sql": {
+        "clauses": ["NOT ((t.category_id = $2 OR t.category_id = $3))"],
+        "args": ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]
+      }
+    },
+    {
+      "name": "quoted value keeps its space",
+      "surface": "tag:\"Whole Foods\"",
+      "canonical": "tag:\"Whole Foods\"",
+      "terms": [{ "field": "tag", "op": "=", "values": ["Whole Foods"], "negated": false, "position": 0 }],
+      "diagnostics": []
+    },
+    {
+      "name": "a quoted name on an id field is rejected",
+      "surface": "payee:\"Whole Foods\"",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "payee:\"Whole Foods\"", "code": "unresolved_value", "message": "payee: \"Whole Foods\" is not an id this server can resolve", "position": 0 }
+      ]
+    },
+    {
+      "name": "bare word is plain search",
+      "surface": "coffee",
+      "canonical": "coffee",
+      "terms": [{ "field": "plain", "op": "~", "values": ["coffee"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "kind": "plain" }
+    },
+    {
+      "name": "two bare words are one plain term",
+      "surface": "coffee shop",
+      "canonical": "coffee shop",
+      "terms": [{ "field": "plain", "op": "~", "values": ["coffee", "shop"], "negated": false, "position": 0 }],
+      "diagnostics": []
+    },
+    {
+      "name": "field prefix consumes one value only",
+      "surface": "desc:coffee shop",
+      "canonical": "desc:coffee shop",
+      "terms": [
+        { "field": "desc", "op": "=", "values": ["coffee"], "negated": false, "position": 0 },
+        { "field": "plain", "op": "~", "values": ["shop"], "negated": false, "position": 12 }
+      ],
+      "diagnostics": []
+    },
+    {
+      "name": "two fields are anded",
+      "surface": "cat:11111111-1111-4111-8111-111111111111 amt>=50",
+      "canonical": "cat:11111111-1111-4111-8111-111111111111 amt>=5000",
+      "terms": [
+        { "field": "cat", "op": "=", "values": ["11111111-1111-4111-8111-111111111111"], "negated": false, "position": 0 },
+        { "field": "amt", "op": ">=", "values": ["50"], "negated": false, "position": 41 }
+      ],
+      "diagnostics": [],
+      "sql": {
+        "clauses": ["(t.category_id = $2)", "t.amount >= $3"],
+        "args": ["11111111-1111-4111-8111-111111111111", 5000]
+      }
+    },
+    {
+      "name": "the none sentinel matches an absent value",
+      "surface": "cat:none",
+      "canonical": "cat:none",
+      "terms": [{ "field": "cat", "op": "=", "values": ["none"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "clauses": ["(t.category_id IS NULL)"], "args": [] }
+    },
+    {
+      "name": "unknown field is dropped and reported",
+      "surface": "catgory:food",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "catgory:food", "code": "unknown_field", "message": "unknown field catgory", "position": 0 }
+      ]
+    },
+    {
+      "name": "doubled operator is dropped and reported",
+      "surface": "amt>>50",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "amt>>50", "code": "bad_operator", "message": "malformed operator after amt", "position": 0 }
+      ]
+    },
+    {
+      "name": "malformed amount is dropped and reported",
+      "surface": "amt:5.",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "amt:5.", "code": "malformed_amount", "message": "amt: \"5.\" is not an amount (e.g. 50 or 50.75)", "position": 0 }
+      ]
+    },
+    {
+      "name": "out of window date is dropped and reported",
+      "surface": "date:0001-01-01",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "date:0001-01-01", "code": "malformed_date", "message": "date: \"0001-01-01\" is not a usable date", "position": 0 }
+      ]
+    },
+    {
+      "name": "bad enum value is dropped and reported",
+      "surface": "type:money",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "type:money", "code": "unresolved_value", "message": "type: \"money\" is not one of [debit credit]", "position": 0 }
+      ]
+    },
+    {
+      "name": "a name the server cannot resolve is dropped",
+      "surface": "cat:groceries",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "cat:groceries", "code": "unresolved_value", "message": "cat: \"groceries\" is not an id this server can resolve", "position": 0 }
+      ]
+    },
+    {
+      "name": "everything invalid yields no terms",
+      "surface": "catgory:food amt>>50",
+      "canonical": "",
+      "terms": [],
+      "diagnostics": [
+        { "term": "catgory:food", "code": "unknown_field", "message": "unknown field catgory", "position": 0 },
+        { "term": "amt>>50", "code": "bad_operator", "message": "malformed operator after amt", "position": 13 }
+      ]
+    }
+  ]
+}
