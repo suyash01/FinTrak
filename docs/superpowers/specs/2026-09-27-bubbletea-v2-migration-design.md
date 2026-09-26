@@ -171,10 +171,20 @@ none. The guard is written for correctness by construction rather than relying
 on that, and Section 8 adds a test that sends one anyway.
 
 One silent behaviour change to make explicitly: **v2's `Key.String()` returns
-`"space"`, not `" "`.** `form.go:199` matches `case " ":` to toggle a
-`BoolField`, so it becomes `case "space":`. Nothing else in the tree matches a
-literal space. The ctrl+c interception at `app.go:165` uses
-`m.String() == "ctrl+c"` and is unaffected.
+`"space"`, not `" "`.** The rename has **two halves**, and both matter because
+`key.Matches` compares `msg.String()` against the strings a binding declares:
+
+- The **call site**: `form.go:199` matches `case " ":` to toggle a `BoolField`,
+  and becomes `case "space":`.
+- The **declaration**: `transactions.go:73` and `links.go:141` declare
+  `key.WithKeys(" ")`, and become `key.WithKeys("space")`. A binding left on the
+  bare character can never match, because `uv.Key.String()` returns `Keystroke()`
+  — the literal `"space"` — whenever `Text` is a single space. That silently kills
+  multi-row selection for bulk actions and Links row selection while the status
+  bar still advertises "space".
+
+The ctrl+c interception at `app.go:165` uses `m.String() == "ctrl+c"` and is
+unaffected.
 
 `digitIndex(key.String())` (`app.go:336`) is assumed unchanged for `"1"`..`"9"`
 and `"0"`; Section 8 pins it with a test rather than trusting the assumption.
@@ -355,8 +365,10 @@ their own boolean, not bubbles' focus state.
   `ssh.Session`. The "colour floor is TrueColor, not wish's default Ascii"
   comment is deleted rather than rewritten: a fixed floor was the v1 workaround
   for a renderer that had to be told, and the per-client profile replaces it.
-- `sessionRenderer` (`server.go:319-328`) and its `colorprofile.Env` call are
-  deleted (Section 5.1).
+- `sessionRenderer` (`server.go:319-328`) is deleted in full. The `lipgloss` and
+  `termenv` imports go with it; `colorprofile` does not, because the
+  `colorprofile.Env` call it made moves into `model`'s options rather than
+  disappearing (Section 5.1).
 - `tea.WithEnvironment(sessionEnv(sess))` (`server.go:299`) still exists and is
   kept — it is what lets bubbletea read the *client's* `TERM` rather than the
   door container's.

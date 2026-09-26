@@ -28,7 +28,14 @@
 
 The spec is a vision document; its silence on an input is not permission to break it. These are the five failure modes most likely to bite a real user, each pinned by a test in the task that owns the code:
 
-1. **Space stops toggling a boolean form field.** `form.go` matches `case " ":` today; v2 stringifies space as `"space"`. A user pressing space on a "closed" or "active" toggle gets nothing — no error, no visual change, and the form still submits the old value. The whole suite stays green, because nothing asserts the toggle.
+1. **Space stops toggling a boolean form field, and stops selecting rows.**
+   v2 stringifies the space bar as `"space"`, so the rename has two halves and
+   both are silent. The **call site** is `form.go`'s `case " ":` on a `BoolField`.
+   The **declaration** is `key.WithKeys(" ")` in `transactions.go` and
+   `links.go`: `key.Matches` compares `msg.String()`, and a binding on the bare
+   character can never match, so bulk multi-select and Links row selection die
+   while the status bar still advertises "space". Nothing asserts either, which
+   is why the suite stays green.
 2. **A form's text inputs collapse to one character wide.** `textinput.Width` became private, so a dropped `SetWidth` leaves the field rendering at its default. The user cannot read what they typed and cannot tell which field is focused. A write-only accessor fails silently in exactly the way a removed exported field cannot.
 3. **A light-background terminal renders with dark colours, or one SSH client's colours leak to another.** This is the theme seam. The user sees an unreadable or wrong-looking TUI. The leak direction is the dangerous one: it is the exact failure `app.go:69-78` documents the current design as preventing, so a regression here is invisible locally and only shows with two clients on one door.
 4. **ctrl+c stops quitting.** The App intercepts it before any modal or the sign-in screen can swallow it, and three existing regression tests exist because it broke before. v2 moves the interception site (`tea.KeyMsg` struct → `tea.KeyPressMsg`); if the interception is left after the modal branch, the process becomes unquittable from the sign-in screen and from any open overlay.
@@ -559,6 +566,7 @@ func (a *App) setTheme(isDark bool) {
 
 ```go
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"charm.land/ssh"
 	"charm.land/wish/v2"
 	wishtea "charm.land/wish/v2/bubbletea"
@@ -567,7 +575,10 @@ func (a *App) setTheme(isDark bool) {
 	"github.com/fintrak/tui/internal/ui"
 ```
 
-`colorprofile`, `lipgloss` and `termenv` are all dropped: they existed only to build the per-session renderer, which is deleted below.
+`lipgloss` and `termenv` are dropped: they existed only to build the per-session
+renderer, which is deleted below. `colorprofile` **stays** — the door still has to
+name the profile itself, which is the whole point of the `WithColorProfile` line
+in `model`.
 
 The middleware block, with its colour-floor comment rewritten because the floor's meaning changed:
 
