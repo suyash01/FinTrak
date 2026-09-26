@@ -21,20 +21,30 @@ export interface FieldDef {
   kind: FieldKind;
   ops: QueryOp[];
   enum?: string[];
+  /**
+   * Words that stand for an absent value. Only a field whose column is actually
+   * nullable may take them - mirrors backend/internal/query/fields.go, where the
+   * compiler turns one into IS NULL and anything else would bind the literal
+   * string against the column.
+   */
+  sentinels?: string[];
 }
 
 const EQ: QueryOp[] = ["=", "!="];
 const ORDER: QueryOp[] = ["=", "!=", ">", ">=", "<", "<="];
 const TEXT: QueryOp[] = ["=", "!=", "~"];
 
+/** nullSentinels are the two words the existing filters use for an absent value. */
+const NULL_SENTINELS = ["none", "uncategorized"];
+
 export const FIELD_TABLE: Record<string, FieldDef> = {
   plain: { userTyped: false, kind: "text", ops: TEXT },
   desc: { userTyped: true, kind: "text", ops: TEXT },
   note: { userTyped: true, kind: "text", ops: TEXT },
-  cat: { userTyped: true, kind: "uuid", ops: EQ },
+  cat: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   group: { userTyped: true, kind: "uuid", ops: EQ },
   acct: { userTyped: true, kind: "uuid", ops: EQ },
-  payee: { userTyped: true, kind: "uuid", ops: EQ },
+  payee: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   tag: { userTyped: true, kind: "tags", ops: EQ },
   type: { userTyped: true, kind: "enum", ops: EQ, enum: ["debit", "credit"] },
   linked: { userTyped: true, kind: "enum", ops: EQ, enum: ["true", "false"] },

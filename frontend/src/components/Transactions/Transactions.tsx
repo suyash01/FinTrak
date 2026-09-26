@@ -422,18 +422,19 @@ export default function Transactions() {
 
   // True when any filter deviates from the defaults, so the header can tell a
   // filtered count apart from the unfiltered "all accounts" total.
+  // A dimension counts as filtering when it differs from its default. Comparing
+  // against DEFAULT_FILTERS rather than "" is what makes this correct: sortBy and
+  // sortOrder are always set ("date", "DESC") and are not filters, while a
+  // hand-written list of keys once named `search`, which the query language
+  // replaced - so the comparison was against `undefined` and the header claimed
+  // "matching your filters" whatever was set.
   const isFiltered = useMemo(
     () =>
-      filters.accountId !== "" ||
-      filters.categoryId !== "" ||
-      filters.groupId !== "" ||
-      filters.payeeId !== "" ||
-      filters.search !== "" ||
-      filters.type !== "" ||
-      filters.dateFrom !== "" ||
-      filters.dateTo !== "" ||
-      filters.linked !== "" ||
-      filters.tags !== "",
+      URL_PARAMS.some((k) => {
+        const value = filters[k];
+        if (value === "" || value === undefined || value === null) return false;
+        return String(value) !== String(DEFAULT_FILTERS[k]);
+      }),
     [filters],
   );
 
@@ -848,6 +849,13 @@ export default function Transactions() {
           queryDiagnostics={queryDiagnostics}
           onQueryInProgressChange={setQueryInProgress}
           onQueryCommit={() => setQueryFinalized(true)}
+          onQueryTextChange={(text) => {
+            // Editing the text ends the previous submission: the in-progress rule
+            // must resume, or a finalized half-typed term stays diagnosed and
+            // serialized for the rest of the session.
+            setQueryFinalized(false);
+            updateFilter("q", text);
+          }}
         />
 
         {selected.size > 0 && (

@@ -1,7 +1,7 @@
 import { periodRange } from "@/lib/dates";
 import type { Account, Category, CategoryGroup, Payee } from "@/types";
 import { FIELD_PLAIN, DIAG, type ParsedQuery, type QueryDiagnostic, type QueryTerm } from "./parse";
-import { DATE_PERIODS, FIELD_TABLE } from "./fields";
+import { DATE_PERIODS, FIELD_TABLE, type FieldDef } from "./fields";
 
 // Re-exported so the autocomplete and the grammar sheet read the period list from
 // the one place that defines which periods are offerable.
@@ -54,7 +54,11 @@ export function resolveQuery(
         terms.push(term);
         continue;
       case "amount":
-        terms.push({ ...term, values: term.values.map(toMinorUnits) });
+        // Deliberately NOT converted to minor units. The wire carries major
+        // units, like the JSON boundary everywhere else in this API, and the
+        // server does the single major->minor conversion with money.Parse.
+        // Converting here as well made every amount filter 100x too large.
+        terms.push(term);
         continue;
       case "date":
         terms.push(...expandDates(term, diagnostics));
@@ -66,7 +70,7 @@ export function resolveQuery(
         terms.push(term);
         continue;
       case "uuid":
-        terms.push(...resolveIds(term, src, diagnostics));
+        terms.push(...resolveIds(term, def, src, diagnostics));
         continue;
     }
   }
@@ -92,13 +96,15 @@ function labelFor(field: string): string {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function resolveIds(term: QueryTerm, src: ResolveSource, diagnostics: QueryDiagnostic[]): QueryTerm[] {
+function resolveIds(term: QueryTerm, def: FieldDef, src: ResolveSource, diagnostics: QueryDiagnostic[]): QueryTerm[] {
   const resolved: string[] = [];
   const ambiguous: string[] = [];
 
   for (const value of term.values) {
-    // The sentinels and an id the caller already resolved are passed through.
-    if (value === "none" || value === "uncategorized" || UUID_RE.test(value)) {
+    // A sentinel passes only for a field whose column is actually nullable. On
+    // any other uuid field the compiler would bind the literal string against the
+    // column and the database would answer 500, so it is reported here instead.
+    if (def.sentinels?.includes(value) || UUID_RE.test(value)) {
       resolved.push(value);
       continue;
     }
@@ -117,12 +123,21 @@ function resolveIds(term: QueryTerm, src: ResolveSource, diagnostics: QueryDiagn
   }
 
   if (ambiguous.length > 0) {
+    // The fix-it advice has to name a spelling this field actually understands.
+    // Only cat resolves `Group/Name`; telling someone to disambiguate a payee or
+    // an account that way sent them to a string that resolves to nothing.
+    const hint =
+      term.field === "cat"
+        ? ` Use ${term.field}:Group/Name to pick one.`
+        : term.field === "group"
+          ? ` Use the group's exact name.`
+          : ` Use the exact name.`;
     diagnostics.push({
       term: term.raw,
       code: DIAG.ambiguous,
       message:
         `${ambiguous.map((v) => JSON.stringify(v)).join(", ")} matched more than one ` +
-        `${labelFor(term.field)}; keeping all of them. Use ${term.field}:Group/Name to pick one.`,
+        `${labelFor(term.field)}; keeping all of them.${hint}`,
       position: term.position,
     });
   }
@@ -164,19 +179,6 @@ function lookup(field: string, raw: string, src: ResolveSource): string[] {
     default:
       return [];
   }
-}
-
-/**
- * toMinorUnits converts decimal major units to integer minor units without ever
- * touching a float: a query for 50.75 must send 5075, not 5074.999999999999.
- * The server binds the result against a BIGINT cents column.
- */
-export function toMinorUnits(value: string): string {
-  const negative = value.startsWith("-");
-  const body = value.replace(/^[+-]/, "");
-  const [whole = "0", frac = ""] = body.split(".");
-  const minor = Number(whole) * 100 + Number(frac.padEnd(2, "0") || "0");
-  return `${negative ? "-" : ""}${minor}`;
 }
 
 /**

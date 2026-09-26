@@ -94,6 +94,7 @@ function renderFilters(
     queryDiagnostics: [],
     onQueryInProgressChange: vi.fn(),
     onQueryCommit: vi.fn(),
+    onQueryTextChange: vi.fn(),
     ...overrides,
   };
   // The box is controlled by `query`, so the harness has to behave like the page
@@ -108,6 +109,10 @@ function renderFilters(
         onFilterChange={(key, value) => {
           props.onFilterChange(key, value);
           if (key === "q") setQuery(value);
+        }}
+        onQueryTextChange={(text) => {
+          props.onQueryTextChange(text);
+          setQuery(text);
         }}
       />
     );
@@ -125,15 +130,16 @@ function comboBoxWithText(text: string): HTMLElement {
 }
 
 describe("TransactionFilters", () => {
-  // The search box is now the query box. It is controlled by `query`, writes the
-  // text on every keystroke, and reports a submit separately — the resolved
-  // expression is derived from the text by the page, not written back here.
+  // The search box is now the query box. It is controlled by `query`, reports the
+  // text through onQueryTextChange (which also ends the previous submission), and
+  // reports a submit separately - the resolved expression is derived from the text
+  // by the page, not written back here.
   it("writes the text as it is typed", async () => {
     const user = userEvent.setup();
     const { props } = renderFilters();
     const box = screen.getByRole("combobox", { name: /transaction query/i });
     await user.type(box, "coffee");
-    expect(props.onFilterChange).toHaveBeenLastCalledWith("q", "coffee");
+    expect(props.onQueryTextChange).toHaveBeenLastCalledWith("coffee");
   });
 
   it("reports a submit separately, without rewriting the text", async () => {
@@ -143,7 +149,7 @@ describe("TransactionFilters", () => {
     await user.type(box, "coffee{Enter}");
     expect(props.onQueryCommit).toHaveBeenCalledTimes(1);
     // A submitted name must stay a name in the box: the id goes to the server.
-    expect(props.onFilterChange).not.toHaveBeenCalledWith("q", expect.stringContaining("-"));
+    expect(props.onQueryTextChange).not.toHaveBeenLastCalledWith(expect.stringContaining("-"));
   });
 
   it("shows the text it is given, so a shared link opens the same query", () => {

@@ -24,9 +24,21 @@ function setup(initialText = "", server: ServerDiagnostics = NO_SERVER) {
     ({ text: seed }: { text: string }) => {
       const [text, setText] = useState(seed);
       const [inProgress, setInProgress] = useState<string | null>(null);
+      // The page clears `finalized` when the text changes, not this hook: the
+      // hook cannot know whether an edit is a new submission. `setText` here is
+      // only the harness's way of seeding text, so it also clears, exactly as the
+      // page does.
       const [finalized, setFinalized] = useState(false);
       const lang = useQueryLanguage({ source: src, text, inProgress, finalized, server });
-      return { ...lang, setInProgress, finalize: () => setFinalized(true) };
+      return {
+        ...lang,
+        setInProgress,
+        setText: (next: string) => {
+          setText(next);
+          setFinalized(false);
+        },
+        finalize: () => setFinalized(true),
+      };
     },
     { initialProps: { text: initialText } },
   );
@@ -73,7 +85,7 @@ describe("the in-progress token", () => {
   it("does not serialize the in-progress token", () => {
     const { result } = setup("amt>50 am");
     act(() => result.current.setInProgress("am"));
-    expect(result.current.q).toBe("amt>5000");
+    expect(result.current.q).toBe("amt>50");
   });
 
   it("sends nothing at all when the only token is in progress", () => {
@@ -90,6 +102,25 @@ describe("the in-progress token", () => {
     act(() => result.current.setInProgress(null));
     expect(result.current.diagnostics).toEqual([]);
     expect(result.current.q).toBe("catg");
+  });
+
+  // Finalizing is per submission, not for the life of the box. It used to latch:
+  // after one Enter, every later keystroke both diagnosed AND serialized the
+  // trailing token, so the banner strobed on each character and a half-typed
+  // term was sent - dropping the whole q and flashing the unfiltered ledger.
+  it("goes back to treating a trailing token as in progress after the text changes", () => {
+    const { result } = setup("coffee catgory:food");
+    act(() => result.current.setInProgress("catgory:food"));
+    act(() => result.current.finalize());
+    expect(result.current.diagnostics.map((d) => d.code)).toEqual(["unknown_field"]);
+
+    // The user keeps typing. The finalized state must not survive that: the
+    // trailing token goes back to being excluded from both the diagnostics and
+    // the wire value.
+    act(() => result.current.setText("coffee catgory:foods"));
+    act(() => result.current.setInProgress("catgory:foods"));
+    expect(result.current.diagnostics).toEqual([]);
+    expect(result.current.q).toBe("coffee");
   });
 });
 

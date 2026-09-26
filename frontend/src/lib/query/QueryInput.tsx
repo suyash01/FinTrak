@@ -94,18 +94,25 @@ function suggestionsFor(text: string, token: CaretToken, source: ResolveSource):
       if (t.toLowerCase().includes(partial)) out.push({ group: "Tags", label: t, insert: insert(t) });
     }
   }
-  if (token.field === "cat" || token.field === "group") {
+  if (token.field === "cat") {
+    // Only cat takes a category. `group:` resolves a group name or id, so
+    // offering a category there produced a `group:Food/Groceries` the resolver
+    // then reported as an unresolvable group.
     const groupName = (id: string) => source.groups.find((g) => g.id === id)?.name ?? "";
     for (const c of source.categories) {
       if (!c.name.toLowerCase().includes(partial)) continue;
-      // Two categories can share a name, so an ambiguous one is offered
-      // qualified. The bare spelling still resolves to both, and the resolver
-      // reports the ambiguity rather than picking one.
+      // Two categories can share a name, so one is offered qualified. The bare
+      // spelling still resolves to both, and the resolver reports the ambiguity
+      // rather than picking one.
       const qualified = `${groupName(c.groupId)}/${c.name}`;
       out.push({ group: "Categories", label: qualified, insert: insert(qualified) });
     }
+  }
+  if (token.field === "cat" || token.field === "group") {
     for (const g of source.groups) {
-      if (g.name.toLowerCase().includes(partial)) out.push({ group: "Groups", label: g.name, insert: insert(g.name) });
+      if (g.name.toLowerCase().includes(partial)) {
+        out.push({ group: "Groups", label: g.name, insert: `${token.field}:${quoteIfNeeded(g.name)}` });
+      }
     }
   }
   if (token.field === "date") {
@@ -277,9 +284,13 @@ function describeField(def: FieldDef): string {
   if (def.enum) return def.enum.join(" | ");
   switch (def.kind) {
     case "uuid":
-      return "an id, or none / uncategorized";
+      // Only a nullable column takes a sentinel. Promising `none` on acct or
+      // group would send the user to a spelling the server answers with a 500.
+      return def.sentinels?.length
+        ? `an id, or ${def.sentinels.join(" / ")}`
+        : "an id (a uuid)";
     case "amount":
-      return "a decimal in major units; supports > >= < <= = !=";
+      return "a decimal in major units, e.g. 50 or 50.75; supports > >= < <= = !=";
     case "date":
       return `YYYY-MM-DD or ${DATE_PERIODS.join(" / ")}; supports > >= < <= = !=`;
     case "tags":

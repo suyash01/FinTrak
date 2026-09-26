@@ -84,8 +84,8 @@ func TestServerOnlyCasesAreOnlyAboutUnresolvedNames(t *testing.T) {
 	}
 
 	allowed := map[string]bool{
-		"a quoted name on an id field is rejected":      true,
-		"a name the server cannot resolve is dropped":   true,
+		"a quoted name on an id field is rejected":    true,
+		"a name the server cannot resolve is dropped": true,
 	}
 	var bad []string
 	shared := 0

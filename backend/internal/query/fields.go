@@ -25,6 +25,11 @@ type fieldDef struct {
 	enum []string
 	// kind selects the value validator.
 	kind valueKind
+	// sentinels are the words that stand for an absent value. Only a field whose
+	// column is actually nullable may use them, because the compiler turns one
+	// into `IS NULL`; on a non-nullable column it would bind the literal string
+	// against the column and PostgreSQL would answer with a type error.
+	sentinels []string
 }
 
 type valueKind int
@@ -42,16 +47,20 @@ var (
 	opsEq    = []Op{OpEq, OpNe}
 	opsOrder = []Op{OpEq, OpNe, OpGt, OpGe, OpLt, OpLe}
 	opsText  = []Op{OpEq, OpNe, OpLike}
+
+	// nullSentinels are the two words the existing filters already use for an
+	// absent category and an absent payee. Only cat and payee may take them.
+	nullSentinels = []string{"none", "uncategorized"}
 )
 
 var fieldTable = map[string]fieldDef{
 	FieldPlain:  {kind: kindText, ops: opsText},
 	"desc":      {userTyped: true, kind: kindText, ops: opsText},
 	"note":      {userTyped: true, kind: kindText, ops: opsText},
-	"cat":       {userTyped: true, kind: kindUUID, ops: opsEq},
+	"cat":       {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"group":     {userTyped: true, kind: kindUUID, ops: opsEq},
 	"acct":      {userTyped: true, kind: kindUUID, ops: opsEq},
-	"payee":     {userTyped: true, kind: kindUUID, ops: opsEq},
+	"payee":     {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"tag":       {userTyped: true, kind: kindTagList, ops: opsEq},
 	"type":      {userTyped: true, kind: kindEnum, enum: []string{"debit", "credit"}, ops: opsEq},
 	"linked":    {userTyped: true, kind: kindEnum, enum: []string{"true", "false"}, ops: opsEq},
@@ -121,13 +130,19 @@ func (d fieldDef) validate(t Term) error {
 		case kindText:
 			// Any text is acceptable; `~` is a substring match.
 		case kindUUID:
-			// The sentinels the existing filters already use.
-			if v == "none" || v == "uncategorized" {
+			if contains(d.sentinels, v) {
 				continue
 			}
-			if !isUUID(v) {
-				return errf(CodeUnresolved, "%s: %q is not an id this server can resolve; ids are a uuid, \"none\" or \"uncategorized\"", t.Field, v)
+			if isUUID(v) {
+				continue
 			}
+			// Say what this field actually accepts. Telling someone to try
+			// "none" on a field with no nullable column would send them round in
+			// circles, and would have 500ed if the validator had allowed it.
+			if len(d.sentinels) == 0 {
+				return errf(CodeUnresolved, "%s takes an id (a uuid); %q is not one", t.Field, v)
+			}
+			return errf(CodeUnresolved, "%s: %q is not an id this server can resolve; ids are a uuid, %q or %q", t.Field, v, d.sentinels[0], d.sentinels[1])
 		case kindEnum:
 			if !contains(d.enum, v) {
 				return errf(CodeUnresolved, "%s: %q is not one of %v", t.Field, v, d.enum)

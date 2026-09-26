@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseQuery } from "./parse";
-import { resolveQuery, serializeQuery, toMinorUnits, type ResolveSource } from "./resolve";
+import { resolveQuery, serializeQuery, type ResolveSource } from "./resolve";
 
 // Two categories deliberately share the name "Groceries" in different groups,
 // because that is the case the resolver has to handle without either silently
@@ -16,7 +16,14 @@ const src: ResolveSource = {
     { id: "33333333-3333-4333-8333-333333333333", name: "Food" },
     { id: "55555555-5555-4555-8555-555555555555", name: "Home" },
   ] as ResolveSource["groups"],
-  payees: [{ id: "77777777-7777-4777-8777-777777777777", name: "Whole Foods" }] as ResolveSource["payees"],
+  // Two payees deliberately share the name "Whole Foods", so the ambiguity
+  // advice can be checked on a field that does NOT understand the Group/Name
+  // spelling. "Corner Store" is unique, for the tests that want a clean resolve.
+  payees: [
+    { id: "77777777-7777-4777-8777-777777777777", name: "Whole Foods" },
+    { id: "88888888-8888-4888-8888-888888888888", name: "Whole Foods" },
+    { id: "99999999-9999-4999-8999-999999999999", name: "Corner Store" },
+  ] as ResolveSource["payees"],
   tags: ["vacation", "food"],
 };
 
@@ -30,10 +37,10 @@ describe("resolveQuery", () => {
   });
 
   it("resolves an account and a quoted payee", () => {
-    const { terms, diagnostics } = run('acct:Checking payee:"Whole Foods"');
+    const { terms, diagnostics } = run('acct:Checking payee:"Corner Store"');
     expect(diagnostics).toEqual([]);
     expect(serializeQuery(terms)).toBe(
-      "acct:11111111-1111-4111-8111-111111111111 payee:77777777-7777-4777-8777-777777777777",
+      "acct:11111111-1111-4111-8111-111111111111 payee:99999999-9999-4999-8999-999999999999",
     );
   });
 
@@ -58,6 +65,17 @@ describe("resolveQuery", () => {
     expect(diagnostics[0].message).toContain("cat:Group/Name");
   });
 
+  // The advice must name a spelling the field actually resolves. Only cat
+  // understands Group/Name, so telling a payee to use it sent the user to a
+  // string that resolves to nothing.
+  it("does not offer Group/Name for a field that cannot resolve it", () => {
+    const { diagnostics } = run('payee:"Whole Foods"');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].code).toBe("ambiguous_value");
+    expect(diagnostics[0].message).not.toContain("Group/Name");
+    expect(diagnostics[0].message).toContain("Use the exact name");
+  });
+
   it("drops a name that matches nothing and reports it, keeping the other terms", () => {
     const { terms, diagnostics } = run("payee:Costco amt>50");
     expect(terms.map((t) => t.field)).toEqual(["amt"]);
@@ -73,9 +91,21 @@ describe("resolveQuery", () => {
     expect(terms[1].values).toEqual(["vacation"]);
   });
 
-  it("converts a major-unit amount to minor units", () => {
-    const { terms } = run("amt>50");
-    expect(terms[0].values).toEqual(["5000"]);
+  // The wire carries MAJOR units, like the JSON boundary everywhere else in this
+  // API, and the server does the single major->minor conversion. Converting here
+  // as well made every amount filter 100x too large: `amt>50` filtered above
+  // $5,000. The server's own curl path was always right, so only the web app
+  // was wrong and no test noticed.
+  it("sends an amount in major units, unconverted", () => {
+    const { terms, diagnostics } = run("amt>50");
+    expect(diagnostics).toEqual([]);
+    expect(terms[0].values).toEqual(["50"]);
+    expect(serializeQuery(terms)).toBe("amt>50");
+  });
+
+  it("sends a fractional amount unconverted too", () => {
+    const { terms } = run("amt>=50.75");
+    expect(terms[0].values).toEqual(["50.75"]);
   });
 
   it("resolves a named period into concrete date bounds", () => {
@@ -101,20 +131,6 @@ describe("resolveQuery", () => {
   });
 });
 
-describe("toMinorUnits", () => {
-  // Money is never computed in a float here: 50.75 must be 5075 exactly.
-  it("converts whole and fractional amounts exactly", () => {
-    expect(toMinorUnits("50")).toBe("5000");
-    expect(toMinorUnits("50.7")).toBe("5070");
-    expect(toMinorUnits("50.75")).toBe("5075");
-    expect(toMinorUnits("0.05")).toBe("5");
-  });
-
-  it("keeps a leading minus", () => {
-    expect(toMinorUnits("-12.34")).toBe("-1234");
-  });
-});
-
 describe("serializeQuery", () => {
   it("quotes a value containing a space and escapes the quote character", () => {
     expect(
@@ -130,8 +146,8 @@ describe("serializeQuery", () => {
 
   it("writes an operator form as field<op>value and a not prefix", () => {
     expect(
-      serializeQuery([{ field: "amt", op: ">", values: ["5000"], negated: true, position: 0, raw: "" }]),
-    ).toBe("not amt>5000");
+      serializeQuery([{ field: "amt", op: ">", values: ["50"], negated: true, position: 0, raw: "" }]),
+    ).toBe("not amt>50");
   });
 
   it("keeps a CSV as a CSV", () => {
@@ -147,7 +163,7 @@ describe("serializeQuery", () => {
   });
 
   it("round-trips: serialize then parse gives the same terms back", () => {
-    for (const q of ["coffee", "cat:none", "amt>5000", "tag:vacation", 'tag:"Whole Foods"']) {
+    for (const q of ["coffee", "cat:none", "amt>50", "tag:vacation", 'tag:"Whole Foods"']) {
       const { terms, diagnostics } = resolveQuery(parseQuery(q), src);
       expect(diagnostics, q).toEqual([]);
       const again = parseQuery(serializeQuery(terms));

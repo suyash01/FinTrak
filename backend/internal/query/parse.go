@@ -97,15 +97,20 @@ func Parse(q string) (Expr, []Diagnostic) {
 	var expr Expr
 	var diags []Diagnostic
 
-	if len(q) > MaxQueryChars {
+	// The cap is counted in RUNES, and the cut lands on a rune boundary.
+	// Slicing the raw string at a byte offset split multi-byte characters, and
+	// the invalid UTF-8 went into a bound argument and came back from the
+	// database as an encoding error - a 500 from a parameter that is supposed to
+	// be incapable of failing.
+	runes := []rune(q)
+	if len(runes) > MaxQueryChars {
 		diags = append(diags, Diagnostic{
-			Term: q[:MaxQueryChars], Code: CodeTooLong,
+			Term: string(runes[:MaxQueryChars]), Code: CodeTooLong,
 			Message: "query is longer than 2000 characters; the rest was ignored",
 		})
-		q = q[:MaxQueryChars]
+		runes = runes[:MaxQueryChars]
 	}
 
-	runes := []rune(q)
 	i, n := 0, len(runes)
 	skipSpaces := func() {
 		for i < n && (runes[i] == ' ' || runes[i] == '\t') {

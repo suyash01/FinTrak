@@ -43,6 +43,15 @@ func Compile(e Expr, sink Sink) []Diagnostic {
 	return diags
 }
 
+// plainSearchGroup is one word's free-text predicate: a substring match over the
+// description, the notes, the payee's name and each tag, as one AND-ed clause
+// binding the same pattern four times. It is a format string with four %d
+// placeholders; the text itself is always a bound argument.
+const plainSearchGroup = `(LOWER(t.description) LIKE LOWER($%d)
+				  OR LOWER(COALESCE(t.notes, '')) LIKE LOWER($%d)
+				  OR EXISTS (SELECT 1 FROM payees sp WHERE sp.id = t.payee_id AND LOWER(sp.name) LIKE LOWER($%d))
+				  OR EXISTS (SELECT 1 FROM unnest(t.tags) AS tag WHERE LOWER(tag) LIKE LOWER($%d)))`
+
 // emit renders one term. A *Diagnostic return means "dropped, and report this".
 func emit(t Term, sink Sink) *Diagnostic {
 	// `not x` and `x!=v` are the same request, so both spellings negate. This is
@@ -51,17 +60,28 @@ func emit(t Term, sink Sink) *Diagnostic {
 
 	switch t.Field {
 	case FieldPlain:
-		// The existing free-text search, one AND-ed four-way group per word, so
-		// `coffee shop` requires both words. Each group binds the same pattern
-		// four times, exactly as txnQueryFilter's search does today.
+		// The existing free-text search: one four-way group per word, bound with
+		// the same pattern four times, exactly as txnQueryFilter's search does.
+		//
+		// The words are AND-ed, so `coffee shop` requires both. A negated term
+		// wraps the WHOLE conjunction once, so `not coffee shop` is "not (coffee
+		// AND shop)". Negating each word separately would be "neither coffee nor
+		// shop", which is a much broader request than the one that was made.
+		groups := make([]string, 0, len(t.Values))
+		args := make([]any, 0, len(t.Values)*4)
 		for _, w := range t.Values {
 			pattern := "%" + EscapeLikePattern(w) + "%"
-			sink.Params(`(LOWER(t.description) LIKE LOWER($%d)
-				  OR LOWER(COALESCE(t.notes, '')) LIKE LOWER($%d)
-				  OR EXISTS (SELECT 1 FROM payees sp WHERE sp.id = t.payee_id AND LOWER(sp.name) LIKE LOWER($%d))
-				  OR EXISTS (SELECT 1 FROM unnest(t.tags) AS tag WHERE LOWER(tag) LIKE LOWER($%d)))`,
-				pattern, pattern, pattern, pattern)
+			args = append(args, pattern, pattern, pattern, pattern)
+			groups = append(groups, plainSearchGroup)
 		}
+		joined := strings.Join(groups, " AND ")
+		if negate {
+			// Params, not Raw: the group still carries placeholders that must be
+			// substituted. Raw would leave a literal $%d in the statement.
+			sink.Params("NOT ("+joined+")", args...)
+			return nil
+		}
+		sink.Params(joined, args...)
 		return nil
 
 	case "desc":
@@ -184,8 +204,15 @@ func quoteAll(values []string) string {
 }
 
 // emitFlag is the boolean field: linked / recurring choose between two fixed
-// EXISTS fragments and bind nothing, so they use Raw.
+// EXISTS fragments and bind nothing.
+//
+// A comma-separated value is an OR, like every other field, so the fragments are
+// collected and OR-ed as ONE clause. Emitting one Raw fragment per value made
+// them AND-ed, and `linked:true,false` became EXISTS(...) AND NOT EXISTS(...) -
+// a contradiction that can never match, with no diagnostic to explain the empty
+// result.
 func emitFlag(t Term, sink Sink, negate bool, whenTrue, whenFalse string) *Diagnostic {
+	clauses := make([]string, 0, len(t.Values))
 	for _, v := range t.Values {
 		fragment := whenTrue
 		if v == "false" || v == "unlinked" {
@@ -199,8 +226,9 @@ func emitFlag(t Term, sink Sink, negate bool, whenTrue, whenFalse string) *Diagn
 				fragment = whenTrue
 			}
 		}
-		sink.Raw(fragment)
+		clauses = append(clauses, fragment)
 	}
+	wrapGroup(sink, clauses, negate)
 	return nil
 }
 

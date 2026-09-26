@@ -1077,19 +1077,23 @@ paths:
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
             linked, recurring), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
-            separated value matches any of them, and a bare word is the same
-            free-text search `search` performs. Values are ids, not names: `cat`,
-            `group`, `acct` and `payee` take a uuid (or the sentinels
-            "uncategorized" / "none"), `tag` takes a tag name because tags have
-            no ids, `amt` is in major units ("50", "50.75") and `date` is
-            YYYY-MM-DD. At most 32 terms.
+            separated value matches any of them, and a bare word is a free-text
+            search over description, notes, payee name and tags. Values are ids,
+            not names: `cat` and `payee` take a uuid, or the sentinels
+            "uncategorized" / "none" for an absent value; `group` and `acct` take
+            a uuid and have no sentinel, because their columns are not nullable;
+            `tag` takes a tag name, because tags have no ids; `amt` is in major
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
+            most 32 terms and 2000 characters.
 
 
-            An unusable term is never an error: it is dropped, and the export
-            silently omits it. Because a dropped constraint widens the result
-            set, a caller that lets a user type `q` here should parse it first
-            (or read the list endpoint's `queryDiagnostics`) so the user is told
-            what was ignored.
+            An unusable term is never an error: it is dropped and reported in
+            `queryDiagnostics`, which this response carries and which is
+            present only when something was ignored. Because a dropped
+            constraint widens the result set, a caller that sees the key present
+            must tell the user what was ignored rather than present the wider
+            set as the answer. This parameter AND-s with every other filter on
+            this operation.
         - in: query
           name: accountId
           schema:
@@ -1643,19 +1647,21 @@ paths:
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
             linked, recurring), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
-            separated value matches any of them, and a bare word is the same
-            free-text search `search` performs. Values are ids, not names: `cat`,
-            `group`, `acct` and `payee` take a uuid (or the sentinels
-            "uncategorized" / "none"), `tag` takes a tag name because tags have
-            no ids, `amt` is in major units ("50", "50.75") and `date` is
-            YYYY-MM-DD. At most 32 terms.
+            separated value matches any of them, and a bare word is a free-text
+            search over description, notes, payee name and tags. Values are ids,
+            not names: `cat` and `payee` take a uuid, or the sentinels
+            "uncategorized" / "none" for an absent value; `group` and `acct` take
+            a uuid and have no sentinel, because their columns are not nullable;
+            `tag` takes a tag name, because tags have no ids; `amt` is in major
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
+            most 32 terms and 2000 characters.
 
 
-            An unusable term is never an error: it is dropped, and the export
-            silently omits it. Because a dropped constraint widens the result
-            set, a caller that lets a user type `q` here should parse it first
-            (or read the list endpoint's `queryDiagnostics`) so the user is told
-            what was ignored.
+            An unusable term is never an error: it is dropped, and this endpoint
+            DROPS IT SILENTLY - a CSV has nowhere to report anything. Because a
+            dropped constraint widens the result set, a caller that lets a user
+            type `q` here should parse it first, or read the list endpoint's
+            `queryDiagnostics`, so the user is told what was ignored.
         - in: query
           name: accountId
           schema: { type: string }

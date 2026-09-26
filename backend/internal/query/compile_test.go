@@ -70,6 +70,73 @@ func compile(t *testing.T, q string) (*recSink, []Diagnostic) {
 // TestCompileMajorUnitsBecomeMinorUnits is the money test: `amt>50` is fifty
 // dollars and must bind 5000, never 50. A query for $50 that matched a $0.50
 // transaction would be silently and invisibly wrong.
+// TestCompileNotOnAPlainTermNegates is the regression test for a term that
+// silently compiled to its own opposite. `not coffee` used to emit exactly the
+// same predicate as `coffee`, so a user asking for everything EXCEPT coffee got
+// only coffee, with no diagnostic and a plausible-looking row count. The grammar
+// sheet advertises `not`, so the compiler has to honour it.
+func TestCompileNotOnAPlainTermNegates(t *testing.T) {
+	plain, _ := compile(t, "coffee")
+	negated, _ := compile(t, "not coffee")
+
+	if len(negated.clauses) != 1 {
+		t.Fatalf("got %d clauses, want one", len(negated.clauses))
+	}
+	if !strings.HasPrefix(negated.clauses[0], "NOT (") {
+		t.Errorf("clause %q is not negated", negated.clauses[0])
+	}
+	if plain.clauses[0] == negated.clauses[0] {
+		t.Error("`not coffee` compiled to the same predicate as `coffee`")
+	}
+}
+
+// TestCompileNotOnAMultiWordPlainTermNegatesTheWholeTerm: `not coffee shop` is
+// "not (coffee AND shop)", so the NOT must wrap the conjunction once. Wrapping
+// each word separately would be "neither coffee nor shop", which is a different
+// and much broader request.
+func TestCompileNotOnAMultiWordPlainTermNegatesTheWholeTerm(t *testing.T) {
+	sink, _ := compile(t, "not coffee shop")
+	if len(sink.clauses) != 1 {
+		t.Fatalf("got %d clauses, want the whole term as one", len(sink.clauses))
+	}
+	if !strings.HasPrefix(sink.clauses[0], "NOT (") {
+		t.Errorf("clause %q is not negated", sink.clauses[0])
+	}
+	if !strings.Contains(sink.clauses[0], " AND ") {
+		t.Errorf("clause %q should keep the words AND-ed inside the NOT", sink.clauses[0])
+	}
+}
+
+// TestCompileBooleanCSVIsAnOr is the regression test for a query that answered
+// "nothing" instead of "either". A comma-separated value is an OR everywhere
+// else, and the openapi prose promises it for every field - but the two boolean
+// fields emit one Raw fragment per value and Raw fragments are AND-ed, so
+// `linked:true,false` compiled to EXISTS(...) AND NOT EXISTS(...), which is
+// always false, with no diagnostic.
+func TestCompileBooleanCSVIsAnOr(t *testing.T) {
+	sink, diags := compile(t, "linked:true,false")
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", diags)
+	}
+	if len(sink.clauses) != 1 {
+		t.Fatalf("got %d clauses, want one OR group", len(sink.clauses))
+	}
+	if !strings.Contains(sink.clauses[0], " OR ") {
+		t.Errorf("clause %q should OR the two senses", sink.clauses[0])
+	}
+	if strings.Contains(sink.clauses[0], ") AND ") {
+		t.Errorf("clause %q ANDs two contradictory EXISTS fragments, so it can never match", sink.clauses[0])
+	}
+}
+
+// The same for the recurring field, whose two senses are its own.
+func TestCompileRecurringCSVIsAnOr(t *testing.T) {
+	sink, _ := compile(t, "recurring:linked,unlinked")
+	if len(sink.clauses) != 1 || !strings.Contains(sink.clauses[0], " OR ") {
+		t.Errorf("clauses = %v, want one OR group", sink.clauses)
+	}
+}
+
 func TestCompileMajorUnitsBecomeMinorUnits(t *testing.T) {
 	sink, diags := compile(t, "amt>50")
 	if len(diags) != 0 {
@@ -129,11 +196,16 @@ func TestCompilePlainSearchIsTheExistingFourWayOr(t *testing.T) {
 }
 
 // TestCompilePlainSearchBindsOneGroupPerWord: `coffee shop` must require both
-// words, so two groups and eight bound arguments.
+// words, as two four-way groups AND-ed inside a single clause. One clause rather
+// than two is deliberate: it is what lets a negated term wrap the whole
+// conjunction in one NOT.
 func TestCompilePlainSearchBindsOneGroupPerWord(t *testing.T) {
 	sink, _ := compile(t, "coffee shop")
-	if len(sink.clauses) != 2 {
-		t.Fatalf("got %d clauses, want one per word", len(sink.clauses))
+	if len(sink.clauses) != 1 {
+		t.Fatalf("got %d clauses, want the whole term as one", len(sink.clauses))
+	}
+	if !strings.Contains(sink.clauses[0], " AND ") {
+		t.Errorf("clause %q should AND the two words", sink.clauses[0])
 	}
 	if len(sink.bound()) != 8 {
 		t.Errorf("got %d args, want 8 (four per word)", len(sink.bound()))
@@ -164,9 +236,10 @@ func TestCompileSentinelMatchesNull(t *testing.T) {
 
 func TestCompileBooleanFieldsBindNothing(t *testing.T) {
 	sink, _ := compile(t, "linked:true recurring:unlinked")
+	// A single value is still OR-wrapped, like every other field's single value.
 	want := []string{
-		"EXISTS (SELECT 1 FROM links l WHERE l.from_txn_id = t.id OR l.to_txn_id = t.id)",
-		"NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id)",
+		"(EXISTS (SELECT 1 FROM links l WHERE l.from_txn_id = t.id OR l.to_txn_id = t.id))",
+		"(NOT EXISTS (SELECT 1 FROM recurring_attachments ra WHERE ra.transaction_id = t.id))",
 	}
 	if !reflect.DeepEqual(sink.clauses, want) {
 		t.Errorf("clauses = %v, want %v", sink.clauses, want)
@@ -236,9 +309,10 @@ func TestCompileOnlyReferencesTheTransactionsTable(t *testing.T) {
 }
 
 type corpusSQLCase struct {
-	Name    string `json:"name"`
-	Surface string `json:"surface"`
-	SQL     *struct {
+	Name      string `json:"name"`
+	Surface   string `json:"surface"`
+	Canonical string `json:"canonical"`
+	SQL       *struct {
 		Clauses []string `json:"clauses"`
 		Args    []any    `json:"args"`
 		Kind    string   `json:"kind"`
@@ -293,9 +367,19 @@ func TestCorpusSQLContract(t *testing.T) {
 				// TestCompilePlainSearchIsTheExistingFourWayOr.
 				return
 			}
-			sink, diags := compile(t, tc.Surface)
+			// Compile the CANONICAL form, not the surface. The canonical is what
+			// the frontend actually puts on the wire, so compiling the surface
+			// would leave the whole frontend-to-server path unverified: an
+			// `amt` term is the one case where they differ, and a double
+			// conversion there once made every amount filter 100x too large
+			// without a single test noticing.
+			surface := tc.Canonical
+			if surface == "" {
+				surface = tc.Surface
+			}
+			sink, diags := compile(t, surface)
 			if len(diags) != 0 {
-				t.Fatalf("Compile(%q) diagnostics: %+v", tc.Surface, diags)
+				t.Fatalf("Compile(%q) diagnostics: %+v", surface, diags)
 			}
 			if !reflect.DeepEqual(sink.clauses, tc.SQL.Clauses) {
 				t.Errorf("clauses = %v, want %v", sink.clauses, tc.SQL.Clauses)

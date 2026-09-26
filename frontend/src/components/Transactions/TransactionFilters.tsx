@@ -49,6 +49,12 @@ interface TransactionFiltersProps {
   onQueryInProgressChange: (token: string | null) => void;
   /** Called on submit, so a half-typed term becomes a real diagnostic. */
   onQueryCommit: () => void;
+  /**
+   * Called with the whole text on every keystroke. Separate from onFilterChange
+   * because editing the text must also end the previous submission's
+   * "finalized" state, and the box does not own that.
+   */
+  onQueryTextChange: (text: string) => void;
 }
 
 // Search + filter controls above the transactions table, plus the rows-per-page
@@ -75,6 +81,7 @@ export default function TransactionFilters({
   queryDiagnostics,
   onQueryInProgressChange,
   onQueryCommit,
+  onQueryTextChange,
 }: TransactionFiltersProps) {
   const triggerHeight = compactLayout ? "h-8" : "h-10";
 
@@ -176,7 +183,7 @@ export default function TransactionFilters({
             tags: tags.map((t) => t.name),
           }}
           value={query}
-          onValueChange={(text) => onFilterChange("q", text)}
+          onValueChange={onQueryTextChange}
           onSubmit={onQueryCommit}
           diagnostics={queryDiagnostics}
           onInProgressChange={onQueryInProgressChange}

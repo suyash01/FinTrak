@@ -193,7 +193,10 @@ describe("Transactions", () => {
     await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
 
     expect(lastTransactionParams()).toMatchObject({ accountId: "a1" });
-    expect(screen.getByText(/2 transactions across all accounts|2 transactions matching your filters/)).toBeInTheDocument();
+    // Strict: an accountId IS a filter, so this must be the "matching your
+    // filters" wording. An earlier version of this assertion accepted either
+    // phrasing, which is what let a bug through - see the isFiltered test below.
+    expect(screen.getByText(/2 transactions matching your filters/)).toBeInTheDocument();
   });
 
   it("sends a lone loan account as loanAccountId", async () => {
@@ -481,13 +484,13 @@ describe("the query language on the page", () => {
     renderPage("/transactions?q=cat%3AFood%2FGroceries+amt%3E50");
     await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
     expect(apiMock.getTransactions.mock.calls[0][0]).toMatchObject({
-      q: "cat:c1 amt>5000",
+      q: "cat:c1 amt>50",
     });
 
     await userEvent.click(await screen.findByRole("button", { name: /export/i }));
     await waitFor(() => expect(apiMock.exportTransactions).toHaveBeenCalled());
     expect(apiMock.exportTransactions.mock.calls[0][0]).toMatchObject({
-      q: "cat:c1 amt>5000",
+      q: "cat:c1 amt>50",
     });
   });
 
@@ -511,5 +514,40 @@ describe("the query language on the page", () => {
     renderPage("/transactions?q=payee%3Abogus");
     expect(await screen.findByText(/term was ignored/)).toBeInTheDocument();
     expect(screen.getByText("payee:bogus")).toBeInTheDocument();
+  });
+});
+
+describe("the header's filtered wording", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.getTransactions.mockResolvedValue({ data: [], total: 0, page: 1, pages: 1 });
+    apiMock.getTags.mockResolvedValue({ data: [] });
+  });
+
+  // isFiltered used to test `filters.search`, which no longer exists after the
+  // query language replaced the free-text parameter. `undefined !== ""` is true,
+  // so the header claimed "matching your filters" no matter what was set.
+  //
+  // The default account pre-fill is itself a filter, so this isolates isFiltered
+  // by removing the default account: with no filter at all the header must say
+  // "across all accounts".
+  it("says across all accounts when nothing is filtered", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      ...defaultDomain(),
+      accounts: accounts.map((a) => ({ ...a, isDefault: false })),
+    });
+    renderPage("/transactions");
+    await waitFor(() => expect(apiMock.getTransactions).toHaveBeenCalled());
+    expect(lastTransactionParams().accountId).toBeUndefined();
+    expect(screen.getByText(/across all accounts/)).toBeInTheDocument();
+  });
+
+  it("counts a query as a filter", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      ...defaultDomain(),
+      accounts: accounts.map((a) => ({ ...a, isDefault: false })),
+    });
+    renderPage("/transactions?q=coffee");
+    expect(await screen.findByText(/matching your filters/)).toBeInTheDocument();
   });
 });

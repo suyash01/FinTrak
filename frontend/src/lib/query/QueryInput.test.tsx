@@ -88,6 +88,26 @@ describe("QueryInput autocomplete", () => {
     expect(value(input)).toBe("tag:vacation");
   });
 
+  it("offers a category under cat: but not under group:", async () => {
+    // `group:` resolves a group name or id only, so offering a category there
+    // produced `group:Food/Groceries`, which the resolver then reported as
+    // "no category group named groceries" on the very next keystroke.
+    const user = userEvent.setup();
+    const { input } = setup();
+    await user.type(input, "cat:Grocer");
+    expect(await screen.findByText("Food/Groceries")).toBeTruthy();
+    await user.clear(input);
+    await user.type(input, "group:Grocer");
+    expect(screen.queryByText("Food/Groceries")).toBeNull();
+  });
+
+  it("offers a group name under group:", async () => {
+    const user = userEvent.setup();
+    const { input } = setup();
+    await user.type(input, "group:Ho");
+    expect(await screen.findByText("Home")).toBeTruthy();
+  });
+
   it("suggests only the periods that mean what they say", async () => {
     const user = userEvent.setup();
     const { input } = setup();
@@ -199,6 +219,21 @@ describe("QueryInput grammar sheet", () => {
     // Both a field with a fixed domain and a plain text field must be described,
     // so the documented syntax cannot drift from the accepted one.
     expect(await screen.findByText("debit | credit")).toBeTruthy();
-    expect(screen.getByText("a decimal in major units; supports > >= < <= = !=")).toBeTruthy();
+    expect(
+      screen.getByText("a decimal in major units, e.g. 50 or 50.75; supports > >= < <= = !="),
+    ).toBeTruthy();
+  });
+
+  // The sheet used to promise "an id, or none / uncategorized" for all four uuid
+  // fields. Only cat and payee have a nullable column; on acct and group that
+  // spelling reached the database and answered 500.
+  it("only offers a sentinel for a field whose column is nullable", async () => {
+    const user = userEvent.setup();
+    setup();
+    await user.click(screen.getByRole("button", { name: /query syntax/i }));
+    // cat and payee take a sentinel; acct and group do not, so each description
+    // appears exactly twice.
+    expect(await screen.findAllByText("an id, or none / uncategorized")).toHaveLength(2);
+    expect(screen.getAllByText("an id (a uuid)")).toHaveLength(2);
   });
 });
