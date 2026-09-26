@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -138,7 +138,7 @@ type linkKeys struct {
 func newLinkKeys() linkKeys {
 	return linkKeys{
 		Pane:      key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pane")),
-		Select:    key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select")),
+		Select:    key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "select")),
 		SelectAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all/none")),
 		New:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 		BulkNew:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "bulk from ids")),
@@ -310,7 +310,7 @@ func (l *Links) Update(msg tea.Msg) tea.Cmd {
 		l.clearSelection()
 		return l.refreshPane()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return l.handleKey(m)
 	}
 	return nil
@@ -318,7 +318,7 @@ func (l *Links) Update(msg tea.Msg) tea.Cmd {
 
 // handleKey routes a key press: first the pane-independent navigation and pane
 // cycle, then whatever the active pane binds.
-func (l *Links) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (l *Links) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := l.navKey(msg); handled {
 		return cmd
 	}
@@ -333,7 +333,7 @@ func (l *Links) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // navKey handles movement and the pane cycle.
-func (l *Links) navKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (l *Links) navKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if keyMatches(l.keys.Pane, msg) {
 		return l.nextPane(), true
 	}
@@ -407,7 +407,7 @@ func (l *Links) moveEdge(last bool) {
 }
 
 // linkKey handles the Links pane's actions.
-func (l *Links) linkKey(msg tea.KeyMsg) tea.Cmd {
+func (l *Links) linkKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(l.keys.Type, msg):
 		l.openTypePicker()
@@ -435,7 +435,7 @@ func (l *Links) linkKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // suggestionKey handles the Suggestions pane's actions.
-func (l *Links) suggestionKey(msg tea.KeyMsg) tea.Cmd {
+func (l *Links) suggestionKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(l.keys.Transfer, msg):
 		return l.setSuggestionKind("transfer")
@@ -481,7 +481,7 @@ func (l *Links) setSuggestionKind(kind string) tea.Cmd {
 }
 
 // cycleKey handles the Circular money pane's actions.
-func (l *Links) cycleKey(msg tea.KeyMsg) tea.Cmd {
+func (l *Links) cycleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if keyMatches(l.keys.Window, msg) {
 		l.openWindowForm()
 	}

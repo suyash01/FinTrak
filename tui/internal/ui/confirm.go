@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -50,7 +50,7 @@ func (c *Confirm) Canceled() bool { return c.closed && !c.confirmed }
 
 // Update handles one key press.
 func (c *Confirm) Update(msg tea.Msg) tea.Cmd {
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
 	}
@@ -118,7 +118,7 @@ func (i *InfoModal) Canceled() bool { return true }
 
 // Update scrolls or dismisses.
 func (i *InfoModal) Update(msg tea.Msg) tea.Cmd {
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
 	}
@@ -236,7 +236,7 @@ func (h *HelpModal) Canceled() bool { return true }
 
 // Update dismisses the overlay on any of the usual close keys.
 func (h *HelpModal) Update(msg tea.Msg) tea.Cmd {
-	key, ok := msg.(tea.KeyMsg)
+	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
 	}

@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -213,7 +213,7 @@ func (a *Accounts) Update(msg tea.Msg) tea.Cmd {
 		}
 		return a.afterMutation(m.tag)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return a.handleKey(m)
 	}
 	return nil
@@ -244,7 +244,7 @@ func (a *Accounts) afterMutation(tag string) tea.Cmd {
 
 // handleKey routes a key press. Refresh is deliberately absent: the App handles
 // `r` globally and calls Refresh.
-func (a *Accounts) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (a *Accounts) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case keyMatches(a.keys.New, msg):
 		a.openForm(nil)
@@ -780,7 +780,7 @@ type creditPicker struct {
 // Update implements Modal. Enter is inspected before the picker sees it, so a
 // refused row is never committed and the list stays open to pick another.
 func (c *creditPicker) Update(msg tea.Msg) tea.Cmd {
-	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "enter" {
 		if loan, ok := c.highlighted(); ok {
 			c.refuse(loan)
 			return nil

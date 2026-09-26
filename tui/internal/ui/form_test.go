@@ -6,9 +6,61 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// TestSpaceTogglesABoolField pins the v2 stringification of the space bar.
+// form.go matched " " in v1 and must match "space" in v2; a mismatch is silent,
+// because the toggle simply stops happening and the form still submits.
+// BoolField stores "yes"/"no" rather than a bool, which is the stored value the
+// assertion reads.
+func TestSpaceTogglesABoolField(t *testing.T) {
+	form := NewForm("t", "Edit", []Field{
+		BoolField("Closed", false),
+	}, nil)
+
+	form.Update(press(' '))
+	if form.fields[0].Value != "yes" {
+		t.Errorf("space did not toggle the field on: Value = %q, want %q",
+			form.fields[0].Value, "yes")
+	}
+
+	form.Update(press(' '))
+	if form.fields[0].Value != "no" {
+		t.Errorf("space did not toggle the field back off: Value = %q, want %q",
+			form.fields[0].Value, "no")
+	}
+}
+
+// TestTextFieldsKeepTheirWidth pins SetWidth. textinput.Width became
+// write-only in v2, so a form that forgets to set it renders a field too narrow
+// to read, with no error anywhere. TextField's third argument is a validator,
+// not a width, so the width is set on the Field; NewForm falls back to 32 when
+// it is zero.
+//
+// The assertion is on the input model's own width, not on the width of the
+// rendered line. A field line is a fixed 24-cell label column (with no colon) that
+// the layout pads regardless of the input, followed by the value truncated to
+// width-24-2, so its width is dominated by the label and would stay at 24 or more
+// even if the input had collapsed to a single character — a line-width assertion
+// here would pass while the bug it is meant to catch was present.
+func TestTextFieldsKeepTheirWidth(t *testing.T) {
+	field := TextField("Name", "hello", nil)
+	field.Width = 24
+	form := NewForm("t", "Edit", []Field{field}, nil)
+
+	if got := form.inputs[0].Width(); got != 24 {
+		t.Errorf("the input's width is %d, want the configured 24", got)
+	}
+
+	// A visibility smoke test, not a second width gate: this still passes with
+	// SetWidth dropped, so it only says the value reaches the screen at all.
+	body := ansi.Strip(form.View(DefaultTheme(), 60, 12))
+	if !strings.Contains(body, "hello") {
+		t.Errorf("the field value is not visible:\n%s", body)
+	}
+}
 
 // TestFormScrollsToKeepTheFocusedFieldVisible is a regression test for the
 // reported overflow: the form rendered every field regardless of the height it
@@ -46,7 +98,7 @@ func TestFormScrollsToKeepTheFocusedFieldVisible(t *testing.T) {
 
 	// Walking to the end must scroll the focused field into view.
 	for range len(fields) - 1 {
-		form.Update(tea.KeyMsg{Type: tea.KeyTab})
+		form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	}
 	body = ansi.Strip(form.View(DefaultTheme(), width, height))
 	assertFits(t, body)
@@ -59,7 +111,7 @@ func TestFormScrollsToKeepTheFocusedFieldVisible(t *testing.T) {
 
 	// And walking back brings the top back.
 	for range len(fields) - 1 {
-		form.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		form.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	}
 	body = ansi.Strip(form.View(DefaultTheme(), width, height))
 	if !strings.Contains(body, "▸ Field 00") {
@@ -129,7 +181,7 @@ func TestOversizedModalCannotEscapeTheScreen(t *testing.T) {
 	a.focus = FocusContent
 	a.modal = oversizedModal{}
 
-	out := a.View()
+	out := a.view()
 	lines := strings.Split(out, "\n")
 	if len(lines) > 24 {
 		t.Errorf("the frame is %d lines tall for a 24-row terminal", len(lines))
@@ -161,7 +213,7 @@ func TestHelpOverlayFitsAShortTerminal(t *testing.T) {
 	// Scrolling reveals the rest: reaching the end means the last row of the second
 	// section is on screen (its heading has scrolled past by then, which is fine).
 	for range 40 {
-		help.Update(tea.KeyMsg{Type: tea.KeyDown})
+		help.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	body = ansi.Strip(help.View(DefaultTheme(), 60, 12))
 	if lines := strings.Count(body, "\n") + 1; lines > 12 {
@@ -221,7 +273,7 @@ func TestSmallTerminalModalShowsSeveralFormFields(t *testing.T) {
 		a.focus = FocusContent
 		a.modal = NewForm("tall", "Tall form", fields, nil)
 
-		frame := ansi.Strip(a.View())
+		frame := ansi.Strip(a.view())
 		shown := 0
 		for _, label := range labels {
 			if strings.Contains(frame, label) {
@@ -250,19 +302,19 @@ func TestFormIgnoresASecondSubmitWhileTheFirstIsInFlight(t *testing.T) {
 		})
 
 	// The field is the form's only one, so enter submits it as well as ctrl+s.
-	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	form.Update(ctrlPress('s'))
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if submits != 1 {
 		t.Errorf("a second submit key while the first mutation was in flight submitted %d times, want 1", submits)
 	}
 
 	// The mutation came back rejected: the form is the user's to correct.
 	form.SetError(errors.New("duplicate transaction"))
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if submits != 2 {
 		t.Fatalf("submissions after a rejected save = %d, want 2", submits)
 	}
-	form.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	form.Update(ctrlPress('s'))
 	if submits != 2 {
 		t.Errorf("submissions after resubmitting = %d, want 2: the guard must be back in place", submits)
 	}

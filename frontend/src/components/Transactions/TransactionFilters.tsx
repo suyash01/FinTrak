@@ -1,6 +1,8 @@
 import { useMemo } from "react";
-import { Search, Folder, Tag } from "lucide-react";
+import { Folder, Tag } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { QueryInput } from "@/lib/query/QueryInput";
+import type { QueryDiagnostic } from "@/lib/query/parse";
 import {
   Select,
   SelectContent,
@@ -13,7 +15,7 @@ import MultiSelect, {
 } from "@/components/ui/multi-select";
 import { UNCATEGORIZED, type CategorySection } from "../../lib/categories";
 import { groupAccountsByType } from "../../utils/accountGroups";
-import type { Account, Payee, TagCount } from "../../types";
+import type { Account, Category, CategoryGroup, Payee, TagCount } from "../../types";
 import {
   PAGE_SIZE_OPTIONS,
   parseFilterList,
@@ -33,6 +35,26 @@ interface TransactionFiltersProps {
   onPresetChange: (value: string) => void;
   onCustomInputChange: (value: string) => void;
   onCommitCustom: () => void;
+  /** The typed query's resolved value, for the initial text of the box. */
+  query: string;
+  /** Categories and groups, so the box can resolve a name the user types. */
+  categories: Category[];
+  groups: CategoryGroup[];
+  /**
+   * Diagnostics for the current text, so the box can show a term it ignored
+   * before the request that would also report it comes back.
+   */
+  queryDiagnostics: QueryDiagnostic[];
+  /** Reports the token the caret is in, so it is not diagnosed mid-typing. */
+  onQueryInProgressChange: (token: string | null) => void;
+  /** Called on submit, so a half-typed term becomes a real diagnostic. */
+  onQueryCommit: () => void;
+  /**
+   * Called with the whole text on every keystroke. Separate from onFilterChange
+   * because editing the text must also end the previous submission's
+   * "finalized" state, and the box does not own that.
+   */
+  onQueryTextChange: (text: string) => void;
 }
 
 // Search + filter controls above the transactions table, plus the rows-per-page
@@ -53,6 +75,13 @@ export default function TransactionFilters({
   onPresetChange,
   onCustomInputChange,
   onCommitCustom,
+  query,
+  categories,
+  groups,
+  queryDiagnostics,
+  onQueryInProgressChange,
+  onQueryCommit,
+  onQueryTextChange,
 }: TransactionFiltersProps) {
   const triggerHeight = compactLayout ? "h-8" : "h-10";
 
@@ -145,13 +174,20 @@ export default function TransactionFilters({
   return (
     <>
       <div className={`relative w-full ${compactLayout ? "mb-3" : "mb-5"}`}>
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input
-          className={`pl-9 ${compactLayout ? "h-8" : "h-10"} bg-background`}
-          placeholder="Search descriptions, notes, payees, tags..."
-          aria-label="Search transactions by description, notes, payee, or tag"
-          value={filters.search}
-          onChange={(e) => onFilterChange("search", e.target.value)}
+        <QueryInput
+          source={{
+            accounts,
+            categories,
+            groups,
+            payees,
+            tags: tags.map((t) => t.name),
+          }}
+          value={query}
+          onValueChange={onQueryTextChange}
+          onSubmit={onQueryCommit}
+          diagnostics={queryDiagnostics}
+          onInProgressChange={onQueryInProgressChange}
+          compactLayout={compactLayout}
         />
       </div>
       <div

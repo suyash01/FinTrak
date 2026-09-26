@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -16,6 +16,32 @@ import (
 // area is allowed to shrink below a few rows. A fixed chrome is what left a
 // two-field sign-in form showing one field and a fifty-entry category chooser
 // showing one entry.
+
+// TestDigitIndexUnderV2KeyStrings pins the assumption the digit shortcuts are
+// built on: v2 stringifies a digit keypress as that digit alone. If this stops
+// holding, `digitIndex` returns -1 for every digit and the 1..9 and 0 jumps
+// silently do nothing. The end-to-end gate for that is
+// TestDeliberateJumpEntersTheScreen; this is the unit-level restatement.
+func TestDigitIndexUnderV2KeyStrings(t *testing.T) {
+	// An ordered slice, not a map: map[rune]int iterates in random order, so a
+	// regression would report its failures in nondeterministic sequence.
+	for _, tc := range []struct {
+		key  rune
+		want int
+	}{
+		{'1', 0},
+		{'5', 4},
+		{'9', 8},
+		{'0', 9},
+	} {
+		if got := digitIndex(press(tc.key).String()); got != tc.want {
+			t.Errorf("digitIndex(%q) = %d, want %d", press(tc.key).String(), got, tc.want)
+		}
+	}
+	if got := digitIndex(press('a').String()); got != -1 {
+		t.Errorf("digitIndex(%q) = %d, want -1", press('a').String(), got)
+	}
+}
 
 // TestLoginFormShowsAllFields is the reported case: the login card used to hand
 // the form a height of zero, so even two fields did not fit.
@@ -87,7 +113,7 @@ func TestCategoryChooserInAFormShowsManyCategories(t *testing.T) {
 	form := NewForm("t", "Edit transaction", []Field{
 		SelectField("Category", "", ctx.Ref.CategoryOptions(), false),
 	}, nil)
-	form.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opens the chooser
+	form.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // opens the chooser
 	if form.picker == nil {
 		t.Fatal("the select field did not open a chooser")
 	}

@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 	"github.com/fintrak/tui/internal/sshd"
@@ -88,7 +88,7 @@ func startLocal(opts options) error {
 	if err != nil {
 		return err
 	}
-	program := tea.NewProgram(ui.New(client), tea.WithAltScreen())
+	program := tea.NewProgram(ui.New(client))
 	_, err = program.Run()
 	return err
 }

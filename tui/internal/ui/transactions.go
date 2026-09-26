@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -70,7 +70,7 @@ func newTxKeys() txKeys {
 		Edit:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		Detail:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "detail + links")),
-		Select:     key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select")),
+		Select:     key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "select")),
 		SelectAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "select all/none")),
 		Clear:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear selection")),
 		Sort:       key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort field")),
@@ -217,14 +217,14 @@ func (t *Transactions) Update(msg tea.Msg) tea.Cmd {
 		t.clearSelection()
 		return t.reload()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return t.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press.
-func (t *Transactions) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (t *Transactions) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if t.searching {
 		switch msg.String() {
 		case "enter":
@@ -335,7 +335,7 @@ func (t *Transactions) handleKey(msg tea.KeyMsg) tea.Cmd {
 		t.searching = true
 		t.search = textinput.New()
 		t.search.Placeholder = "search description, notes, payee, tags"
-		t.search.Width = 48
+		t.search.SetWidth(48)
 		t.search.SetValue(t.filter.Search)
 		t.search.Focus()
 		return textinput.Blink

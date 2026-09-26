@@ -3,8 +3,8 @@ package ui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -69,7 +69,7 @@ func listRows(height int) int {
 }
 
 // keyMatches reports whether a key press satisfies a binding.
-func keyMatches(binding key.Binding, msg tea.KeyMsg) bool {
+func keyMatches(binding key.Binding, msg tea.KeyPressMsg) bool {
 	return binding.Enabled() && key.Matches(msg, binding)
 }
 

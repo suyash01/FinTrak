@@ -1,6 +1,6 @@
 # FinTrak Terminal Client
 
-The TUI is a Go + Bubble Tea client for the same REST API as the web SPA. It
+The TUI is a Go + Bubble Tea v2 client for the same REST API as the web SPA. It
 can run in a local terminal or serve the same UI through an SSH door.
 
 ## Local mode

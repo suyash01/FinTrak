@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/fintrak/client/api"
 )
@@ -274,14 +274,14 @@ func (r *Recurring) Update(msg tea.Msg) tea.Cmd {
 		}
 		return tea.Batch(r.reloadSeries(), r.reloadPane())
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return r.handleKey(m)
 	}
 	return nil
 }
 
 // handleKey routes a key press to the open sub-view or to the series list.
-func (r *Recurring) handleKey(msg tea.KeyMsg) tea.Cmd {
+func (r *Recurring) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if r.pane != recurPaneSeries {
 		return r.handlePaneKey(msg)
 	}
@@ -315,7 +315,7 @@ func (r *Recurring) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 // handlePaneKey routes a key press inside a sub-view: esc always returns to the
 // series list, and the rest depends on which view is open.
-func (r *Recurring) handlePaneKey(msg tea.KeyMsg) tea.Cmd {
+func (r *Recurring) handlePaneKey(msg tea.KeyPressMsg) tea.Cmd {
 	if keyMatches(r.keys.Back, msg) {
 		r.pane = recurPaneSeries
 		return nil
@@ -350,7 +350,7 @@ func (r *Recurring) handlePaneKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // moveTable applies the shared cursor keys to a table.
-func (r *Recurring) moveTable(table *Table, msg tea.KeyMsg) {
+func (r *Recurring) moveTable(table *Table, msg tea.KeyPressMsg) {
 	switch msg.String() {
 	case "up", "k":
 		table.Move(-1)
