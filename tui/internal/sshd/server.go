@@ -289,35 +289,31 @@ func (s *server) logSession(next ssh.Handler) ssh.Handler {
 func (s *server) model(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// The client's own environment is the one the profile below is derived from:
 	// the door process's TERM (usually unset in a container) is not the terminal
-	// the session is drawn on. wish appends its own WithEnvironment on every branch
-	// of makeOpts, after ours, so the program in fact runs on wish's copy of the
-	// list — the same one, except on a pty request that carries no TERM, where
-	// wish appends an empty TERM over the client's and sessionEnv leaves the
-	// client's alone.
+	// the session is drawn on.
 	env := sessionEnv(sess)
 	// The profile is named explicitly rather than left to the program, which runs
 	// colorprofile.Detect only when it was given no profile. The point is that the
 	// answer follows the client's environment rather than the PTY branch, and the
 	// cost is the half of Detect that colorprofile.Env does not read.
 	//
-	// wish already names a profile on the emulated branch, because there the output
-	// is the ssh.Session itself — an io.Writer, not a term.File — and Detect gates
-	// on the output being a terminal. Its options are appended after ours
-	// (tea.NewProgram(m, append(opts, MakeOptions(s)...))), so on that branch its
-	// assignment is the one that lands and this call has no effect there. What
-	// this call decides is the real-PTY branch, where wish names no profile and
-	// hands the program pty.Slave: a real term.File, so Detect would run and read
-	// terminfo and tmux as well as the environment. Answering with Env instead is
-	// what keeps that branch from answering on different grounds than the emulated
-	// one, so the depth a client gets follows what the client said — its TERM and
-	// COLORTERM — rather than which kind of pty it happened to be handed.
+	// On the Unix build wish already names a profile on the emulated branch, because
+	// there the output is the ssh.Session itself — an io.Writer, not a term.File —
+	// and Detect gates on the output being a terminal. Its options are appended
+	// after ours (tea.NewProgram(m, append(opts, MakeOptions(s)...))), so on that
+	// branch its assignment is the one that lands and this call has no effect there.
+	// What this call decides is the real-PTY branch, where wish names no profile and
+	// hands the program pty.Slave: a real term.File, so on a real PTY that
+	// advertises a TERM the program would have run Detect and read terminfo and
+	// tmux as well as the environment. Answering with Env instead is what keeps that
+	// branch from answering on different grounds than the emulated one, so the depth
+	// a client gets follows what the client said — its TERM and COLORTERM — rather
+	// than which kind of pty it happened to be handed.
 	//
 	// The cost: Detect takes the maximum of the environment, terminfo and tmux, so
 	// overriding it with Env can only lower the profile, never raise it. A terminal
 	// that is direct-colour by terminfo but says nothing in COLORTERM gets a
 	// shallower palette than Detect would have allowed, not a wrong one.
 	opts := []tea.ProgramOption{
-		tea.WithEnvironment(env),
 		tea.WithColorProfile(colorprofile.Env(env)),
 	}
 

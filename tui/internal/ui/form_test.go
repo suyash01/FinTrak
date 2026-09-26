@@ -40,10 +40,11 @@ func TestSpaceTogglesABoolField(t *testing.T) {
 // it is zero.
 //
 // The assertion is on the input model's own width, not on the width of the
-// rendered line. A field line is `Label: value` and is padded by the layout, so
-// its width is dominated by the label and would stay above 24 even if the input
-// had collapsed to a single character — a line-width assertion here would pass
-// while the bug it is meant to catch was present.
+// rendered line. A field line is a fixed 24-cell label column (with no colon) that
+// the layout pads regardless of the input, followed by the value truncated to
+// width-24-2, so its width is dominated by the label and would stay at 24 or more
+// even if the input had collapsed to a single character — a line-width assertion
+// here would pass while the bug it is meant to catch was present.
 func TestTextFieldsKeepTheirWidth(t *testing.T) {
 	field := TextField("Name", "hello", nil)
 	field.Width = 24
@@ -53,6 +54,8 @@ func TestTextFieldsKeepTheirWidth(t *testing.T) {
 		t.Errorf("the input's width is %d, want the configured 24", got)
 	}
 
+	// A visibility smoke test, not a second width gate: this still passes with
+	// SetWidth dropped, so it only says the value reaches the screen at all.
 	body := ansi.Strip(form.View(DefaultTheme(), 60, 12))
 	if !strings.Contains(body, "hello") {
 		t.Errorf("the field value is not visible:\n%s", body)

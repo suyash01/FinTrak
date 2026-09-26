@@ -6,19 +6,34 @@ import (
 )
 
 func TestThemeForResolvesThePaletteForLightAndDark(t *testing.T) {
+	// Every colour ThemeFor names, both ways round. The row-selected background is
+	// a style rather than a field, and is left to the rendered-style assertions
+	// in app_test.go.
 	tests := []struct {
-		name           string
-		isDark         bool
-		primary, muted string
+		name                                          string
+		isDark                                        bool
+		primary, muted, danger, success, warn, border string
 	}{
-		{"dark", true, "#22d3ee", "#94a3b8"},
-		{"light", false, "#0e7490", "#64748b"},
+		{
+			name: "dark", isDark: true,
+			primary: "#22d3ee", muted: "#94a3b8", danger: "#f87171",
+			success: "#4ade80", warn: "#fbbf24", border: "#334155",
+		},
+		{
+			name: "light", isDark: false,
+			primary: "#0e7490", muted: "#64748b", danger: "#b91c1c",
+			success: "#15803d", warn: "#b45309", border: "#cbd5e1",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			th := ThemeFor(tc.isDark)
 			assertHex(t, "Primary", th.Primary, tc.primary)
 			assertHex(t, "Muted", th.Muted, tc.muted)
+			assertHex(t, "Danger", th.Danger, tc.danger)
+			assertHex(t, "Success", th.Success, tc.success)
+			assertHex(t, "Warn", th.Warn, tc.warn)
+			assertHex(t, "Border", th.Border, tc.border)
 		})
 	}
 }
