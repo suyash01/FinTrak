@@ -83,7 +83,7 @@
 ### Terminal client (`tui/`)
 
 - **Language**: Go 1.27, a separate module (`github.com/fintrak/tui`)
-- **Framework**: Bubble Tea + Bubbles/Lip Gloss, with [wish](https://github.com/charmbracelet/wish) for the optional SSH door
+- **Framework**: Bubble Tea v2 + Bubbles/Lip Gloss v2, with [wish](https://github.com/charmbracelet/wish) for the optional SSH door
 - **Tests**: stdlib `testing` plus a route-parity suite against `backend/openapi.yaml`
 
 ### Shared API client (`client/`)
@@ -228,7 +228,7 @@ The web frontend is a Progressive Web App: `frontend/public/manifest.webmanifest
 
 ### Terminal client (`tui/`)
 
-A keyboard-driven terminal client lives in `tui/` (Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea)). It is a pure client of the same REST API — no extra endpoint, no schema change — so it covers what the web frontend covers: filtered transaction search, inline create/edit/delete, multi-select bulk actions, statement and Paperless imports, CSV/JSON exports and restore, the dashboard, the money-flow graph with its timeline, the cash-flow calendar, and the recurring/loan tooling.
+A keyboard-driven terminal client lives in `tui/` (Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea), v2). It is a pure client of the same REST API — no extra endpoint, no schema change — so it covers what the web frontend covers: filtered transaction search, inline create/edit/delete, multi-select bulk actions, statement and Paperless imports, CSV/JSON exports and restore, the dashboard, the money-flow graph with its timeline, the cash-flow calendar, and the recurring/loan tooling.
 
 ```bash
 cd tui
