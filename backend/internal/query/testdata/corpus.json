@@ -280,6 +280,35 @@
         { "term": "catgory:food", "code": "unknown_field", "message": "unknown field catgory", "position": 0 },
         { "term": "amt>>50", "code": "bad_operator", "message": "malformed operator after amt", "position": 13 }
       ]
+    },
+    {
+      "name": "a currency is matched case-insensitively",
+      "surface": "ccy:usd",
+      "canonical": "ccy:usd",
+      "terms": [{ "field": "ccy", "op": "=", "values": ["usd"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": {
+        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2))"],
+        "args": ["USD"]
+      }
+    },
+    {
+      "name": "a currency that is not three letters is refused",
+      "surface": "ccy:US",
+      "canonical": "ccy:US",
+      "terms": [],
+      "diagnostics": [{ "term": "ccy:US", "code": "unresolved_value", "message": "ccy: \"US\" is not a currency code (three letters, e.g. USD)", "position": 0 }]
+    },
+    {
+      "name": "a currency csv is an or set",
+      "surface": "ccy:usd,eur",
+      "canonical": "ccy:usd,eur",
+      "terms": [{ "field": "ccy", "op": "=", "values": ["usd", "eur"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": {
+        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2) OR EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $3))"],
+        "args": ["USD", "EUR"]
+      }
     }
   ]
 }

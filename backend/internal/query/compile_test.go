@@ -283,6 +283,7 @@ func TestCompileOnlyReferencesTheTransactionsTable(t *testing.T) {
 	queries := []string{
 		"coffee", "coffee shop", "desc:rent", "note:memo", "cat:none", "cat:" + uuidA,
 		"group:" + uuidA, "acct:" + uuidA, "payee:none", "payee:" + uuidA,
+		"ccy:usd", "ccy:usd,eur", "not ccy:usd",
 		"tag:food", "tag:food,drink", "type:debit", "amt>50", "date>=2026-01-01",
 		"linked:true", "linked:false", "recurring:unlinked", "not linked:true",
 	}

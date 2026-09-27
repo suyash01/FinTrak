@@ -93,6 +93,8 @@ func emit(t Term, sink Sink) *Diagnostic {
 		return emitColumn(t, sink, "t.category_id = $%d", "t.category_id IS NULL", negate)
 	case "acct":
 		return emitColumn(t, sink, "t.account_id = $%d", "", negate)
+	case "ccy":
+		return emitCurrency(t, sink, negate)
 	case "payee":
 		return emitColumn(t, sink, "t.payee_id = $%d", "t.payee_id IS NULL", negate)
 	case "type":
@@ -153,6 +155,35 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 	clauses := make([]string, 0, len(t.Values))
 	for _, v := range t.Values {
 		clauses = append(clauses, sink.Clause("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", v))
+	}
+	wrapGroup(sink, clauses, negate)
+	return nil
+}
+
+// currencyPredicate matches a transaction whose account holds one currency,
+// through a correlated EXISTS so the fragment still names only `transactions
+// t`. A join is not an option and the reason is at the top of this file: the
+// list query and its COUNT(*) share this predicate, so a fragment naming a
+// joined table would make the count fail while the page rendered fine.
+// compile_safety_test.go enforces that.
+//
+// It is emitGroup's shape deliberately — one clause per value, OR-ed by
+// wrapGroup — because that is what keeps the placeholder numbering in one
+// place. sink.Clause allocates each $n, so a csv is several placeholders and
+// never a hand-counted one, which is what would break the moment another term
+// preceded this one on the same query.
+const currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $%d)"
+
+// emitCurrency binds a ccy term. Every value is folded to upper case here, at
+// bind time rather than at parse time, so the parser keeps what the user typed
+// (the same split `amt` uses, where convertAmount normalises at compile time)
+// and the TypeScript mirror has nothing to fold. Without the fold, "usd" would
+// bind against 'USD', match nothing, and hand the user an empty ledger with no
+// error to explain it.
+func emitCurrency(t Term, sink Sink, negate bool) *Diagnostic {
+	clauses := make([]string, 0, len(t.Values))
+	for _, v := range t.Values {
+		clauses = append(clauses, sink.Clause(currencyPredicate, strings.ToUpper(v)))
 	}
 	wrapGroup(sink, clauses, negate)
 	return nil

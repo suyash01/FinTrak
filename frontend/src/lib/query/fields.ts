@@ -13,7 +13,7 @@ import { PERIOD_CURRENT_FY, PERIOD_LAST_12_MONTHS } from "@/lib/dates";
 // the two modules circular at runtime over a type that is erased anyway.
 export type QueryOp = "=" | "!=" | ">" | ">=" | "<" | "<=" | "~";
 
-export type FieldKind = "text" | "uuid" | "enum" | "amount" | "date" | "tags";
+export type FieldKind = "text" | "uuid" | "enum" | "amount" | "date" | "tags" | "currency";
 
 export interface FieldDef {
   /** False for the `plain` pseudo-field, which the parser synthesises. */
@@ -44,6 +44,7 @@ export const FIELD_TABLE: Record<string, FieldDef> = {
   cat: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   group: { userTyped: true, kind: "uuid", ops: EQ },
   acct: { userTyped: true, kind: "uuid", ops: EQ },
+  ccy: { userTyped: true, kind: "currency", ops: EQ },
   payee: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   tag: { userTyped: true, kind: "tags", ops: EQ },
   type: { userTyped: true, kind: "enum", ops: EQ, enum: ["debit", "credit"] },

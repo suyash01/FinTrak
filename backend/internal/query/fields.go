@@ -41,6 +41,7 @@ const (
 	kindAmount
 	kindDate
 	kindTagList
+	kindCurrency
 )
 
 var (
@@ -60,6 +61,7 @@ var fieldTable = map[string]fieldDef{
 	"cat":       {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"group":     {userTyped: true, kind: kindUUID, ops: opsEq},
 	"acct":      {userTyped: true, kind: kindUUID, ops: opsEq},
+	"ccy":       {userTyped: true, kind: kindCurrency, ops: opsEq},
 	"payee":     {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"tag":       {userTyped: true, kind: kindTagList, ops: opsEq},
 	"type":      {userTyped: true, kind: kindEnum, enum: []string{"debit", "credit"}, ops: opsEq},
@@ -147,6 +149,16 @@ func (d fieldDef) validate(t Term) error {
 			if !contains(d.enum, v) {
 				return errf(CodeUnresolved, "%s: %q is not one of %v", t.Field, v, d.enum)
 			}
+		case kindCurrency:
+			// Three ASCII letters, folded to upper case: the column is
+			// VARCHAR(3) and every code stored in it is upper case, so an
+			// un-folded "usd" would bind against 'USD', match nothing, and
+			// return an empty ledger with no error to explain it. Not a
+			// kindEnum: the domain is the user's own accounts, so a fixed
+			// list would refuse a currency they legitimately hold.
+			if !isCurrencyCode(v) {
+				return errf(CodeUnresolved, "%s: %q is not a currency code (three letters, e.g. USD)", t.Field, v)
+			}
 		case kindAmount:
 			if _, err := money.Parse(v); err != nil {
 				return errf(CodeMalformedAmt, "%s: %q is not an amount (e.g. 50 or 50.75)", t.Field, v)
@@ -170,6 +182,22 @@ func (d fieldDef) validate(t Term) error {
 func isUUID(v string) bool {
 	_, err := uuid.Parse(v)
 	return err == nil
+}
+
+// isCurrencyCode reports whether v is three ASCII letters, in either case. The
+// fold to upper case happens in the compiler, not here, so validate only has to
+// answer "is this the right shape".
+func isCurrencyCode(v string) bool {
+	if len(v) != 3 {
+		return false
+	}
+	for i := range len(v) {
+		c := v[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func contains(list []string, want string) bool {
