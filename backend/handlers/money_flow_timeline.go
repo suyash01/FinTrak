@@ -73,7 +73,23 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 	// still appears and explains the currency it holds - which is what lets a
 	// caller see a currency holding no transaction in the window at all, rather
 	// than a period list silently missing it.
-	scope, err := srv.currencyScope(ctx, srv.db, userID, scopeOptions{
+	//
+	// Both reads run in one read-only, repeatable-read transaction. The scope is
+	// the periods' own explanation of themselves, so a write landing between two
+	// autocommit statements would let them describe different ledgers - an
+	// account's scoped income and its period's amount disagreeing, or a period
+	// naming a currency the scope never mentions, which is the silent gap this
+	// response exists to close. Same argument, and same shape, as the dashboard
+	// summary and the money-flow graph.
+	tx, err := srv.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (begin)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	scope, err := srv.currencyScope(ctx, tx, userID, scopeOptions{
 		DateFrom:  dateFrom,
 		DateTo:    dateTo,
 		AccountID: accountID,
@@ -85,9 +101,15 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 		return
 	}
 
-	periods, err := queryMonthlyFlowTimeline(ctx, srv.db, userID, dateFrom, dateTo, accountID, currency)
+	periods, err := queryMonthlyFlowTimeline(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlowTimeline (monthly)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("GetMoneyFlowTimeline (commit)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -104,6 +126,12 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 //
 // The account's currency is projected and grouped with the month, so one month is
 // one period holding one amount per currency rather than one period per currency.
+// Reading the transaction's denomination off its account rests on there being no
+// currency of its own on a transaction: a transaction's amount is always in its own
+// account's currency, and a schema that gave transactions a currency would make this
+// projection a mislabel rather than an error. The same premise is stated for links
+// in money_flow.go's linkCurrencyColumn.
+//
 // The grouping is by ordinal: the currency is the second select expression, so
 // `GROUP BY 1, 2` reads the month and the currency, and `ORDER BY 1, 2` returns
 // each month in one piece with its currencies in a fixed order. Grouping the month
@@ -197,7 +225,9 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 	// belongs to exactly one account, and the API only lets a transaction be
 	// assigned to a cycle of its own account, so every period of this timeline is
 	// in that one currency. The maps below are per-currency for consistency with
-	// the monthly view, not because this window can span currencies.
+	// the monthly view, not because this window can span currencies. As there, the
+	// account's currency is the transactions' denomination only because a
+	// transaction carries no currency of its own.
 	var billingDay *int
 	var accountCurrency string
 	err = srv.db.QueryRow(ctx,
@@ -263,7 +293,20 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 	windowStart := window[0].StartDate.Format("2006-01-02")
 	windowEnd := window[len(window)-1].EndDate.Format("2006-01-02")
 
-	scope, err := srv.currencyScope(ctx, srv.db, userID, scopeOptions{
+	// The scope and the periods share one read-only, repeatable-read snapshot, for
+	// the same reason as the monthly view: the scope names the currency the
+	// periods are in, so it has to be read from the same ledger they were. It
+	// starts here rather than around the whole branch because ensureBillingCycles
+	// above is a writer, and a read-only transaction could not contain it.
+	tx, err := srv.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (begin)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	scope, err := srv.currencyScope(ctx, tx, userID, scopeOptions{
 		DateFrom:  windowStart,
 		DateTo:    windowEnd,
 		AccountID: accountID.String(),
@@ -290,7 +333,7 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		cycleArgs = append(cycleArgs, currency)
 	}
 
-	rows, err := srv.db.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT bc.id, bc.start_date, bc.end_date, bc.label,
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
@@ -308,6 +351,34 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 	}
 	defer rows.Close()
 
+	periods, err := billingCycleTimelinePeriods(rows, accountCurrency)
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (cycle periods fold)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("GetMoneyFlowTimeline (commit)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, models.MoneyFlowTimeline{
+		GroupBy:       billingCycleGroupBy,
+		Periods:       periods,
+		CurrencyScope: scope.Scope,
+	})
+}
+
+// billingCycleTimelinePeriods folds the cycle rows into one period per cycle, each
+// in the account's single currency. It is a function rather than inline code in the
+// handler so that its row-stream error is testable on its own: through the handler
+// a failed stream and a failed commit are both a 500, so a test there cannot tell
+// which branch answered, and a fold that dropped the rows.Err() check would pass
+// it. Half-read folds report the cycles that did arrive and silently omit the rest,
+// which reads as a quiet account rather than as a failed read.
+func billingCycleTimelinePeriods(rows pgx.Rows, accountCurrency string) ([]models.MoneyFlowTimelinePeriod, error) {
 	periods := []models.MoneyFlowTimelinePeriod{}
 	for rows.Next() {
 		var id uuid.UUID
@@ -315,9 +386,7 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		var label string
 		var income, expense money.Amount
 		if err := rows.Scan(&id, &start, &end, &label, &income, &expense); err != nil {
-			slog.Error("GetMoneyFlowTimeline scan (cycle periods)", slog.String("error", err.Error()))
-			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		incomeAmt := models.NewCurrencyAmounts().Add(accountCurrency, income)
 		expenseAmt := models.NewCurrencyAmounts().Add(accountCurrency, expense)
@@ -331,10 +400,8 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 			Net:       incomeAmt.Sub(expenseAmt),
 		})
 	}
-
-	c.JSON(http.StatusOK, models.MoneyFlowTimeline{
-		GroupBy:       billingCycleGroupBy,
-		Periods:       periods,
-		CurrencyScope: scope.Scope,
-	})
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return periods, nil
 }
