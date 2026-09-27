@@ -455,8 +455,8 @@ func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
 }
 
 // TestCurrencyScopeReadsTheProjectedCurrencyEverywhere pins the invariant the
-// whole feature rests on: the SELECT projection, the GROUP BY and the
-// `currency` predicate must all read COALESCE(NULLIF(a.currency, ''), 'INR'.
+// whole feature rests on: the SELECT projection, the `?currency=` predicate and
+// the GROUP BY must all read COALESCE(NULLIF(a.currency, ''), 'INR').
 //
 // accounts.currency is nullable, and the "" that a restored backup bundle can
 // carry reaches the column verbatim. If the WHERE omitted the NULLIF that the
@@ -466,8 +466,12 @@ func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
 // entire change was written to eliminate.
 //
 // One assertion spanning the whole statement, because three narrow ones would
-// each pass while the other two sites drifted: a reader cannot tell from a
-// test named for this invariant that it only ever checked the WHERE.
+// each pass while the other two sites drifted: a reader cannot tell from a test
+// named for this invariant that it only ever checked the WHERE.
+//
+// The options carry a Currency on purpose. With none, the predicate never
+// renders, so the middle segment has nothing to match and the guard silently
+// narrows back to the two sites it was written to close.
 func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -477,14 +481,17 @@ func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
 	srv := newTestServer(mock)
 
 	projected := `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\)`
-	// The projection and the GROUP BY, with the WHERE's predicate between them.
-	statement := "SELECT a\\.id, a\\.name, " + projected +
-		" AS currency[\\s\\S]*?GROUP BY a\\.id, a\\.name, " + projected
+	statement := "SELECT a\\.id, a\\.name, " + projected + " AS currency" +
+		"[\\s\\S]*? AND " + projected + " = \\$2" +
+		"[\\s\\S]*?GROUP BY a\\.id, a\\.name, " + projected
 	mock.ExpectQuery(statement).
-		WithArgs(testUserID()).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
+		WithArgs(testUserID(), "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(uuid.New(), "Travel card", "INR", 0, 0))
 
-	if _, err := srv.currencyScope(context.Background(), mock, testUserID(), scopeOptions{}); err != nil {
+	if _, err := srv.currencyScope(context.Background(), mock, testUserID(), scopeOptions{
+		Currency: "INR",
+	}); err != nil {
 		t.Fatalf("currencyScope: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
