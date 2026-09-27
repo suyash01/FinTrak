@@ -16,17 +16,6 @@ body:
         Nothing here is committed to. Features are usually discussed before they are
         scheduled, and a PR for a large one may be asked to split.
 
-  - type: input
-    id: ticket
-    attributes:
-      label: Ticket
-      description: >-
-        If this work will land as a pull request, its title has to be
-        `<ticket-id>: <short description>`, so include the ID here.
-      placeholder: "FIN-8"
-    validations:
-      required: false
-
   - type: textarea
     id: problem
     attributes:

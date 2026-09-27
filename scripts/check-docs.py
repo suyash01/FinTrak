@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -29,9 +30,12 @@ MERMAID_TYPES = {
 }
 
 
+ROOT_DOCS = ("README.md", "CONTRIBUTING.md", "AGENTS.md", "FLOWCHART.md")
+
+
 def markdown_files() -> list[Path]:
     files: list[Path] = []
-    for name in ("README.md", "CONTRIBUTING.md", "AGENTS.md", "FLOWCHART.md"):
+    for name in ROOT_DOCS:
         path = ROOT / name
         if path.exists():
             files.append(path)
@@ -45,6 +49,28 @@ def markdown_files() -> list[Path]:
     return sorted(set(files))
 
 
+def exists_case_sensitive(path: Path) -> bool:
+    """Whether `path` exists, comparing every path segment's case exactly.
+
+    `Path.exists()` asks the filesystem, so on a case-insensitive one (Windows,
+    macOS) a link to `FLOWCHART.md` happily resolves to a file tracked as
+    `flowchart.md`. The link then passes on the author's machine and fails on
+    the case-sensitive filesystem CI runs on - so walk the real directory
+    entries instead, where membership is an exact string comparison on every
+    platform. A case-mismatched link should fail where it was written.
+    """
+    current = ROOT
+    for part in path.relative_to(ROOT).parts:
+        try:
+            entries = os.listdir(current)
+        except OSError:
+            return False
+        if part not in entries:
+            return False
+        current = current / part
+    return True
+
+
 def check_links(errors: list[str]) -> None:
     for path in markdown_files():
         text = path.read_text(encoding="utf-8")
@@ -56,7 +82,7 @@ def check_links(errors: list[str]) -> None:
             if not target or not PATH_TARGET.match(target):
                 continue
             candidate = (ROOT / target[1:]) if target.startswith("/") else (path.parent / target)
-            if not candidate.exists():
+            if not exists_case_sensitive(candidate):
                 errors.append(f"{path.relative_to(ROOT)}: missing local link target {raw!r}")
 
 
@@ -128,6 +154,11 @@ def check_openapi_descriptions(errors: list[str]) -> None:
 
 def main() -> int:
     errors: list[str] = []
+    # A root document listed above but absent (renamed, or its case changed) used
+    # to be skipped without a word, so its links were never checked. Name it.
+    for name in ROOT_DOCS:
+        if not exists_case_sensitive(ROOT / name):
+            errors.append(f"expected root document {name} is missing (renamed? wrong case?)")
     check_links(errors)
     check_mermaid(errors)
     check_makefile_and_docs(errors)

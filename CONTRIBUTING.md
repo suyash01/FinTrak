@@ -26,9 +26,11 @@ NULL tags, the date window) are the ones most likely to be violated by accident.
 
 - **Open an issue first for anything non-trivial** — a new feature, a schema change, a
   dependency bump, or a behavioural change to an existing endpoint. A short discussion
-  first is cheaper than a rejected 2,000-line PR.
+  first is cheaper than a rejected 2,000-line PR. The issue is the unit of work and
+  the thing the pull request closes, so this is the only place the work is tracked.
 - **Small fixes can go straight to a PR.** Typo fixes, a missing test, a one-line
-  correction to a doc, and unambiguous bug fixes need no prior issue.
+  correction to a doc, and unambiguous bug fixes need no prior issue — just say so in
+  the description instead of a `Closes #` line.
 - **Please don't open a pull request you have not run the gate on** (below). CI runs the
   same commands, so a red PR is just a slower local run.
 
@@ -147,27 +149,27 @@ a floor to get a pull request merged.
 
 ---
 
-## Branches, commits, and PR titles
+## Branches, commits, and pull requests
 
 - **Branch from `master`** and target your pull request at `master`. Release tags are
   cut only from `master` at `origin/master` with a clean tree, so nothing targeting
   another branch can ship.
-- **Name branches after the ticket** — `feature/FIN-<n>`, the pattern already in use
-  here. A branch for work with no ticket yet uses a descriptive slug instead
-  (`feature/query-language`). Dependabot's `dependabot/…` branches are the third form.
-- **Commit subjects follow Conventional Commits**, as the history already does —
-  `feat(import): …`, `fix(tui): …`, `docs: …`, `test: …`, with an optional scope. The
-  imperative mood reads best: `fix(links): reject a transfer to a closed account`.
-- **Pull request titles are `<ticket-id>: <short description>`** — for example
-  `FIN-7: read ISO 20022 and OFX bank files in the browser`. The description stays on
-  one line, in plain prose, with no scope parentheses. This is **enforced in CI** by
-  [`.github/workflows/pull-request-title.yml`](.github/workflows/pull-request-title.yml),
-  which checks the shape `ABC-123: …` and a 100-character limit. Dependabot's
-  auto-generated pull requests are exempt.
+- **Name branches descriptively** — `feature/<short-slug>`, as in
+  `feature/query-language`. Dependabot's `dependabot/…` branches are the other form.
+- **Commit subjects and pull request titles follow Conventional Commits**, as the
+  history already does — `feat(import): …`, `fix(tui): …`, `docs: …`, `test: …`, with
+  an optional scope. The imperative mood reads best:
+  `fix(links): reject a transfer to a closed account`. A pull request title is the one
+  line that says what the change does, so it should read on its own:
+  `feat(import): read ISO 20022 and OFX bank files in the browser`.
+- **Link the issue in the pull request body**, as the first line:
+  `Closes #12`. That is what ties the two together — GitHub links them, closes the
+  issue on merge, and shows the issue in the pull request's sidebar. It replaces the
+  ticket ID a separate tracker would have given you, and unlike one it resolves to
+  something a reader can open.
 
-The commit subject and the PR title are two different things and follow two different
-rules — a conventional-commit *commit* inside a ticket-prefixed *pull request* is
-correct and expected.
+There is no ticket system beyond GitHub Issues: a [GitHub Issue](https://github.com/suyash01/FinTrak/issues)
+*is* the unit of work, so an issue number is the only identifier a pull request needs.
 
 ---
 

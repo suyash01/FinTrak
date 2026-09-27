@@ -1,18 +1,18 @@
 <!--
-  Title must be: <ticket-id>: <short description>   e.g. "FIN-7: read ISO 20022 bank files"
-  Checked by .github/workflows/pull-request-title.yml.
-  Commit subjects inside the PR follow Conventional Commits (feat(x):, fix(x):, docs:, test:).
+  Title: one line, Conventional Commits style, e.g.
+  "feat(import): read ISO 20022 and OFX bank files in the browser"
+  Commit subjects inside the PR use the same style.
 -->
-
-## What and why
-
-<!-- What does this change, and what problem does it solve? Link the issue if there is one. -->
 
 Closes #
 
+## What and why
+
+<!-- What does this change, and what problem does it solve? -->
+
 ## Checklist
 
-- [ ] I opened or referenced an issue for this (or it is a small fix that does not need one)
+- [ ] I opened an issue for this, or it is a small fix that needs none
 - [ ] `make test` + the `make test-*-cover-check` targets for every module I touched
 - [ ] `make test-integration` (if I touched SQL, migrations, or anything Docker-backed)
 - [ ] `make openapi-check` (if I added, changed, or removed a route)

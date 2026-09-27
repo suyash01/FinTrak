@@ -45,17 +45,6 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: ticket
-    attributes:
-      label: Ticket
-      description: >-
-        Optional for a drive-by fix. If this work will land as a pull request, its
-        title has to be `<ticket-id>: <short description>`, so include the ID here.
-      placeholder: "FIN-7 (optional)"
-    validations:
-      required: false
-
   - type: textarea
     id: expected
     attributes:
