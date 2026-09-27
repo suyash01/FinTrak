@@ -1073,19 +1073,67 @@ type MoneyFlowLinkSummary struct {
 	Total CurrencyAmounts `json:"total"`
 }
 
+// MoneyFlowSuppressedLeg is one leg of a cycle the graph could not draw, and
+// what it removed from that leg.
+//
+// Gross is the leg's full flow, per currency, before anything was netted away.
+// Discarded is the part of it that is in no node total and no edge of the graph,
+// so the two are what a reader reconciles against the drawn figure: a currency
+// in Gross but absent from the graph is in Discarded, by definition and per
+// currency. Nothing here is computed across currencies, and the sum of every leg's
+// Discarded is already inside CurrencyScope's income and expense — these legs are
+// ordinary transactions — so a client reports them, it does not add them to the
+// totals again.
+type MoneyFlowSuppressedLeg struct {
+	From      string          `json:"from"`
+	To        string          `json:"to"`
+	Gross     CurrencyAmounts `json:"gross"`
+	Discarded CurrencyAmounts `json:"discarded"`
+}
+
+// MoneyFlowSuppressedCycle is one circular account-to-account flow the graph
+// cannot draw, with the amounts it removed. A Sankey must stay acyclic, so
+// reciprocal pairs are netted and longer loops are broken by dropping their back
+// edge; this is where the money that went missing is disclosed rather than
+// silently absent from the graph.
+//
+// Kind is "reciprocal" for a pair that flowed both ways and "cycle" for a longer
+// loop. Two things remove money and the pair is reported whichever happened:
+// netting cancels a currency against its own reverse, and the cycle break drops
+// whatever netting could not reduce — which, since a rupee cannot cancel a
+// dollar, is a whole currency in a link between differently denominated accounts.
+// Without this the same response would state one total in the graph and a
+// different one in LinkSummary for the same money, with nothing to reconcile them.
+//
+// Accounts lists the participants in flow order as account ids, each leg running
+// from Accounts[i] to Accounts[(i+1)%len(Accounts)] — the same accounts
+// CurrencyScope names, so a reader can resolve them without this type carrying a
+// second copy of the display metadata.
+type MoneyFlowSuppressedCycle struct {
+	Kind     string                   `json:"kind"`
+	Accounts []string                 `json:"accounts"`
+	Legs     []MoneyFlowSuppressedLeg `json:"legs"`
+}
+
 // MoneyFlowGraph is the response of GET /api/v1/dashboard/money-flow. Every
 // amount on it is per-currency, and the three headline totals come from the same
 // currencyScope query the rest of the reporting endpoints use, so they describe
 // the same accounts the nodes do. TotalNet is computed here rather than left to a
 // client, because income minus expense is only defined inside one currency.
+//
+// SuppressedCycles is the response's account for anything CurrencyScope names but
+// the graph does not draw: a currency the scope holds whose only flows were
+// circular, removed because a cycle cannot be drawn and one currency cannot
+// cancel another. It is empty, never null, when nothing was removed.
 type MoneyFlowGraph struct {
-	Nodes         []MoneyFlowNode        `json:"nodes"`
-	Links         []MoneyFlowEdge        `json:"links"`
-	TotalIncome   CurrencyAmounts        `json:"totalIncome"`
-	TotalExpense  CurrencyAmounts        `json:"totalExpense"`
-	TotalNet      CurrencyAmounts        `json:"totalNet"`
-	LinkSummary   []MoneyFlowLinkSummary `json:"linkSummary"`
-	CurrencyScope CurrencyScope          `json:"currencyScope"`
+	Nodes            []MoneyFlowNode            `json:"nodes"`
+	Links            []MoneyFlowEdge            `json:"links"`
+	TotalIncome      CurrencyAmounts            `json:"totalIncome"`
+	TotalExpense     CurrencyAmounts            `json:"totalExpense"`
+	TotalNet         CurrencyAmounts            `json:"totalNet"`
+	LinkSummary      []MoneyFlowLinkSummary     `json:"linkSummary"`
+	SuppressedCycles []MoneyFlowSuppressedCycle `json:"suppressedCycles"`
+	CurrencyScope    CurrencyScope              `json:"currencyScope"`
 }
 
 // Circular-money report types. The Sankey has to be acyclic, so the account

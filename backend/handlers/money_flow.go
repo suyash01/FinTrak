@@ -477,20 +477,15 @@ func combineFlowConds(fromCond, toCond string) string {
 	}
 }
 
-// accountFlowEdges turns raw cross-account links into directed account flows
-// (debit account -> credit account), then nets reciprocal pairs and drops the
-// remaining back edges so the result is a DAG the Sankey can render. The
-// processing order is deterministic (sorted ids), so the same input always
-// yields the same edges.
-func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
-	edges, _ := analyzeAccountFlows(rows)
-	return edges
-}
-
-// flowCycleEdge is one directed account leg of a circular flow.
+// flowCycleEdge is one directed account leg of a circular flow. value is the
+// leg's gross flow — what circulated — and discarded is the part of it that ended
+// up in no edge, filled in once the whole graph is known. gross and drawn differ
+// for two separate reasons, and both are reported: netting cancels a currency
+// against its own reverse, and the cycle break drops a leg wholesale.
 type flowCycleEdge struct {
 	srcID, dstID string
 	value        models.CurrencyAmounts
+	discarded    models.CurrencyAmounts
 }
 
 // flowCycle is one circular money flow between accounts. kind is "reciprocal"
@@ -527,10 +522,12 @@ func flowLinkEnds(r flowAcctLinkRow) (key [2]string, src, dst flowAccountEnd, ok
 // analyzeAccountFlows turns raw cross-account links into directed account flows
 // (debit account -> credit account), then nets reciprocal pairs and drops the
 // remaining back edges so the returned edges form a DAG the Sankey can render.
-// The cycles this discards are returned alongside them, so the circular-money
-// report (GetLinkCycles) can surface exactly what the graph had to hide. The
-// processing order is deterministic (sorted ids), so the same input always
-// yields the same edges and the same cycles.
+// The cycles this discards are returned alongside them, each leg carrying both
+// what circulated and what the graph did not keep, so both the graph
+// (`MoneyFlowGraph.SuppressedCycles`) and the circular-money report
+// (GetLinkCycles) can say what had to be hidden rather than only that something
+// was. The processing order is deterministic (sorted ids), so the same input
+// always yields the same edges and the same cycles.
 //
 // Which edges are drawn is decided by identity - the node pair, then the DFS
 // stack - not by which amount is larger, so making every value per-currency does
@@ -541,6 +538,12 @@ func flowLinkEnds(r flowAcctLinkRow) (key [2]string, src, dst flowAccountEnd, ok
 // cycle. The reciprocal cycle carries the gross, per-currency legs either way.
 func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle) {
 	agg := map[[2]string]*flowAccountEdge{}
+	// gross is agg before netting, keyed the same way, and is what a cycle leg
+	// reports: what circulated between the two accounts, not what survived. The
+	// graph is required to stay acyclic and a cycle is required to be reported
+	// with what it removed, and a report of the post-netting figure would answer
+	// neither.
+	gross := map[[2]string]models.CurrencyAmounts{}
 	for _, r := range rows {
 		key, src, dst, ok := flowLinkEnds(r)
 		if !ok {
@@ -548,6 +551,7 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 		}
 		if e, ok := agg[key]; ok {
 			e.value = e.value.Add(r.currency, r.amount)
+			gross[key] = gross[key].Add(r.currency, r.amount)
 			continue
 		}
 		agg[key] = &flowAccountEdge{
@@ -555,6 +559,7 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 			dstID: dst.id, dstName: dst.name, dstColor: dst.color,
 			value: models.NewCurrencyAmounts().Add(r.currency, r.amount),
 		}
+		gross[key] = models.NewCurrencyAmounts().Add(r.currency, r.amount)
 	}
 	// Net reciprocal pairs into a single edge in the dominant direction. This
 	// removes the common A->B / B->A two-cycles outright; each one is reported
@@ -592,8 +597,8 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 			kind:  "reciprocal",
 			nodes: []string{key[0], key[1]},
 			legs: []flowCycleEdge{
-				{srcID: key[0], dstID: key[1], value: edge.value},
-				{srcID: key[1], dstID: key[0], value: revEdge.value},
+				{srcID: key[0], dstID: key[1], value: gross[key]},
+				{srcID: key[1], dstID: key[0], value: gross[rev]},
 			},
 		})
 		edge.value, revEdge.value = netFlowAmounts(edge.value, revEdge.value)
@@ -619,12 +624,16 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 	state := map[string]int{} // 0 unvisited, 1 on stack, 2 done
 	stack := []string{}
 	kept := []flowAccountEdge{}
+	// dropped records the edges the break removed, so each cycle leg can report
+	// what it cost once the whole graph is known.
+	dropped := map[[2]string]bool{}
 	var visit func(string)
 	visit = func(u string) {
 		state[u] = 1
 		stack = append(stack, u)
 		for _, v := range adj[u] {
-			edge, ok := agg[[2]string{u, v}]
+			key := [2]string{u, v}
+			edge, ok := agg[key]
 			if !ok {
 				continue
 			}
@@ -632,7 +641,8 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 			case 1:
 				// Back edge: dropping it breaks the cycle. The stack holds the
 				// cycle's participants in flow order.
-				if cycle, ok := flowStackCycle(agg, stack, v, edge.value); ok {
+				dropped[key] = true
+				if cycle, ok := flowStackCycle(gross, stack, v, gross[key]); ok {
 					cycles = append(cycles, cycle)
 				}
 			case 0:
@@ -656,6 +666,27 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 		}
 	}
 
+	// What each leg lost, now that every edge's fate is settled: its gross minus
+	// what the graph actually carries for that pair, currency by currency. A leg
+	// the break dropped lost all of it, and netting's cancellation is a loss from
+	// both directions of a pair — the same 40 rupees, reported against each leg it
+	// was taken from, because that is what each leg's flow was reduced by.
+	for i := range cycles {
+		for j := range cycles[i].legs {
+			leg := &cycles[i].legs[j]
+			var shown models.CurrencyAmounts
+			if e, ok := agg[[2]string{leg.srcID, leg.dstID}]; ok && !dropped[[2]string{leg.srcID, leg.dstID}] {
+				shown = e.value
+			}
+			leg.discarded = models.NewCurrencyAmounts()
+			for code, amount := range leg.value {
+				if rest := amount - shown[code]; rest != 0 {
+					leg.discarded[code] = rest
+				}
+			}
+		}
+	}
+
 	sort.Slice(kept, func(i, j int) bool {
 		if kept[i].srcID != kept[j].srcID {
 			return kept[i].srcID < kept[j].srcID
@@ -672,8 +703,9 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 // and a reciprocal pair whose two sides are in different currencies survives in
 // both directions instead of being collapsed into whichever side happened to hold
 // the larger number. A side that nets away entirely comes back empty, which is
-// how the caller knows the edge no longer exists. Neither input is modified, so
-// the gross legs of the reciprocal cycle stay available.
+// how the caller knows the edge no longer exists. Neither input is modified, and
+// the caller keeps the pre-netting figures separately, so what the netting
+// removed is still available to report.
 func netFlowAmounts(fwd, rev models.CurrencyAmounts) (models.CurrencyAmounts, models.CurrencyAmounts) {
 	outFwd, outRev := models.NewCurrencyAmounts(), models.NewCurrencyAmounts()
 	for code, amount := range fwd {
@@ -691,9 +723,10 @@ func netFlowAmounts(fwd, rev models.CurrencyAmounts) (models.CurrencyAmounts, mo
 
 // flowStackCycle builds the cycle closed by a back edge from the current DFS
 // stack: v is the already-on-stack node the edge points back at, so the loop is
-// stack[indexOf(v):] plus the closing leg. Legs carry the aggregated flow of
-// each consecutive pair.
-func flowStackCycle(agg map[[2]string]*flowAccountEdge, stack []string, v string, closing models.CurrencyAmounts) (flowCycle, bool) {
+// stack[indexOf(v):] plus the closing leg. Legs carry the gross, pre-netting flow
+// of each consecutive pair — the same figure a reciprocal pair reports, so the two
+// kinds of cycle are read the same way.
+func flowStackCycle(gross map[[2]string]models.CurrencyAmounts, stack []string, v string, closing models.CurrencyAmounts) (flowCycle, bool) {
 	start := -1
 	for i, id := range stack {
 		if id == v {
@@ -714,11 +747,11 @@ func flowStackCycle(agg map[[2]string]*flowAccountEdge, stack []string, v string
 			legs = append(legs, flowCycleEdge{srcID: nodes[i], dstID: nodes[0], value: closing})
 			continue
 		}
-		edge, ok := agg[[2]string{nodes[i], nodes[i+1]}]
+		value, ok := gross[[2]string{nodes[i], nodes[i+1]}]
 		if !ok {
 			return flowCycle{}, false
 		}
-		legs = append(legs, flowCycleEdge{srcID: nodes[i], dstID: nodes[i+1], value: edge.value})
+		legs = append(legs, flowCycleEdge{srcID: nodes[i], dstID: nodes[i+1], value: value})
 	}
 	return flowCycle{kind: "cycle", nodes: nodes, legs: legs}, true
 }
@@ -917,7 +950,11 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 	// necessarily the currency of the account the money flows out of — a link
 	// between two differently denominated accounts records that inconsistency
 	// rather than converting it away.
-	acctEdges := accountFlowEdges(acctLinkRows)
+	//
+	// The cycles come back with the edges and are carried into the response: the
+	// break removed money from the graph, and a node total that quietly lacks a
+	// currency the scope names is the exact silence this change exists to end.
+	acctEdges, cycles := analyzeAccountFlows(acctLinkRows)
 	for _, e := range acctEdges {
 		addNode(acctNodes, "account", flowAccountNodeID(e.srcID), e.srcName, e.srcColor, "", "", 0)
 		addNode(acctNodes, "account", flowAccountNodeID(e.dstID), e.dstName, e.dstColor, "", "", 0)
@@ -1035,13 +1072,39 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 	}
 
 	return models.MoneyFlowGraph{
-		Nodes:        nodes,
-		Links:        links,
-		TotalIncome:  models.NewCurrencyAmounts(),
-		TotalExpense: models.NewCurrencyAmounts(),
-		TotalNet:     models.NewCurrencyAmounts(),
-		LinkSummary:  summary,
+		Nodes:            nodes,
+		Links:            links,
+		TotalIncome:      models.NewCurrencyAmounts(),
+		TotalExpense:     models.NewCurrencyAmounts(),
+		TotalNet:         models.NewCurrencyAmounts(),
+		LinkSummary:      summary,
+		SuppressedCycles: suppressedFlowCycles(cycles),
 	}
+}
+
+// suppressedFlowCycles renders the cycles the graph could not draw. Accounts are
+// left as ids, because CurrencyScope already names every one of them with its
+// display metadata and a second copy here would be a second thing to keep right.
+// The list is empty rather than nil so "nothing was hidden" is a fact the response
+// states, not one a client has to infer from an absent field.
+func suppressedFlowCycles(cycles []flowCycle) []models.MoneyFlowSuppressedCycle {
+	out := make([]models.MoneyFlowSuppressedCycle, 0, len(cycles))
+	for _, c := range cycles {
+		entry := models.MoneyFlowSuppressedCycle{
+			Kind:     c.kind,
+			Accounts: append([]string{}, c.nodes...),
+			Legs:     make([]models.MoneyFlowSuppressedLeg, 0, len(c.legs)),
+		}
+		for _, leg := range c.legs {
+			entry.Legs = append(entry.Legs, models.MoneyFlowSuppressedLeg{
+				From: leg.srcID, To: leg.dstID,
+				Gross:     leg.value,
+				Discarded: leg.discarded,
+			})
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // maxFlowAmounts takes the larger of two per-currency totals, one currency at a

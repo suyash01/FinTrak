@@ -897,19 +897,52 @@ type MoneyFlowLinkSummary struct {
 	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowGraph is the GET /dashboard/money-flow response: an acyclic graph
-// plus the link-type summary that is not drawn as edges. Every amount is
-// per-currency, TotalNet is the server's per-currency difference rather than a
-// subtraction to perform here, and CurrencyScope says which currencies the
-// response covers.
+// MoneyFlowSuppressedLeg is one leg of a cycle the graph could not draw, and
+// what it removed from that leg. Gross is the leg's full flow, per currency,
+// before netting; Discarded is the part of it that is in no node total and no
+// edge, per currency. It is already inside the graph's TotalIncome/TotalExpense -
+// these legs are ordinary transactions - so it is reported, never added again.
+type MoneyFlowSuppressedLeg struct {
+	From      string          `json:"from"`
+	To        string          `json:"to"`
+	Gross     CurrencyAmounts `json:"gross"`
+	Discarded CurrencyAmounts `json:"discarded"`
+}
+
+// MoneyFlowSuppressedCycle is one circular account-to-account flow the graph
+// cannot draw, with the amounts it removed. Kind is "reciprocal" for a pair that
+// flowed both ways and "cycle" for a longer loop; netting cancelled a currency
+// against its own reverse, and the cycle break dropped whatever netting could not
+// reduce - which, since one currency cannot cancel another, is a whole currency
+// in a link between differently denominated accounts.
+//
+// Accounts lists the participants in flow order as ids, each leg running from
+// Accounts[i] to Accounts[(i+1) mod len]; the graph's CurrencyScope already names
+// every one of them.
+type MoneyFlowSuppressedCycle struct {
+	Kind     string                   `json:"kind"`
+	Accounts []string                 `json:"accounts"`
+	Legs     []MoneyFlowSuppressedLeg `json:"legs"`
+}
+
+// MoneyFlowGraph is the GET /dashboard/money-flow response: an acyclic graph,
+// the link-type summary that is not drawn as edges, and the cycles that were.
+// Every amount is per-currency, TotalNet is the server's per-currency difference
+// rather than a subtraction to perform here, and CurrencyScope says which
+// currencies the response covers.
+//
+// SuppressedCycles is the response's account for anything CurrencyScope names but
+// the graph does not draw: a currency in scope whose only flows were circular and
+// were therefore removed. It is empty, never nil, when nothing was removed.
 type MoneyFlowGraph struct {
-	Nodes         []MoneyFlowNode        `json:"nodes"`
-	Links         []MoneyFlowEdge        `json:"links"`
-	TotalIncome   CurrencyAmounts        `json:"totalIncome"`
-	TotalExpense  CurrencyAmounts        `json:"totalExpense"`
-	TotalNet      CurrencyAmounts        `json:"totalNet"`
-	LinkSummary   []MoneyFlowLinkSummary `json:"linkSummary"`
-	CurrencyScope CurrencyScope          `json:"currencyScope"`
+	Nodes            []MoneyFlowNode            `json:"nodes"`
+	Links            []MoneyFlowEdge            `json:"links"`
+	TotalIncome      CurrencyAmounts            `json:"totalIncome"`
+	TotalExpense     CurrencyAmounts            `json:"totalExpense"`
+	TotalNet         CurrencyAmounts            `json:"totalNet"`
+	LinkSummary      []MoneyFlowLinkSummary     `json:"linkSummary"`
+	SuppressedCycles []MoneyFlowSuppressedCycle `json:"suppressedCycles"`
+	CurrencyScope    CurrencyScope              `json:"currencyScope"`
 }
 
 // MoneyFlowTimelinePeriod is one period of the flow timeline; the bounds are

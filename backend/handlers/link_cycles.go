@@ -32,7 +32,7 @@ type flowPairTotal struct {
 }
 
 // GetLinkCycles reports the account-to-account link flows the Money Flow Sankey
-// cannot draw. The graph must stay acyclic, so `accountFlowEdges` nets
+// cannot draw. The graph must stay acyclic, so `analyzeAccountFlows` nets
 // reciprocal pairs and drops the DFS back edges that close a longer loop — and
 // those discarded cycles are themselves a diagnostic ("is one card paying
 // another in a loop?"). The report returns them with their participants, each

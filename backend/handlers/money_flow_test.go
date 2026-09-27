@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -61,6 +62,33 @@ var (
 // three headline totals and the accounts behind them.
 const moneyFlowScopeRegex = `FROM accounts a\s+LEFT JOIN transactions t`
 
+// The scope query is the one that differs from the stage queries: it puts the
+// date bounds in the join's ON and the account in its WHERE, so a single filter
+// fragment does not describe it. These two expectations spell that out, each
+// still requiring the currency in the projection, the predicate and the GROUP BY.
+const (
+	moneyFlowScopeFilterRegex = moneyFlowScopeRegex +
+		`[\s\S]*AND a\.id = \$4[\s\S]*GROUP BY a.id, a.name, ` + flowCurrencyRegex
+	// The stage queries' own filter fragments: the window and account alone, then
+	// the same with the currency predicate appended after them. The link queries
+	// bind the window twice, so theirs is a nested pair.
+	stageWindowRegex = `t\.date >= \$2 AND t\.date <= \$3 AND a\.id = \$4`
+	linkWindowRegex  = `\(\(ft\.date >= \$2 AND ft\.date <= \$3 AND fa\.id = \$4\) OR \(tt\.date >= \$5 AND tt\.date <= \$6 AND ta\.id = \$7\)\)`
+)
+
+// The same three fragments with the currency bound as well. These are vars, not
+// consts, only because the currency's placeholder is now derived rather than
+// written out: flowFilter binds it last, so the stage queries put it on $5 and the
+// link queries on $8, and a test that reused the $2 above would have pinned a
+// statement the handler never issues.
+var (
+	stageAllFiltersRegex     = stageWindowRegex + ` AND ` + flowCurrencyPredAt(5)
+	linkAllFiltersRegex      = linkWindowRegex + ` AND ` + flowLinkCurrencyRegex + ` = \$8`
+	moneyFlowScopeAllFiltersRegex = moneyFlowScopeRegex +
+		`[\s\S]*AND a.id = \$4 AND ` + flowCurrencyPredAt(5) +
+		`[\s\S]*GROUP BY a.id, a.name, ` + flowCurrencyRegex
+)
+
 // flowStageRegex assembles one stage expectation: head, the ?currency= predicate
 // if the request carried one, then tail.
 func flowStageRegex(head, tail, predicate string) string {
@@ -68,6 +96,14 @@ func flowStageRegex(head, tail, predicate string) string {
 		return head + `[\s\S]*` + tail
 	}
 	return head + ` AND ` + predicate + tail
+}
+
+// flowCurrencyPredAt is the currency predicate with a different placeholder. The
+// scope query numbers its own arguments, so with the window and the account also
+// bound the currency lands on $5 rather than $2, and a test that hardcoded $2
+// there would pass without ever pinning the number.
+func flowCurrencyPredAt(placeholder int) string {
+	return flowCurrencyRegex + fmt.Sprintf(` = \$%d`, placeholder)
 }
 
 // expectMoneyFlowQueries wires the six expected queries for an unfiltered
@@ -468,18 +504,84 @@ func TestGetMoneyFlowWithFilters(t *testing.T) {
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	// The stage regexes deliberately include the "AND" that joins the base
 	// predicate to the filter, so a missing separator (which the DB would reject
-	// as a syntax error) fails the test.
-	mock.ExpectQuery(`FROM accounts a\s+LEFT JOIN transactions t[\s\S]*a\.id = \$4`).
+	// as a syntax error) fails the test. They reuse the unfiltered path's
+	// head/tail with the filters as the middle, so this test pins the projected
+	// currency too — it used to be the only money-flow expectation that did not,
+	// which meant a respelled projection passed here and failed elsewhere.
+	mock.ExpectQuery(moneyFlowScopeFilterRegex).
 		WithArgs(simpleArgs...).WillReturnRows(scope)
-	mock.ExpectQuery(`(?s)t\.type = 'credit' AND t\.date >=`).WithArgs(simpleArgs...).WillReturnRows(income)
-	mock.ExpectQuery(`(?s)SELECT a\.id::text.*t\.type = 'debit' AND t\.date >=`).WithArgs(simpleArgs...).WillReturnRows(acctCat)
-	mock.ExpectQuery(`(?s)payees p ON t\.payee_id.*t\.type = 'debit' AND t\.date >=`).WithArgs(simpleArgs...).WillReturnRows(catPayee)
-	mock.ExpectQuery("SELECT l.type, COUNT").WithArgs(linkArgs...).WillReturnRows(links)
-	mock.ExpectQuery("fa.id <> ta.id").WithArgs(linkArgs...).WillReturnRows(acctLinks)
+	mock.ExpectQuery(flowStageRegex(moneyFlowIncomeHead, moneyFlowStageTail, stageWindowRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(income)
+	mock.ExpectQuery(flowStageRegex(moneyFlowAcctCatHead, moneyFlowStageTail, stageWindowRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(acctCat)
+	mock.ExpectQuery(flowStageRegex(moneyFlowCatPayeeHead, moneyFlowStageTail, stageWindowRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(catPayee)
+	mock.ExpectQuery(flowStageRegex(moneyFlowLinksHead, moneyFlowLinksTail, linkWindowRegex)).
+		WithArgs(linkArgs...).WillReturnRows(links)
+	mock.ExpectQuery(flowStageRegex(moneyFlowAcctLinksHead, moneyFlowAcctLinksTail, linkWindowRegex)).
+		WithArgs(linkArgs...).WillReturnRows(acctLinks)
 	mock.ExpectCommit()
 
 	req, _ := http.NewRequest(http.MethodGet,
 		"/dashboard/money-flow?dateFrom="+dateFrom+"&dateTo="+dateTo+"&accountId="+accountID.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// All four filters at once. flowFilter binds the currency last, so it lands on
+// $5 in the three stage queries — one window fragment, one bind — and on $8 in
+// the link queries, whose endpoint predicates have already consumed $2..$7 by
+// binding the window twice. Nothing about that numbering is visible from the
+// unfiltered or the currency-only expectations, and getting it wrong binds a
+// different argument order with no error anywhere, so it is pinned here.
+func TestGetMoneyFlowNarrowsEveryStageWithEveryFilterTogether(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	srv := newTestServer(mock)
+	r := newMoneyFlowTestRouter(srv)
+	userID := testUserID()
+
+	accountID := uuid.NewString()
+	dateFrom, dateTo := "2026-07-01", "2026-07-31"
+	// The scope and the three stage queries bind each filter once: user, window,
+	// account, currency.
+	simpleArgs := []any{userID, dateFrom, dateTo, accountID, "USD"}
+	// The two link queries bind the window twice, once per endpoint, and the
+	// currency once, after both.
+	linkArgs := []any{
+		userID, dateFrom, dateTo, accountID,
+		dateFrom, dateTo, accountID,
+		"USD",
+	}
+
+	empty := func(cols ...string) *pgxmock.Rows { return pgxmock.NewRows(cols) }
+	scope := empty("id", "name", "currency", "income", "expense")
+	income := empty("cat_id", "cat_name", "cat_color", "group_id", "group_color", "acct_id", "acct_name", "acct_color", "currency", "total")
+	acctCat := empty("acct_id", "acct_name", "acct_color", "cat_id", "cat_name", "cat_color", "group_id", "group_color", "currency", "total")
+	catPayee := empty("cat_id", "cat_name", "cat_color", "group_id", "group_color", "payee_id", "payee_name", "currency", "total")
+	links := empty("type", "count", "currency", "total")
+	acctLinks := empty("from_type", "to_type", "fa_id", "fa_name", "fa_color", "ta_id", "ta_name", "ta_color", "currency", "amount")
+
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	mock.ExpectQuery(moneyFlowScopeAllFiltersRegex).WithArgs(simpleArgs...).WillReturnRows(scope)
+	mock.ExpectQuery(flowStageRegex(moneyFlowIncomeHead, moneyFlowStageTail, stageAllFiltersRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(income)
+	mock.ExpectQuery(flowStageRegex(moneyFlowAcctCatHead, moneyFlowStageTail, stageAllFiltersRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(acctCat)
+	mock.ExpectQuery(flowStageRegex(moneyFlowCatPayeeHead, moneyFlowStageTail, stageAllFiltersRegex)).
+		WithArgs(simpleArgs...).WillReturnRows(catPayee)
+	mock.ExpectQuery(flowStageRegex(moneyFlowLinksHead, moneyFlowLinksTail, linkAllFiltersRegex)).
+		WithArgs(linkArgs...).WillReturnRows(links)
+	mock.ExpectQuery(flowStageRegex(moneyFlowAcctLinksHead, moneyFlowAcctLinksTail, linkAllFiltersRegex)).
+		WithArgs(linkArgs...).WillReturnRows(acctLinks)
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"/dashboard/money-flow?dateFrom="+dateFrom+"&dateTo="+dateTo+"&accountId="+accountID+"&currency=USD", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -583,7 +685,7 @@ func TestBuildMoneyFlowGraphRollup(t *testing.T) {
 func TestAccountFlowEdgesDerivesDirectionAndSkipsSameAccount(t *testing.T) {
 	a, b := uuid.NewString(), uuid.NewString()
 
-	edges := accountFlowEdges([]flowAcctLinkRow{
+	edges, _ := analyzeAccountFlows([]flowAcctLinkRow{
 		// Stored credit -> debit: money still flows debit (B) -> credit (A).
 		{fromType: "credit", toType: "debit",
 			fromAcctID: a, fromAcctName: "A", fromAcctColor: "#111",
@@ -603,7 +705,7 @@ func TestAccountFlowEdgesDerivesDirectionAndSkipsSameAccount(t *testing.T) {
 func TestAccountFlowEdgesNetsReciprocalPairs(t *testing.T) {
 	a, b := uuid.NewString(), uuid.NewString()
 
-	edges := accountFlowEdges([]flowAcctLinkRow{
+	edges, _ := analyzeAccountFlows([]flowAcctLinkRow{
 		{fromType: "debit", toType: "credit", fromAcctID: a, fromAcctName: "A", toAcctID: b, toAcctName: "B", currency: "INR", amount: money.FromFloat(100)},
 		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: a, toAcctName: "A", currency: "INR", amount: money.FromFloat(40)},
 	})
@@ -618,8 +720,16 @@ func TestAccountFlowEdgesNetsReciprocalPairs(t *testing.T) {
 // which side is dominant is not a question a rupee and a dollar can answer. So
 // netting cancels each currency separately, and whatever it cannot cancel is left
 // as a two-way flow — which the cycle-breaking pass then hides, because a
-// Sankey cannot draw a cycle. Both facts have to be visible: the graph shows one
-// leg, and the cycles report carries the pair with its gross, per-currency legs.
+// Sankey cannot draw a cycle.
+//
+// Both halves of that are forced, so what is left to get right is that the loss is
+// not silent. The USD 70 is in no node total and in no edge, while linkSummary
+// still counts it: without a disclosure the one response states two different
+// totals for the same money with nothing to reconcile them. The arithmetic
+// assertion below (one edge, {INR: 60}) is correct on its own and would pass
+// whether or not the loss is reported — it is the suppressedCycles assertions
+// that pin the disclosure, and the mutation check on this test is removing the
+// population of that field.
 func TestAccountFlowEdgesKeepsReciprocalPairsInDifferentCurrenciesApart(t *testing.T) {
 	a, b := uuid.NewString(), uuid.NewString()
 	// Force a < b so which side survives the cycle-breaking is stable: the DFS
@@ -628,11 +738,12 @@ func TestAccountFlowEdgesKeepsReciprocalPairsInDifferentCurrenciesApart(t *testi
 	sort.Strings(ids)
 	a, b = ids[0], ids[1]
 
-	edges, cycles := analyzeAccountFlows([]flowAcctLinkRow{
+	rows := []flowAcctLinkRow{
 		{fromType: "debit", toType: "credit", fromAcctID: a, fromAcctName: "A", toAcctID: b, toAcctName: "B", currency: "INR", amount: money.FromFloat(100)},
 		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: a, toAcctName: "A", currency: "INR", amount: money.FromFloat(40)},
 		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: a, toAcctName: "A", currency: "USD", amount: money.FromFloat(70)},
-	})
+	}
+	edges, cycles := analyzeAccountFlows(rows)
 
 	// The rupee leg is netted down to its dominant side; the dollar leg cannot
 	// cancel anything, and what is left of the pair is a cycle, so only one
@@ -649,6 +760,102 @@ func TestAccountFlowEdgesKeepsReciprocalPairsInDifferentCurrenciesApart(t *testi
 	require.Len(t, cycles[0].legs, 2)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, cycles[0].legs[0].value)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40), "USD": money.FromFloat(70)}, cycles[0].legs[1].value)
+
+	// And the response says so, per leg, in the currency that went missing: the
+	// dollar leg has nothing drawn at all, so all 70 of it is discarded.
+	graph := buildMoneyFlowGraph(nil, nil, nil, nil, rows, 12)
+	require.Len(t, graph.SuppressedCycles, 1)
+	assert.Equal(t, "reciprocal", graph.SuppressedCycles[0].Kind)
+	assert.Equal(t, []string{a, b}, graph.SuppressedCycles[0].Accounts)
+	require.Len(t, graph.SuppressedCycles[0].Legs, 2)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, graph.SuppressedCycles[0].Legs[0].Gross)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40), "USD": money.FromFloat(70)}, graph.SuppressedCycles[0].Legs[1].Gross)
+	// 40 rupees cancelled against the forward leg, and the whole 70 dollars,
+	// which survived netting and was then dropped as the closing back edge.
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40)}, graph.SuppressedCycles[0].Legs[0].Discarded)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40), "USD": money.FromFloat(70)}, graph.SuppressedCycles[0].Legs[1].Discarded)
+}
+
+// The same disclosure, all the way through the handler: with nothing left in
+// `cycles` the field is an empty slice, never a null, so a client reading it as
+// "nothing was hidden" is never misled by an absent field.
+func TestGetMoneyFlowReportsNoSuppressedCyclesAsAnEmptyList(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	srv := newTestServer(mock)
+	r := newMoneyFlowTestRouter(srv)
+	userID := testUserID()
+
+	empty := func(cols ...string) *pgxmock.Rows { return pgxmock.NewRows(cols) }
+	expectMoneyFlowQueries(mock, []any{userID},
+		empty("id", "name", "currency", "income", "expense"),
+		empty("cat_id", "cat_name", "cat_color", "group_id", "group_color", "acct_id", "acct_name", "acct_color", "currency", "total"),
+		empty("acct_id", "acct_name", "acct_color", "cat_id", "cat_name", "cat_color", "group_id", "group_color", "currency", "total"),
+		empty("cat_id", "cat_name", "cat_color", "group_id", "group_color", "payee_id", "payee_name", "currency", "total"),
+		empty("type", "count", "currency", "total"),
+		empty("from_type", "to_type", "fa_id", "fa_name", "fa_color", "ta_id", "ta_name", "ta_color", "currency", "amount"))
+
+	req, _ := http.NewRequest(http.MethodGet, "/dashboard/money-flow", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+	list, isList := raw["suppressedCycles"].([]any)
+	if !isList || len(list) != 0 {
+		t.Errorf("suppressedCycles = %v, want an empty list", raw["suppressedCycles"])
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// compareFlowTotals' ranking convention: the codes are walked in sorted order and
+// the first one that differs decides. That is a convention, not a derivation, and
+// it decides which nodes survive the cap and so what lands in "Other" — which
+// means a change to it would silently change the graph, so it is pinned here.
+func TestCompareFlowTotalsRanksByTheFirstCurrencyThatDiffers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b models.CurrencyAmounts
+		want int
+	}{
+		{"one currency ranks by amount, the old order",
+			models.CurrencyAmounts{"INR": money.FromFloat(100)},
+			models.CurrencyAmounts{"INR": money.FromFloat(40)}, -1},
+		{"equal totals tie for the caller's id tiebreak",
+			models.CurrencyAmounts{"INR": money.FromFloat(100)},
+			models.CurrencyAmounts{"INR": money.FromFloat(100)}, 0},
+		// The disclosed rule: INR is compared first, so the 10 rupees decide
+		// against 9 dollars and the USD 0 never gets a say. An implementation that
+		// compared by magnitude instead, or that let a later currency break a tie
+		// an earlier one had already settled, would rank these the other way.
+		{"the alphabetically first currency decides, present-and-zero included",
+			models.CurrencyAmounts{"INR": money.FromFloat(10), "USD": 0},
+			models.CurrencyAmounts{"USD": money.FromFloat(9)}, -1},
+		{"a currency the other side lacks counts as zero, and decides when the earlier ones tie",
+			models.CurrencyAmounts{"EUR": money.FromFloat(5), "USD": money.FromFloat(1)},
+			models.CurrencyAmounts{"EUR": money.FromFloat(5)}, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, compareFlowTotals(tc.a, tc.b))
+			assert.Equal(t, -tc.want, compareFlowTotals(tc.b, tc.a), "the order must be antisymmetric")
+		})
+	}
+}
+
+// The cap follows that order, so a stage whose second currency would have
+// reordered it keeps the node the first currency picked.
+func TestKeepTopFlowNodesCapsOnTheFirstCurrencyThatDiffers(t *testing.T) {
+	m := map[string]*models.MoneyFlowNode{
+		"category:a": {ID: "category:a", Total: models.CurrencyAmounts{"INR": money.FromFloat(10), "USD": 0}},
+		"category:b": {ID: "category:b", Total: models.CurrencyAmounts{"USD": money.FromFloat(9)}},
+	}
+
+	kept := keepTopFlowNodes(m, 1)
+	assert.Equal(t, map[string]bool{"category:a": true}, kept)
+	assert.Equal(t, map[string]bool{"category:a": true, "category:b": true}, keepTopFlowNodes(m, 2))
+	assert.Empty(t, keepTopFlowNodes(m, 0))
 }
 
 func TestAccountFlowEdgesBreaksCyclesDeterministically(t *testing.T) {
@@ -658,7 +865,7 @@ func TestAccountFlowEdgesBreaksCyclesDeterministically(t *testing.T) {
 	sort.Strings(ids)
 	a, b, c = ids[0], ids[1], ids[2]
 
-	edges := accountFlowEdges([]flowAcctLinkRow{
+	edges, _ := analyzeAccountFlows([]flowAcctLinkRow{
 		{fromType: "debit", toType: "credit", fromAcctID: a, fromAcctName: "A", toAcctID: b, toAcctName: "B", currency: "INR", amount: money.FromFloat(100)},
 		{fromType: "debit", toType: "credit", fromAcctID: b, fromAcctName: "B", toAcctID: c, toAcctName: "C", currency: "INR", amount: money.FromFloat(100)},
 		{fromType: "debit", toType: "credit", fromAcctID: c, fromAcctName: "C", toAcctID: a, toAcctName: "A", currency: "INR", amount: money.FromFloat(100)},

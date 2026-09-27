@@ -4079,6 +4079,12 @@ paths:
         the headline figures can be a single number, so each carries one amount
         per currency alongside the `currencyScope` that produced it.
 
+        The graph is acyclic, so circular account-to-account flows are netted away
+        or broken. `suppressedCycles` reports those cycles and the amounts they
+        removed, per currency: a currency that `currencyScope` names but that
+        appears in no node and no edge is named there, so the two can be
+        reconciled without guessing.
+
         The handler itself only reads (all its queries run in one read-only,
         repeatable-read transaction), but the route sits on the write-guard
         list with the sibling GETs that materialize billing cycles, so a
@@ -4113,15 +4119,24 @@ paths:
             minLength: 3
             maxLength: 3
           description: >-
-            Narrow the whole response to accounts holding one currency code
-            (upper-case three-letter, case-insensitive). Amounts are always
-            reported per currency regardless; this chooses which accounts are in
-            scope, and every stage - the nodes, the edges and the link summary -
-            is narrowed with it, so no two of them describe different sets of
-            transactions. The link queries narrow on the currency of the link's
-            value rather than on either endpoint's account, because a link between
-            two differently denominated accounts reports the currency of the amount
-            it carries. A code that is not three letters is a 400.
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency regardless;
+            this chooses which money is in scope, and every stage - the totals, the
+            nodes, the edges and the link summary - is narrowed with it, so no two
+            of them describe different sets of transactions. A code that is not
+            three letters is a 400.
+
+            The transaction-driven stages and the totals narrow on the account's
+            own currency. The two link queries narrow on the currency of the
+            link's *value* - the account the amount came from - which is not
+            either endpoint's currency when a link joins two differently
+            denominated accounts. Two consequences follow, and neither is a
+            rounding detail: a link whose amount is denominated in another
+            currency is *dropped* even though one of its endpoints is an account
+            in the requested currency, and a link whose value *is* in the
+            requested currency still contributes a node for its other endpoint,
+            so a non-USD account can appear in a `?currency=USD` graph. The
+            filter is on the money, not on the accounts.
         - in: query
           name: limit
           schema:
@@ -6109,8 +6124,73 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowLinkSummary"
+        suppressedCycles:
+          type: array
+          description: >-
+            The circular account-to-account flows the graph could not draw, with
+            the amounts they removed. A Sankey must stay acyclic, so reciprocal
+            pairs are netted and longer loops are broken by dropping their back
+            edge; this is where the money that went missing is disclosed. Without
+            it a node total could quietly lack a currency that `currencyScope`
+            names, while `linkSummary` still counted the same money, and the one
+            response would state two totals with nothing to reconcile them. Empty
+            when nothing was removed; never null.
+          items:
+            $ref: "#/components/schemas/MoneyFlowSuppressedCycle"
         currencyScope:
           $ref: "#/components/schemas/CurrencyScope"
+
+    MoneyFlowSuppressedLeg:
+      type: object
+      description: >-
+        One leg of a suppressed cycle, and what the graph removed from it. A leg
+        whose `discarded` is non-empty and whose `gross` holds a currency the
+        graph draws nowhere is how a reader finds a currency that is in scope and
+        in no band.
+      properties:
+        from:
+          type: string
+          description: Source account id, one of the enclosing cycle's `accounts`.
+        to:
+          type: string
+          description: Target account id, one of the enclosing cycle's `accounts`.
+        gross:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The leg's full flow, per currency, before anything was netted away.
+        discarded:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The part of `gross` that is in no node total and no edge, per currency.
+            Already inside `MoneyFlowGraph.totalIncome`/`totalExpense` — these legs
+            are ordinary transactions — so a client reports it, it does not add it
+            to the totals again.
+
+    MoneyFlowSuppressedCycle:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [reciprocal, cycle]
+          description: >-
+            `reciprocal` for a pair that flowed both ways (netted into one edge),
+            `cycle` for a longer loop broken by dropping its back edge. Netting
+            cancels a currency against its own reverse; the break drops whatever
+            netting could not reduce, which - since one currency cannot cancel
+            another - is a whole currency in a link between differently
+            denominated accounts.
+        accounts:
+          type: array
+          description: >-
+            The participants in flow order, each leg running from accounts[i] to
+            accounts[(i+1) mod len]. Account ids only: `currencyScope` already
+            names every one of them with its display metadata.
+          items:
+            type: string
+        legs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowSuppressedLeg"
 
     LinkCycleAccount:
       type: object
