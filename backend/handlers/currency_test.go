@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,10 @@ func TestParseCurrencyNormalisesCaseAndRejectsAnythingElse(t *testing.T) {
 		{raw: "USD", want: "USD", wantCode: 0},
 		{raw: "usd", want: "USD", wantCode: 0},
 		{raw: "uSd", want: "USD", wantCode: 0},
+		// TrimSpace is load-bearing and the URL is escaped, so the row really
+		// carries the surrounding spaces rather than a percent-encoded pair.
+		{raw: " usd ", want: "USD", wantCode: 0},
+		{raw: "   ", want: "", wantCode: 0},
 		{raw: "US", want: "", wantCode: http.StatusBadRequest},
 		{raw: "USDD", want: "", wantCode: http.StatusBadRequest},
 		{raw: "US1", want: "", wantCode: http.StatusBadRequest},
@@ -35,7 +40,7 @@ func TestParseCurrencyNormalisesCaseAndRejectsAnythingElse(t *testing.T) {
 	for _, tc := range cases {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/?currency="+tc.raw, nil)
+		c.Request = httptest.NewRequest(http.MethodGet, "/?currency="+url.QueryEscape(tc.raw), nil)
 
 		got, ok := parseCurrency(c)
 
@@ -80,6 +85,9 @@ func TestCurrencyScopeFoldsPerCurrencyTotalsAndNamesEveryAccount(t *testing.T) {
 		t.Fatalf("currencyScope: %v", err)
 	}
 
+	if len(got.Scope.Currencies) != 2 {
+		t.Fatalf("Currencies = %v, want [INR USD]", got.Scope.Currencies)
+	}
 	if got.Scope.Currencies[0] != "INR" || got.Scope.Currencies[1] != "USD" {
 		t.Errorf("Currencies = %v, want [INR USD]", got.Scope.Currencies)
 	}
@@ -161,7 +169,7 @@ func TestCurrencyScopeKeepsTheDateFilterInTheJoinNotTheWhere(t *testing.T) {
 	}
 }
 
-func TestCurrencyScopeFiltersOnTheProjectedCurrencyNotTheRawColumn(t *testing.T) {
+func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -169,13 +177,19 @@ func TestCurrencyScopeFiltersOnTheProjectedCurrencyNotTheRawColumn(t *testing.T)
 	defer mock.Close()
 	srv := newTestServer(mock)
 
-	// The predicate has to be the SELECT's own expression, NULLIF included: a
-	// backup import writes a bundle's empty currency through verbatim
-	// (backup.go scans COALESCE(currency, '')), so an account can hold "". It is
-	// projected as INR everywhere else, and a bare COALESCE(a.currency, 'INR')
-	// here would leave it out of an explicit ?currency=INR report — the very
-	// silence the comment on the fragment rules out.
-	mock.ExpectQuery("COALESCE\\(NULLIF\\(a\\.currency, ''\\), 'INR'\\) = \\$2").
+	// All three sites in one regexp, in the order they appear in the statement:
+	// the projection, the currency predicate the caller splices in, and the
+	// GROUP BY. They have to be the same expression because a backup import
+	// writes a bundle's empty currency through verbatim (backup.go scans
+	// COALESCE(currency, '') and inserts it unchanged), so an account can hold
+	// "". One site reading a bare COALESCE(a.currency, ...) while the other two
+	// keep the NULLIF drops that account from an explicit ?currency=INR report —
+	// the very silence the scopeSQL comment rules out.
+	projected := `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\)`
+	statement := "SELECT a\\.id, a\\.name, " + projected + " AS currency" +
+		"[\\s\\S]*? AND " + projected + " = \\$2" +
+		"[\\s\\S]*?GROUP BY a\\.id, a\\.name, " + projected
+	mock.ExpectQuery(statement).
 		WithArgs(testUserID(), "INR").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(uuid.New(), "Unset account", "INR", 0, 0))
@@ -209,6 +223,53 @@ func TestCurrencyScopeReportsAFailedQueryRatherThanAnEmptyScope(t *testing.T) {
 	// result the caller would report as a quiet month.
 	if len(res.Scope.Currencies) != 0 {
 		t.Errorf("Currencies = %v on a failed query, want none", res.Scope.Currencies)
+	}
+}
+
+func TestCurrencyScopePropagatesARowError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	boom := errors.New("connection reset mid-scan")
+	mock.ExpectQuery("FROM accounts a").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(uuid.New(), "Salary account", "INR", 0, 0).
+			RowError(1, boom))
+
+	// A half-read fold would report the accounts that did arrive and drop the
+	// rest, which is the same silence as a quiet window; the error has to travel.
+	res, err := srv.currencyScope(context.Background(), mock, testUserID(), scopeOptions{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+	if len(res.Scope.Accounts) != 0 {
+		t.Errorf("Accounts = %v on a row error, want none", res.Scope.Accounts)
+	}
+}
+
+func TestCurrencyScopePropagatesAnUnreadableColumn(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	// A BIGINT of cents cannot arrive as this, so the Scan failure stands in for
+	// any mis-typed or truncated column: the fold must stop rather than carry on
+	// with a zero it invented.
+	mock.ExpectQuery("FROM accounts a").
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(uuid.New(), "Salary account", "INR", "not-an-amount", 0))
+
+	if _, err := srv.currencyScope(context.Background(), mock, testUserID(), scopeOptions{}); err == nil {
+		t.Fatal("an unreadable income column returned no error")
 	}
 }
 

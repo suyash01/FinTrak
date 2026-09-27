@@ -26,6 +26,20 @@ import (
 // window still appears in the scope — moving them to the WHERE would drop it,
 // and the caller would be told a currency is absent when the account holding it
 // is simply quiet this month.
+//
+// The same expression appears three times — the projection, the GROUP BY, and
+// the currency predicate currencyScope splices in — and all three must stay
+// alike. accounts.currency is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL, so
+// NULL and the empty string are both representable, and a restored bundle can
+// write the empty string through verbatim (backup.go scans a COALESCE defaulting
+// to the empty string and inserts it unchanged). Any one of the three dropping
+// the NULLIF for a bare COALESCE(a.currency, ...) instead would disagree with
+// the other two and drop such an account from an explicit ?currency=INR report
+// while every other part of the same response still called it INR. The 'INR'
+// literal is repeated rather than interpolated from defaultCurrency on purpose:
+// a third %s would make this statement's placeholder count fragile against any
+// future edit, and the value is a fixed column default, not a configurable
+// knob.
 const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0) AS income,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0) AS expense
@@ -35,15 +49,10 @@ const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') A
 	GROUP BY a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR')
 	ORDER BY a.name, a.id`
 
-// defaultCurrency reads both NULL and the empty string out of
-// accounts.currency. The column is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL
-// (migration 000001), so a row can genuinely hold NULL, and NULLIF additionally
-// covers a restored bundle carrying "". The API cannot create either —
-// CreateAccount normalises "" to "INR" and UpdateAccount keeps the existing
-// value through COALESCE(NULLIF(...), currency) — so this is defence at the one
-// edge that bypasses both write paths. It is the same idiom account.go already
-// uses, and without it a blank code would become a "" map key that every
-// consumer would then have to defend against.
+// defaultCurrency is the code an account is read as when its own is unset, and
+// it must match the literal inside scopeSQL's three COALESCE expressions. See
+// that comment for why all three have to agree, and for why the literal is
+// repeated rather than interpolated from here.
 const defaultCurrency = "INR"
 
 // scopeOptions is the window one aggregate covers. It is the reporting
