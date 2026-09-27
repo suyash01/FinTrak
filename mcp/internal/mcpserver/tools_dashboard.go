@@ -90,7 +90,7 @@ func dashboardTools() []Tool {
 				"per-link-type rollup that is not drawn. Every node, edge and rollup total carries the flow through it keyed by " +
 				"currency, so a node fed by two currencies has no single total and the API does not invent one. A node's total is " +
 				"the server's own figure — an account node's is the larger of its inflow and outflow — so read it rather than adding " +
-				"up the edges around it. " + perCurrencyAmounts + narrowByCurrency,
+				"up the edges around it. " + perCurrencyAmounts + narrowByCurrencyLinkStages,
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/dashboard/money-flow"},
 			install: installMoneyFlow,
 		},
@@ -114,7 +114,7 @@ func dashboardTools() []Tool {
 				"against, so one day's size is comparable to another's only within a single currency. Selecting a single account also " +
 				"returns that account's billing-cycle boundaries and its synthetic summary markers " +
 				"(month-end running balances, or per-cycle outstanding), each keyed by currency like the day totals, and all of " +
-				"them overlay data excluded from those totals. " + perCurrencyAmounts + narrowByCurrency,
+				"them overlay data excluded from those totals. " + perCurrencyAmounts + narrowByCurrencyOverlays,
 			SideEffect: sideEffectBillingCycleForAccount,
 			Route:      readonly.Route{Method: http.MethodGet, Path: "/dashboard/cash-flow-calendar"},
 			install:    installCashFlowCalendar,

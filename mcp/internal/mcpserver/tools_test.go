@@ -537,9 +537,19 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 		"never pick one silently",
 		"currencyScope",
 	}
-	// The narrowing half, held to the four tools whose currency argument really
-	// does select accounts.
+	// The narrowing half, and the tools it is true of. Only get_dashboard_summary
+	// and get_money_flow_timeline select the accounts holding the code outright;
+	// get_money_flow's link stages and get_cash_flow_calendar's overlays are
+	// narrowed differently, so the plain claim is not what their descriptions
+	// say. `narrowing` is also the list get_link_cycles must not contain.
 	narrowing := []string{"selects the accounts holding that currency code", "single key"}
+	accountNarrowed := []string{"get_dashboard_summary", "get_money_flow_timeline"}
+	// The two qualified forms, held to the same words-not-constants rule: each
+	// must carry its exception, and neither may carry the unqualified claim.
+	qualified := map[string]string{
+		"get_money_flow":         "they keep only the links whose own amount is denominated in that currency",
+		"get_cash_flow_calendar": "keyed by that account's own currency, which this argument does not narrow",
+	}
 
 	stub := newStubAPI(t)
 	session := connect(t, stub.client(t))
@@ -583,11 +593,19 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 			t.Errorf("the server instructions still promise a total: %q", banned)
 		}
 	}
-	for _, name := range []string{"get_dashboard_summary", "get_money_flow", "get_money_flow_timeline", "get_cash_flow_calendar"} {
+	for _, name := range accountNarrowed {
 		for _, want := range narrowing {
 			if !strings.Contains(served[name], want) {
 				t.Errorf("%s does not say %q about its currency argument", name, want)
 			}
+		}
+	}
+	for name, want := range qualified {
+		if !strings.Contains(served[name], want) {
+			t.Errorf("%s does not qualify its currency argument: %q", name, want)
+		}
+		if strings.Contains(served[name], "so every amount then comes back with a single key") {
+			t.Errorf("%s claims the currency argument narrows every amount, which is wrong for it", name)
 		}
 	}
 	// The withholding and its replacement are pinned together, because either

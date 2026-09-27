@@ -668,9 +668,9 @@ MCP `list_transactions` tool accepts. The web UI exposes `recurring` and `ccy` a
 query-language terms instead (`frontend/src/lib/query/fields.ts`) and uses neither
 `excludeAttached` nor `recurringId` at all. `q` is the one that costs capability
 rather than convenience: it is the typed query language, so a terminal user cannot
-negate a term, use the comparison operators or give one field several values, which
-is what the dropdowns above cannot do. A user on the terminal is still less capable
-than the same user in a browser, on the same data.
+negate a term or use the comparison operators, which is what the dropdowns above
+cannot do. A user on the terminal is still less capable than the same user in a
+browser, on the same data.
 
 #### Proposal
 
@@ -821,11 +821,9 @@ These are not features, but they were found alongside and are cheap to fix.
 > here should be read as saying otherwise.
 >
 > Findings 1 and 3 below are left as written because they described the repository
-> as it stood at the commit named at the top of this document. Finding 2 is not:
-> its claim about the issue tracker was in the present tense, and no commit hash
-> scopes a present-tense claim — which is true of all three equally, so the
-> distinction is not the tense but whether the claim happened to still hold. Only
-> finding 2's did not, so only its clause is corrected in place.
+> as it stood at the commit named at the top of this document. Finding 2's clause
+> is not one a commit hash can scope. Only finding 2's clause needed a scope the
+> commit hash could not supply, so only it is corrected in place.
 
 1. **`README.md` lists a file that does not exist.** The project tree claims
    `IDEAS.md  # Feature backlog`. There is no `IDEAS.md` in the repository. Either

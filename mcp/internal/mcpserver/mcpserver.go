@@ -57,7 +57,7 @@ const instructions = `FinTrak is a personal finance ledger. Every tool here is R
 
 One qualification, stated again in the affected tool descriptions and in their readOnlyHint: a few tools that report on a single account with a configured billing day materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given), and list_paperless_documents re-seals the user's stored Paperless token in place on read. The first only regenerates the derived statement periods the account's own screens show; the second leaves the token itself unchanged. Neither touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
 
-Money is decimal major units (for example "1250.50"), and whether an amount carries a currency key depends on the tool. On the aggregate tools (get_dashboard_summary, get_money_flow, get_money_flow_timeline, get_cash_flow_calendar, get_link_cycles) every amount is an object keyed by currency code, for example {"INR": "1250.50"}: a single-currency scope has exactly one key, and a scope spanning several currencies has one key per currency and no total, because the API will not add across currencies. Elsewhere an amount is a plain decimal in its own account's currency — a transaction's own amount, a loan instalment, a billing cycle's outstanding — and is already one currency, so it needs no key. Never add amounts across keys yourself, and do not add them up at all: the server computes these figures, so ask an aggregate tool for a figure rather than deriving one. When the user wants a single total, narrow the call with the "currency" argument the aggregate tools take (on get_link_cycles it selects the amount's currency rather than the accounts') and read the single key; a scope that still spans currencies has no total, and the honest answer is then the per-currency figures. Never invent a number that a tool did not return. Dates are YYYY-MM-DD.
+Money is decimal major units (for example "1250.50"), and whether an amount carries a currency key depends on the tool. On the aggregate tools (get_dashboard_summary, get_money_flow, get_money_flow_timeline, get_cash_flow_calendar, get_link_cycles) every amount is an object keyed by currency code, for example {"INR": "1250.50"}: a single-currency scope has exactly one key, and a scope spanning several currencies has one key per currency and no total, because the API will not add across currencies. Elsewhere an amount is a plain decimal in its own account's currency — a transaction's own amount, a loan instalment, a billing cycle's outstanding — and is already one currency, so it needs no key. Never add amounts across keys yourself, and do not add them up at all: the server computes these figures, so ask an aggregate tool for a figure rather than deriving one. When the user wants a single total, narrow the call with the "currency" argument the aggregate tools take (on get_link_cycles it selects the amount's currency rather than the accounts', on get_money_flow the two link stages do rather than the accounts, and on get_cash_flow_calendar the billing-cycle and summary-row overlays are not narrowed by it at all) and read the single key; a scope that still spans currencies has no total, and the honest answer is then the per-currency figures. Never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
 Start with list_accounts, list_categories, list_groups, list_payees and list_tags: they provide the ids every other tool takes. list_transactions is the ledger itself and accepts the same filters as the app's transaction list.
 
@@ -85,12 +85,31 @@ const perCurrencyAmounts = "Every amount is an object keyed by currency code, fo
 	"accounts behind each, so read it rather than inferring coverage from the filters you passed."
 
 // narrowByCurrency is the other half — how to get one currency instead of
-// several — and it is a separate constant because it holds of the four dashboard
-// tools and not of get_link_cycles, whose currency argument selects the amount's
-// own currency rather than the accounts holding it. One sentence offered on the
-// wrong tool is a wrong filter, so it goes only where it is true.
+// several — and it is a separate constant because it holds of get_dashboard_summary
+// and get_money_flow_timeline only. Those two select the accounts holding the code
+// and are narrowed with it. The other two dashboard tools narrow part of themselves
+// differently and carry their own constants below, and get_link_cycles selects the
+// amount's currency rather than the accounts holding it. One sentence offered on the
+// wrong tool is a wrong filter, so each goes only where it is true.
 const narrowByCurrency = "To narrow a window to one denomination, pass the currency argument: it selects the " +
 	"accounts holding that currency code, so every amount then comes back with a single key."
+
+// narrowByCurrencyLinkStages is get_money_flow's form. Its two link queries filter
+// on the currency a link's own value is denominated in, not on either endpoint's
+// account, so the account-narrowing sentence is only half of it.
+const narrowByCurrencyLinkStages = "To narrow a window to one denomination, pass the currency argument: it selects the " +
+	"accounts holding that currency code, so the transaction-driven stages and the totals are narrowed with it. " +
+	"The two link stages are the exception: they keep only the links whose own amount is denominated in that " +
+	"currency, which is not the same as either endpoint's account, so a non-USD account can still appear in a " +
+	"?currency=USD graph."
+
+// narrowByCurrencyOverlays is get_cash_flow_calendar's form. attachCashFlowOverlays
+// takes no currency at all: the billing-cycle and summary-row overlays are the named
+// account's own figures, keyed by that account's currency.
+const narrowByCurrencyOverlays = "To narrow a window to one denomination, pass the currency argument: it selects the " +
+	"accounts holding that currency code, so the days, the totals and the currencyScope are narrowed with it. " +
+	"The billing-cycle and summary-row overlays are the exception: they belong to the account named by accountId " +
+	"and are keyed by that account's own currency, which this argument does not narrow."
 
 // Tool is one MCP tool: how it is described to a client, the API operation it
 // performs, and how it is installed on a server.
