@@ -1167,19 +1167,32 @@ type LinkCycleLeg struct {
 
 // LinkCycle is one circular money flow between accounts. Kind is "reciprocal"
 // for a pair that flows both ways (netted into one edge for the Sankey) or
-// "cycle" for a longer loop broken by dropping its back edge. Gross is the sum
-// of the legs, per currency.
+// "cycle" for a longer loop broken by dropping its back edge. Gross is the sum of
+// the legs, per currency: never a single combined figure, and for a cycle
+// spanning currencies it is a sum of flows that were never combined anywhere.
 //
-// Net is the smallest leg, and it is smallest *within one currency*: each key is
-// that currency's own smallest leg. With one currency across the cycle that is
-// the figure this field has always carried — the amount that actually circulates
-// the whole loop — and Single() returns it. With more than one it does not, and
-// must not: a loop that moves INR 1,000 and USD 12 circulates no amount at all,
-// because neither number describes the loop and their sum describes nothing. The
-// two keys are the honest local answer, and a client that calls Single() gets
-// ok=false and knows to say the loop moves two currencies rather than to add
-// them. There is deliberately no scalar fallback: the shape already carries the
-// answer a boolean would only restate.
+// Net is the smallest leg, and there are exactly two readings of it. Which one
+// applies is decided by how many keys it has, and nothing else:
+//
+//   - One key. The cycle's legs are all in one currency, so that key is the
+//     smallest leg and therefore the amount that circulates the whole loop. This
+//     is the figure this field has always carried, unchanged, and a client
+//     reaching for a single number wants exactly this case.
+//   - More than one key. Each key is that currency's own smallest leg — a local
+//     figure, per currency, and *not* a circulation figure. Nothing circulates a
+//     loop whose legs are denominated differently: one that moves INR 1,000 one
+//     way and USD 12 the other moves two amounts of two currencies, and neither
+//     number describes the loop. Under this package's own convention that an
+//     absent key reads as zero, the honest circulation for such a cycle is zero
+//     in every currency, not the smaller of its two keys. So a client asking
+//     "what circulates this loop" must first call Single(): ok=true returns the
+//     circulation figure, and ok=false is the answer — report that the loop moves
+//     more than one currency, and show the per-currency keys as they are, rather
+//     than adding them or picking the smallest.
+//
+// There is deliberately no scalar fallback and no "combined" flag: the key count
+// already carries the distinction, and a second signal could only disagree with
+// it.
 type LinkCycle struct {
 	Kind         string             `json:"kind"`
 	Accounts     []LinkCycleAccount `json:"accounts"`
@@ -1223,10 +1236,12 @@ type LinkOneSidedFlow struct {
 // their owners gave them.
 type LinkCycleReport struct {
 	Cycles []LinkCycle `json:"cycles"`
-	// TotalCircular is the sum of every cycle's Net, per currency. It is the
-	// money that travels a full loop between the user's own accounts, and for a
-	// cycle spanning currencies that is per currency too — see LinkCycle.Net for
-	// why there is no single figure to report.
+	// TotalCircular is the sum of every cycle's Net, per currency. Despite the
+	// name it is never a single combined figure, and for a cycle spanning
+	// currencies it is not a circulation figure either — it inherits
+	// LinkCycle.Net's two readings, and its key count is the same signal. What it
+	// is for is the single-currency case, where it is the money that travels a
+	// full loop between the user's own accounts and one key returns it.
 	TotalCircular CurrencyAmounts `json:"totalCircular"`
 	// OneSidedFlows are directed pairs with no flow in the opposite direction.
 	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`

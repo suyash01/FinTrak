@@ -2865,12 +2865,14 @@ paths:
         Every amount is per-currency, and this endpoint has the least room to be
         otherwise: a link has a from-account and a to-account, so it sums two
         accounts' transactions by construction, and no account filter avoids the
-        question. A cycle whose legs are all in one currency reports `net` as
-        the amount that actually circulates the whole loop, exactly as before; a
-        cycle whose legs span currencies reports each currency's own smallest leg
-        and no single figure, because a loop moving INR 1,000 and USD 12
-        circulates no amount at all. `currencyScope` names the accounts behind
-        every currency in the response.
+        question. Read `LinkCycle.net`'s description before rendering it: with one
+        key it is the amount that circulates the whole loop, and with several it
+        is a per-currency local figure and the loop circulates nothing.
+        `currencyScope` names the accounts behind every currency in the response —
+        the accounts holding that currency, so under `?currency=USD` it lists the
+        USD ones, and a reported leg's other endpoint may be an account it does not
+        list, because the filter narrows on the currency of the *amount*, which is
+        not necessarily either endpoint's account currency.
       operationId: getLinkCycles
       security:
         - AccessCookie: []
@@ -2919,7 +2921,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LinkCycleReport"
         "400":
-          description: Invalid accountId
+          description: Invalid accountId, a dateFrom/dateTo that is not YYYY-MM-DD, or a currency that is not three letters
           content:
             application/json:
               schema:
@@ -6329,18 +6331,27 @@ components:
           allOf:
             - $ref: "#/components/schemas/CurrencyAmounts"
           description: >-
-            The smallest leg, per currency: each key is that currency's own
-            smallest leg. With one currency across the cycle this is the amount
-            that actually circulates the whole loop. With more than one it is
-            not, and there is no such amount — a loop moving INR 1,000 and
-            USD 12 circulates nothing, because neither figure describes the loop
-            and their sum describes nothing either. A client asking what
-            circulates must therefore check that `net` holds exactly one key (a
-            key absent reads as zero; a present one is exact) and, when it holds
-            several, say that the loop moves that many currencies rather than
-            adding them.
+            The smallest leg. There are exactly two readings and the number of
+            keys decides which applies. **One key** — the cycle's legs are all in
+            one currency, so that key is the amount that actually circulates the
+            whole loop, exactly as before this field became a map. **More than one
+            key** — each key is that currency's own smallest leg: a per-currency
+            local figure, and *not* a circulation figure. Nothing circulates a loop
+            whose legs are denominated differently; one that moves INR 1,000 one way
+            and USD 12 the other moves two amounts of two currencies, and neither
+            describes the loop. Since an absent key reads as zero, the honest
+            circulation for such a cycle is zero in every currency, not the smaller
+            of its keys. A client asking "what circulates this loop" must therefore
+            check the key count first: one key, use it; several, report that the
+            loop moves more than one currency and show the per-currency keys as they
+            are, rather than adding them or picking the smallest.
         gross:
-          $ref: "#/components/schemas/CurrencyAmounts"
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The sum of the legs, per currency. Like `net` it is never a single
+            combined figure, and for a cycle spanning currencies it is the sum of
+            flows that were never combined anywhere.
         transactions:
           type: integer
           description: Number of links making up the cycle.
@@ -6385,10 +6396,12 @@ components:
           allOf:
             - $ref: "#/components/schemas/CurrencyAmounts"
           description: >-
-            Sum of every cycle's `net`, per currency. It is the money that
-            travels a full loop between the user's own accounts, and for a
-            cycle spanning currencies that is per currency too — see `LinkCycle.net`
-            for why there is no single figure to report.
+            Sum of every cycle's `net`, per currency. Despite the name it is never
+            a single combined figure, and for a cycle spanning currencies it is
+            not a circulation figure either: it carries `LinkCycle.net`'s two
+            readings, and its key count is the same signal. It is for the
+            single-currency case, where it is the money that travels a full loop
+            between the user's own accounts and one key returns it.
         oneSidedFlows:
           type: array
           items:

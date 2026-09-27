@@ -52,8 +52,12 @@ type flowPairTotal struct {
 // accounts' transactions by construction and no account filter avoids the
 // question. A cycle whose legs are all in one currency reports the circulation
 // figure it always did; a cycle spanning currencies reports each currency's own
-// smallest leg and no single figure, because a loop moving INR 1,000 and USD 12
-// circulates no amount at all. The currencyScope names both accounts.
+// smallest leg, which is a local figure and not a circulation one — see
+// models.LinkCycle.Net, which states which is which. The currencyScope names the
+// accounts holding each currency in the response, so under ?currency=USD it
+// lists the USD ones, and a reported leg's other endpoint may be an account it
+// does not list: the filter narrows on the currency of the amount, which is not
+// necessarily either endpoint's account currency.
 func (srv *Server) GetLinkCycles(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
@@ -263,9 +267,6 @@ func buildLinkCycleReport(rows []flowLinkDetailRow) models.LinkCycleReport {
 				ID: account.id, Name: account.name, Color: account.color,
 			})
 		}
-		// Net is seeded from the first leg rather than from zero, so a currency
-		// one leg carries is not discarded by an initial zero it never matched.
-		seeded := false
 		for _, leg := range cycle.legs {
 			key := [2]string{leg.srcID, leg.dstID}
 			inCycle[key] = true
@@ -288,13 +289,10 @@ func buildLinkCycleReport(rows []flowLinkDetailRow) models.LinkCycleReport {
 			for code, amount := range pair.total {
 				out.Gross = out.Gross.Add(code, amount)
 			}
-			if !seeded {
-				for code, amount := range pair.total {
-					out.Net = out.Net.Add(code, amount)
-				}
-				seeded = true
-				continue
-			}
+			// No seeding pass: the first leg folds against an empty Net, and
+			// minCycleAmounts' union rule hands back exactly that leg's keys, so
+			// the first leg is the starting value rather than a comparison
+			// against an invented zero.
 			out.Net = minCycleAmounts(out.Net, pair.total)
 		}
 		for code, amount := range out.Net {
@@ -339,8 +337,10 @@ func buildLinkCycleReport(rows []flowLinkDetailRow) models.LinkCycleReport {
 // the obvious reading of a per-currency minimum — take the smallest number
 // whichever currency it is denominated in — is the cross-currency total this
 // endpoint exists to refuse. A currency only one operand holds is its own
-// minimum, the same union rule Sub and maxFlowAmounts follow; the caller seeds
-// the first leg so nothing is compared against an invented zero.
+// minimum, the same union rule Sub and maxFlowAmounts follow, which is also why
+// the first leg needs no special case: folded against an empty map it comes back
+// unchanged. See models.LinkCycle.Net for which of these figures is a
+// circulation figure, and when.
 func minCycleAmounts(a, b models.CurrencyAmounts) models.CurrencyAmounts {
 	out := models.NewCurrencyAmounts()
 	for code, amount := range a {

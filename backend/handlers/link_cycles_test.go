@@ -266,26 +266,38 @@ func TestBuildLinkCycleReportNetIsTheUnionOfItsLegsCurrencies(t *testing.T) {
 		report.Cycles[0].Net)
 }
 
-// A cycle whose smallest leg is zero still has a key, because a present zero and
-// an absent key are the same value to every reader but only a present one keeps
-// the currency named in the response. The empty map is the {} the contract
-// promises, never a null.
+// Every CurrencyAmounts on the report has to be an object on the wire even when it
+// holds nothing, because the contract is {} and a null says the amounts are
+// unknown where the truth is that there are none. A link's amount is never zero —
+// transactions reject a non-positive amount — so this is the only way to reach the
+// empty case, and it is the empty report a user with no links gets.
 func TestBuildLinkCycleReportEmptyAmountsAreObjectsNotNulls(t *testing.T) {
 	report := buildLinkCycleReport(nil)
 
 	assert.Equal(t, models.CurrencyAmounts{}, report.TotalCircular)
 	assert.Empty(t, report.Cycles)
 	assert.Empty(t, report.OneSidedFlows)
+}
 
-	a := flowAccountEnd{id: uuid.NewString(), name: "A"}
-	b := flowAccountEnd{id: uuid.NewString(), name: "B"}
-	withPair := buildLinkCycleReport([]flowLinkDetailRow{
-		linkDetailRow("transfer", "debit", "credit", "INR", a, b, 0),
-	})
-	require.Len(t, withPair.OneSidedFlows, 1)
-	assert.Equal(t, models.CurrencyAmounts{}, withPair.OneSidedFlows[0].Total)
-	require.Len(t, withPair.OneSidedFlows[0].Types, 1)
-	assert.Equal(t, models.CurrencyAmounts{}, withPair.OneSidedFlows[0].Types[0].Total)
+// The fold's empty case, driven directly rather than through a report: no link
+// can have a zero amount, so buildLinkCycleReport cannot produce an empty
+// CurrencyAmounts on a leg. minCycleAmounts has to be pinned at both ends
+// anyway, because the first leg folds against an empty map and relies on the
+// union rule to come back unchanged — if that ever became a comparison against
+// an invented zero, the first leg's own currencies would be zeroed and this is
+// what would notice.
+func TestMinCycleAmountsEmptyOperands(t *testing.T) {
+	// A currency only the second operand holds is its own minimum.
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(700)},
+		minCycleAmounts(models.NewCurrencyAmounts(), models.CurrencyAmounts{"INR": money.FromFloat(700)}))
+	// A currency only the first holds likewise.
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(700)},
+		minCycleAmounts(models.CurrencyAmounts{"INR": money.FromFloat(700)}, models.NewCurrencyAmounts()))
+	// Two empty operands give an empty object, not a null and not a zero key.
+	assert.Equal(t, models.CurrencyAmounts{}, minCycleAmounts(nil, nil))
+	// A nil operand is an empty one: Add may hand a fold a nil map, and the
+	// result must still be {}.
+	assert.NotNil(t, minCycleAmounts(nil, models.CurrencyAmounts{"USD": money.FromFloat(30)}))
 }
 
 func TestBuildLinkCycleReportOneSidedFlows(t *testing.T) {
@@ -450,11 +462,11 @@ func TestGetLinkCyclesPinsTheProjectedCurrency(t *testing.T) {
 	const predAt2 = ` = \$2`
 
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	mock.ExpectQuery(linkCyclesScopeRegex + `[\s\S]*` + flowCurrencyRegex + predAt2).
+	mock.ExpectQuery(linkCyclesScopeRegex+`[\s\S]*`+flowCurrencyRegex+predAt2).
 		WithArgs(userID, "USD").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(card, "Travel card", "USD", money.FromFloat(300), money.FromFloat(50)))
-	mock.ExpectQuery(linkCyclesDetailsHead + `[\s\S]*` + flowLinkCurrencyRegex + predAt2 + `[\s\S]*AND fa\.id <> ta\.id`).
+	mock.ExpectQuery(linkCyclesDetailsHead+`[\s\S]*`+flowLinkCurrencyRegex+predAt2+`[\s\S]*AND fa\.id <> ta\.id`).
 		WithArgs(userID, "USD").
 		WillReturnRows(linkCycleDetailRows().
 			AddRow("refund", "debit", "credit", card.String(), "Travel card", "#222", wallet.String(), "Wallet", "#333", "USD", 25.00))

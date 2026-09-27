@@ -1006,12 +1006,16 @@ type LinkCycleLeg struct {
 // both ways, netted for the Sankey) or "cycle" (a longer loop broken by
 // dropping its back edge).
 //
-// Net is the smallest leg per currency: each key is that currency's own smallest
-// leg. With one currency across the cycle it is what actually circulates the
-// loop and one key returns it; with more than one, no amount circulates the
-// loop and the keys are the honest local answer - so read Net only after
-// confirming it holds exactly one key, and say the loop moves several currencies
-// rather than adding them. Gross is the sum of the legs, per currency.
+// Net is the smallest leg, and the number of keys decides which of two readings
+// applies. One key: the legs are all in one currency, and that key is the amount
+// that circulates the whole loop - the single number this field used to hold
+// outright. More than one key: each key is that currency's own smallest leg, a
+// per-currency local figure and NOT a circulation figure. Nothing circulates a
+// loop whose legs are denominated differently, so check the key count before
+// rendering Net as a scalar: one key is the circulation, and several means the
+// loop moves that many currencies and none of them is what circulates it. Do not
+// add the keys and do not pick the smallest. Gross is the sum of the legs, per
+// currency, and is never a combined figure either.
 type LinkCycle struct {
 	Kind         string             `json:"kind"`
 	Accounts     []LinkCycleAccount `json:"accounts"`
@@ -1039,7 +1043,12 @@ type LinkOneSidedFlow struct {
 // CurrencyAmounts: a link joins two accounts, so this report sums two
 // accounts' transactions by construction and the two need not share a currency.
 type LinkCycleReport struct {
-	Cycles        []LinkCycle        `json:"cycles"`
+	Cycles []LinkCycle `json:"cycles"`
+	// TotalCircular is the sum of every cycle's Net, per currency. Despite the
+	// name it is never a single combined figure and, for a cycle spanning
+	// currencies, not a circulation figure either - it carries LinkCycle.Net's
+	// two readings and the same key-count signal. It is for the single-currency
+	// case, where one key returns the money that travels a full loop.
 	TotalCircular CurrencyAmounts     `json:"totalCircular"`
 	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`
 	// CurrencyScope names every currency the report covers and the accounts
