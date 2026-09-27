@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactNode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import MoneyFlow, { nodeDrilldownPath } from "./MoneyFlow";
-import { formatCurrency } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type {
+  CurrencyScope,
   LinkCycleReport,
   MoneyFlowGraph,
   MoneyFlowNode,
@@ -45,6 +46,22 @@ vi.mock("../../context/SettingsContext", () => ({
   useSettings: () => ({ compactLayout: false }),
 }));
 
+// oneCurrencyScope is the common case: a window that only ever touched rupees.
+function oneCurrencyScope(): CurrencyScope {
+  return {
+    currencies: ["INR"],
+    accounts: [
+      {
+        id: "a1",
+        name: "Checking",
+        currency: "INR",
+        income: { INR: 50000 },
+        expense: { INR: 12000 },
+      },
+    ],
+  };
+}
+
 function graph(overrides: Partial<MoneyFlowGraph> = {}): MoneyFlowGraph {
   return {
     nodes: [
@@ -54,14 +71,14 @@ function graph(overrides: Partial<MoneyFlowGraph> = {}): MoneyFlowGraph {
         kind: "income",
         color: "#22c55e",
         group: "income",
-        total: 50000,
+        total: { INR: 50000 },
       },
       {
         id: "account:a1",
         name: "Checking",
         kind: "account",
         color: "#3b82f6",
-        total: 50000,
+        total: { INR: 50000 },
       },
       {
         id: "category:c1",
@@ -69,18 +86,20 @@ function graph(overrides: Partial<MoneyFlowGraph> = {}): MoneyFlowGraph {
         kind: "category",
         color: "#f97316",
         group: "expense",
-        total: 12000,
+        total: { INR: 12000 },
       },
-      { id: "payee:p1", name: "Zomato", kind: "payee", total: 12000 },
+      { id: "payee:p1", name: "Zomato", kind: "payee", total: { INR: 12000 } },
     ],
     links: [
-      { source: "income:i1", target: "account:a1", value: 50000 },
-      { source: "account:a1", target: "category:c1", value: 12000 },
-      { source: "category:c1", target: "payee:p1", value: 12000 },
+      { source: "income:i1", target: "account:a1", value: { INR: 50000 } },
+      { source: "account:a1", target: "category:c1", value: { INR: 12000 } },
+      { source: "category:c1", target: "payee:p1", value: { INR: 12000 } },
     ],
-    totalIncome: 50000,
-    totalExpense: 12000,
-    linkSummary: [{ type: "transfer", count: 2, total: 30000 }],
+    totalIncome: { INR: 50000 },
+    totalExpense: { INR: 12000 },
+    totalNet: { INR: 38000 },
+    linkSummary: [{ type: "transfer", count: 2, total: { INR: 30000 } }],
+    currencyScope: oneCurrencyScope(),
     ...overrides,
   };
 }
@@ -94,20 +113,21 @@ function timeline(): MoneyFlowTimeline {
         label: "May 2024",
         startDate: "2024-05-01",
         endDate: "2024-05-31",
-        income: 5000,
-        expense: 1000,
-        net: 4000,
+        income: { INR: 5000 },
+        expense: { INR: 1000 },
+        net: { INR: 4000 },
       },
       {
         key: "2024-06",
         label: "Jun 2024",
         startDate: "2024-06-01",
         endDate: "2024-06-30",
-        income: 0,
-        expense: 2000,
-        net: -2000,
+        income: { INR: 0 },
+        expense: { INR: 2000 },
+        net: { INR: -2000 },
       },
     ],
+    currencyScope: oneCurrencyScope(),
   };
 }
 
@@ -126,37 +146,38 @@ function cycleReport(overrides: Partial<LinkCycleReport> = {}): LinkCycleReport 
             fromAccountName: "Checking",
             toAccountId: "a2",
             toAccountName: "Card",
-            amount: 8000,
+            amount: { INR: 8000 },
             count: 2,
-            types: [{ type: "transfer", count: 2, total: 8000 }],
+            types: [{ type: "transfer", count: 2, total: { INR: 8000 } }],
           },
           {
             fromAccountId: "a2",
             fromAccountName: "Card",
             toAccountId: "a1",
             toAccountName: "Checking",
-            amount: 3000,
+            amount: { INR: 3000 },
             count: 1,
-            types: [{ type: "transfer", count: 1, total: 3000 }],
+            types: [{ type: "transfer", count: 1, total: { INR: 3000 } }],
           },
         ],
-        net: 3000,
-        gross: 11000,
+        net: { INR: 3000 },
+        gross: { INR: 11000 },
         transactions: 3,
       },
     ],
-    totalCircular: 3000,
+    totalCircular: { INR: 3000 },
     oneSidedFlows: [
       {
         fromAccountId: "a1",
         fromAccountName: "Checking",
         toAccountId: "a3",
         toAccountName: "Savings",
-        total: 1500,
+        total: { INR: 1500 },
         count: 1,
-        types: [{ type: "bill_payment", count: 1, total: 1500 }],
+        types: [{ type: "bill_payment", count: 1, total: { INR: 1500 } }],
       },
     ],
+    currencyScope: oneCurrencyScope(),
     ...overrides,
   };
 }
@@ -186,13 +207,14 @@ describe("MoneyFlow", () => {
 
     expect(await screen.findByText("Money Flow")).toBeInTheDocument();
     expect(screen.getByText("Money In")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(50000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(12000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(38000))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(50000, "INR"))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(12000, "INR"))).toBeInTheDocument();
+    // The net is the server's figure, not a subtraction of the two above.
+    expect(screen.getByText(formatOne(38000, "INR"))).toBeInTheDocument();
 
     expect(screen.getByText("Transfers")).toBeInTheDocument();
     expect(screen.getByText("2 links")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(30000))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(30000, "INR"))).toBeInTheDocument();
   });
 
   it("renders the circular-money report", async () => {
@@ -202,20 +224,24 @@ describe("MoneyFlow", () => {
     expect(screen.getByText("Cycles between your accounts")).toBeInTheDocument();
     expect(screen.getByText("Two-way pair")).toBeInTheDocument();
     expect(
-      screen.getByText(`${formatCurrency(3000)} circulating`),
+      screen.getByText(`${formatOne(3000, "INR")} circulating`),
     ).toBeInTheDocument();
     // Both cycle legs are listed with their own flows.
     expect(
-      screen.getByText(`Checking → Card: ${formatCurrency(8000)}`),
+      screen.getByText(`Checking → Card: ${formatOne(8000, "INR")}`),
     ).toBeInTheDocument();
     expect(screen.getByText("One-way account flows")).toBeInTheDocument();
     expect(screen.getByText("Bill payments (1)")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(1500))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(1500, "INR"))).toBeInTheDocument();
   });
 
   it("shows an empty state when there is no circular money", async () => {
     apiMock.getLinkCycles.mockResolvedValue(
-      cycleReport({ cycles: [], oneSidedFlows: [], totalCircular: 0 }),
+      cycleReport({
+        cycles: [],
+        oneSidedFlows: [],
+        totalCircular: { INR: 0 },
+      }),
     );
     render(page());
 
@@ -319,7 +345,14 @@ describe("MoneyFlow", () => {
 
   it("shows empty states when there are no flows", async () => {
     apiMock.getMoneyFlow.mockResolvedValue(
-      graph({ nodes: [], links: [], totalIncome: 0, totalExpense: 0, linkSummary: [] }),
+      graph({
+        nodes: [],
+        links: [],
+        totalIncome: { INR: 0 },
+        totalExpense: { INR: 0 },
+        totalNet: { INR: 0 },
+        linkSummary: [],
+      }),
     );
     render(page());
 
@@ -350,6 +383,116 @@ describe("MoneyFlow", () => {
       ),
     );
   });
+
+  it("shows one currency at a time and names the one it is not showing", async () => {
+    const user = userEvent.setup();
+    const twoCurrencies: CurrencyScope = {
+      currencies: ["INR", "USD"],
+      accounts: [
+        ...oneCurrencyScope().accounts,
+        {
+          id: "a2",
+          name: "Dollars",
+          currency: "USD",
+          income: { USD: 900 },
+          expense: { USD: 300 },
+        },
+      ],
+    };
+    apiMock.getMoneyFlow.mockResolvedValue(
+      graph({
+        totalIncome: { INR: 50000, USD: 900 },
+        totalExpense: { INR: 12000, USD: 300 },
+        totalNet: { INR: 38000, USD: 600 },
+        linkSummary: [{ type: "transfer", count: 2, total: { INR: 30000 } }],
+        currencyScope: twoCurrencies,
+      }),
+    );
+    render(page());
+
+    expect(await screen.findByText("Money Flow")).toBeInTheDocument();
+    expect(screen.getByText(formatOne(50000, "INR"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(50900, "INR"))).not.toBeInTheDocument();
+    expect(screen.getByText("1 other currency")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Currency" }));
+    await user.click(await screen.findByRole("option", { name: "USD" }));
+
+    expect(await screen.findByText(formatOne(900, "USD"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(50000, "INR"))).not.toBeInTheDocument();
+  });
+
+  it("sizes the timeline bars by the selected currency only", async () => {
+    // June earned and spent in dollars on a larger scale than May earned and
+    // spent in rupees. Its INR figures are genuinely absent: the bars must fall
+    // to the floor rather than be sized by the foreign magnitudes, and May must
+    // still fill the strip. Taking the largest currency as the denominator
+    // would shrink May to a little over half height.
+    apiMock.getMoneyFlow.mockResolvedValue(
+      graph({
+        currencyScope: {
+          currencies: ["INR", "USD"],
+          accounts: [
+            ...oneCurrencyScope().accounts,
+            {
+              id: "a2",
+              name: "Dollars",
+              currency: "USD",
+              income: { USD: 9000 },
+              expense: { USD: 3000 },
+            },
+          ],
+        },
+      }),
+    );
+    apiMock.getMoneyFlowTimeline.mockResolvedValue({
+      groupBy: "month",
+      periods: [
+        {
+          key: "2024-05",
+          label: "May 2024",
+          startDate: "2024-05-01",
+          endDate: "2024-05-31",
+          income: { INR: 5000 },
+          expense: { INR: 1000 },
+          net: { INR: 4000 },
+        },
+        {
+          key: "2024-06",
+          label: "Jun 2024",
+          startDate: "2024-06-01",
+          endDate: "2024-06-30",
+          income: { USD: 9000 },
+          expense: { USD: 3000 },
+          net: { USD: 6000 },
+        },
+      ],
+      currencyScope: { currencies: ["INR", "USD"], accounts: [] },
+    });
+    render(page());
+
+    const barHeights = (button: HTMLElement) =>
+      [...button.querySelectorAll("span[style]")].map((bar) =>
+        bar.getAttribute("style"),
+      );
+
+    const domestic = await screen.findByRole("button", { name: /May 2024/ });
+    expect(barHeights(domestic)).toEqual(["height: 100%;", "height: 20%;"]);
+    // A period with nothing in the selected currency draws flat rather than
+    // being sized by the currency the user is not looking at.
+    const foreign = screen.getByRole("button", { name: /Jun 2024/ });
+    expect(barHeights(foreign)).toEqual(["height: 2%;", "height: 2%;"]);
+
+    // And its net is not a surplus either: the figure has no sign to report.
+    const net = within(foreign).getByText("0.00");
+    expect(net).toHaveClass("text-muted-foreground");
+    expect(net).not.toHaveClass("text-chart-3");
+  });
 });
 
 describe("nodeDrilldownPath", () => {
@@ -357,7 +500,7 @@ describe("nodeDrilldownPath", () => {
     id,
     name: id,
     kind,
-    total: 1,
+    total: { INR: 1 },
   });
 
   it("maps each node kind to Transactions filters", () => {

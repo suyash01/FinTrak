@@ -4,8 +4,14 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "./Dashboard";
+import { formatOne } from "../../lib/currency";
 import { formatCurrency } from "../../utils/formatters";
-import type { Account, DashboardSummary, RecurringSeries } from "../../types";
+import type {
+  Account,
+  CurrencyScope,
+  DashboardSummary,
+  RecurringSeries,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -64,15 +70,52 @@ function account(overrides: Partial<Account> = {}): Account {
   };
 }
 
+// oneCurrencyScope is the common case: a window that only ever touched rupees.
+function oneCurrencyScope(): CurrencyScope {
+  return {
+    currencies: ["INR"],
+    accounts: [
+      {
+        id: "a1",
+        name: "Checking",
+        currency: "INR",
+        income: { INR: 5000 },
+        expense: { INR: 2000 },
+      },
+    ],
+  };
+}
+
+// twoCurrencyScope is the case this change exists for: a window over an INR and
+// a USD account, where no single figure describes it.
+function twoCurrencyScope(): CurrencyScope {
+  return {
+    currencies: ["INR", "USD"],
+    accounts: [
+      ...oneCurrencyScope().accounts,
+      {
+        id: "a2",
+        name: "Dollars",
+        currency: "USD",
+        income: { USD: 120 },
+        expense: { USD: 80 },
+      },
+    ],
+  };
+}
+
 function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
   return {
     totalAccounts: 1,
     totalTransactions: 12,
-    totalIncome: 5000,
-    totalExpense: 2000,
+    totalIncome: { INR: 5000 },
+    totalExpense: { INR: 2000 },
+    totalNet: { INR: 3000 },
     byCategory: [],
     incomeByCategory: [],
-    monthlyTrend: [{ month: "2024-01", income: 5000, expense: 2000 }],
+    monthlyTrend: [
+      { month: "2024-01", income: { INR: 5000 }, expense: { INR: 2000 } },
+    ],
     recentTransactions: [
       {
         id: "t1",
@@ -84,6 +127,7 @@ function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
         accountName: "Checking",
       },
     ],
+    currencyScope: oneCurrencyScope(),
     ...overrides,
   };
 }
@@ -135,13 +179,15 @@ describe("Dashboard", () => {
     renderLoaded([account()]);
 
     expect(await screen.findByText("Total Income")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(5000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(2000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(3000))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(5000, "INR"))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(2000, "INR"))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(3000, "INR"))).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
 
     const recent = screen.getByText("Coffee Shop").closest("tr")!;
     expect(within(recent).getByText("Checking")).toBeInTheDocument();
+    // A single-currency window pays for nothing: the notice renders nothing.
+    expect(screen.queryByText(/other currencies?/)).toBeNull();
   });
 
   it("pre-fills the default account and passes it to the API", async () => {
@@ -213,17 +259,17 @@ describe("Dashboard", () => {
 
     // The newer (account-scoped) request resolves first.
     await act(async () => {
-      resolveSecond(summary({ totalIncome: 9999 }));
+      resolveSecond(summary({ totalIncome: { INR: 9999 } }));
     });
-    expect(await screen.findByText(formatCurrency(9999))).toBeInTheDocument();
+    expect(await screen.findByText(formatOne(9999, "INR"))).toBeInTheDocument();
 
     // The older request resolves last; its data must not overwrite the newer
     // result.
     await act(async () => {
-      resolveFirst(summary({ totalIncome: 1111 }));
+      resolveFirst(summary({ totalIncome: { INR: 1111 } }));
     });
-    expect(screen.queryByText(formatCurrency(1111))).not.toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(9999))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(1111, "INR"))).not.toBeInTheDocument();
+    expect(screen.getByText(formatOne(9999, "INR"))).toBeInTheDocument();
   });
 
   it("keeps the loaded dashboard while a refetch is in flight and after it fails", async () => {
@@ -262,8 +308,8 @@ describe("Dashboard", () => {
             label: "Mar 2024",
             startDate: "2024-03-01",
             endDate: "2024-03-31",
-            income: 100,
-            expense: 50,
+            income: { INR: 100 },
+            expense: { INR: 50 },
           },
         ],
       }),
@@ -336,6 +382,8 @@ describe("Dashboard", () => {
       await screen.findByText("Recurring & Subscriptions"),
     ).toBeInTheDocument();
     expect(screen.getByText("Netflix")).toBeInTheDocument();
+    // The recurring card is per-account and still renders a transaction-style
+    // amount; it is not one of the reporting aggregates this change scopes.
     expect(
       screen.getAllByText(formatCurrency(1599)).length,
     ).toBeGreaterThanOrEqual(1);
@@ -349,5 +397,92 @@ describe("Dashboard", () => {
     renderLoaded([account()]);
     await screen.findByText("Total Income");
     expect(screen.queryByText("Recurring & Subscriptions")).toBeNull();
+  });
+
+  it("shows one currency at a time and names the one it is not showing", async () => {
+    const user = userEvent.setup();
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        totalIncome: { INR: 5000, USD: 120 },
+        totalExpense: { INR: 2000, USD: 80 },
+        totalNet: { INR: 3000, USD: 40 },
+        currencyScope: twoCurrencyScope(),
+      }),
+    );
+    renderLoaded([
+      account(),
+      account({ id: "a2", name: "Dollars", currency: "USD", isDefault: false }),
+    ]);
+
+    // Figures above are the selected currency's own, never a sum of the two.
+    expect(await screen.findByText(formatOne(5000, "INR"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(5120, "INR"))).not.toBeInTheDocument();
+
+    // The notice says what is left out, and where it is.
+    expect(screen.getByText("1 other currency")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Currency" }));
+    await user.click(await screen.findByRole("option", { name: "USD" }));
+
+    expect(await screen.findByText(formatOne(120, "USD"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(5000, "INR"))).not.toBeInTheDocument();
+    expect(screen.getByText("1 other currency")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /INR .*\(Checking\)\. These are not added to the figures above\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves a category with no figure in the selected currency at zero", async () => {
+    // A category spent only in dollars, in a window the rupee selection is
+    // looking at. The row is real, so the pie beside it draws a real (empty)
+    // slice — but it has no rupee figure to report, and the net card above it
+    // takes its colour from the server's net rather than from `net >= 0`.
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        totalIncome: { INR: 5000, USD: 900 },
+        totalExpense: { INR: 2000, USD: 1200 },
+        totalNet: { INR: 3000, USD: -300 },
+        byCategory: [
+          {
+            categoryId: "c1",
+            categoryName: "Rent",
+            categoryColor: "#f97316",
+            categoryIcon: "🏠",
+            total: { INR: 2000 },
+            count: 1,
+          },
+          {
+            categoryId: "c2",
+            categoryName: "Latte",
+            categoryColor: "#a855f7",
+            categoryIcon: "☕",
+            total: { USD: 900 },
+            count: 1,
+          },
+        ],
+        currencyScope: twoCurrencyScope(),
+      }),
+    );
+    renderLoaded([
+      account(),
+      account({ id: "a2", name: "Dollars", currency: "USD", isDefault: false }),
+    ]);
+
+    // The net is the server's figure, read in the selected currency.
+    const card = (await screen.findByText("Net Savings")).parentElement!;
+    const net = within(card).getByText(formatOne(3000, "INR"));
+    expect(net).toHaveClass("text-chart-3");
+
+    // A category spent only in dollars has no rupee figure at all.
+    const row = screen.getByText("Latte").parentElement!;
+    expect(within(row).getByText("0.00")).toBeInTheDocument();
+    expect(within(row).queryByText(formatOne(900, "USD"))).toBeNull();
   });
 });

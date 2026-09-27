@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import CashFlowCalendar from "./CashFlowCalendar";
-import { formatCurrency } from "../../utils/formatters";
-import type { CashFlowCalendar as CashFlowCalendarData } from "../../types";
+import { formatOne } from "../../lib/currency";
+import type {
+  CashFlowCalendar as CashFlowCalendarData,
+  CurrencyScope,
+} from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -27,33 +30,106 @@ vi.mock("../../context/SettingsContext", () => ({
   useSettings: () => ({ compactLayout: false }),
 }));
 
+function oneCurrencyScope(): CurrencyScope {
+  return {
+    currencies: ["INR"],
+    accounts: [
+      {
+        id: "a1",
+        name: "Checking",
+        currency: "INR",
+        income: { INR: 5000 },
+        expense: { INR: 1500 },
+      },
+    ],
+  };
+}
+
 function calendar(
   overrides: Partial<CashFlowCalendarData> = {},
 ): CashFlowCalendarData {
   return {
     days: [
-      { date: "2024-06-03", income: 5000, expense: 0, net: 5000, count: 1 },
-      { date: "2024-06-04", income: 0, expense: 1500, net: -1500, count: 2 },
+      {
+        date: "2024-06-03",
+        income: { INR: 5000 },
+        expense: { INR: 0 },
+        net: { INR: 5000 },
+        count: 1,
+      },
+      {
+        date: "2024-06-04",
+        income: { INR: 0 },
+        expense: { INR: 1500 },
+        net: { INR: -1500 },
+        count: 2,
+      },
     ],
     markers: [
       {
         date: "2024-06-04",
         label: "Running balance",
         kind: "balance",
-        amount: -1500,
+        amount: { INR: -1500 },
       },
     ],
     cycles: [],
-    totalIncome: 5000,
-    totalExpense: 1500,
-    net: 3500,
-    maxAbsNet: 5000,
+    totalIncome: { INR: 5000 },
+    totalExpense: { INR: 1500 },
+    net: { INR: 3500 },
+    maxAbsNet: { INR: 5000 },
+    currencyScope: oneCurrencyScope(),
     ...overrides,
   };
 }
 
-function page(entry = "/cash-flow-calendar?dateFrom=2024-06-03&dateTo=2024-06-10") {
-  return (
+// twoCurrencyCalendar is the case this change exists for: a window with a
+// domestic surplus and deficit alongside a day spent entirely in dollars, on a
+// much larger scale. Nothing in the response may combine the two.
+function twoCurrencyCalendar(): CashFlowCalendarData {
+  const dollars = {
+    id: "a2",
+    name: "Dollars",
+    currency: "USD",
+    income: { USD: 9000 },
+    expense: { USD: 9060 },
+  };
+  return calendar({
+    days: [
+      {
+        date: "2024-06-03",
+        income: { INR: 5000 },
+        expense: { INR: 0 },
+        net: { INR: 5000 },
+        count: 1,
+      },
+      {
+        date: "2024-06-04",
+        income: { INR: 0 },
+        expense: { INR: 1500 },
+        net: { INR: -1500 },
+        count: 2,
+      },
+      {
+        date: "2024-06-05",
+        income: { USD: 9000 },
+        expense: { USD: 9060 },
+        net: { USD: -60 },
+        count: 2,
+      },
+    ],
+    totalIncome: { INR: 5000, USD: 9000 },
+    totalExpense: { INR: 1500, USD: 9060 },
+    net: { INR: 3500, USD: -60 },
+    maxAbsNet: { INR: 5000, USD: 60 },
+    currencyScope: {
+      currencies: ["INR", "USD"],
+      accounts: [...oneCurrencyScope().accounts, dollars],
+    },
+  });
+}
+
+function page(entry = "/cash-flow-calendar?dateFrom=2024-06-03&dateTo=2024-06-10") {  return (
     <MemoryRouter initialEntries={[entry]}>
       <CashFlowCalendar />
     </MemoryRouter>
@@ -72,9 +148,9 @@ describe("CashFlowCalendar", () => {
 
     expect(await screen.findByText("Cash Flow Calendar")).toBeInTheDocument();
     expect(screen.getByText("Money In")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(5000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(1500))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(3500))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(5000, "INR"))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(1500, "INR"))).toBeInTheDocument();
+    expect(screen.getByText(formatOne(3500, "INR"))).toBeInTheDocument();
     expect(screen.getByText("Daily Net Flow")).toBeInTheDocument();
   });
 
@@ -107,7 +183,7 @@ describe("CashFlowCalendar", () => {
             // Sunday to exercise the week-overlap normalization.
             startDate: "2024-06-09T00:00:00Z",
             endDate: "2024-07-09T00:00:00Z",
-            outstanding: 0,
+            outstanding: { INR: 0 },
           },
         ],
       }),
@@ -163,10 +239,10 @@ describe("CashFlowCalendar", () => {
         days: [],
         markers: [],
         cycles: [],
-        totalIncome: 0,
-        totalExpense: 0,
-        net: 0,
-        maxAbsNet: 0,
+        totalIncome: { INR: 0 },
+        totalExpense: { INR: 0 },
+        net: { INR: 0 },
+        maxAbsNet: { INR: 0 },
       }),
     );
     render(page());
@@ -174,5 +250,69 @@ describe("CashFlowCalendar", () => {
     expect(
       await screen.findByText("No transactions in this range."),
     ).toBeInTheDocument();
+  });
+
+  it("shows one currency at a time and names the one it is not showing", async () => {
+    const user = userEvent.setup();
+    apiMock.getCashFlowCalendar.mockResolvedValue(twoCurrencyCalendar());
+    render(page());
+
+    expect(await screen.findByText("Cash Flow Calendar")).toBeInTheDocument();
+    expect(screen.getByText(formatOne(5000, "INR"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(14000, "INR"))).not.toBeInTheDocument();
+    expect(screen.getByText("1 other currency")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Currency" }));
+    await user.click(await screen.findByRole("option", { name: "USD" }));
+
+    expect(await screen.findByText(formatOne(9000, "USD"))).toBeInTheDocument();
+    expect(screen.queryByText(formatOne(5000, "INR"))).not.toBeInTheDocument();
+  });
+
+  it("scales the heatmap by the selected currency and leaves a foreign day flat", async () => {
+    apiMock.getCashFlowCalendar.mockResolvedValue(twoCurrencyCalendar());
+    render(page());
+
+    // 3 June's rupee surplus is the largest INR net in the window, so it fills
+    // the colour scale. Sizing by the dollars instead — the largest magnitude in
+    // the payload — would leave it barely tinted.
+    const domestic = await screen.findByRole("gridcell", {
+      name: /03 Jun 2024: net INR ₹5,000\.00/,
+    });
+    expect(domestic.getAttribute("style")).toContain("var(--chart-3) 90%");
+
+    // A day spent only in dollars has no figure in the currency on screen, so
+    // it stays flat rather than being tinted from a currency the user is not
+    // looking at.
+    const foreign = screen.getByRole("gridcell", {
+      name: /05 Jun 2024: net INR ₹0\.00/,
+    });
+    expect(foreign.getAttribute("style")).toBe(
+      "background-color: var(--muted);",
+    );
+  });
+
+  it("does not colour a day the selected currency never held as a surplus", async () => {
+    // The same foreign day, read from the selected-day panel: a real row with
+    // no figure in the currency on screen, whose net must claim no sign at all.
+    apiMock.getCashFlowCalendar.mockResolvedValue(twoCurrencyCalendar());
+    render(page());
+
+    // fireEvent rather than userEvent: this is about the panel, and a real click
+    // would also open the hover tooltip with a second Net row to disambiguate.
+    fireEvent.click(
+      await screen.findByRole("gridcell", { name: /05 Jun 2024: net INR/ }),
+    );
+
+    const net = within(await screen.findByText("Net")).getByText(
+      formatOne(0, "INR"),
+    );
+    expect(net).toHaveClass("text-muted-foreground");
+    expect(net).not.toHaveClass("text-chart-3");
   });
 });
