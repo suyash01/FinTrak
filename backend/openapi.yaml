@@ -1075,7 +1075,7 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring), optionally prefixed with `not`, or
+            linked, recurring, ccy), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
@@ -1083,8 +1083,11 @@ paths:
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
             `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
-            most 32 terms and 2000 characters.
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
+            `ccy` is a three-letter currency code, matched against the
+            transaction's *account's* currency and folded to upper case, with an
+            unset or empty account currency read as INR — the same reading every
+            reporting endpoint gives it. At most 32 terms and 2000 characters.
 
 
             An unusable term is never an error: it is dropped and reported in
@@ -1645,7 +1648,7 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring), optionally prefixed with `not`, or
+            linked, recurring, ccy), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
@@ -1653,8 +1656,11 @@ paths:
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
             `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
-            most 32 terms and 2000 characters.
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
+            `ccy` is a three-letter currency code, matched against the
+            transaction's *account's* currency and folded to upper case, with an
+            unset or empty account currency read as INR — the same reading every
+            reporting endpoint gives it. At most 32 terms and 2000 characters.
 
 
             An unusable term is never an error: it is dropped, and this endpoint
@@ -4040,10 +4046,20 @@ paths:
             Narrow the whole response to accounts holding one currency code
             (upper-case three-letter, case-insensitive). Amounts are always
             reported per currency regardless; this chooses which accounts are in
-            scope, and every section - totals, category breakdowns, monthly trend
-            and the transaction list - is narrowed with it, so no two sections
-            describe different sets of transactions. A code that is not three
-            letters is a 400.
+            scope, and every section that describes transactions - totals,
+            category breakdowns, monthly trend and the transaction list - is
+            narrowed with it, so no two of those describe different sets of
+            transactions. A code that is not three letters is a 400.
+
+            Three things are not narrowed, each for a stated reason, so that
+            reading "the whole response" as absolute would be a misreading rather
+            than a discovery. `totalAccounts` is a plain `COUNT(*)` over the
+            user's accounts and keeps counting all of them; `currencyScope` is
+            what lists the accounts actually in scope, and it is narrowed. In
+            `groupBy=billing_cycle` the per-cycle trend bars are narrowed too.
+            An account whose `currency` is unset or empty is treated as INR here,
+            exactly as every other currency read in the product treats it, so
+            `currency=INR` includes it rather than silently excluding it.
         - in: query
           name: groupBy
           schema:
@@ -6076,8 +6092,19 @@ components:
       properties:
         totalAccounts:
           type: integer
+          description: >-
+            How many accounts the user has. This is a plain `COUNT(*)` over their
+            accounts and the `currency` parameter does **not** narrow it, so a
+            response filtered to one currency still reports every account they
+            own. Use `currencyScope.accounts` for the accounts actually in scope;
+            that list is narrowed, and it is the one that says which accounts a
+            figure came from.
         totalTransactions:
           type: integer
+          description: >-
+            How many transactions the response's window covers. Unlike
+            `totalAccounts` this is transaction-backed, so the `currency`,
+            `accountId` and date parameters all narrow it.
         totalIncome:
           $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
