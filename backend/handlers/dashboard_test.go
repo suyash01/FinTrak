@@ -39,6 +39,15 @@ const catWindowRegex = `ROW_NUMBER\(\) OVER \(PARTITION BY COALESCE\(NULLIF\(a\.
 // placeholder. A section that dropped it would describe a wider window than the
 // stat cards beside it, which is the contradiction the test below exists to
 // catch, so each of those expectations matches this and binds the code.
+//
+// Note what this regex cannot also do: pin that the placeholder appears exactly
+// once. That is not an oversight but a property of the matcher — pgxmock's
+// QueryMatcherRegexp runs stripQuery over the actual statement first, collapsing
+// every whitespace run to a single space, so no pattern can tell `= $2` from
+// `= $2 $2` by what follows it, and a bare `= \$2` matches inside the malformed
+// `= $2 $2` too. That is how a statement PostgreSQL rejects passed thirteen tasks
+// and a per-task review: a matcher compares strings and cannot parse one, so
+// tightening this pattern is not available as a fix for anything.
 const currencyFilterRegex = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$2`
 
 func TestGetDashboardSummary(t *testing.T) {
@@ -695,7 +704,10 @@ func TestGetDashboardSummaryBillingCycleNarrowsToTheCurrencyFilter(t *testing.T)
 	windowStart, windowEnd := "2026-07-06", "2026-08-05"
 
 	// The shared fragment's currency predicate is the fourth condition, so $5.
-	// The scope query numbers the same three filters and reaches $5 too.
+	// The scope query numbers the same three filters and reaches $5 too. This view
+	// builds its own copy of the fragment, so it carries the same caveat as
+	// currencyFilterRegex: the pattern pins the spelling, and nothing here pins
+	// the placeholder count.
 	const filterAt5 = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$5`
 
 	mock.ExpectQuery("SELECT a.billing_day").

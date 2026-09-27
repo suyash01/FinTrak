@@ -126,11 +126,28 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	// inner-joins accounts, so a row that fails the predicate is one with no
 	// account in scope. It is the account-driven scope query that has to keep
 	// quiet accounts visible, and that guard lives in currencyScope, not here.
+	//
+	// Two closers build that fragment, and neither can do the other's job.
+	// addCond owns the placeholder and appends it to an operator, which is what
+	// the three column comparisons need. addFragment takes a condition that
+	// already carries its own and binds only the value, which is what a currency
+	// predicate needs: currencyPredicate renders a whole comparison, so handing
+	// it to addCond produced `= $4 $4` and PostgreSQL rejected the statement.
+	// That is the same shape currency.go's add has always had — a pre-formatted
+	// fragment plus a bound value, with the caller building the $n — and it was
+	// right there and wrong here only because addCond predates any
+	// self-contained predicate. Two closures, one job each, is cheaper than
+	// teaching one of them to guess which kind of condition it was handed.
 	catFilter := ""
 	args := []any{userID}
 	paramIdx := 2
 	addCond := func(cond string, val any) {
 		catFilter += fmt.Sprintf(" AND %s $%d", cond, paramIdx)
+		args = append(args, val)
+		paramIdx++
+	}
+	addFragment := func(fragment string, val any) {
+		catFilter += " AND " + fragment
 		args = append(args, val)
 		paramIdx++
 	}
@@ -144,7 +161,7 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		addCond("t.account_id =", accountID)
 	}
 	if currency != "" {
-		addCond(currencyPredicate(paramIdx), currency)
+		addFragment(currencyPredicate(paramIdx), currency)
 	}
 
 	// Run every read in a single read-only, repeatable-read transaction so the
@@ -601,6 +618,11 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 	// so no query can renumber another's placeholders. The account's own
 	// currency filter rides along so a caller asking for a currency this account
 	// does not hold gets an empty report rather than one in the wrong currency.
+	//
+	// Two closers, for the reason given at the month view's copy: addCond owns
+	// the placeholder and takes an operator, addFragment takes a condition that
+	// already carries one. A currency predicate is the second kind, and routing
+	// it through the first is what made this endpoint answer 500 before.
 	catFilter := ""
 	catArgs := []any{userID}
 	paramIdx := 2
@@ -609,11 +631,16 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 		catArgs = append(catArgs, val)
 		paramIdx++
 	}
+	addFragment := func(fragment string, val any) {
+		catFilter += " AND " + fragment
+		catArgs = append(catArgs, val)
+		paramIdx++
+	}
 	addCond("t.date >=", windowStart)
 	addCond("t.date <=", windowEnd)
 	addCond("t.account_id =", accountID)
 	if currency != "" {
-		addCond(currencyPredicate(paramIdx), currency)
+		addFragment(currencyPredicate(paramIdx), currency)
 	}
 
 	cycleCountQuery := `SELECT COUNT(*) FROM transactions t
