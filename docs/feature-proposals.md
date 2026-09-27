@@ -11,13 +11,17 @@ questions, so it can be argued with before any of it becomes a spec.
 > query field from #1 part 3.** The multi-currency work landed on this branch and
 > fixed the bug this document opens with — every aggregate on the five reporting
 > endpoints now reports per currency, with the reasons kept below and the current
-> shape in the API section of `README.md`. The `ccy:` field was added to the query
-> language separately (`backend/internal/query/fields.go`), so the "`ccy:` is
-> genuinely cheap" claim below is now a record of work done rather than a
-> suggestion. Still **not** done: dated exchange rates, the `group by currency`
-> dashboard option, and exposing the unconverted set in the UI. #1 is below as the
-> reasoning behind the change, not as an open finding — and the line numbers it
-> quotes moved when the aggregates were rewritten.
+> shape in the API section of `README.md`. The unconverted set is exposed in the UI
+> too: `MultiCurrencyNotice`, mounted on the Dashboard, Money Flow and Cash Flow
+> Calendar, names each currency a report is not showing, the accounts behind it and
+> their income and expense, and says the figures are not added to the ones above.
+> The `ccy:` field is in the tree as well (`backend/internal/query/fields.go`, added
+> in `c074cd2`, a commit on this branch's history that is not part of this change),
+> so the "`ccy:` is genuinely cheap" claim below is a record of work done rather
+> than a suggestion. Still **not** done: dated exchange rates, and a `group by
+> currency` option on the dashboard. #1 is below as the reasoning behind the change,
+> not as an open finding — and the line numbers it quotes moved when the aggregates
+> were rewritten.
 
 ---
 
@@ -659,11 +663,14 @@ work.
 The TUI's transaction filter form exposes search, account, category (including the
 `uncategorized` sentinel), group, payee, type, linked, date range, tags, amount, limit
 and page. It exposes **none** of `q`, `loanAccountId`, `excludeAttached`, `recurringId`
-or `recurring` — all of which the shared client implements, the API documents, the web
-UI uses, and the MCP `list_transactions` tool accepts. `q` is the one that costs
-capability rather than convenience: it is the typed query language, so a terminal user
-cannot combine or negate the terms the dropdowns above give them one at a time. A user
-on the terminal is still less capable than the same user in a browser, on the same data.
+or `recurring` — all of which the shared client implements, the API documents and the
+MCP `list_transactions` tool accepts. The web UI exposes `recurring` and `ccy` as
+query-language terms instead (`frontend/src/lib/query/fields.ts`) and uses neither
+`excludeAttached` nor `recurringId` at all. `q` is the one that costs capability
+rather than convenience: it is the typed query language, so a terminal user cannot
+negate a term, use the comparison operators or give one field several values, which
+is what the dropdowns above cannot do. A user on the terminal is still less capable
+than the same user in a browser, on the same data.
 
 #### Proposal
 
@@ -813,11 +820,12 @@ These are not features, but they were found alongside and are cheap to fix.
 > maintainer action once the release carrying the corrections ships, and nothing
 > here should be read as saying otherwise.
 >
-> Findings 1 and 3 below are left as written because they describe the repository
-> as it stood at the commit named at the top of this document, which is what their
-> wording is scoped to. Finding 2 is not: its claim about the issue tracker is in
-> the present tense and no commit hash can scope it, so that clause has been
-> corrected in place.
+> Findings 1 and 3 below are left as written because they described the repository
+> as it stood at the commit named at the top of this document. Finding 2 is not:
+> its claim about the issue tracker was in the present tense, and no commit hash
+> scopes a present-tense claim — which is true of all three equally, so the
+> distinction is not the tense but whether the claim happened to still hold. Only
+> finding 2's did not, so only its clause is corrected in place.
 
 1. **`README.md` lists a file that does not exist.** The project tree claims
    `IDEAS.md  # Feature backlog`. There is no `IDEAS.md` in the repository. Either

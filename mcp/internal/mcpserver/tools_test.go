@@ -616,6 +616,21 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 	if !strings.Contains(schemas["get_dashboard_summary"], "totalAccounts still counts every account") {
 		t.Errorf("get_dashboard_summary's currency argument does not say that totalAccounts is not narrowed")
 	}
+	// get_money_flow's two link stages narrow on the currency of the link's own
+	// value rather than on the endpoint accounts, so the account-narrowing
+	// reading is the wrong one for part of that tool and has to be qualified
+	// where the model reads it.
+	if !strings.Contains(schemas["get_money_flow"], "they keep only the links whose own amount is denominated in that currency") {
+		t.Errorf("get_money_flow's currency argument does not say that its link stages narrow on the link amount, not the accounts")
+	}
+	// get_cash_flow_calendar's overlays belong to the one account and are keyed by
+	// that account's currency, which the filter does not narrow, so a currency the
+	// response was filtered to exclude can still be the one an overlay is reported
+	// in. A model reading "narrow the AMOUNTS" alone would read that figure as
+	// being in the requested currency.
+	if !strings.Contains(schemas["get_cash_flow_calendar"], "the billing-cycle and summary-row overlays are NOT narrowed by it") {
+		t.Errorf("get_cash_flow_calendar's currency argument does not say that its overlays are not narrowed")
+	}
 }
 
 // spec is the part of backend/openapi.yaml these tests read.

@@ -4149,9 +4149,7 @@ paths:
           description: >-
             Narrow the response to one currency code (upper-case three-letter,
             case-insensitive). Amounts are always reported per currency regardless;
-            this chooses which money is in scope, and every stage - the totals, the
-            nodes, the edges and the link summary - is narrowed with it, so no two
-            of them describe different sets of transactions. A code that is not
+            this chooses which money is in scope. A code that is not
             three letters is a 400.
 
             The transaction-driven stages and the totals narrow on the account's
@@ -4164,7 +4162,8 @@ paths:
             in the requested currency, and a link whose value *is* in the
             requested currency still contributes a node for its other endpoint,
             so a non-USD account can appear in a `?currency=USD` graph. The
-            filter is on the money, not on the accounts.
+            filter is on the money, not on the accounts, so the stages do not
+            all describe the same set of transactions.
         - in: query
           name: limit
           schema:
@@ -4368,6 +4367,13 @@ paths:
             regardless; this chooses which money is in scope, and both the days
             and the `currencyScope` are narrowed with it, so the two cannot name
             different currencies. A code that is not three letters is a 400.
+
+            The `cycles` and `markers` overlays are the exception: they belong to
+            the single account named by `accountId` and are keyed by that
+            account's own currency, which this parameter does not narrow. So
+            `?currency=USD&accountId=<an INR account with a billing day>` answers
+            with empty days and an empty `currencyScope` beside that account's
+            cycle outstanding reported in INR.
       responses:
         "200":
           description: Cash-flow calendar

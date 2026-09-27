@@ -21,15 +21,17 @@ import (
 // range, a single account, and/or a single currency.
 //
 // The currency argument narrows the AMOUNTS rather than the whole response, and
-// the difference is stated rather than left to be discovered: the account count
-// is a plain COUNT(*) over the user's accounts and is not narrowed, so a model
-// told "the whole response" would report a narrowed figure beside an unnarrowed
-// one. Only summaryArgs names the field, because it is the one tool that has it.
+// the difference is stated rather than left to be discovered: on
+// get_dashboard_summary the account count is a plain COUNT(*) over the user's
+// accounts and is not narrowed, so a model told "the whole response" would
+// report a narrowed figure beside an unnarrowed one. summaryArgs is the copy
+// that names the field, because get_dashboard_summary is the tool that has it;
+// get_money_flow_timeline shares that struct and has no count to warn about.
 type windowArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD; omit for the server's default window"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"narrow the whole response to one account id"`
-	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
+	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency; the billing-cycle and summary-row overlays are NOT narrowed by it — they are one account's own figures, so ask for the account whose currency you want"`
 }
 
 // summaryArgs adds the statement-period framing to the window.
@@ -48,7 +50,7 @@ type moneyFlowArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"narrow the graph to one account id"`
-	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
+	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); the two link stages are the exception — they keep only the links whose own amount is denominated in that currency, which is not the same as either endpoint's account; without it every amount comes back keyed by currency"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"cap on the income, category and payee stages, default 12, max 30; the remainder of each stage collapses into one Other node"`
 }
 
