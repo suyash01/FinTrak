@@ -542,8 +542,16 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 	// get_money_flow's link stages and get_cash_flow_calendar's overlays are
 	// narrowed differently, so the plain claim is not what their descriptions
 	// say. `narrowing` is also the list get_link_cycles must not contain.
-	narrowing := []string{"selects the accounts holding that currency code", "single key"}
+	narrowing := []string{"selects the accounts holding that currency code"}
 	accountNarrowed := []string{"get_dashboard_summary", "get_money_flow_timeline"}
+	// A narrowed window holds one currency, not necessarily one key. Add skips a
+	// zero contribution, so a window holding no money in the requested currency
+	// answers with an empty object, and a model told the amounts come back
+	// "under a single key" looks for the key, finds none, and calls it a failure
+	// rather than an empty window. So the qualification is its own requirement,
+	// not part of `narrowing`: it is a statement about an empty result, and
+	// get_link_cycles is not barred from making it.
+	emptyWhenNoMoney := "or under none at all"
 	// The two qualified forms, held to the same words-not-constants rule: each
 	// must carry its exception, and neither may carry the unqualified claim.
 	qualified := map[string]string{
@@ -598,6 +606,9 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 			if !strings.Contains(served[name], want) {
 				t.Errorf("%s does not say %q about its currency argument", name, want)
 			}
+		}
+		if !strings.Contains(served[name], emptyWhenNoMoney) {
+			t.Errorf("%s promises the amounts come back under a key, but a window holding no money in that currency answers with none", name)
 		}
 	}
 	for name, want := range qualified {

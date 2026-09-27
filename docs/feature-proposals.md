@@ -666,11 +666,11 @@ and page. It exposes **none** of `q`, `loanAccountId`, `excludeAttached`, `recur
 or `recurring` — all of which the shared client implements, the API documents and the
 MCP `list_transactions` tool accepts. The web UI exposes `recurring` and `ccy` as
 query-language terms instead (`frontend/src/lib/query/fields.ts`) and uses neither
-`excludeAttached` nor `recurringId` at all. `q` is the one that costs capability
+`excludeAttached` nor `recurringId` at all, so on those two the browser is no more
+capable than the terminal. `q` is the one that costs capability against the browser
 rather than convenience: it is the typed query language, so a terminal user cannot
 negate a term or use the comparison operators, which is what the dropdowns above
-cannot do. A user on the terminal is still less capable than the same user in a
-browser, on the same data.
+cannot do.
 
 #### Proposal
 
