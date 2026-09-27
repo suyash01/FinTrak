@@ -974,7 +974,7 @@ In `frontend/src/lib/query/resolve.test.ts`, add a case in the style of the exis
 Run: `cd frontend && bun run test -- src/lib/query`
 Expected: PASS — the corpus is read by both suites, so a divergence between the two tables fails here, and the new `resolve.test.ts` case fails if the resolver drops a `ccy` term.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add backend/internal/query/fields.go backend/internal/query/compile.go backend/internal/query/testdata/corpus.json frontend/src/lib/query/fields.ts frontend/src/lib/query/parse.ts
