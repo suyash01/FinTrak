@@ -762,9 +762,13 @@ Independent of the reporting change — it touches the filter grammar, not the a
 - Modify: `backend/internal/query/fields.go` (add `kindCurrency`, add the `ccy` entry, add the validate case)
 - Modify: `backend/internal/query/compile.go` (add the `ccy` emitter)
 - Modify: `backend/internal/query/testdata/corpus.json` (three cases)
+- Modify: `backend/internal/query/compile_test.go` (add `ccy` to the no-join query list)
 - Modify: `frontend/src/lib/query/fields.ts` (add `"currency"` to `FieldKind`, add the `ccy` entry)
 - Modify: `frontend/src/lib/query/parse.ts` (add the `"currency"` validate case)
+- Modify: `frontend/src/lib/query/QueryInput.tsx` (`describeField`, so the grammar sheet stops advertising `~` on a field that refuses it)
 - Test: the corpus is the test; `backend/internal/query/corpus_coverage_test.go` is what fails if a case is missing.
+
+The last two are the drift guards this language already keeps, and a new field that misses them is a field the guards cannot see. `compile_test.go` enumerates the fields whose compiled fragments must not contain a `JOIN` — `ccy` emits a correlated `EXISTS` and belongs in that list, or the "never name a joined table" invariant is unasserted for the one field most likely to want one. `QueryInput.tsx`'s `describeField` renders the grammar sheet from `FIELD_TABLE`'s `ops`, and without the entry the sheet would document `ccy~USD`, which the parser rejects.
 
 **Interfaces:**
 - Consumes: nothing from Tasks 1–2.
@@ -802,7 +806,7 @@ Note the second case: the **parser keeps what the user typed** (`values: ["usd"]
       "terms": [{ "field": "ccy", "op": "=", "values": ["usd", "eur"], "negated": false, "position": 0 }],
       "diagnostics": [],
       "sql": {
-        "clauses": ["((EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2)) OR (EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $3)))"],
+        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2) OR EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $3))"],
         "args": ["USD", "EUR"]
       }
     }
@@ -904,7 +908,7 @@ func emitCurrency(t Term, sink Sink, negate bool) *Diagnostic {
 }
 ```
 
-This produces exactly the SQL Step 1's corpus cases pin: one value becomes `(EXISTS (... ac.currency = $2))` with arg `USD`, and a csv becomes `((EXISTS (... $2)) OR (EXISTS (... $3)))` with args `USD`, `EUR` — the shape `emitGroup` already produces for `group:`, which is why that existing corpus entry renders as a single un-OR'd clause.
+This produces exactly the SQL Step 1's corpus cases pin: one value becomes `(EXISTS (... ac.currency = $2))` with arg `USD`, and a csv becomes `(EXISTS (... $2) OR EXISTS (... $3))` with args `USD`, `EUR`. Note the **single** outer parenthesis pair: `wrapGroup` delegates to `sink.AnyOf`, which wraps the group once and does not parenthesise each branch, so a csv is `A OR B` inside one group rather than `(A) OR (B)`. That is the same shape `cat:a,b` produces, which is why the two must agree — the corpus compares these strings exactly.
 
 - [ ] **Step 5: Run the backend corpus test to verify it passes**
 
@@ -931,9 +935,10 @@ In `frontend/src/lib/query/parse.ts`, add to the `switch (def.kind)` in `validat
       case "currency":
         // Three ASCII letters, folded to upper case by the server. Not an enum:
         // the domain is the user's own accounts, so a fixed list would refuse a
-        // currency they legitimately hold. The fold happens server-side
-        // (backend/internal/query/compile.go), so the canonical form in
-        // testdata/corpus.json is the upper-case one and this only checks shape.
+        // currency they legitimately hold. The fold happens server-side at bind
+        // time (backend/internal/query/compile.go), so the canonical form in
+        // testdata/corpus.json keeps the text the user typed ("ccy:usd") and
+        // this only checks shape.
         if (!/^[A-Za-z]{3}$/.test(v)) {
           return {
             code: DIAG.unresolved,
