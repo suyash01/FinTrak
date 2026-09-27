@@ -537,6 +537,15 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 		"never pick one silently",
 		"currencyScope",
 	}
+	// The third state the key count has. A currency with no money in the window
+	// contributes nothing — Add skips a zero — so a scope can hold no keys at
+	// all, and a model told "one key" or "several keys" has no rule for that and
+	// reads the absence as a failed or truncated call. It is not an error and not
+	// absent data: it is a scope in which that currency has no money, so the
+	// reading is zero. Kept out of `rule` so it is its own requirement on all
+	// five tools, the way emptyWhenNoMoney is, rather than one of the fragments a
+	// reworded constant can shed silently.
+	emptyIsZero := "an amount with no keys"
 	// The narrowing half, and the tools it is true of. Only get_dashboard_summary
 	// and get_money_flow_timeline select the accounts holding the code outright;
 	// get_money_flow's link stages and get_cash_flow_calendar's overlays are
@@ -583,6 +592,9 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 			if !strings.Contains(served[name], want) {
 				t.Errorf("%s does not tell the model %q", name, want)
 			}
+		}
+		if !strings.Contains(served[name], emptyIsZero) {
+			t.Errorf("%s does not say that %q is a zero rather than a failed call", name, emptyIsZero)
 		}
 	}
 	// The instructions carry the rule in their own words rather than quoting a

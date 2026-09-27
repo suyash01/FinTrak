@@ -57,7 +57,7 @@ const instructions = `FinTrak is a personal finance ledger. Every tool here is R
 
 One qualification, stated again in the affected tool descriptions and in their readOnlyHint: a few tools that report on a single account with a configured billing day materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given), and list_paperless_documents re-seals the user's stored Paperless token in place on read. The first only regenerates the derived statement periods the account's own screens show; the second leaves the token itself unchanged. Neither touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
 
-Money is decimal major units (for example "1250.50"), and whether an amount carries a currency key depends on the tool. On the aggregate tools (get_dashboard_summary, get_money_flow, get_money_flow_timeline, get_cash_flow_calendar, get_link_cycles) every amount is an object keyed by currency code, for example {"INR": "1250.50"}: a single-currency scope has exactly one key, and a scope spanning several currencies has one key per currency and no total, because the API will not add across currencies. Elsewhere an amount is a plain decimal in its own account's currency — a transaction's own amount, a loan instalment, a billing cycle's outstanding — and is already one currency, so it needs no key. Never add amounts across keys yourself, and do not add them up at all: the server computes these figures, so ask an aggregate tool for a figure rather than deriving one. When the user wants a single total, narrow the call with the "currency" argument the aggregate tools take and read the amount under the one key it should then carry — or find no key at all, which means the window held no money in that currency, not that the call failed. What that argument narrows is not the same on every tool: each tool's own description says what it covers there, and some of them narrow only part of the response, so read the description before assuming it narrowed all of it. A scope that still spans currencies has no total, and the honest answer is then the per-currency figures. Never invent a number that a tool did not return. Dates are YYYY-MM-DD.
+Money is decimal major units (for example "1250.50"), and whether an amount carries a currency key depends on the tool. On the aggregate tools every amount is an object keyed by currency code, for example {"INR": "1250.50"}: a scope has one key per currency it holds money in, a scope spanning several currencies has one key per currency and no total because the API will not add across currencies, and a currency with no money in the scope carries no key, so an amount with no keys at all is the third state: the reading is zero, and it is not a failed or truncated call. Which tools are the aggregate ones, and what each one's currency argument narrows, is in that tool's own description. Elsewhere an amount is a plain decimal in its own account's currency — a transaction's own amount, a loan instalment, a billing cycle's outstanding — and is already one currency, so it needs no key. Never add amounts across keys yourself, and do not add them up at all: the server computes these figures, so ask an aggregate tool for a figure rather than deriving one. When the user wants a single total, narrow the call with the "currency" argument the aggregate tools take and read the amount under the one key it should then carry — or find no key at all, which means the window held no money in that currency, not that the call failed. What that argument narrows is not the same on every tool: each tool's own description says what it covers there, and some of them narrow only part of the response, so read the description before assuming it narrowed all of it. A scope that still spans currencies has no total, and the honest answer is then the per-currency figures. Never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
 Start with list_accounts, list_categories, list_groups, list_payees and list_tags: they provide the ids every other tool takes. list_transactions is the ledger itself and accepts the same filters as the app's transaction list.
 
@@ -70,7 +70,9 @@ The suggestion tools (validate_transactions, preview_rule, get_transfer_suggesti
 // amount — an account carries a currency and a transaction does not, so a window
 // can span currencies and no single number describes it — and the key count is
 // the answer. One key is exact for the whole scope; several keys mean no total
-// exists, because the API will not add across currencies.
+// exists, because the API will not add across currencies. A currency with no
+// money in the scope carries no key, so an amount with no keys at all is the
+// third state: the reading is zero, and it is not a failed or truncated call.
 //
 // So the instruction to a model is not to reach for a helper it cannot call, but
 // to read the keys and report the currencies the response named, rather than
@@ -80,9 +82,11 @@ The suggestion tools (validate_transactions, preview_rule, get_transfer_suggesti
 // passed is how a mixed result gets read as a single-currency one.
 const perCurrencyAmounts = "Every amount is an object keyed by currency code, for example {\"INR\": \"1250.50\"}. " +
 	"One key means the figure is exact for the whole scope it covers; several keys mean the scope spans currencies " +
-	"and no total is returned, because the API will not add across currencies. Never sum the keys, and never pick " +
-	"one silently: report the currencies the response gave you. currencyScope lists the currencies in scope and the " +
-	"accounts behind each, so read it rather than inferring coverage from the filters you passed."
+	"and no total is returned, because the API will not add across currencies. A currency with no money in the " +
+	"scope carries no key: an amount with no keys at all is the third state, and the reading is zero rather than a " +
+	"failed or truncated call. Never sum the keys, and never pick one silently: report the currencies the response " +
+	"gave you. currencyScope lists the currencies in scope and the accounts behind each, so read it rather than " +
+	"inferring coverage from the filters you passed."
 
 // narrowByCurrency is the other half — how to get one currency instead of
 // several — and it is a separate constant because it holds of get_dashboard_summary
