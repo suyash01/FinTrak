@@ -332,6 +332,7 @@ The server signs in lazily with its first tool call and refreshes the session fr
 ├── Makefile             # dev / test / vet / build / openapi / release targets
 ├── codecov.yml          # Per-flag coverage targets (backend 85, frontend 78, parser 90, client 85, tui 18, mcp 80)
 ├── AGENTS.md            # Repo conventions for contributors and coding agents
+├── CONTRIBUTING.md      # How to set up, what CI checks, and PR expectations
 ├── FLOWCHART.md         # Architecture, transaction lifecycle, ER diagram
 ├── IDEAS.md             # Feature backlog
 ├── LICENSE              # AGPL-3.0
@@ -423,3 +424,11 @@ When the short-lived access token expires, the SPA calls `POST /auth/refresh`, w
 ## 📝 License
 
 This project is licensed under the GNU Affero General Public License v3.0
+
+## 🤝 Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the setup steps,
+the verification gate CI runs, and what a good pull request looks like. The code-level
+conventions live in [AGENTS.md](AGENTS.md), the architecture in
+[docs/architecture.md](docs/architecture.md), and the transaction lifecycle in
+[FLOWCHART.md](FLOWCHART.md).

@@ -1,0 +1,110 @@
+name: Bug report
+description: Something in FinTrak behaves differently from what it should.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** open an issue for a security
+        problem — see the Security tab of the repository instead, which opens a
+        private channel.
+
+        **Never paste a `.env`, a `JWT_SECRET`, a `TOKEN_ENCRYPTION_KEY`, a
+        Paperless API token, or your real transaction data.** A minimal
+        reproduction using invented accounts is both safer and faster to diagnose.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of FinTrak?
+      description: Pick the closest match; "Other" is fine.
+      options:
+        - Backend API
+        - Frontend (web app / PWA / offline)
+        - Terminal client (TUI / SSH)
+        - MCP server
+        - Statement parser (PDF import)
+        - Bank file import (ISO 20022 / OFX)
+        - Paperless-ngx integration
+        - Dev stack / Docker / build
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: FinTrak version
+      description: >-
+        The release tag, or the output of `git rev-parse --short HEAD` if you are
+        running from `master`.
+      placeholder: "v1.2.3 or a1b2c3d"
+    validations:
+      required: true
+
+  - type: input
+    id: ticket
+    attributes:
+      label: Ticket
+      description: >-
+        Optional for a drive-by fix. If this work will land as a pull request, its
+        title has to be `<ticket-id>: <short description>`, so include the ID here.
+      placeholder: "FIN-7 (optional)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered, starting from a fresh sign-in. For an API bug, the curl command
+        or request body is ideal.
+      placeholder: |
+        1. Sign in and open Transactions
+        2. Filter by tag `trip`
+        3. Click Export
+        4. See …
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >-
+        `LOG_LEVEL=debug` plus a positive `LOG_BODY_LIMIT` turns on request and
+        response body capture, which is usually what pins an API bug down. Trim it
+        to the failing request, and redact anything sensitive.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Anything else about your setup
+      description: >-
+        How you run FinTrak (Docker, TUI, MCP), frontend browser and OS, and
+        database version. Include this if the bug may be environment-specific.
+      render: text
+    validations:
+      required: false
