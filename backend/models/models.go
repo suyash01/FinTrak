@@ -6,6 +6,7 @@ package models
 
 import (
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/fintrak/backend/internal/money"
@@ -1628,4 +1629,112 @@ type BackupImportResult struct {
 	RecurringAttachments int      `json:"recurringAttachments"`
 	Rules                int      `json:"rules"`
 	Warnings             []string `json:"warnings,omitempty"`
+}
+
+// CurrencyAmounts is one aggregate's value, keyed by the currency code of each
+// account that contributed to it.
+//
+// accounts.currency is stored and validated, but transactions carry no currency
+// of their own, so an aggregate over more than one account can span currencies
+// and a single number cannot represent that. So there is no single number: every
+// amount on the reporting endpoints is one of these. One key means the value is
+// exact for the whole scope it covers. More than one means no total exists, and a
+// consumer must either choose a currency or say that it cannot add them.
+//
+// Addition within a currency is meaningful and is what Sub performs. Addition
+// *across* keys is not, and no method here does it: nothing in this package
+// collapses a CurrencyAmounts into one amount, because that is the number this
+// type exists to refuse.
+type CurrencyAmounts map[string]money.Amount
+
+// ScopedAccount is one account inside a response's scope, with the per-currency
+// income and expense it contributes. It is what lets a client say what a
+// currency it is not currently displaying is worth, rather than dropping it
+// silently.
+type ScopedAccount struct {
+	ID       uuid.UUID       `json:"id"`
+	Name     string          `json:"name"`
+	Currency string          `json:"currency"`
+	Income   CurrencyAmounts `json:"income"`
+	Expense  CurrencyAmounts `json:"expense"`
+}
+
+// CurrencyScope names every currency a response covers and the accounts behind
+// each one. A reporting response carries it so a mixed-currency result explains
+// itself: the caller can see that USD 120.00 exists, and which account holds it,
+// instead of receiving a total that quietly dropped it.
+type CurrencyScope struct {
+	// Currencies holds every code in the response, sorted, so a picker and a
+	// test do not depend on map iteration order. It is never nil: a response
+	// covering no accounts carries an empty slice, not a null.
+	Currencies []string        `json:"currencies"`
+	Accounts   []ScopedAccount `json:"accounts"`
+}
+
+// NewCurrencyAmounts returns an empty, non-nil map, so a handler folding SQL
+// rows into one can never trip over a nil map on the first write.
+func NewCurrencyAmounts() CurrencyAmounts { return CurrencyAmounts{} }
+
+// Add folds one account's contribution in and returns the map, so it works both
+// on a map from NewCurrencyAmounts (which it mutates in place) and on a nil one
+// (which it cannot mutate, so it allocates and hands the new map back).
+//
+// A zero contribution adds NO key. That is what makes "a missing key reads as
+// zero" true everywhere rather than only by convention: a currency with no money
+// in it is simply absent, so len() counts the currencies the aggregate actually
+// touched, and an account that only ever spends contributes a key to the expense
+// side and none to the income side — which is exactly the asymmetry Sub needs to
+// still produce its negative net. (Contributions that later cancel to zero leave
+// the key in place; a present zero and an absent key are the same value to every
+// reader, and removing keys mid-accumulation would be a surprising thing for a
+// method named Add to do.)
+func (m CurrencyAmounts) Add(currency string, amount money.Amount) CurrencyAmounts {
+	if amount == 0 {
+		return m
+	}
+	if m == nil {
+		m = CurrencyAmounts{}
+	}
+	m[currency] += amount
+	return m
+}
+
+// Single returns the map's only entry, and ok=false whenever it does not hold
+// exactly one currency — including when it is empty or nil. It is the answer to
+// "may this be treated as a single number", and the only sanctioned way to reach
+// a bare amount out of this type.
+func (m CurrencyAmounts) Single() (string, money.Amount, bool) {
+	if len(m) != 1 {
+		return "", 0, false
+	}
+	for code, amount := range m {
+		return code, amount, true
+	}
+	return "", 0, false
+}
+
+// Currencies returns the codes in sorted order.
+func (m CurrencyAmounts) Currencies() []string {
+	out := make([]string, 0, len(m))
+	for code := range m {
+		out = append(out, code)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Sub returns the per-currency difference m - other. A currency missing from
+// either operand counts as zero and the result carries the union of the key
+// sets, so a currency that appears in only one operand still yields a
+// well-defined difference — a foreign account that only spends gets a negative
+// net rather than disappearing — and no key is ever invented.
+func (m CurrencyAmounts) Sub(other CurrencyAmounts) CurrencyAmounts {
+	out := make(CurrencyAmounts, len(m)+len(other))
+	for code, amount := range m {
+		out[code] += amount
+	}
+	for code, amount := range other {
+		out[code] -= amount
+	}
+	return out
 }
