@@ -129,7 +129,10 @@ function twoCurrencyCalendar(): CashFlowCalendarData {
   });
 }
 
-function page(entry = "/cash-flow-calendar?dateFrom=2024-06-03&dateTo=2024-06-10") {  return (
+function page(
+  entry = "/cash-flow-calendar?dateFrom=2024-06-03&dateTo=2024-06-10",
+) {
+  return (
     <MemoryRouter initialEntries={[entry]}>
       <CashFlowCalendar />
     </MemoryRouter>
@@ -263,7 +266,7 @@ describe("CashFlowCalendar", () => {
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+        /Dollars: in USD .*9,000\.00, out USD .*9,060\.00\. These are not added/,
       ),
     ).toBeInTheDocument();
 
@@ -310,7 +313,48 @@ describe("CashFlowCalendar", () => {
     );
 
     const net = within(await screen.findByText("Net")).getByText(
-      formatOne(0, "INR"),
+      "no INR in this report",
+    );
+    expect(net).toHaveClass("text-muted-foreground");
+    expect(net).not.toHaveClass("text-chart-3");
+  });
+
+  it("re-reads the selected day in the currency switched to after the click", async () => {
+    // The panel used to hold the cell it was handed, so switching currency after
+    // selecting a day reported the previous currency's number under the new
+    // currency's name — a wrong money figure with a wrong currency label, in two
+    // clicks through the picker this change added.
+    const user = userEvent.setup();
+    apiMock.getCashFlowCalendar.mockResolvedValue(twoCurrencyCalendar());
+    render(page());
+
+    // 3 June is rupee-only: 5,000 in, nothing in dollars at all.
+    fireEvent.click(
+      await screen.findByRole("gridcell", { name: /03 Jun 2024: net INR/ }),
+    );
+    const panel = (await screen.findByText("03 Jun 2024")).parentElement!;
+    expect(within(panel).getByText("In")).toBeInTheDocument();
+    expect(
+      within(within(panel).getByText("In")).getByText(formatOne(5000, "INR")),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Currency" }));
+    await user.click(await screen.findByRole("option", { name: "USD" }));
+
+    // The same day, in dollars: the rupee figure must not survive under the
+    // dollar label, and the panel has to say the day holds no dollars rather
+    // than print a dollar zero.
+    const after = (await screen.findByText("03 Jun 2024")).parentElement!;
+    expect(within(after).queryByText(formatOne(5000, "INR"))).toBeNull();
+    const inRow = within(after).getByText("In");
+    expect(within(inRow).getByText("no USD in this report")).toBeInTheDocument();
+    expect(within(inRow).queryByText(formatOne(0, "USD"))).toBeNull();
+
+    // The net's colour comes from the same re-read: a day the dollar selection
+    // never held has no dollar net to colour, where the cell captured before the
+    // switch still carried the rupee surplus.
+    const net = within(within(after).getByText("Net")).getByText(
+      "no USD in this report",
     );
     expect(net).toHaveClass("text-muted-foreground");
     expect(net).not.toHaveClass("text-chart-3");

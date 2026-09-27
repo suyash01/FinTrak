@@ -20,6 +20,7 @@ import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import { useOffline } from "../../context/OfflineContext";
 import {
+  formatAxis,
   formatOne,
   formatScoped,
   signClass,
@@ -78,14 +79,17 @@ const recentColumnHelper = createColumnHelper<Transaction>();
  * category pie both go through this one function so the two cannot drift onto
  * different keys.
  */
-function projectScoped<T extends object, K extends keyof T>(
+function projectScoped<
+  K extends PropertyKey,
+  T extends Record<K, CurrencyAmounts>,
+>(
   row: T,
   fields: readonly K[],
   scoped: ScopedAmount,
 ): Omit<T, K> & Record<K, number> {
   const out = { ...row } as Record<string, unknown>;
   for (const field of fields) {
-    out[field as string] = scoped(row[field] as unknown as CurrencyAmounts);
+    out[field as string] = scoped(row[field]);
   }
   return out as Omit<T, K> & Record<K, number>;
 }
@@ -407,15 +411,11 @@ export default function Dashboard() {
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
               <SelectContent>
-                {/* An empty code is representable (accounts.currency is
-                    nullable) and Radix rejects it as an item value. */}
-                {codes
-                  .filter((c) => c !== "")
-                  .map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
+                {codes.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
@@ -611,7 +611,7 @@ export default function Dashboard() {
                     <YAxis
                       stroke="var(--muted-foreground)"
                       fontSize={12}
-                      tickFormatter={(v) => formatOne(Number(v), code)}
+                      tickFormatter={(v) => formatAxis(Number(v), code)}
                     />
                     <Tooltip
                       contentStyle={{

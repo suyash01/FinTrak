@@ -12,6 +12,25 @@ export function formatCurrency(amount: number, currency = "INR"): string {
   return nf.format(amount);
 }
 
+let numberFormatter: Intl.NumberFormat | null = null;
+
+/**
+ * formatNumber renders an amount with thousands separators and no currency, for
+ * the places that must not name one: a code Intl cannot resolve, and an account
+ * whose currency is NULL.
+ *
+ * It lives beside formatCurrency and mirrors its locale and its two-decimal
+ * choice so the two cannot drift into printing the same amount two ways. It
+ * takes no currency at all, so unlike formatCurrency it cannot throw.
+ */
+export function formatNumber(amount: number): string {
+  numberFormatter ??= new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return numberFormatter.format(amount);
+}
+
 export function parseDateOnly(dateStr: string | null | undefined): Date | null {
   if (!dateStr) return null;
   const m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);

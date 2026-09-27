@@ -213,8 +213,12 @@ export default function MoneyFlow() {
   const [error, setError] = useState("");
   const [timeline, setTimeline] = useState<MoneyFlowTimeline | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(true);
-  // The graph's scope is the window's scope, so the selection made here is also
-  // the one the timeline and the cycle report below are read in.
+  // One selection for the page, taken from the graph's scope. The timeline and
+  // the cycle report are fetched with the same filters over the same window, so
+  // their own currencyScope blocks are the same window's account list restated
+  // — which is why the selection below governs all three. Reading each response's
+  // scope separately would give the page three independent currencies, and a
+  // screen showing two of them at once is the defect this change exists to stop.
   const { code, codes, setCode, scoped, others } = useCurrencyScope(
     data?.currencyScope,
   );
@@ -518,15 +522,11 @@ export default function MoneyFlow() {
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
               <SelectContent>
-                {/* An empty code is representable (accounts.currency is
-                    nullable) and Radix rejects it as an item value. */}
-                {codes
-                  .filter((c) => c !== "")
-                  .map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
+                {codes.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}

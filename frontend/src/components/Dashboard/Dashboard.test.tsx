@@ -104,6 +104,25 @@ function twoCurrencyScope(): CurrencyScope {
   };
 }
 
+// spendOnlyScope is the state that broke the notice: a foreign account that has
+// only ever spent, so its income map has no key at all. A notice built from
+// income alone announces the account and then says it holds nothing.
+function spendOnlyScope(): CurrencyScope {
+  return {
+    currencies: ["INR", "USD"],
+    accounts: [
+      ...oneCurrencyScope().accounts,
+      {
+        id: "a2",
+        name: "Dollars",
+        currency: "USD",
+        income: {},
+        expense: { USD: 906 },
+      },
+    ],
+  };
+}
+
 function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
   return {
     totalAccounts: 1,
@@ -422,7 +441,7 @@ describe("Dashboard", () => {
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+        /Dollars: in USD .*120\.00, out USD .*80\.00\. These are not added to the figures above\./,
       ),
     ).toBeInTheDocument();
 
@@ -434,9 +453,40 @@ describe("Dashboard", () => {
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /INR .*\(Checking\)\. These are not added to the figures above\./,
+        /Checking: in INR .*5,000\.00, out INR .*2,000\.00\. These are not added/,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("discloses a foreign account that only ever spent, with what it spent", async () => {
+    // The notice has to report both sides. An income-only notice would read
+    // "no transactions (Dollars)" beside a Money Out figure that has already left
+    // that account's spending out.
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        totalIncome: { INR: 5000 },
+        totalExpense: { INR: 2000, USD: 906 },
+        totalNet: { INR: 3000, USD: -906 },
+        currencyScope: spendOnlyScope(),
+      }),
+    );
+    renderLoaded([
+      account(),
+      account({ id: "a2", name: "Dollars", currency: "USD", isDefault: false }),
+    ]);
+
+    expect(await screen.findByText("1 other currency")).toBeInTheDocument();
+    // The whole sentence a user reads, apart from the count above it, which is a
+    // nested element: the account is named, the side with no money says so, and
+    // the side that has money carries the figure.
+    expect(
+      screen.getByText(
+        /^in 1 account not shown here — Dollars: in nothing, out USD \$906\.00\. These are not added to the figures above\.$/,
+      ),
+    ).toBeInTheDocument();
+    // And the account's spending is not claimed to be absent from the payload.
+    expect(screen.queryByText(/no transactions/)).toBeNull();
+    expect(screen.queryByText(/Dollars: in USD/)).toBeNull();
   });
 
   it("leaves a category with no figure in the selected currency at zero", async () => {
@@ -480,9 +530,12 @@ describe("Dashboard", () => {
     const net = within(card).getByText(formatOne(3000, "INR"));
     expect(net).toHaveClass("text-chart-3");
 
-    // A category spent only in dollars has no rupee figure at all.
+    // A category spent only in dollars has no rupee figure at all, and the row
+    // says which currency is missing rather than printing a bare zero beside
+    // "INR 2,000.00" that could be read as a real one.
     const row = screen.getByText("Latte").parentElement!;
-    expect(within(row).getByText("0.00")).toBeInTheDocument();
+    expect(within(row).getByText("no INR in this report")).toBeInTheDocument();
+    expect(within(row).queryByText("0.00")).toBeNull();
     expect(within(row).queryByText(formatOne(900, "USD"))).toBeNull();
   });
 });

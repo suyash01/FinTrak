@@ -4,6 +4,7 @@ import {
   formatScoped,
   formatScopedMulti,
   formatOne,
+  formatAxis,
   signOf,
   signClass,
   sumPerCurrency,
@@ -71,10 +72,52 @@ describe("formatScoped", () => {
     expect(formatScoped(amounts, "INR")).not.toContain("120.00");
   });
   it("falls back to the given text when the map itself is absent", () => {
-    expect(formatScoped(undefined, "INR")).toBe("0.00");
     expect(formatScoped(undefined, "INR", "no transactions")).toBe(
       "no transactions",
     );
+    // A real zero is the caller's to claim, so the seam stays: pass "0.00" where
+    // nothing in the response at all really does mean zero.
+    expect(formatScoped(undefined, "INR", "0.00")).toBe("0.00");
+  });
+
+  it("refuses rather than printing a bare zero for a currency it lacks", () => {
+    // A bare "0.00" in a column of "INR 2,000.00" cannot be told apart from a
+    // genuine zero, which is how money that was left out reads as money that was
+    // not there.
+    expect(formatScoped({ USD: 120 }, "INR")).toBe("no INR in this report");
+    expect(formatScoped({}, "USD")).toBe("no USD in this report");
+    // With no currency named there is nothing to miss.
+    expect(formatScoped({ USD: 120 }, "")).toBe("no transactions");
+    // A key that is present and zero is a figure, and is rendered as one.
+    expect(formatScoped({ INR: 0 }, "INR")).toBe(formatOne(0, "INR"));
+  });
+
+  it("reads only its own keys, never the prototype chain's", () => {
+    // `"toString" in {}` is true, so the `in` operator would hand back a
+    // function here and the three readers of one map would disagree.
+    expect(formatScoped({}, "toString")).toBe("no toString in this report");
+    expect(signOf({}, "toString")).toBe("none");
+  });
+});
+
+describe("formatAxis", () => {
+  it("keeps the code and abbreviates the magnitude", () => {
+    expect(formatAxis(50000, "INR")).toBe("INR 50k");
+    expect(formatAxis(1500, "USD")).toBe("USD 1.5k");
+    expect(formatAxis(-2500, "INR")).toBe("INR -2.5k");
+    expect(formatAxis(500, "INR")).toBe("INR 500");
+    expect(formatAxis(0, "INR")).toBe("INR 0");
+  });
+
+  it("stays short enough for a chart column and never names a symbol", () => {
+    const tick = formatAxis(1234567, "INR");
+    expect(tick).toBe("INR 1234.6k");
+    expect(tick).not.toContain("₹");
+    expect(tick.length).toBeLessThanOrEqual(12);
+  });
+
+  it("prints no code when the report has none on screen", () => {
+    expect(formatAxis(50000, "")).toBe("50k");
   });
 });
 
@@ -223,5 +266,48 @@ describe("useCurrencyScope", () => {
     expect(result.current.codes).toEqual([]);
     expect(result.current.others).toEqual([]);
     expect(result.current.scoped({ INR: 5000 })).toBe(0);
+  });
+
+  it("never offers or defaults to the empty code an account with no currency holds", () => {
+    // "" sorts first, so leaving it in would make the whole report render as
+    // unnamed numbers with a picker showing no matching item.
+    const { result } = renderHook(() =>
+      useCurrencyScope(
+        scope({
+          currencies: ["", "USD", "INR"],
+          accounts: [
+            scopedAccount({ id: "a0", name: "Unlabelled", currency: "" }),
+            scopedAccount(),
+            scopedAccount({
+              id: "a2",
+              name: "Dollars",
+              currency: "USD",
+              income: { USD: 120 },
+              expense: { USD: 80 },
+            }),
+          ],
+        }),
+      ),
+    );
+    expect(result.current.codes).toEqual(["INR", "USD"]);
+    expect(result.current.code).toBe("INR");
+    // The nameless account is still disclosed, as one of the currencies left out.
+    expect(result.current.others.map((a) => a.name)).toEqual([
+      "Unlabelled",
+      "Dollars",
+    ]);
+  });
+
+  it("keeps only the nameless account out of the picker", () => {
+    const { result } = renderHook(() =>
+      useCurrencyScope(
+        scope({
+          currencies: [""],
+          accounts: [scopedAccount({ currency: "" })],
+        }),
+      ),
+    );
+    expect(result.current.codes).toEqual([]);
+    expect(result.current.code).toBe("");
   });
 });

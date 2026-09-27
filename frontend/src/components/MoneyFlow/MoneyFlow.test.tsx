@@ -416,7 +416,7 @@ describe("MoneyFlow", () => {
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /USD .*\(Dollars\)\. These are not added to the figures above\./,
+        /Dollars: in USD .*900\.00, out USD .*300\.00\. These are not added/,
       ),
     ).toBeInTheDocument();
 
@@ -488,10 +488,13 @@ describe("MoneyFlow", () => {
     const foreign = screen.getByRole("button", { name: /Jun 2024/ });
     expect(barHeights(foreign)).toEqual(["height: 2%;", "height: 2%;"]);
 
-    // And its net is not a surplus either: the figure has no sign to report.
-    const net = within(foreign).getByText("0.00");
+    // And its net claims no sign and prints no dollar of rupees: a period with
+    // nothing in the selected currency says so rather than showing a zero that
+    // could be read as a figure.
+    const net = within(foreign).getByText("no INR in this report");
     expect(net).toHaveClass("text-muted-foreground");
     expect(net).not.toHaveClass("text-chart-3");
+    expect(within(foreign).queryByText(formatOne(0, "INR"))).toBeNull();
   });
 });
 

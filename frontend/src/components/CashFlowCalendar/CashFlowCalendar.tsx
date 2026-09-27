@@ -94,6 +94,11 @@ interface DayCell {
   // colouring the second as a surplus is the claim this change exists to
   // refuse.
   netSign: CurrencySign;
+  // The day's own per-currency aggregates, held by reference beside the
+  // projection above, because only the map can tell a figure that is zero from a
+  // currency the day never touched. Text is read from this; the heatmap and the
+  // cell's own numbers are read from the projection.
+  amounts?: CashFlowCalendarDay;
   count: number;
   markers: CashFlowCalendarMarker[];
 }
@@ -151,6 +156,7 @@ function buildWeeks(
         expense: scoped(agg?.expense),
         net: scoped(agg?.net),
         netSign: signOf(agg?.net, code),
+        amounts: agg,
         count: agg?.count ?? 0,
         markers: inRange ? (markerMap.get(key) ?? []) : [],
       });
@@ -195,18 +201,24 @@ function findCycleStartColumns(
 }
 
 // dayBackground tints a cell by the magnitude of its net flow: green for a
-// surplus, red for a deficit, muted for a flat or empty day.
+// surplus, red for a deficit, muted for a day with no sign to report — which
+// includes a day the selected currency never touched, not only a day that netted
+// to zero. The sign is read from the cell's own tri-state rather than
+// reconstructed from the projected number, so the two can never disagree about
+// what a zero means.
 function dayBackground(
   net: number,
+  netSign: CurrencySign,
   maxAbs: number,
   hasData: boolean,
 ): CSSProperties {
-  if (!hasData || maxAbs <= 0 || net === 0) {
+  if (!hasData || maxAbs <= 0 || netSign === "none") {
     return { backgroundColor: "var(--muted)" };
   }
   const intensity = Math.min(1, Math.abs(net) / maxAbs);
   const pct = Math.round((0.18 + intensity * 0.72) * 100);
-  const token = net > 0 ? "var(--chart-3)" : "var(--destructive)";
+  const token =
+    netSign === "positive" ? "var(--chart-3)" : "var(--destructive)";
   return { backgroundColor: `color-mix(in oklch, ${token} ${pct}%, var(--muted))` };
 }
 
@@ -249,7 +261,12 @@ export default function CashFlowCalendar() {
   const [data, setData] = useState<CashFlowCalendarData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<DayCell | null>(null);
+  // The selected day is held as a date, not as the cell it resolved to. A cell
+  // is a projection of one day onto the currency then on screen, so holding one
+  // would let the panel report the previous currency's number under the new
+  // currency's name — and would go stale on a date-range change for the same
+  // reason. The cell is looked up from `weeks` on every render instead.
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [hover, setHover] = useState<{
     cell: DayCell;
     left: number;
@@ -350,6 +367,17 @@ export default function CashFlowCalendar() {
     [weeks, data],
   );
 
+  // The one place the selected day becomes a cell, so it cannot be a snapshot of
+  // a currency or a range that has since changed.
+  const selected = useMemo(() => {
+    if (!selectedDate) return null;
+    for (const week of weeks) {
+      const cell = week.cells.find((c) => c.date === selectedDate);
+      if (cell) return cell;
+    }
+    return null;
+  }, [selectedDate, weeks]);
+
   const handleEnter = (e: MouseEvent<HTMLDivElement>, cell: DayCell) => {
     const grid = gridRef.current;
     if (!grid) return;
@@ -437,15 +465,11 @@ export default function CashFlowCalendar() {
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
               <SelectContent>
-                {/* An empty code is representable (accounts.currency is
-                    nullable) and Radix rejects it as an item value. */}
-                {codes
-                  .filter((c) => c !== "")
-                  .map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
+                {codes.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
@@ -602,7 +626,7 @@ export default function CashFlowCalendar() {
                                 selected={selected?.date === cell.date}
                                 onEnter={handleEnter}
                                 onLeave={() => setHover(null)}
-                                onSelect={setSelected}
+                                onSelect={setSelectedDate}
                               />
                             );
                           })}
@@ -625,7 +649,7 @@ export default function CashFlowCalendar() {
                           label="In"
                           value={
                             <span className="text-chart-3">
-                              {formatOne(hover.cell.income, code)}
+                              {formatScoped(hover.cell.amounts?.income, code)}
                             </span>
                           }
                         />
@@ -633,7 +657,7 @@ export default function CashFlowCalendar() {
                           label="Out"
                           value={
                             <span className="text-destructive">
-                              {formatOne(hover.cell.expense, code)}
+                              {formatScoped(hover.cell.amounts?.expense, code)}
                             </span>
                           }
                         />
@@ -641,7 +665,7 @@ export default function CashFlowCalendar() {
                           label="Net"
                           value={
                             <span className={signClass[hover.cell.netSign]}>
-                              {formatOne(hover.cell.net, code)}
+                              {formatScoped(hover.cell.amounts?.net, code)}
                             </span>
                           }
                         />
@@ -707,13 +731,13 @@ export default function CashFlowCalendar() {
                     <span className="text-muted-foreground">
                       In{" "}
                       <span className="font-medium text-chart-3">
-                        {formatOne(selected.income, code)}
+                        {formatScoped(selected.amounts?.income, code)}
                       </span>
                     </span>
                     <span className="text-muted-foreground">
                       Out{" "}
                       <span className="font-medium text-destructive">
-                        {formatOne(selected.expense, code)}
+                        {formatScoped(selected.amounts?.expense, code)}
                       </span>
                     </span>
                     <span className="text-muted-foreground">
@@ -721,7 +745,7 @@ export default function CashFlowCalendar() {
                       <span
                         className={`font-medium ${signClass[selected.netSign]}`}
                       >
-                        {formatOne(selected.net, code)}
+                        {formatScoped(selected.amounts?.net, code)}
                       </span>
                     </span>
                     {selected.count > 0 && (
@@ -761,7 +785,7 @@ function DayCellView({
   selected: boolean;
   onEnter: (e: MouseEvent<HTMLDivElement>, cell: DayCell) => void;
   onLeave: () => void;
-  onSelect: (cell: DayCell) => void;
+  onSelect: (date: string) => void;
 }) {
   if (!cell.inRange) {
     return <div className="h-3.5 rounded-[2px]" aria-hidden />;
@@ -778,10 +802,10 @@ function DayCellView({
       } ${hasMarker ? "ring-1 ring-foreground/50" : ""} ${
         selected ? "outline outline-2 outline-foreground" : ""
       }`}
-      style={dayBackground(cell.net, maxAbs, hasData)}
+      style={dayBackground(cell.net, cell.netSign, maxAbs, hasData)}
       onMouseEnter={(e) => onEnter(e, cell)}
       onMouseLeave={onLeave}
-      onClick={() => onSelect(cell)}
+      onClick={() => onSelect(cell.date)}
     />
   );
 }

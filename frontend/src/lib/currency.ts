@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatCurrency } from "@/utils/formatters";
+import { formatCurrency, formatNumber } from "@/utils/formatters";
 import type { CurrencyAmounts, CurrencyScope, ScopedAccount } from "@/types";
 
 /**
@@ -14,7 +14,7 @@ import type { CurrencyAmounts, CurrencyScope, ScopedAccount } from "@/types";
  */
 export function formatOne(amount: number, code: string): string {
   if (!code) {
-    return groupDigits(amount);
+    return formatNumber(amount);
   }
   // The code travels with the figure even when a currency picker already names
   // it: reading a figure in the wrong currency is the whole failure this guards
@@ -25,36 +25,57 @@ export function formatOne(amount: number, code: string): string {
   } catch {
     // Intl cannot resolve this code, so there is no symbol to print. The code is
     // still the honest label and a grouped number is still the amount.
-    return `${code} ${groupDigits(amount)}`;
+    return `${code} ${formatNumber(amount)}`;
   }
 }
 
-/** groupDigits renders a number with thousands separators and no currency. */
-function groupDigits(amount: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
+/**
+ * formatAxis renders one chart axis tick: the currency's code and a magnitude,
+ * abbreviated, with no symbol.
+ *
+ * A symbol is the first thing to go and the thousands abbreviation with nothing
+ * to stop it — a tick is four characters of budget in a chart column, and
+ * Recharts neither abbreviates nor drops the ticks that would collide, so the
+ * full form clips. The code stays, because the axis is the one place on a report
+ * that states its scale without naming a currency anywhere near it.
+ *
+ * It formats nothing through Intl, so it cannot throw on a code the user typed.
+ */
+export function formatAxis(amount: number, code: string): string {
+  const value =
+    Math.abs(amount) >= 1000 ? `${round(amount / 1000)}k` : `${round(amount)}`;
+  return code ? `${code} ${value}` : value;
+}
+
+/** round trims a magnitude to one decimal, so 1.5k does not read as 1.50k. */
+function round(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 /**
- * formatScoped renders one currency's share of an amount, or `fallback` when the
- * map holds no entry for that currency at all.
+ * formatScoped renders one currency's share of an amount, or the refusal when
+ * the map holds no entry for that currency at all.
  *
- * A missing key is a zero, not an error and not absent data — an account that
- * only ever spends has no income key and the dashboard still has to draw — so
- * the default fallback is a plain zero, and it deliberately carries no currency
- * mark: there is no figure of that currency here, and printing one with a symbol
- * beside it would claim otherwise. A caller that has text for that case (the
- * notice's "no transactions") passes it as `fallback`.
+ * A missing key is not an error and not absent data, so this never blanks a
+ * figure — but it is not a zero either, and rendering it as one puts a bare
+ * "0.00" in a column of "INR 2,000.00" where the reader cannot tell a genuine
+ * zero from money that was left out. So the default says which currency is
+ * missing, the way the terminal client does. A caller that really does mean a
+ * zero — nothing in this response at all, rather than nothing in this currency —
+ * passes "0.00" as `fallback`.
  */
 export function formatScoped(
   amounts: CurrencyAmounts | undefined,
   code: string,
-  fallback = "0.00",
+  fallback = absentText(code),
 ): string {
-  if (!amounts || !(code in amounts)) return fallback;
+  if (!amounts || !Object.hasOwn(amounts, code)) return fallback;
   return formatOne(amounts[code], code);
+}
+
+/** absentText is what a report says where a currency has no figure at all. */
+function absentText(code: string): string {
+  return code ? `no ${code} in this report` : "no transactions";
 }
 
 /**
@@ -140,7 +161,7 @@ export function signOf(
 ): CurrencySign {
   if (!amounts) return "none";
   if (code) {
-    if (!(code in amounts)) return "none";
+    if (!Object.hasOwn(amounts, code)) return "none";
     const value = amounts[code];
     if (value < 0) return "negative";
     return value > 0 ? "positive" : "none";
@@ -163,7 +184,7 @@ export type ScopedAmount = (amounts: CurrencyAmounts | undefined) => number;
 export interface CurrencyScopeSelection {
   /** The currency on screen, or "" before any scope has loaded. */
   code: string;
-  /** Every currency the response covers, sorted. Empty before it loads. */
+  /** Every named currency the response covers, sorted. Empty before it loads. */
   codes: string[];
   setCode: (code: string) => void;
   /** The selected currency's share of an amount, as a number for a chart. */
@@ -186,7 +207,15 @@ export interface CurrencyScopeSelection {
 export function useCurrencyScope(
   scope: CurrencyScope | undefined,
 ): CurrencyScopeSelection {
-  const codes = useMemo(() => [...(scope?.currencies ?? [])].sort(), [scope]);
+  // accounts.currency is nullable, so an empty code is representable and it
+  // sorts first — which would make it the default selection and render the whole
+  // report through the no-code path, as unnamed numbers. It is not a currency a
+  // reader can pick, so it is not offered as one; what such an account is
+  // *shown* as is the notice's problem, and it names the account by name.
+  const codes = useMemo(
+    () => [...(scope?.currencies ?? [])].filter((c) => c !== "").sort(),
+    [scope],
+  );
   const [chosen, setChosen] = useState("");
 
   // A response that no longer holds the chosen currency must not leave the
@@ -201,7 +230,6 @@ export function useCurrencyScope(
     (amounts) => (amounts ? (amounts[code] ?? 0) : 0),
     [code],
   );
-
   const others = useMemo(
     () => (scope?.accounts ?? []).filter((account) => account.currency !== code),
     [scope, code],
