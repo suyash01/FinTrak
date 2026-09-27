@@ -7,6 +7,18 @@ questions, so it can be argued with before any of it becomes a spec.
 **Date:** 2026-09-27
 **Source:** a read-only sweep of the repository at `143caff`.
 
+> **Two parts of this document are now behind the tree: #1 part 1, and the `ccy:`
+> query field from #1 part 3.** The multi-currency work landed on this branch and
+> fixed the bug this document opens with — every aggregate on the five reporting
+> endpoints now reports per currency, with the reasons kept below and the current
+> shape in the API section of `README.md`. The `ccy:` field was added to the query
+> language separately (`backend/internal/query/fields.go`), so the "`ccy:` is
+> genuinely cheap" claim below is now a record of work done rather than a
+> suggestion. Still **not** done: dated exchange rates, the `group by currency`
+> dashboard option, and exposing the unconverted set in the UI. #1 is below as the
+> reasoning behind the change, not as an open finding — and the line numbers it
+> quotes moved when the aggregates were rewritten.
+
 ---
 
 ## How to read this
@@ -286,9 +298,10 @@ client can render it and a model can act on it.
 
 #### Why it fits
 
-This is the principled form of the propose-and-apply surface that
-`mcp/internal/mcpserver` explicitly defers — the half of an agent surface where
-the mutations are propose-only. The current stance — the server implements
+This is the principled form of a surface the MCP server does not have. Its package doc
+says only that the server "is read-only, and nothing else" and that its suggestion
+tools "cannot apply them" — it never describes a deferral, and it does not need to:
+nothing here contradicts it. The current stance — the server implements
 the read half and nothing else, so "a model's suggestions are always confirmed in the
 app" — is preserved exactly: the model proposes a mutation, the server returns a diff,
 the user confirms, and the apply runs the **same validated code path** as a manual edit.
@@ -643,12 +656,14 @@ work.
 
 #### Problem
 
-The TUI's transaction filter form exposes search, category, payee, type, linked, date
-range, tags, amount, limit and page. It exposes **none** of `q`, `groupId`, `accountId`,
-the `uncategorized` sentinel, `loanAccountId`, `excludeAttached`, `recurringId` or
-`recurring` — all of which the shared client implements, the API documents, the web UI
-uses, and the MCP `list_transactions` tool accepts. A user on the terminal is
-strictly less capable than the same user in a browser, on the same data.
+The TUI's transaction filter form exposes search, account, category (including the
+`uncategorized` sentinel), group, payee, type, linked, date range, tags, amount, limit
+and page. It exposes **none** of `q`, `loanAccountId`, `excludeAttached`, `recurringId`
+or `recurring` — all of which the shared client implements, the API documents, the web
+UI uses, and the MCP `list_transactions` tool accepts. `q` is the one that costs
+capability rather than convenience: it is the typed query language, so a terminal user
+cannot combine or negate the terms the dropdowns above give them one at a time. A user
+on the terminal is still less capable than the same user in a browser, on the same data.
 
 #### Proposal
 
@@ -791,21 +806,31 @@ proportional and is the main thing to decide up front.
 
 These are not features, but they were found alongside and are cheap to fix.
 
-> **Status: all three fixed.** They were filed as issues #40, #41 and #42 and
-> closed by the multi-currency work, whose documentation pass corrected the two
-> documents and committed this file in place of the `IDEAS.md` the tree named. The
-> findings below are left as written because they describe the repository as it
-> stood at the commit named at the top of this document, not as it stands now.
+> **Status: all three corrected in the documents; the filed issues are still open.**
+> They were filed as issues #40, #41 and #42 and the multi-currency work corrected
+> both documents and committed this file in place of the `IDEAS.md` the tree named.
+> **The three issues remain open as of this writing** — closing them is a
+> maintainer action once the release carrying the corrections ships, and nothing
+> here should be read as saying otherwise.
+>
+> Findings 1 and 3 below are left as written because they describe the repository
+> as it stood at the commit named at the top of this document, which is what their
+> wording is scoped to. Finding 2 is not: its claim about the issue tracker is in
+> the present tense and no commit hash can scope it, so that clause has been
+> corrected in place.
 
 1. **`README.md` lists a file that does not exist.** The project tree claims
    `IDEAS.md  # Feature backlog`. There is no `IDEAS.md` in the repository. Either
    create it (this document is a reasonable starting point, relabeled as a backlog) or
    remove the line.
 2. **The README and `mcp/internal/mcpserver/mcpserver.go` both cite "backlog idea #56"
-   (scoped read-only tokens) and "idea #59" (propose-only agent surface) — but the
-   GitHub issue tracker is completely empty** (0 open, 0 closed). Those references point
-   at nothing a reader can follow. They are load-bearing prose in the MCP server's own
-   doc comment, which explains its whole design.
+   (scoped read-only tokens) and "idea #59" (propose-only agent surface) — and the
+   GitHub issue tracker was completely empty** (0 open, 0 closed) when this sweep
+   ran. *(It is not empty now: this document's findings and the rest of the review
+   are filed there, and the two gaps are now stated in their own terms in the
+   `mcp/internal/mcpserver` package doc and the README, so a reader can follow the
+   claim without a number that points at nothing.)* Those references were
+   load-bearing prose in the MCP server's own doc comment, which explains its whole design.
 3. **`AGENTS.md` claims the TUI has route-parity tests.** It states the terminal client
    "covers every operation in `backend/openapi.yaml` through the shared client and TUI
    route-parity tests." There is no such test: `tui/` contains no file referencing
@@ -820,11 +845,11 @@ These are not features, but they were found alongside and are cheap to fix.
 
 | Order | Proposal | Why here |
 | --- | --- | --- |
-| 1 | **#1 part 1** (stop summing across currencies) | A live bug. Small, self-contained, and every later aggregate change is easier once it is fixed. |
+| 1 | ~~**#1 part 1**~~ (stop summing across currencies) | **Done** — it was the live bug, and every later aggregate change is easier now that it is fixed. |
 | 2 | **#9** (health report) | Cheapest high-value item, no schema change, and it will surface bugs worth fixing before the bigger work. |
 | 3 | **#10** (TUI filter parity) | Bounded; closes a real capability gap in a sitting. |
-| 4 | **#1 parts 2–3** (rates, query surface, UI) | Builds on part 1's groundwork. |
-| 5 | **#3** (what-if simulator) | The most valuable *new* capability per unit of risk, and it unlocks the propose-and-apply surface the MCP server does not have safely. |
+| 4 | **#1 parts 2–3** (rates, UI; the `ccy:` query field is already in) | Builds on part 1's groundwork. |
+| 5 | **#3** (what-if simulator) | The most valuable *new* capability per unit of risk, and it would give the MCP server a propose-and-apply surface it does not have. |
 | 6 | **#4** (projection) | Composition of correct existing models; pairs well with #3. |
 | 7 | **#7** then **#6** | Reference-record hygiene before derived reporting on top of it. |
 | 8 | **#8** (document intelligence) | High payoff, narrow change, but per-bank extractor work. |
