@@ -1105,23 +1105,37 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+	// totalTransactions still needs its own count. The old scalarQuery returned
+	// the transaction count alongside the totals, so deleting it leaves the count
+	// unsourced — and reporting 0 would be a silent wrong number, which is the
+	// class of defect this change exists to remove.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(9))
 	// The scope query: two accounts, two currencies.
 	mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(acctINR, "Salary", "INR", money.FromFloat(50000), money.FromFloat(30000.50)).
 			AddRow(acctUSD, "Travel card", "USD", 0, money.FromFloat(80)))
-	// Category and trend queries now carry the account's currency.
+	// Category and trend queries now carry the account's currency. Every
+	// ExpectQuery needs an explicit WithArgs: pgxmock reads an omitted one as
+	// "expects zero arguments", so a query that binds the user id would not
+	// match and the test would fail for the wrong reason.
 	mock.ExpectQuery("a.currency").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
 			AddRow("c1", "Food", "#f00", "food", "INR", money.FromFloat(12000), 8))
 	mock.ExpectQuery("a.currency").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
 	mock.ExpectQuery("TO_CHAR\\(t.date, 'YYYY-MM'\\)").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
 			AddRow("2026-07", "INR", money.FromFloat(50000), money.FromFloat(30000.50)).
 			AddRow("2026-07", "USD", 0, money.FromFloat(80)))
 	mock.ExpectQuery("SELECT t.id, t.account_id").
+		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type",
 			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
@@ -1143,10 +1157,15 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(30000.50), "USD": money.FromFloat(80)}, summary.TotalExpense)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(19999.50), "USD": -money.FromFloat(80)}, summary.TotalNet)
 
-	// A two-currency scope refuses to report as a single number, which is what
-	// stops a client from adding 50000 rupees to 80 dollars.
-	if _, _, ok := summary.TotalIncome.Single(); ok {
-		t.Error("a two-currency total reported as a single amount")
+	// A two-currency figure refuses to report as a single number, which is what
+	// stops a client from adding 50000 rupees to 80 dollars. Assert it on
+	// Expense and Net, NOT on Income: the USD account in this fixture never earns
+	// anything, so Income genuinely holds one key and Single() is right to say so.
+	if _, _, ok := summary.TotalExpense.Single(); ok {
+		t.Error("a two-currency expense total reported as a single amount")
+	}
+	if _, _, ok := summary.TotalNet.Single(); ok {
+		t.Error("a two-currency net reported as a single amount")
 	}
 	assert.Equal(t, []string{"INR", "USD"}, summary.CurrencyScope.Currencies)
 	assert.Len(t, summary.CurrencyScope.Accounts, 2)
@@ -3056,11 +3075,20 @@ the raw response for any scalar that would reintroduce the bug."
 
 Tasks 1 → 2 → 3 are independent of each other and of everything after them; run them in any order, or in parallel. Tasks 4–8 are independent of each other and **must all complete before Task 9**, because Task 9's spec must describe the final shape. Task 9 must precede 10, 11 and 12, all three of which are independent of each other. Task 14 follows 4–8. Task 13 is independent and can run at any point.
 
+**The branch does not build in every module at every intermediate step, and that is deliberate.** Changing a response shape cannot be atomic across four Go modules and the SPA without one task that touches all of them. So from Task 4 until Task 11 the following are true, and each is a *loud* failure rather than a silent wrong number:
+
+- `backend/` and `client/`'s dependency-free packages build and test green.
+- `TestOpenAPISchemasMatchTheModels` fails from Task 4 onward: the spec still describes the old scalars.
+- `TestClientTypesMatchTheSpecSchemas` fails for the same reason.
+- `tui/` and `mcp/` do not **compile** — their structs still hold `Amount` where the backend now sends a map.
+
+Task 9 restores the spec and the shared client; Task 10 restores `mcp/`; Task 11 restores `tui/`; Task 12 restores the SPA. **The branch is whole only after Task 11**, and `make test-tui-cover-check` / `test-mcp-cover-check` / `openapi-check` are expected to fail if run before then. Do not "fix" a downstream compile error by reverting a model field: that is the shape change being undone, and the correct fix is always to bring the consumer forward.
+
 ```
 1 ─┐
 2 ─┼─→ 4 ─┐
 3 ─┘      ├─→ 9 ─┬─→ 10
-           5 ─┤     ├─→ 11
+           5 ─┤     ├─→ 11  ← branch whole here
            6 ─┤     └─→ 12
            7 ─┤
            8 ─┘
