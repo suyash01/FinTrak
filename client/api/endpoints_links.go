@@ -98,16 +98,27 @@ func (c *Client) CashbackSuggestions(ctx context.Context, page, limit int) (Sugg
 // direction: a genuinely one-way bill payment or refund looks exactly like a
 // half-entered transfer, which is why they are surfaced for review rather than
 // corrected. An empty dateFrom/dateTo leaves the window unbounded and an empty
-// accountID does not filter; a non-uuid accountID is rejected with 400.
+// accountID does not filter; a non-uuid accountID is rejected with 400, as is a
+// currency that is not three letters.
 //
 // Every amount is a CurrencyAmounts, and a cycle's net is the smallest leg per
 // currency: it is the amount that circulates the whole loop only while the
 // cycle holds a single currency, which a link spanning two differently
 // denominated accounts does not. See LinkCycle.
-func (c *Client) LinkCycles(ctx context.Context, dateFrom, dateTo, accountID string) (LinkCycleReport, error) {
+//
+// Currency narrows the report to the links whose *amount* is denominated in
+// that code, which is the currency of the account a leg's amount came from —
+// not necessarily the currency of the account the money flows out of, and not a
+// filter that admits a link because one endpoint holds the currency and then
+// reports the amount in the other's. That is the opposite of
+// WindowFilter.Currency, which selects on the account's own currency. Amounts
+// are per-currency regardless; this chooses which links and which accounts are
+// in scope, and the response's CurrencyScope names the accounts holding the code.
+func (c *Client) LinkCycles(ctx context.Context, dateFrom, dateTo, accountID, currency string) (LinkCycleReport, error) {
 	r := get("/links/cycles").
 		setQuery("dateFrom", dateFrom).
 		setQuery("dateTo", dateTo).
-		setQuery("accountId", accountID)
+		setQuery("accountId", accountID).
+		setQuery("currency", currency)
 	return do[LinkCycleReport](ctx, c, r)
 }

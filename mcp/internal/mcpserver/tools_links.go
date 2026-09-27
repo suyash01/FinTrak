@@ -103,6 +103,6 @@ func installCashbackSuggestions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 
 func installLinkCycles(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in linkCyclesArgs) (any, error) {
-		return c.LinkCycles(ctx, in.DateFrom, in.DateTo, in.AccountID)
+		return c.LinkCycles(ctx, in.DateFrom, in.DateTo, in.AccountID, "")
 	})
 }

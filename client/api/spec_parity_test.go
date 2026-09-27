@@ -400,8 +400,8 @@ func routeCases() []routeCase {
 			query: map[string]string{"page": "1", "limit": "50"},
 			call:  func(ctx context.Context, c *Client) error { _, err := c.CashbackSuggestions(ctx, 1, 50); return err }},
 		{name: "link cycles", method: "GET", path: "/links/cycles", body: `{"cycles":[],"totalCircular":{},"oneSidedFlows":[],"currencyScope":{"currencies":[],"accounts":[]}}`,
-			query: map[string]string{"accountId": idAcct},
-			call:  func(ctx context.Context, c *Client) error { _, err := c.LinkCycles(ctx, "", "", idAcct); return err }},
+			query: map[string]string{"accountId": idAcct, "currency": "USD"},
+			call:  func(ctx context.Context, c *Client) error { _, err := c.LinkCycles(ctx, "", "", idAcct, "USD"); return err }},
 
 		// Recurring.
 		{name: "list recurring", method: "GET", path: "/recurring", body: dataList,
@@ -456,29 +456,31 @@ func routeCases() []routeCase {
 
 		// Dashboard.
 		{name: "dashboard summary", method: "GET", path: "/dashboard/summary", body: `{}`,
-			query: map[string]string{"accountId": idAcct, "groupBy": "billing_cycle", "cycles": "6"},
+			query: map[string]string{"accountId": idAcct, "currency": "USD", "groupBy": "billing_cycle", "cycles": "6"},
 			call: func(ctx context.Context, c *Client) error {
 				_, err := c.Summary(ctx, DashboardFilter{
-					WindowFilter: WindowFilter{AccountID: idAcct}, GroupBy: "billing_cycle", Cycles: 6,
+					WindowFilter: WindowFilter{AccountID: idAcct, Currency: "USD"}, GroupBy: "billing_cycle", Cycles: 6,
 				})
 				return err
 			}},
 		{name: "money flow", method: "GET", path: "/dashboard/money-flow", body: `{"nodes":[],"links":[],"linkSummary":[]}`,
-			query: map[string]string{"limit": "15"},
+			query: map[string]string{"limit": "15", "currency": "USD"},
 			call: func(ctx context.Context, c *Client) error {
-				_, err := c.MoneyFlow(ctx, MoneyFlowFilter{Limit: 15})
+				_, err := c.MoneyFlow(ctx, MoneyFlowFilter{WindowFilter: WindowFilter{Currency: "USD"}, Limit: 15})
 				return err
 			}},
 		{name: "money flow timeline", method: "GET", path: "/dashboard/money-flow/timeline", body: `{"groupBy":"month","periods":[]}`,
-			query: map[string]string{"groupBy": "billing_cycle", "cycles": "12"},
+			query: map[string]string{"groupBy": "billing_cycle", "cycles": "12", "currency": "USD"},
 			call: func(ctx context.Context, c *Client) error {
-				_, err := c.MoneyFlowTimeline(ctx, TimelineFilter{GroupBy: "billing_cycle", Cycles: 12})
+				_, err := c.MoneyFlowTimeline(ctx, TimelineFilter{
+					WindowFilter: WindowFilter{Currency: "USD"}, GroupBy: "billing_cycle", Cycles: 12,
+				})
 				return err
 			}},
 		{name: "cash flow calendar", method: "GET", path: "/dashboard/cash-flow-calendar", body: `{"days":[],"markers":[],"cycles":[]}`,
-			query: map[string]string{"dateFrom": "2026-01-01"},
+			query: map[string]string{"dateFrom": "2026-01-01", "currency": "USD"},
 			call: func(ctx context.Context, c *Client) error {
-				_, err := c.CashFlowCalendar(ctx, WindowFilter{DateFrom: "2026-01-01"})
+				_, err := c.CashFlowCalendar(ctx, WindowFilter{DateFrom: "2026-01-01", Currency: "USD"})
 				return err
 			}},
 

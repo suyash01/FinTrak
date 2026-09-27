@@ -8,8 +8,8 @@ import "context"
 // rather than a data envelope.
 
 // WindowFilter is the optional window shared by every dashboard route: an
-// inclusive date range and/or a single account. The zero value means "the
-// server's default window".
+// inclusive date range, a single account, and/or a single currency. The zero
+// value means "the server's default window".
 type WindowFilter struct {
 	// DateFrom and DateTo bound the window inclusively, as YYYY-MM-DD. Either
 	// bound may be left empty.
@@ -17,13 +17,24 @@ type WindowFilter struct {
 	DateTo   string
 	// AccountID narrows every section to one account.
 	AccountID string
+	// Currency narrows every section to the accounts holding one currency code,
+	// so a window over several accounts can be held to the one denomination the
+	// caller wants. An account already determines its own currency, so this is
+	// for choosing across several accounts at once; a code the server does not
+	// recognise as three letters is a 400 rather than a filter that quietly
+	// matched nothing. The server folds case, so "usd" and "USD" behave alike —
+	// send upper case to be explicit. Amounts are per-currency either way; this
+	// chooses which accounts are in scope, and it is applied to every section of
+	// a response so that two of them can never describe different transactions.
+	Currency string
 }
 
 // apply writes the window parameters, skipping empty ones.
 func (f WindowFilter) apply(r *request) *request {
 	return r.setQuery("dateFrom", f.DateFrom).
 		setQuery("dateTo", f.DateTo).
-		setQuery("accountId", f.AccountID)
+		setQuery("accountId", f.AccountID).
+		setQuery("currency", f.Currency)
 }
 
 // DashboardFilter is the window for Summary plus the statement-period framing.
