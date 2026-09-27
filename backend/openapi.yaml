@@ -4298,6 +4298,11 @@ paths:
         billing day, the handler materializes the account's missing billing
         cycles (INSERT) and back-fills transactions' cycle assignment, so a
         cross-site request is refused.
+
+        Every amount is per-currency, `maxAbsNet` included: a day can hold an
+        INR amount and a USD one, and neither its net nor the denominator that
+        renders it can be a single number. The client picks its own currency's
+        scale from `maxAbsNet`.
       operationId: getCashFlowCalendar
       security:
         - AccessCookie: []
@@ -4323,6 +4328,18 @@ paths:
           description: >-
             Filter by account ID. When provided, billing-cycle boundaries and
             synthetic summary markers for that account are included.
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency
+            regardless; this chooses which money is in scope, and both the days
+            and the `currencyScope` are narrowed with it, so the two cannot name
+            different currencies. A code that is not three letters is a 400.
       responses:
         "200":
           description: Cash-flow calendar
@@ -6343,13 +6360,20 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency). A day on which one currency spent and another earned has a
+            net in both, and neither is a total of the other. A day that only
+            spent has no `income` key and a negative `net` under the currency it
+            spent in.
         count:
           type: integer
+          description: Transactions posted that day, across every currency in scope.
 
     CashFlowCalendarMarker:
       type: object
@@ -6364,7 +6388,11 @@ components:
           type: string
           enum: [balance, outstanding]
         amount:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The overlay belongs to the selected account, so `amount` holds that
+            account's single key. It is a map anyway, so a client never has to
+            learn two shapes for the same field.
 
     CashFlowCalendarCycle:
       type: object
@@ -6381,7 +6409,10 @@ components:
           type: string
           format: date
         outstanding:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The running balance through the cycle end, in the account's own
+            currency - one key, never a sum of two.
 
     CashFlowCalendar:
       type: object
@@ -6399,14 +6430,26 @@ components:
           items:
             $ref: "#/components/schemas/CashFlowCalendarCycle"
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The window's per-currency difference, computed by the server from the
+            same scope query the dashboard summary uses, so the two cannot
+            disagree about the window they describe.
         maxAbsNet:
-          type: number
-          description: Largest absolute daily net in the window, for heatmap scaling.
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Largest absolute daily net **per currency**, for heatmap scaling. It
+            is per currency because a single scale across currencies is
+            meaningless: it would make a quiet foreign account's real deficit
+            render as a flat cell next to a large domestic one. The client picks
+            its own currency's denominator; the server never compares one
+            currency's amount with another's.
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     MoneyFlowTimelinePeriod:
       type: object

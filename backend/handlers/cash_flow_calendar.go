@@ -24,6 +24,11 @@ import (
 // synthetic summary rows already shown in the transactions list (month-end
 // running balances, or per-cycle total outstanding when the account has a
 // billing day) so they can be overlaid on the calendar.
+//
+// Every amount is per-currency, including the heatmap's own scale: with no
+// account filter the window can span an INR account and a USD one, and neither a
+// day's net nor the denominator that renders it can be a single number. The
+// response carries one amount per currency alongside the scope that produced it.
 func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
@@ -52,7 +57,24 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 		}
 		accountUUID = parsed
 	}
+	// The currency is parsed once here and passed to both reads below, so the
+	// scope and the days it is the sum of narrow on the same normalised code.
+	currency, ok := parseCurrency(c)
+	if !ok {
+		return
+	}
 
+	// The scope query names the currencies the days below are reported in, and
+	// it also supplies the window totals. It reads accounts rather than
+	// transactions, so an account quiet in the window still appears and explains
+	// the currency it holds.
+	//
+	// Both reads run in one read-only, repeatable-read transaction. The totals are
+	// the days' own explanation of themselves, so a write landing between two
+	// autocommit statements would let them describe different ledgers - a day's
+	// amounts and the totals beside it disagreeing, which is the silent gap this
+	// response exists to close. Same argument, and same shape, as the dashboard
+	// summary, the money-flow graph and the money-flow timeline.
 	tx, err := srv.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		slog.Error("GetCashFlowCalendar (begin)", slog.String("error", err.Error()))
@@ -61,7 +83,19 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 	}
 	defer tx.Rollback(ctx)
 
-	days, totalIncome, totalExpense, maxAbsNet, err := queryDailyCashFlow(ctx, tx, userID, dateFrom, dateTo, accountID)
+	scope, err := srv.currencyScope(ctx, tx, userID, scopeOptions{
+		DateFrom:  dateFrom,
+		DateTo:    dateTo,
+		AccountID: accountID,
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetCashFlowCalendar (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	days, maxAbsNet, err := queryDailyCashFlow(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetCashFlowCalendar (daily flow)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -74,16 +108,27 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 		return
 	}
 
+	// The window totals come from the scope rather than from summing the day rows
+	// above, so the calendar's and the dashboard's are computed by the same
+	// query. Net is the server's per-currency difference: income minus expense is
+	// only defined inside one currency, and only the server knows which currencies
+	// are in scope.
 	calendar := models.CashFlowCalendar{
-		Days:         days,
-		Markers:      []models.CashFlowCalendarMarker{},
-		Cycles:       []models.CashFlowCalendarCycle{},
-		TotalIncome:  totalIncome,
-		TotalExpense: totalExpense,
-		Net:          totalIncome - totalExpense,
-		MaxAbsNet:    maxAbsNet,
+		Days:          days,
+		Markers:       []models.CashFlowCalendarMarker{},
+		Cycles:        []models.CashFlowCalendarCycle{},
+		TotalIncome:   scope.Income,
+		TotalExpense:  scope.Expense,
+		Net:           scope.Net(),
+		MaxAbsNet:     maxAbsNet,
+		CurrencyScope: scope.Scope,
 	}
 
+	// The overlays are best-effort and read outside the snapshot above: with a
+	// billing day set the overlay regenerates the account's cycles, which writes,
+	// so it cannot share a read-only transaction. They are one account's own
+	// figures rather than a window total, so nothing in the days or the totals
+	// depends on them agreeing.
 	if accountID != "" {
 		srv.attachCashFlowOverlays(ctx, userID, accountUUID, dateFrom, dateTo, &calendar)
 	}
@@ -95,12 +140,23 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 // markers for a single account. Overlays are best-effort: the daily flow is the
 // page's primary content, so a failure here logs and leaves the calendar
 // without overlays rather than failing the whole request.
+//
+// The account's currency is read here, beside its billing day, because every
+// amount the overlays carry is that one account's money: the marker and the cycle
+// outstanding are per-currency maps holding this account's single key, so a
+// client never has to learn a second shape for the same field. Reading it in the
+// query already being issued is what keeps the overlays from costing a statement
+// of their own - and it is read through the same COALESCE(NULLIF(...)) every
+// other currency read in this file uses.
 func (srv *Server) attachCashFlowOverlays(c *gin.Context, userID, accountID uuid.UUID, dateFrom, dateTo string, calendar *models.CashFlowCalendar) {
-	var billingDay *int
+	var (
+		billingDay *int
+		currency   string
+	)
 	err := srv.db.QueryRow(c,
-		`SELECT a.billing_day
+		`SELECT a.billing_day, `+flowCurrency("a.currency")+`
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&billingDay)
+		accountID, userID).Scan(&billingDay, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Unknown account (or one the user does not own): no overlays.
 		return
@@ -112,7 +168,7 @@ func (srv *Server) attachCashFlowOverlays(c *gin.Context, userID, accountID uuid
 
 	if billingDay == nil {
 		rows := srv.computeMonthEndBalanceRows(c, userID, accountID, "", dateFrom, dateTo)
-		calendar.Markers = cashFlowMarkers(rows, "balance")
+		calendar.Markers = cashFlowMarkers(rows, "balance", currency)
 		return
 	}
 
@@ -135,38 +191,55 @@ func (srv *Server) attachCashFlowOverlays(c *gin.Context, userID, accountID uuid
 	calendar.Cycles = make([]models.CashFlowCalendarCycle, 0, len(cycles))
 	for _, bc := range cycles {
 		calendar.Cycles = append(calendar.Cycles, models.CashFlowCalendarCycle{
-			ID:          bc.ID,
-			Label:       bc.Label,
-			StartDate:   bc.StartDate,
-			EndDate:     bc.EndDate,
-			Outstanding: bc.TotalOutstanding,
+			ID:        bc.ID,
+			Label:     bc.Label,
+			StartDate: bc.StartDate,
+			EndDate:   bc.EndDate,
+			// A cycle belongs to exactly one account, so its running balance is
+			// that account's own currency - one key, never a sum of two.
+			Outstanding: models.NewCurrencyAmounts().Add(currency, bc.TotalOutstanding),
 		})
 	}
 
 	rows := srv.summaryRowsFromCycles(c, userID, accountID, "", dateFrom, dateTo, cycles)
-	calendar.Markers = cashFlowMarkers(rows, "outstanding")
+	calendar.Markers = cashFlowMarkers(rows, "outstanding", currency)
 }
 
 // cashFlowMarkers converts the synthetic summary rows returned by the existing
-// month-end/cycle helpers into the lighter calendar marker shape.
-func cashFlowMarkers(rows []models.Transaction, kind string) []models.CashFlowCalendarMarker {
+// month-end/cycle helpers into the lighter calendar marker shape. currency is the
+// selected account's own: every row is a figure for that one account, so each
+// marker holds a single key.
+func cashFlowMarkers(rows []models.Transaction, kind, currency string) []models.CashFlowCalendarMarker {
 	markers := make([]models.CashFlowCalendarMarker, 0, len(rows))
 	for _, r := range rows {
 		markers = append(markers, models.CashFlowCalendarMarker{
 			Date:   r.Date.Format("2006-01-02"),
 			Label:  r.Description,
 			Kind:   kind,
-			Amount: r.Amount,
+			Amount: models.NewCurrencyAmounts().Add(currency, r.Amount),
 		})
 	}
 	return markers
 }
 
 // queryDailyCashFlow groups the filtered transactions by day, returning the
-// per-day aggregates plus the window totals and the largest absolute daily net
-// (for client-side heatmap scaling).
-func queryDailyCashFlow(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]models.CashFlowCalendarDay, money.Amount, money.Amount, money.Amount, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, "")
+// per-day amounts plus the largest absolute daily net per currency (for
+// client-side heatmap scaling).
+//
+// The account's currency is projected and grouped with the date, so one day is
+// one entry holding one amount per currency rather than one entry per currency.
+// Grouping the day without the currency is what added dollars to rupees: the
+// database hands back a single amount that already no longer means anything, and
+// no map later in the response can undo it. The reading of a transaction's
+// denomination off its account rests on a transaction having no currency of its
+// own; see the same premise in money_flow_timeline.go.
+//
+// maxAbsNet is per currency because a single scale across currencies is
+// meaningless - a quiet foreign account's real deficit would render as a flat
+// cell beside a large domestic one. The client picks its own currency's
+// denominator; nothing here compares one currency's amount with another's.
+func queryDailyCashFlow(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]models.CashFlowCalendarDay, models.CurrencyAmounts, error) {
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, currency)
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
@@ -174,45 +247,76 @@ func queryDailyCashFlow(ctx context.Context, db flowQueryer, userID uuid.UUID, d
 
 	rows, err := db.Query(ctx, `
 		SELECT t.date,
+			   `+flowCurrency("a.currency")+` AS currency,
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0),
 			   COUNT(*)
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		WHERE t.user_id = $1`+filter+`
-		GROUP BY t.date
+		GROUP BY t.date, `+flowCurrency("a.currency")+`
 		ORDER BY t.date`, append([]any{userID}, args...)...)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
-	days := []models.CashFlowCalendarDay{}
-	var totalIncome, totalExpense, maxAbsNet money.Amount
+	// The rows arrive in date order, one per date per currency, so the fold keeps
+	// the dates it has seen in the order it saw them. Each entry starts from
+	// NewCurrencyAmounts rather than nil, because a nil map marshals as null
+	// where the contract promises {}.
+	byDate := map[string]*models.CashFlowCalendarDay{}
+	var order []string
 	for rows.Next() {
 		var date time.Time
+		var code string
 		var income, expense money.Amount
 		var count int
-		if err := rows.Scan(&date, &income, &expense, &count); err != nil {
-			return nil, 0, 0, 0, err
+		if err := rows.Scan(&date, &code, &income, &expense, &count); err != nil {
+			return nil, nil, err
 		}
-		net := income - expense
-		days = append(days, models.CashFlowCalendarDay{
-			Date:    date.Format("2006-01-02"),
-			Income:  income,
-			Expense: expense,
-			Net:     net,
-			Count:   count,
-		})
-		totalIncome += income
-		totalExpense += expense
-		absNet := net
-		if absNet < 0 {
-			absNet = -absNet
+		key := date.Format("2006-01-02")
+		entry, ok := byDate[key]
+		if !ok {
+			entry = &models.CashFlowCalendarDay{
+				Date:    key,
+				Income:  models.NewCurrencyAmounts(),
+				Expense: models.NewCurrencyAmounts(),
+				Net:     models.NewCurrencyAmounts(),
+			}
+			byDate[key] = entry
+			order = append(order, key)
 		}
-		if absNet > maxAbsNet {
-			maxAbsNet = absNet
+		entry.Income = entry.Income.Add(code, income)
+		entry.Expense = entry.Expense.Add(code, expense)
+		entry.Count += count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	days := make([]models.CashFlowCalendarDay, 0, len(order))
+	maxAbsNet := models.NewCurrencyAmounts()
+	for _, key := range order {
+		entry := byDate[key]
+		// Net is the difference inside one currency, and the server takes it: a
+		// client subtracting two currency-keyed objects by hand is how a number
+		// across two currencies comes back. Sub takes the union of the keys and
+		// reads a missing one as zero, so a day that only spent still reports its
+		// negative net under the currency it spent in.
+		entry.Net = entry.Income.Sub(entry.Expense)
+		days = append(days, *entry)
+	}
+	// The heatmap scale is the largest |net| each currency reaches, not the
+	// largest in the window: comparing 30000 cents of dollars with 5000000
+	// cents of rupees is a comparison of two numbers in different units, and the
+	// cell it flattens is the foreign account's real deficit.
+	for _, day := range days {
+		for code, net := range day.Net {
+			if abs := net.Abs(); abs > maxAbsNet[code] {
+				maxAbsNet[code] = abs
+			}
 		}
 	}
-	return days, totalIncome, totalExpense, maxAbsNet, rows.Err()
+	return days, maxAbsNet, nil
 }

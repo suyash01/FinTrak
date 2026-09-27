@@ -1037,32 +1037,35 @@ type LinkCycleReport struct {
 // ---- Cash-flow calendar ----
 
 // CashFlowCalendarDay is one day of daily net flow; days without transactions
-// are omitted and filled in by the UI.
+// are omitted and filled in by the UI. Net is per-currency, so a day on which
+// one currency spent and another earned has a net in both.
 type CashFlowCalendarDay struct {
-	Date    string `json:"date"`
-	Income  Amount `json:"income"`
-	Expense Amount `json:"expense"`
-	Net     Amount `json:"net"`
-	Count   int    `json:"count"`
+	Date    string          `json:"date"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
+	Net     CurrencyAmounts `json:"net"`
+	Count   int             `json:"count"`
 }
 
 // CashFlowCalendarMarker is a synthetic summary point (a month-end running
-// balance or a cycle's total outstanding).
+// balance or a cycle's total outstanding). The overlay belongs to one account,
+// so Amount holds that account's single key; it is a map anyway, so a client
+// never has to learn two shapes for the same field.
 type CashFlowCalendarMarker struct {
-	Date   string `json:"date"`
-	Label  string `json:"label"`
-	Kind   string `json:"kind"`
-	Amount Amount `json:"amount"`
+	Date   string          `json:"date"`
+	Label  string          `json:"label"`
+	Kind   string          `json:"kind"`
+	Amount CurrencyAmounts `json:"amount"`
 }
 
 // CashFlowCalendarCycle is a billing-cycle boundary so the calendar can mark
-// statement periods.
+// statement periods. Outstanding is the one account's own currency.
 type CashFlowCalendarCycle struct {
-	ID          string    `json:"id"`
-	Label       string    `json:"label"`
-	StartDate   time.Time `json:"startDate"`
-	EndDate     time.Time `json:"endDate"`
-	Outstanding Amount    `json:"outstanding"`
+	ID          string          `json:"id"`
+	Label       string          `json:"label"`
+	StartDate   time.Time       `json:"startDate"`
+	EndDate     time.Time       `json:"endDate"`
+	Outstanding CurrencyAmounts `json:"outstanding"`
 }
 
 // CashFlowCalendar is the GET /dashboard/cash-flow-calendar response.
@@ -1070,10 +1073,19 @@ type CashFlowCalendar struct {
 	Days         []CashFlowCalendarDay    `json:"days"`
 	Markers      []CashFlowCalendarMarker `json:"markers"`
 	Cycles       []CashFlowCalendarCycle  `json:"cycles"`
-	TotalIncome  Amount                   `json:"totalIncome"`
-	TotalExpense Amount                   `json:"totalExpense"`
-	Net          Amount                   `json:"net"`
-	MaxAbsNet    Amount                   `json:"maxAbsNet"`
+	TotalIncome  CurrencyAmounts           `json:"totalIncome"`
+	TotalExpense CurrencyAmounts           `json:"totalExpense"`
+	Net          CurrencyAmounts           `json:"net"`
+	// MaxAbsNet is the largest absolute daily net **per currency**, the
+	// denominator the heatmap divides by. One scale across currencies is
+	// meaningless - it renders a quiet foreign account's real deficit as a flat
+	// cell beside a large domestic one - so a caller picks its own currency's
+	// entry rather than reading a single number.
+	MaxAbsNet CurrencyAmounts `json:"maxAbsNet"`
+	// CurrencyScope names every currency the days cover and the accounts behind
+	// it, and is where the window totals above come from: the same query the
+	// dashboard summary uses.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Recurring series ----

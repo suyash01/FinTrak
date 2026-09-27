@@ -1218,35 +1218,40 @@ type LinkCycleReport struct {
 // (CashFlowCalendarMarker). Days with no transactions are omitted; the client
 // fills the gaps to render a continuous GitHub-style heatmap.
 
-// CashFlowCalendarDay is one day of daily net flow. Net is income minus
-// expense; Count is the number of transactions posted that day.
+// CashFlowCalendarDay is one day of daily net flow. Net is per-currency, and a
+// day on which one currency spent and another earned has a net in both; Count is
+// the number of transactions posted that day, which carries no currency of its
+// own. Days with no transactions are omitted, so the client fills the gaps.
 type CashFlowCalendarDay struct {
-	Date    string       `json:"date"`
-	Income  money.Amount `json:"income"`
-	Expense money.Amount `json:"expense"`
-	Net     money.Amount `json:"net"`
-	Count   int          `json:"count"`
+	Date    string          `json:"date"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
+	Net     CurrencyAmounts `json:"net"`
+	Count   int             `json:"count"`
 }
 
 // CashFlowCalendarMarker is a synthetic summary point overlaid on the calendar:
 // a month-end "Running balance" for accounts without a billing day (kind
 // "balance") or a per-cycle "Total outstanding" for accounts with one (kind
-// "outstanding"). Amount matches the corresponding row in the transactions list.
+// "outstanding"). The overlay belongs to the account that was selected, so its
+// amount is a map with one key; it is a map anyway, so a client never has to
+// learn two shapes for the same field.
 type CashFlowCalendarMarker struct {
-	Date   string       `json:"date"`
-	Label  string       `json:"label"`
-	Kind   string       `json:"kind"`
-	Amount money.Amount `json:"amount"`
+	Date   string          `json:"date"`
+	Label  string          `json:"label"`
+	Kind   string          `json:"kind"`
+	Amount CurrencyAmounts `json:"amount"`
 }
 
 // CashFlowCalendarCycle is a billing-cycle boundary so the heatmap can mark
-// statement periods. Outstanding is the running balance through the cycle end.
+// statement periods. Outstanding is the running balance through the cycle end,
+// which is likewise the one account's money and so a one-key map.
 type CashFlowCalendarCycle struct {
-	ID          uuid.UUID    `json:"id"`
-	Label       string       `json:"label"`
-	StartDate   time.Time    `json:"startDate"`
-	EndDate     time.Time    `json:"endDate"`
-	Outstanding money.Amount `json:"outstanding"`
+	ID          uuid.UUID         `json:"id"`
+	Label       string            `json:"label"`
+	StartDate   time.Time         `json:"startDate"`
+	EndDate     time.Time         `json:"endDate"`
+	Outstanding CurrencyAmounts `json:"outstanding"`
 }
 
 // CashFlowCalendar is the response of GET /api/v1/dashboard/cash-flow-calendar.
@@ -1254,12 +1259,19 @@ type CashFlowCalendar struct {
 	Days         []CashFlowCalendarDay    `json:"days"`
 	Markers      []CashFlowCalendarMarker `json:"markers"`
 	Cycles       []CashFlowCalendarCycle  `json:"cycles"`
-	TotalIncome  money.Amount             `json:"totalIncome"`
-	TotalExpense money.Amount             `json:"totalExpense"`
-	Net          money.Amount             `json:"net"`
-	// MaxAbsNet is the largest |net| among the returned days, used by the client
-	// to scale the heatmap intensity without a second pass.
-	MaxAbsNet money.Amount `json:"maxAbsNet"`
+	TotalIncome  CurrencyAmounts           `json:"totalIncome"`
+	TotalExpense CurrencyAmounts           `json:"totalExpense"`
+	Net          CurrencyAmounts           `json:"net"`
+	// MaxAbsNet is the largest |net| among the returned days **per currency**,
+	// used by the client to scale the heatmap intensity without a second pass.
+	// It is per currency because a single scale across currencies is meaningless:
+	// it would make a quiet foreign account's real deficit look flat next to a
+	// large domestic one, and the client picks its own currency's denominator.
+	MaxAbsNet CurrencyAmounts `json:"maxAbsNet"`
+	// CurrencyScope names the currencies the window covers and the accounts
+	// behind them, and is where the window totals above come from - the same
+	// query the dashboard summary uses, so the two cannot disagree.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // Money-flow timeline types. GetMoneyFlowTimeline returns one entry per calendar
