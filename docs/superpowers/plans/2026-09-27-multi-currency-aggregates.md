@@ -334,7 +334,6 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 
 	"github.com/fintrak/backend/internal/money"
-	"github.com/fintrak/backend/models"
 )
 
 func TestParseCurrencyNormalisesCaseAndRejectsAnythingElse(t *testing.T) {
@@ -441,7 +440,7 @@ func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
 
 	acct := uuid.New()
 	mock.ExpectQuery("a.id = \\$2").
-		WithArgs(testUserID(), acct, "USD").
+		WithArgs(testUserID(), acct.String(), "USD").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(acct, "Travel card", "USD", 0, 0))
 
@@ -597,6 +596,14 @@ func parseCurrency(c *gin.Context) (string, bool) {
 // currencyScope runs scopeSQL once and returns the response's currency scope
 // alongside the per-currency income and expense it folds from the same rows.
 func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.UUID, opts scopeOptions) (scopeResult, error) {
+	// joinConds lands in the LEFT JOIN's ON clause and whereConds in the WHERE.
+	// Keeping them apart is what stops a date filter from excluding an account
+	// that simply has no transactions in the window.
+	var (
+		joinConds  []string
+		whereConds []string
+		args       []any
+	)
 	param := 2
 	// add appends one already-formatted condition and its bound value. The
 	// caller builds the $n placeholder from param rather than letting add do
@@ -618,10 +625,13 @@ func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.
 		add(&whereConds, fmt.Sprintf(" AND a.id = $%d", param), opts.AccountID)
 	}
 	if opts.Currency != "" {
-		// Compared against the same COALESCE the SELECT projects, so filtering
-		// by INR finds the accounts whose currency is genuinely unset rather
-		// than silently excluding them.
-		add(&whereConds, fmt.Sprintf(" AND COALESCE(a.currency, '%s') = $%d", defaultCurrency, param), opts.Currency)
+		// NULLIF must appear here exactly as it does in the SELECT's projection
+		// and its GROUP BY. Without it this predicate would exclude an account
+		// whose currency is '' while every other part of the same response
+		// projected it as INR — a filter that silently drops the one row it
+		// exists to find. backup.go is the path that can store '': it scans
+		// COALESCE(currency, '') and re-inserts it verbatim.
+		add(&whereConds, fmt.Sprintf(" AND COALESCE(NULLIF(a.currency, ''), '%s') = $%d", defaultCurrency, param), opts.Currency)
 	}
 
 	stmt := fmt.Sprintf(scopeSQL, strings.Join(joinConds, ""), strings.Join(whereConds, ""))
