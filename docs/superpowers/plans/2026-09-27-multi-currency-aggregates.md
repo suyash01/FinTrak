@@ -765,10 +765,15 @@ Independent of the reporting change — it touches the filter grammar, not the a
 - Modify: `backend/internal/query/compile_test.go` (add `ccy` to the no-join query list)
 - Modify: `frontend/src/lib/query/fields.ts` (add `"currency"` to `FieldKind`, add the `ccy` entry)
 - Modify: `frontend/src/lib/query/parse.ts` (add the `"currency"` validate case)
+- Modify: `frontend/src/lib/query/resolve.ts` (add the `"currency"` case to `resolveQuery`'s switch)
 - Modify: `frontend/src/lib/query/QueryInput.tsx` (`describeField`, so the grammar sheet stops advertising `~` on a field that refuses it)
-- Test: the corpus is the test; `backend/internal/query/corpus_coverage_test.go` is what fails if a case is missing.
+- Test: `frontend/src/lib/query/resolve.test.ts` (a `ccy` round-trip case), plus the corpus.
 
-The last two are the drift guards this language already keeps, and a new field that misses them is a field the guards cannot see. `compile_test.go` enumerates the fields whose compiled fragments must not contain a `JOIN` — `ccy` emits a correlated `EXISTS` and belongs in that list, or the "never name a joined table" invariant is unasserted for the one field most likely to want one. `QueryInput.tsx`'s `describeField` renders the grammar sheet from `FIELD_TABLE`'s `ops`, and without the entry the sheet would document `ccy~USD`, which the parser rejects.
+**`resolve.ts` is the one that makes the field work, and it is easy to miss.** `resolveQuery` switches on `def.kind` to decide what a term *becomes* before it goes on the wire: ids get resolved to uuids, dates get expanded from named periods, tags and amounts pass through. A kind with no `case` **falls out of the switch silently** — the term is never pushed, no diagnostic is produced, and the SPA sends `q=` with the filter simply not applied. The user sees the unfiltered list and no error.
+
+That failure is invisible to `bun run typecheck`, because the switch has no exhaustiveness check, and invisible to the corpus, because `parse.test.ts` calls `parseQuery` directly and never routes through `resolveQuery`. So the whole feature can be "complete" by every test in the report while doing nothing in the product. A new `kind` needs a `case` here, and a `resolve.test.ts` case that pins the round-trip.
+
+The other two are drift guards this language already keeps. `compile_test.go` enumerates the fields whose compiled fragments must not contain a `JOIN` — `ccy` emits a correlated `EXISTS` and belongs in that list, or the "never name a joined table" invariant is unasserted for the one field most likely to want one. `QueryInput.tsx`'s `describeField` renders the grammar sheet from `FIELD_TABLE`'s `ops`, and without the entry the sheet would document `ccy~USD`, which the parser rejects.
 
 **Interfaces:**
 - Consumes: nothing from Tasks 1–2.
@@ -948,10 +953,26 @@ In `frontend/src/lib/query/parse.ts`, add to the `switch (def.kind)` in `validat
         break;
 ```
 
-- [ ] **Step 8: Run the frontend query tests**
+- [ ] **Step 8: Add the resolver case and its round-trip test**
+
+In `frontend/src/lib/query/resolve.ts`, add a case to the switch in `resolveQuery`, after the `"uuid"` block:
+
+```ts
+      case "currency":
+        // Already the code the column stores, so there is nothing to resolve.
+        // The fold is the server's, at bind time
+        // (backend/internal/query/compile.go), which is why this mirror needs no
+        // normalisation either.
+        terms.push(term);
+        continue;
+```
+
+In `frontend/src/lib/query/resolve.test.ts`, add a case in the style of the existing ones, asserting that `resolveQuery(parseQuery("ccy:usd"), src)` yields one term with `values: ["usd"]` and serialises back to `ccy:usd` — and that no diagnostic is produced, since a silently-dropped term produces none either. That last assertion is the one that would have caught this gap.
+
+- [ ] **Step 9: Run the frontend query tests**
 
 Run: `cd frontend && bun run test -- src/lib/query`
-Expected: PASS — the corpus is read by both suites, so a divergence between the two tables fails here.
+Expected: PASS — the corpus is read by both suites, so a divergence between the two tables fails here, and the new `resolve.test.ts` case fails if the resolver drops a `ccy` term.
 
 - [ ] **Step 9: Commit**
 
