@@ -7,11 +7,10 @@
 //
 // # Read-only by construction
 //
-// Idea #59 describes an agent surface whose mutations are propose-only. This
-// server implements the read half of that, and nothing else: it exposes the
-// ledger, the derived aggregates and the API's read-only preview twins
-// (POST /transactions/validate, POST /rules/preview), and no tool can write.
-// The guarantee is enforced in two places rather than by convention:
+// This server is read-only, and nothing else: it exposes the ledger, the
+// derived aggregates and the API's read-only preview twins (POST
+// /transactions/validate, POST /rules/preview), and no tool can write. The
+// guarantee is enforced in two places rather than by convention:
 //
 //   - Every tool declares the API operation it performs (Tool.Route), and
 //     tools_test.go checks each one against backend/openapi.yaml: a GET, or a
@@ -27,8 +26,9 @@
 //
 // # Authentication
 //
-// There is no scoped-token endpoint yet (idea #56), so the server signs in with
-// the same credentials the other clients use: the server signs in on the first
+// There is no scoped read-only token endpoint, so the server signs in with the
+// account's own credentials — which is the whole account's authority, not a
+// read-only subset of it: the server signs in on the first
 // tool call through a receiving middleware, and the API client keeps the
 // session alive from there (its own 401 replay trades the refresh token for a
 // new access token). Credentials are never part of the protocol, and a session
@@ -57,11 +57,40 @@ const instructions = `FinTrak is a personal finance ledger. Every tool here is R
 
 One qualification, stated again in the affected tool descriptions and in their readOnlyHint: a few tools that report on a single account with a configured billing day materialize that account's missing billing-cycle rows on read (list_billing_cycles, get_dashboard_summary, get_money_flow_timeline, get_cash_flow_calendar, and list_transactions when an accountId is given), and list_paperless_documents re-seals the user's stored Paperless token in place on read. The first only regenerates the derived statement periods the account's own screens show; the second leaves the token itself unchanged. Neither touches your transactions' amounts, dates or categories. Say so if a user asks whether a read here can change anything.
 
-Money is returned as decimal major units (for example "1250.50") and every figure is already computed by the server. Do not add amounts up yourself: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) when a total is what the user wants, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
+Money is returned as decimal major units (for example "1250.50"), keyed by currency code, for example {"INR": "1250.50"}. A single-currency scope has exactly one key; a scope spanning several currencies has one key per currency and no total, because the API will not add across currencies — say which currency you mean, or pass the "currency" argument to narrow the response. Do not add amounts across keys yourself, and do not add them up at all: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) when a total is what the user wants, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
 Start with list_accounts, list_categories, list_groups, list_payees and list_tags: they provide the ids every other tool takes. list_transactions is the ledger itself and accepts the same filters as the app's transaction list.
 
 The suggestion tools (validate_transactions, preview_rule, get_transfer_suggestions, get_cashback_suggestions, get_recurring_suggestions) compute what the app itself would propose and write nothing. Present their output as suggestions for the user to confirm in the app; this server cannot apply them.`
+
+// perCurrencyAmounts is the shape rule every reporting tool's amounts obey,
+// appended to each of their descriptions rather than left in the instructions
+// alone: a model reads the description of the tool it is about to call, and the
+// one word it must never act on is "total". The reporting routes return no bare
+// amount — an account carries a currency and a transaction does not, so a window
+// can span currencies and no single number describes it — and the key count is
+// the answer. One key is exact for the whole scope; several keys mean no total
+// exists, because the API will not add across currencies.
+//
+// So the instruction to a model is not to reach for a helper it cannot call, but
+// to read the keys and report the currencies the response named, rather than
+// choosing one currency for the user. currencyScope is what says which
+// currencies and which accounts are in play, which is the honest answer to "what
+// does this figure cover?" — inferring coverage from the filters that were
+// passed is how a mixed result gets read as a single-currency one.
+const perCurrencyAmounts = "Every amount is an object keyed by currency code, for example {\"INR\": \"1250.50\"}. " +
+	"One key means the figure is exact for the whole scope it covers; several keys mean the scope spans currencies " +
+	"and no total is returned, because the API will not add across currencies. Never sum the keys, and never pick " +
+	"one silently: report the currencies the response gave you. currencyScope lists the currencies in scope and the " +
+	"accounts behind each, so read it rather than inferring coverage from the filters you passed."
+
+// narrowByCurrency is the other half — how to get one currency instead of
+// several — and it is a separate constant because it holds of the four dashboard
+// tools and not of get_link_cycles, whose currency argument selects the amount's
+// own currency rather than the accounts holding it. One sentence offered on the
+// wrong tool is a wrong filter, so it goes only where it is true.
+const narrowByCurrency = "To narrow a window to one denomination, pass the currency argument: it selects the " +
+	"accounts holding that currency code, so every amount then comes back with a single key."
 
 // Tool is one MCP tool: how it is described to a client, the API operation it
 // performs, and how it is installed on a server.

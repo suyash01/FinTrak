@@ -49,16 +49,16 @@ var sampleArgs = map[string]map[string]any{
 	"list_links":                  {"type": "transfer"},
 	"get_transfer_suggestions":    {"limit": 5},
 	"get_cashback_suggestions":    {},
-	"get_link_cycles":             {"accountId": testAccountID},
+	"get_link_cycles":             {"accountId": testAccountID, "currency": "INR"},
 	"list_recurring":              {},
 	"forecast_recurring":          {"id": testSeriesID, "count": 3},
 	"get_recurring_suggestions":   {"id": testSeriesID},
 	"list_recurring_transactions": {"id": testSeriesID},
 	"list_recurring_terms":        {"id": testSeriesID},
-	"get_dashboard_summary":       {"accountId": testAccountID, "groupBy": "billing_cycle", "cycles": 3},
-	"get_money_flow":              {"limit": 5},
-	"get_money_flow_timeline":     {},
-	"get_cash_flow_calendar":      {"dateFrom": "2026-01-01", "dateTo": "2026-01-31"},
+	"get_dashboard_summary":       {"accountId": testAccountID, "groupBy": "billing_cycle", "cycles": 3, "currency": "INR"},
+	"get_money_flow":              {"limit": 5, "currency": "INR"},
+	"get_money_flow_timeline":     {"currency": "INR"},
+	"get_cash_flow_calendar":      {"dateFrom": "2026-01-01", "dateTo": "2026-01-31", "currency": "INR"},
 	"list_paperless_documents":    {"search": "receipt", "pageSize": 5},
 }
 
@@ -89,16 +89,16 @@ var expectedQuery = map[string]url.Values{
 	"list_links":                  {"type": {"transfer"}},
 	"get_transfer_suggestions":    {"limit": {"5"}},
 	"get_cashback_suggestions":    {},
-	"get_link_cycles":             {"accountId": {testAccountID}},
+	"get_link_cycles":             {"accountId": {testAccountID}, "currency": {"INR"}},
 	"list_recurring":              {},
 	"forecast_recurring":          {"count": {"3"}},
 	"get_recurring_suggestions":   {},
 	"list_recurring_transactions": {},
 	"list_recurring_terms":        {},
-	"get_dashboard_summary":       {"accountId": {testAccountID}, "groupBy": {"billing_cycle"}, "cycles": {"3"}},
-	"get_money_flow":              {"limit": {"5"}},
-	"get_money_flow_timeline":     {},
-	"get_cash_flow_calendar":      {"dateFrom": {"2026-01-01"}, "dateTo": {"2026-01-31"}},
+	"get_dashboard_summary":       {"accountId": {testAccountID}, "groupBy": {"billing_cycle"}, "cycles": {"3"}, "currency": {"INR"}},
+	"get_money_flow":              {"limit": {"5"}, "currency": {"INR"}},
+	"get_money_flow_timeline":     {"currency": {"INR"}},
+	"get_cash_flow_calendar":      {"dateFrom": {"2026-01-01"}, "dateTo": {"2026-01-31"}, "currency": {"INR"}},
 	"list_paperless_documents":    {"pageSize": {"5"}, "search": {"receipt"}},
 }
 
@@ -502,6 +502,61 @@ func TestUnpagedToolsCapTheirResponse(t *testing.T) {
 				t.Errorf("%s reported truncated=%v, want %v", tc.tool, page.Truncated, tc.truncated)
 			}
 		})
+	}
+}
+
+// TestReportingToolsStateThePerCurrencyRule keeps the one promise this package
+// makes in prose checkable. The reporting tools' amounts are keyed by currency
+// because the API will not add across them, and nothing in the Go types or the
+// wire can make a model honour that: a description saying "the total" is
+// actionable and wrong, and a model reads the description, not the type. So
+// each of them must carry the rule, in the text the client serves, and the
+// server instructions must state it too — a tool description is read on its own,
+// and the instructions are not guaranteed to be in context for every client.
+func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
+	reporting := []string{
+		"get_dashboard_summary",
+		"get_money_flow",
+		"get_money_flow_timeline",
+		"get_cash_flow_calendar",
+		"get_link_cycles",
+	}
+
+	stub := newStubAPI(t)
+	session := connect(t, stub.client(t))
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	served := make(map[string]string, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		served[tool.Name] = tool.Description
+	}
+
+	for _, name := range reporting {
+		if !strings.Contains(served[name], perCurrencyAmounts) {
+			t.Errorf("%s does not tell the model that its amounts are keyed by currency", name)
+		}
+	}
+	// The instructions carry the same rule in their own words rather than
+	// quoting the constant, so these ask for the substance: the shape, the
+	// absence of a total, and the argument that narrows a window to one.
+	for _, want := range []string{"keyed by currency code", "no total", `"currency" argument`} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("the server instructions do not say %q", want)
+		}
+	}
+	// narrowByCurrency is only true of the four dashboard tools, so it is
+	// asserted where it holds and, just as importantly, withheld where it does
+	// not: get_link_cycles' currency selects the amount, not the accounts, and a
+	// model told to narrow accounts there would be filtering the wrong thing.
+	for _, name := range []string{"get_dashboard_summary", "get_money_flow", "get_money_flow_timeline", "get_cash_flow_calendar"} {
+		if !strings.Contains(served[name], narrowByCurrency) {
+			t.Errorf("%s does not say that its currency argument narrows to one denomination", name)
+		}
+	}
+	if strings.Contains(served["get_link_cycles"], narrowByCurrency) {
+		t.Errorf("get_link_cycles offers the account-narrowing reading of its currency argument, which is the wrong one for it")
 	}
 }
 

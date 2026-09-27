@@ -72,8 +72,10 @@ func transactionTools() []Tool {
 			Title: "List transactions",
 			Description: "One page of transactions, newest first by default, with the same filters the app's transaction list offers " +
 				"(account, category or group, payee, tags, amount, date range, type, linked, recurring, attachment state, " +
-				"uncategorized). Amounts are the ledger's own decimal values; totals are not computed here — use " +
-				"get_dashboard_summary or list_billing_cycles for aggregates. It also accepts a typed query expression (q) " +
+				"uncategorized). Amounts are the ledger's own decimal values, one per transaction in its account's currency; nothing " +
+				"here is aggregated — use get_dashboard_summary for a window's totals or list_billing_cycles for one account's " +
+				"statement periods, and note that both return their amounts keyed by currency, never summed across keys. It also " +
+				"accepts a typed query expression (q) " +
 				"for filters the named arguments cannot express — amount ranges, several categories at once, or negated " +
 				"terms. That expression takes ids rather than names, and a term it cannot use is dropped rather than " +
 				"rejected, so prefer the named arguments whenever one of them fits.",
