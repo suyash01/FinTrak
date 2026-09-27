@@ -2242,10 +2242,12 @@ Then add the parameter to the five paths, after each `accountId` parameter:
           in: query
           required: false
           description: >-
-            Narrow the whole response to accounts holding one currency code
-            (three letters, case-insensitive). Without it a response can span
-            several currencies, in which case every amount is keyed by currency
-            and currencyScope names the accounts behind each.
+            Narrow the AMOUNTS in the response to the accounts holding this
+            currency code (three letters, case-insensitive). `totalAccounts` still
+            counts every account — it is a count of accounts, not a figure, and
+            `currencyScope` names the accounts actually in scope. Without it, a
+            response can span several currencies, in which case every amount is
+            keyed by currency and currencyScope names the accounts behind each.
           schema:
             type: string
             minLength: 3
@@ -2309,7 +2311,7 @@ Expected: FAIL — the tools do not send `currency`.
 In `tools_dashboard.go`, add `Currency` to `windowArgs`, `summaryArgs` and `moneyFlowArgs`:
 
 ```go
-	Currency string `json:"currency,omitempty" jsonschema:"narrow the whole response to accounts holding one currency code (three letters); without it every amount is returned keyed by currency"`
+	Currency string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters); totalAccounts still counts every account; without it every amount is returned keyed by currency"`
 ```
 
 and pass `Currency: in.Currency` into each `api.WindowFilter`. Do the same for the link-cycles tool in `tools_links.go`.
@@ -2333,7 +2335,7 @@ In `mcpserver.go`, the sentence that is now false:
 
 becomes:
 
-> Money is returned as decimal major units (for example "1250.50"), keyed by currency code, for example `{"INR": "1250.50"}`. A single-currency scope has exactly one key; a scope spanning several currencies has one key per currency and **no total**, because the API will not add across currencies — say which currency you mean, or pass the `currency` argument to narrow the response. Do not add amounts across keys yourself, and do not add them up at all: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) when a total is what the user wants, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
+> Money is returned as decimal major units (for example "1250.50"), keyed by currency code on the aggregate tools, for example `{"INR": "1250.50"}`; the ledger's own per-transaction amounts are plain decimals in their account's currency. A single-currency scope has exactly one key; a scope spanning several currencies has one key per currency and **no total**, because the API will not add across currencies — say which currency you mean, report the others separately, or pass the `currency` argument, where a tool takes one, to narrow the response. Do not add amounts across keys yourself, and do not add them up at all: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) for the server's own per-currency figure when the user wants a total, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
 - [ ] **Step 6: Fix the dangling issue references (part of #40)**
 
