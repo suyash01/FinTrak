@@ -22,8 +22,27 @@ import (
 
 // Add folds one contribution in and returns the map, so it works on a nil map
 // as well as one from the decoder: assigning into a nil map panics, and a
-// decoded-but-absent field arrives as one.
+// decoded-but-absent field arrives as one. That is also why the result has to be
+// taken back — `m.Add(...)` on a nil map compiles, allocates a map nobody holds,
+// and drops the contribution. On a map that already exists the write lands in
+// place and the returned map is the same one, so the result may be ignored there.
+// models.CurrencyAmounts.Add says the same about its own nil case.
+//
+// A zero contribution adds NO key, exactly as models.CurrencyAmounts.Add does,
+// and this is the client's copy of that rule rather than a variation on it. A
+// currency with no money in it is absent, not present-and-zero, so len() still
+// counts the currencies an aggregate actually touched. A client that invented a
+// key the server never reported would make Single() refuse a figure the server
+// called single, Display() refuse to render one it rendered happily, and
+// IsNegative() flip sign — a phantom currency is the same class of mistake as
+// adding two real ones. A key that is present and zero (contributions that
+// later cancelled) is left alone: a present zero and an absent key are the same
+// value to every reader, and removing keys mid-accumulation would be a
+// surprising thing for a method named Add to do.
 func (m CurrencyAmounts) Add(currency string, amount Amount) CurrencyAmounts {
+	if amount.IsZero() {
+		return m
+	}
 	if m == nil {
 		m = CurrencyAmounts{}
 	}
@@ -71,7 +90,12 @@ func (m CurrencyAmounts) Currencies() []string {
 func (m CurrencyAmounts) Sub(other CurrencyAmounts) CurrencyAmounts {
 	out := make(CurrencyAmounts, len(m)+len(other))
 	for code, amount := range m {
-		out[code] = amount
+		// Canonicalised like every computed key rather than passed through: the
+		// server's Sub sums two money.Amounts and the sum renders with two
+		// decimals whatever shape either operand carried, so returning the minuend
+		// verbatim would give one key a different rendering from the rest of a
+		// result this method is producing.
+		out[code] = normaliseDecimal(amount)
 	}
 	for code, amount := range other {
 		// Negating and adding keeps the sign arithmetic in one place, rather than
@@ -129,6 +153,14 @@ func (m CurrencyAmounts) IsNegative() bool {
 // 1.00 - (-4.00) as -3.00.
 func negate(a Amount) Amount {
 	s := strings.TrimSpace(a.String())
+	if s == "" {
+		// An absent amount is zero, and the negation of zero is zero. Returning
+		// "-" instead would build a non-amount on a display path: splitDecimal
+		// reads it as 0,00 so nothing numeric is wrong today, but Amount("-")
+		// fails MarshalJSON if it ever reached a request body, and a currency that
+		// decoded from {"USD":null} can reach here.
+		return "0.00"
+	}
 	switch {
 	case strings.HasPrefix(s, "-"):
 		return Amount(s[1:])

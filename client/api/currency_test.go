@@ -83,6 +83,48 @@ func TestCurrencyAmountsSubKeepsAKeyOnlyTheSubtrahendHolds(t *testing.T) {
 	}
 }
 
+// TestCurrencyAmountsSubCanonicalisesEveryKey pins that a difference renders one
+// shape throughout. The server sums two money.Amounts and the sum prints with two
+// decimals whatever either operand carried, so a key the client passed through
+// verbatim would be the odd one out in a result the client is producing.
+func TestCurrencyAmountsSubCanonicalisesEveryKey(t *testing.T) {
+	got := CurrencyAmounts{"INR": "1.5", "EUR": "2"}.Sub(CurrencyAmounts{"INR": "0.25"})
+
+	if got["INR"] != "1.25" {
+		t.Errorf("INR = %q, want 1.25", got["INR"])
+	}
+	if got["EUR"] != "2.00" {
+		t.Errorf("EUR = %q, want 2.00 - a minuend-only key is canonicalised too", got["EUR"])
+	}
+	// A key that is present and zero renders as such rather than as the empty
+	// string an absent amount decodes to.
+	zeroed := CurrencyAmounts{"INR": ""}
+	if got := zeroed.Sub(nil); got["INR"] != "0.00" {
+		t.Errorf("INR = %q, want 0.00", got["INR"])
+	}
+}
+
+// TestNegateAnAbsentAmountIsZero keeps negate off the non-amount it would
+// otherwise build. A currency that decodes from {"USD":null} arrives as "", and
+// "-" is not a value Amount can put back on the wire.
+func TestNegateAnAbsentAmountIsZero(t *testing.T) {
+	if got := negate(""); got != "0.00" {
+		t.Errorf("negate(%q) = %q, want 0.00", Amount(""), got)
+	}
+	// And the result is one that survives the JSON boundary, which "-" would not.
+	negated := negate("")
+	if _, err := negated.MarshalJSON(); err != nil {
+		t.Errorf("negate(%q) produced %q, which cannot be marshalled: %v", Amount(""), negated, err)
+	}
+	// Reached through Sub, the only caller, and from the value that produces it: a
+	// currency that decoded from {"USD":null} contributes nothing, so its
+	// difference is zero — spelled "0.00", not "" and not the non-amount "-".
+	m := CurrencyAmounts{"INR": "5.00"}
+	if got := m.Sub(CurrencyAmounts{"USD": ""}); got["USD"] != "0.00" {
+		t.Errorf("USD = %q, want 0.00", got["USD"])
+	}
+}
+
 func TestCurrencyAmountsCurrenciesIsSorted(t *testing.T) {
 	got := CurrencyAmounts{"USD": "1", "INR": "2", "EUR": "3"}.Currencies()
 	want := []string{"EUR", "INR", "USD"}
@@ -111,6 +153,79 @@ func TestCurrencyAmountsAddFoldsOneCurrencyAtATime(t *testing.T) {
 	if _, _, ok := m.Single(); ok {
 		t.Error("a two-currency fold reported a single amount")
 	}
+}
+
+// TestCurrencyAmountsAddSkipsAZeroContribution pins the client's copy of
+// models.CurrencyAmounts.Add's rule that a zero contribution adds no key. A
+// currency the server never reported is a currency this type then has to reason
+// about, and it changes every answer: len() counts a currency the aggregate never
+// touched, Single() refuses a figure the server called single, Display() refuses
+// to render one it rendered happily, and IsNegative() flips sign.
+func TestCurrencyAmountsAddSkipsAZeroContribution(t *testing.T) {
+	t.Run("an absent key stays absent", func(t *testing.T) {
+		m := CurrencyAmounts{"INR": "5000.00"}.Add("USD", "0.00")
+		if _, created := m["USD"]; created {
+			t.Errorf("a zero contribution created the key: %v", m)
+		}
+		if got := m.Currencies(); len(got) != 1 || got[0] != "INR" {
+			t.Errorf("Currencies() = %v, want [INR]", got)
+		}
+	})
+
+	// The subtle one, and the reason this is not just "don't write a key": a zero
+	// against a key that IS there must leave the whole map as it was. Reading the
+	// key back is not enough — what has to hold is every derived answer. This is
+	// the guard against the other plausible reading of "a zero adds no key",
+	// deleting it, which the server's twin pointedly does not do.
+	t.Run("an existing key is untouched", func(t *testing.T) {
+		before := CurrencyAmounts{"INR": "5000.00"}
+		after := before.Add("INR", "0.00")
+
+		if len(after) != len(before) {
+			t.Errorf("the map grew from %v to %v", before, after)
+		}
+		code, value, ok := after.Single()
+		if !ok || code != "INR" || value != "5000.00" {
+			t.Errorf("Single() = %q, %q, %t, want INR, 5000.00, true", code, value, ok)
+		}
+		if got, want := after.Display(), "INR 5,000.00"; got != want {
+			t.Errorf("Display() = %q, want %q", got, want)
+		}
+		if after.IsNegative() {
+			t.Error("IsNegative() was true")
+		}
+	})
+
+	// The sign case: a negative map stays negative, which a phantom positive key
+	// would otherwise hide.
+	t.Run("the sign survives a zero in another currency", func(t *testing.T) {
+		m := CurrencyAmounts{"INR": "-5.00"}.Add("USD", "0.00")
+		if !m.IsNegative() {
+			t.Errorf("IsNegative() = false on %v, want true", m)
+		}
+	})
+
+	// The spellings Amount.IsZero recognises are the ones that count as no
+	// contribution, so a caller folding rows reads the same either way. A
+	// whitespace-padded zero is deliberately not in the list: Amount.IsZero does
+	// not trim, and widening it here would be a change to Amount, not to Add.
+	t.Run("every spelling of zero", func(t *testing.T) {
+		for _, zero := range []Amount{"", "0", "0.00"} {
+			m := CurrencyAmounts{"INR": "5.00"}.Add("USD", zero)
+			if len(m) != 1 {
+				t.Errorf("Add(%q) created a key: %v", zero, m)
+			}
+		}
+	})
+
+	// A nil map plus a zero is still nil, because the server's is: the zero branch
+	// comes before the allocation, so the two cannot drift apart.
+	t.Run("a nil map is not allocated by a zero", func(t *testing.T) {
+		var m CurrencyAmounts
+		if got := m.Add("INR", "0.00"); got != nil {
+			t.Errorf("Add on a nil map = %v, want nil", got)
+		}
+	})
 }
 
 func TestCurrencyAmountsIsNegativeNeedsEveryCurrency(t *testing.T) {

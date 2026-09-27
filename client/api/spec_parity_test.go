@@ -22,6 +22,10 @@ import (
 // specPath is the backend's wire contract, relative to this package.
 const specPath = "../../backend/openapi.yaml"
 
+// modelsPath is the backend's type declarations, the other half of that
+// contract: the behaviour behind the names the spec publishes.
+const modelsPath = "../../backend/models/models.go"
+
 // The route table below is the TUI's declaration of API coverage: one entry per
 // operation registered in backend/main.go, each holding a real call to the
 // client method that performs it. Because the calls are compiled, a renamed or
@@ -401,7 +405,10 @@ func routeCases() []routeCase {
 			call:  func(ctx context.Context, c *Client) error { _, err := c.CashbackSuggestions(ctx, 1, 50); return err }},
 		{name: "link cycles", method: "GET", path: "/links/cycles", body: `{"cycles":[],"totalCircular":{},"oneSidedFlows":[],"currencyScope":{"currencies":[],"accounts":[]}}`,
 			query: map[string]string{"accountId": idAcct, "currency": "USD"},
-			call:  func(ctx context.Context, c *Client) error { _, err := c.LinkCycles(ctx, "", "", idAcct, "USD"); return err }},
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.LinkCycles(ctx, LinkCyclesFilter{AccountID: idAcct, Currency: "USD"})
+				return err
+			}},
 
 		// Recurring.
 		{name: "list recurring", method: "GET", path: "/recurring", body: dataList,
@@ -862,4 +869,124 @@ func clientJSONTags(t *testing.T) map[string][]string {
 		t.Fatal("types.go declares no structs")
 	}
 	return tags
+}
+
+// TestCurrencyAmountsAddAgreesWithTheServerTwin checks the one rule of a
+// reporting amount the spec cannot state, because it is behaviour rather than
+// shape: what CurrencyAmounts.Add does with a zero contribution. The client's
+// map and the server's are twins, and the client was once wrong here — it wrote
+// the key, so a currency the server never reported became one the client had to
+// reason about, and a figure the server called single stopped being single.
+//
+// The two cannot be run against each other: they are separate Go modules and no
+// module in the repository requires both, so importing the server's models from
+// here would put gin, pgx and the rest of it in the client module's graph and
+// invert the boundary this module exists to hold (see AGENTS.md — the client is a
+// pure client, and tui/ and mcp/ share it precisely so neither depends on the
+// server). So the rule is read out of both sources instead, the way
+// clientJSONTags reads types.go: a guard clause that returns on a zero amount, in
+// the client and in the server. That is not as strong as folding one sequence of
+// operations through both and comparing the maps, and it is deliberately not
+// pretending to be — it asks a human to confirm the rule still lives on both
+// sides, so neither can drop it unnoticed. A refactor that moves the guard fails
+// here on purpose.
+func TestCurrencyAmountsAddAgreesWithTheServerTwin(t *testing.T) {
+	for _, side := range []struct{ name, path string }{
+		{"the client's CurrencyAmounts.Add", "currency.go"},
+		{"the server's models.CurrencyAmounts.Add", modelsPath},
+	} {
+		t.Run(side.name, func(t *testing.T) {
+			decl := methodOnCurrencyAmounts(t, side.path, "Add")
+			amount := lastParamName(decl)
+			if amount == "" {
+				t.Fatalf("%s: Add has no amount parameter to test for zero", side.path)
+			}
+			if !skipsAZeroContribution(decl, amount) {
+				t.Errorf("%s: Add does not return early on a zero contribution, so a currency "+
+					"with no money in it becomes a key the aggregate never touched — and the "+
+					"client and the server would then disagree on len, Single and the sign", side.path)
+			}
+		})
+	}
+}
+
+// methodOnCurrencyAmounts parses path and returns the declaration of the method
+// named name declared on a CurrencyAmounts receiver, failing the test if there is
+// no such method: a rename has to fail here rather than pass by not finding it.
+func methodOnCurrencyAmounts(t *testing.T, path, name string) *ast.FuncDecl {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != name || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		if receiverTypeName(fn.Recv.List[0].Type) == "CurrencyAmounts" {
+			return fn
+		}
+	}
+	t.Fatalf("%s declares no method %s on CurrencyAmounts", path, name)
+	return nil
+}
+
+// receiverTypeName reads a receiver's type name, with or without a pointer.
+func receiverTypeName(expr ast.Expr) string {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	if id, ok := expr.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+// lastParamName is the name of a method's final parameter — the amount, for both
+// this package's Add and the server's.
+func lastParamName(decl *ast.FuncDecl) string {
+	if decl.Type.Params == nil || len(decl.Type.Params.List) == 0 {
+		return ""
+	}
+	field := decl.Type.Params.List[len(decl.Type.Params.List)-1]
+	if len(field.Names) == 0 {
+		return ""
+	}
+	return field.Names[len(field.Names)-1].Name
+}
+
+// skipsAZeroContribution reports whether a method opens with a guard clause that
+// returns when its amount is zero. It reads the shape and the operands rather
+// than the text, so how the zero is spelled does not matter: the server writes
+// `amount == 0` and the client `amount.IsZero()`, and both must be recognised,
+// while a guard that returns on anything else is not a zero guard at all.
+func skipsAZeroContribution(decl *ast.FuncDecl, amount string) bool {
+	if decl.Body == nil || len(decl.Body.List) == 0 {
+		return false
+	}
+	guard, ok := decl.Body.List[0].(*ast.IfStmt)
+	if !ok || len(guard.Body.List) != 1 {
+		return false
+	}
+	if _, ok := guard.Body.List[0].(*ast.ReturnStmt); !ok {
+		return false
+	}
+	var mentionsAmount, testsZero bool
+	ast.Inspect(guard.Cond, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.Ident:
+			mentionsAmount = mentionsAmount || v.Name == amount
+			testsZero = testsZero || v.Name == "IsZero"
+		case *ast.BasicLit:
+			testsZero = testsZero || v.Value == "0"
+		case *ast.CallExpr:
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok {
+				testsZero = testsZero || sel.Sel.Name == "IsZero"
+			}
+		}
+		return true
+	})
+	return mentionsAmount && testsZero
 }

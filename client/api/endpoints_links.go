@@ -89,6 +89,31 @@ func (c *Client) CashbackSuggestions(ctx context.Context, page, limit int) (Sugg
 	return do[SuggestionPage](ctx, c, r)
 }
 
+// LinkCyclesFilter is the window for LinkCycles. It is deliberately its own
+// type and not a WindowFilter, because the two currencies select on different
+// things and a shared struct would hide the one difference that matters. See
+// Currency below.
+type LinkCyclesFilter struct {
+	// DateFrom and DateTo bound the window inclusively, as YYYY-MM-DD. Either
+	// bound may be left empty.
+	DateFrom string
+	DateTo   string
+	// AccountID keeps only links with either endpoint on this account; a
+	// non-uuid value is rejected with 400.
+	AccountID string
+	// Currency keeps only the links whose *amount* is denominated in that code,
+	// which is the currency of the account a leg's amount came from — not
+	// necessarily the currency of the account the money flows out of, and not a
+	// filter that admits a link because one endpoint holds the currency and then
+	// reports the amount in the other's. This is the opposite of
+	// WindowFilter.Currency, which selects on the account's own currency, and
+	// swapping one for the other is a silent wrong answer rather than an error.
+	// A code that is not three letters is rejected with 400. Amounts are
+	// per-currency regardless; this chooses which links and which accounts are
+	// in scope, and the response's CurrencyScope names the accounts holding it.
+	Currency string
+}
+
 // LinkCycles reports the account-to-account link flows the Money Flow Sankey
 // cannot draw, because the graph has to stay acyclic. Reciprocal pairs (kind
 // "reciprocal") are netted into one edge and the back edges that close a longer
@@ -97,28 +122,18 @@ func (c *Client) CashbackSuggestions(ctx context.Context, page, limit int) (Sugg
 // OneSidedFlows lists directed account flows with no flow in the opposite
 // direction: a genuinely one-way bill payment or refund looks exactly like a
 // half-entered transfer, which is why they are surfaced for review rather than
-// corrected. An empty dateFrom/dateTo leaves the window unbounded and an empty
-// accountID does not filter; a non-uuid accountID is rejected with 400, as is a
-// currency that is not three letters.
+// corrected. The zero LinkCyclesFilter means "the server's default window":
+// unbounded dates and no narrowing.
 //
 // Every amount is a CurrencyAmounts, and a cycle's net is the smallest leg per
 // currency: it is the amount that circulates the whole loop only while the
 // cycle holds a single currency, which a link spanning two differently
 // denominated accounts does not. See LinkCycle.
-//
-// Currency narrows the report to the links whose *amount* is denominated in
-// that code, which is the currency of the account a leg's amount came from —
-// not necessarily the currency of the account the money flows out of, and not a
-// filter that admits a link because one endpoint holds the currency and then
-// reports the amount in the other's. That is the opposite of
-// WindowFilter.Currency, which selects on the account's own currency. Amounts
-// are per-currency regardless; this chooses which links and which accounts are
-// in scope, and the response's CurrencyScope names the accounts holding the code.
-func (c *Client) LinkCycles(ctx context.Context, dateFrom, dateTo, accountID, currency string) (LinkCycleReport, error) {
+func (c *Client) LinkCycles(ctx context.Context, f LinkCyclesFilter) (LinkCycleReport, error) {
 	r := get("/links/cycles").
-		setQuery("dateFrom", dateFrom).
-		setQuery("dateTo", dateTo).
-		setQuery("accountId", accountID).
-		setQuery("currency", currency)
+		setQuery("dateFrom", f.DateFrom).
+		setQuery("dateTo", f.DateTo).
+		setQuery("accountId", f.AccountID).
+		setQuery("currency", f.Currency)
 	return do[LinkCycleReport](ctx, c, r)
 }
