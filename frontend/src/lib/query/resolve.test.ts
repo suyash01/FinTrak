@@ -129,6 +129,37 @@ describe("resolveQuery", () => {
     expect(diagnostics).toEqual([]);
     expect(terms.map((t) => t.values[0])).toEqual(["none", "none"]);
   });
+
+  // A ccy term is dropped by resolveQuery unless this switch has a case for the
+  // currency kind, and the drop is SILENT: no diagnostic, an empty term list,
+  // and therefore q="" on the wire. The user asked for one currency, got the
+  // whole unfiltered ledger, and was told nothing. So this asserts all three of
+  // what "handled" means - the term survives, its values are untouched, and
+  // nothing was reported against it.
+  it("passes a currency through untouched, with no diagnostic", () => {
+    const { terms, diagnostics } = run("ccy:usd");
+    expect(diagnostics).toEqual([]);
+    expect(terms).toHaveLength(1);
+    expect(terms[0].field).toBe("ccy");
+    expect(terms[0].values).toEqual(["usd"]);
+    // The case is not folded here: the server folds it when it binds, so the
+    // wire carries what the user typed.
+    expect(serializeQuery(terms)).toBe("ccy:usd");
+  });
+
+  it("keeps a currency CSV and a negated currency as resolvable terms", () => {
+    const csv = run("ccy:usd,eur");
+    expect(csv.diagnostics).toEqual([]);
+    expect(csv.terms).toHaveLength(1);
+    expect(csv.terms[0].values).toEqual(["usd", "eur"]);
+    expect(serializeQuery(csv.terms)).toBe("ccy:usd,eur");
+
+    const negated = run("not ccy:usd");
+    expect(negated.diagnostics).toEqual([]);
+    expect(negated.terms).toHaveLength(1);
+    expect(negated.terms[0].negated).toBe(true);
+    expect(serializeQuery(negated.terms)).toBe("not ccy:usd");
+  });
 });
 
 describe("serializeQuery", () => {
@@ -163,7 +194,7 @@ describe("serializeQuery", () => {
   });
 
   it("round-trips: serialize then parse gives the same terms back", () => {
-    for (const q of ["coffee", "cat:none", "amt>50", "tag:vacation", 'tag:"Whole Foods"']) {
+    for (const q of ["coffee", "cat:none", "amt>50", "tag:vacation", 'tag:"Whole Foods"', "ccy:usd"]) {
       const { terms, diagnostics } = resolveQuery(parseQuery(q), src);
       expect(diagnostics, q).toEqual([]);
       const again = parseQuery(serializeQuery(terms));

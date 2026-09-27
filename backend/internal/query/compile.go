@@ -165,7 +165,7 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 // t`. A join is not an option and the reason is at the top of this file: the
 // list query and its COUNT(*) share this predicate, so a fragment naming a
 // joined table would make the count fail while the page rendered fine.
-// compile_safety_test.go enforces that.
+// TestCompileOnlyReferencesTheTransactionsTable in compile_test.go enforces that.
 //
 // It is emitGroup's shape deliberately — one clause per value, OR-ed by
 // wrapGroup — because that is what keeps the placeholder numbering in one

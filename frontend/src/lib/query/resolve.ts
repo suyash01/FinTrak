@@ -72,6 +72,13 @@ export function resolveQuery(
       case "uuid":
         terms.push(...resolveIds(term, def, src, diagnostics));
         continue;
+      case "currency":
+        // Nothing to resolve: a currency code IS the code, not a name, so there
+        // is no lookup to do against the user's data. Nothing to normalise
+        // either - the case stays as it was typed, because the server folds it
+        // when it binds (backend/internal/query/compile.go, emitCurrency).
+        terms.push(term);
+        continue;
     }
   }
 
