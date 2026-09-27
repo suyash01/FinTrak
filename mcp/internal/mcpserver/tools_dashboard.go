@@ -19,11 +19,17 @@ import (
 
 // windowArgs is the window shared by the dashboard tools: an inclusive date
 // range, a single account, and/or a single currency.
+//
+// The currency argument narrows the AMOUNTS rather than the whole response, and
+// the difference is stated rather than left to be discovered: the account count
+// is a plain COUNT(*) over the user's accounts and is not narrowed, so a model
+// told "the whole response" would report a narrowed figure beside an unnarrowed
+// one. Only summaryArgs names the field, because it is the one tool that has it.
 type windowArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD; omit for the server's default window"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"narrow the whole response to one account id"`
-	Currency  string `json:"currency,omitempty" jsonschema:"narrow the whole response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
+	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
 }
 
 // summaryArgs adds the statement-period framing to the window.
@@ -31,7 +37,7 @@ type summaryArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"narrow to one account id, from list_accounts"`
-	Currency  string `json:"currency,omitempty" jsonschema:"narrow the whole response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
+	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); totalAccounts still counts every account; without it every amount comes back keyed by currency"`
 
 	GroupBy string `json:"groupBy,omitempty" jsonschema:"\"billing_cycle\" to frame the response around one account's statement periods; omit for calendar months"`
 	Cycles  int    `json:"cycles,omitempty" jsonschema:"how many billing cycles to span when groupBy is billing_cycle, default 12, max 60"`
@@ -42,7 +48,7 @@ type moneyFlowArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"narrow the graph to one account id"`
-	Currency  string `json:"currency,omitempty" jsonschema:"narrow the whole response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
+	Currency  string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters, case-insensitive); without it every amount comes back keyed by currency"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"cap on the income, category and payee stages, default 12, max 30; the remainder of each stage collapses into one Other node"`
 }
 
@@ -105,8 +111,8 @@ func dashboardTools() []Tool {
 				"per currency. maxAbsNet is the largest absolute daily net per currency, and it is the scale the heatmap is drawn " +
 				"against, so one day's size is comparable to another's only within a single currency. Selecting a single account also " +
 				"returns that account's billing-cycle boundaries and its synthetic summary markers " +
-				"(month-end running balances, or per-cycle total outstanding), which are overlay data and excluded from the day totals. " +
-				perCurrencyAmounts + narrowByCurrency,
+				"(month-end running balances, or per-cycle outstanding), each keyed by currency like the day totals, and all of " +
+				"them overlay data excluded from those totals. " + perCurrencyAmounts + narrowByCurrency,
 			SideEffect: sideEffectBillingCycleForAccount,
 			Route:      readonly.Route{Method: http.MethodGet, Path: "/dashboard/cash-flow-calendar"},
 			install:    installCashFlowCalendar,

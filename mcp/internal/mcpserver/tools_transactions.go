@@ -74,8 +74,9 @@ func transactionTools() []Tool {
 				"(account, category or group, payee, tags, amount, date range, type, linked, recurring, attachment state, " +
 				"uncategorized). Amounts are the ledger's own decimal values, one per transaction in its account's currency; nothing " +
 				"here is aggregated — use get_dashboard_summary for a window's totals or list_billing_cycles for one account's " +
-				"statement periods, and note that both return their amounts keyed by currency, never summed across keys. It also " +
-				"accepts a typed query expression (q) " +
+				"statement periods. The summary returns its amounts keyed by currency, never summed across keys; a billing cycle " +
+				"belongs to one account, so its own figures are plain decimals in that account's one currency and need no key. " +
+				"It also accepts a typed query expression (q) " +
 				"for filters the named arguments cannot express — amount ranges, several categories at once, or negated " +
 				"terms. That expression takes ids rather than names, and a term it cannot use is dropped rather than " +
 				"rejected, so prefer the named arguments whenever one of them fits.",

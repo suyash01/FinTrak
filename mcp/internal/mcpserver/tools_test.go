@@ -513,6 +513,13 @@ func TestUnpagedToolsCapTheirResponse(t *testing.T) {
 // each of them must carry the rule, in the text the client serves, and the
 // server instructions must state it too — a tool description is read on its own,
 // and the instructions are not guaranteed to be in context for every client.
+//
+// The expectations below are the rule's WORDS, not the constants that hold them,
+// on purpose. Asserting strings.Contains(description, perCurrencyAmounts) checks
+// that a concatenation happened: reword the constant back to promising a total
+// and that check still passes, five times over, on the exact tools this rule
+// exists for. So each fragment is written out here, and a reworded constant that
+// re-promises a total, or drops the instruction not to sum, fails here.
 func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 	reporting := []string{
 		"get_dashboard_summary",
@@ -521,6 +528,18 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 		"get_cash_flow_calendar",
 		"get_link_cycles",
 	}
+	// The shape rule, in the fragments a model needs: what an amount is, what a
+	// key count decides, that no total exists, and the two things never to do.
+	rule := []string{
+		"keyed by currency code",
+		"no total is returned",
+		"Never sum the keys",
+		"never pick one silently",
+		"currencyScope",
+	}
+	// The narrowing half, held to the four tools whose currency argument really
+	// does select accounts.
+	narrowing := []string{"selects the accounts holding that currency code", "single key"}
 
 	stub := newStubAPI(t)
 	session := connect(t, stub.client(t))
@@ -529,34 +548,73 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 		t.Fatalf("tools/list: %v", err)
 	}
 	served := make(map[string]string, len(listed.Tools))
+	schemas := make(map[string]string, len(listed.Tools))
 	for _, tool := range listed.Tools {
 		served[tool.Name] = tool.Description
+		if tool.InputSchema != nil {
+			raw, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatalf("marshalling the %s input schema: %v", tool.Name, err)
+			}
+			schemas[tool.Name] = string(raw)
+		}
 	}
 
 	for _, name := range reporting {
-		if !strings.Contains(served[name], perCurrencyAmounts) {
-			t.Errorf("%s does not tell the model that its amounts are keyed by currency", name)
+		for _, want := range rule {
+			if !strings.Contains(served[name], want) {
+				t.Errorf("%s does not tell the model %q", name, want)
+			}
 		}
 	}
-	// The instructions carry the same rule in their own words rather than
-	// quoting the constant, so these ask for the substance: the shape, the
-	// absence of a total, and the argument that narrows a window to one.
+	// The instructions carry the rule in their own words rather than quoting a
+	// constant, and are the only place a client hears it without having chosen a
+	// tool, so the same fragments are asked of them.
 	for _, want := range []string{"keyed by currency code", "no total", `"currency" argument`} {
 		if !strings.Contains(instructions, want) {
 			t.Errorf("the server instructions do not say %q", want)
 		}
 	}
-	// narrowByCurrency is only true of the four dashboard tools, so it is
-	// asserted where it holds and, just as importantly, withheld where it does
-	// not: get_link_cycles' currency selects the amount, not the accounts, and a
-	// model told to narrow accounts there would be filtering the wrong thing.
-	for _, name := range []string{"get_dashboard_summary", "get_money_flow", "get_money_flow_timeline", "get_cash_flow_calendar"} {
-		if !strings.Contains(served[name], narrowByCurrency) {
-			t.Errorf("%s does not say that its currency argument narrows to one denomination", name)
+	// The instructions must not point at a total the API refuses to produce: a
+	// model that reads "no total" and is then told where to ask for one is sent
+	// to a tool that will hand it back the two keys it was just told not to add.
+	for _, banned := range []string{"when a total is what the user wants"} {
+		if strings.Contains(instructions, banned) {
+			t.Errorf("the server instructions still promise a total: %q", banned)
 		}
 	}
-	if strings.Contains(served["get_link_cycles"], narrowByCurrency) {
-		t.Errorf("get_link_cycles offers the account-narrowing reading of its currency argument, which is the wrong one for it")
+	for _, name := range []string{"get_dashboard_summary", "get_money_flow", "get_money_flow_timeline", "get_cash_flow_calendar"} {
+		for _, want := range narrowing {
+			if !strings.Contains(served[name], want) {
+				t.Errorf("%s does not say %q about its currency argument", name, want)
+			}
+		}
+	}
+	// The withholding and its replacement are pinned together, because either
+	// half alone leaves get_link_cycles the one tool whose currency argument
+	// nothing explains: the account-narrowing reading must be absent (it is the
+	// wrong one for this endpoint), and the amount-narrowing reading must be
+	// present in both places a model reads it — the description, and the
+	// argument's own schema text.
+	for _, banned := range narrowing {
+		if strings.Contains(served["get_link_cycles"], banned) {
+			t.Errorf("get_link_cycles offers the account-narrowing reading %q, which is the wrong one for it", banned)
+		}
+	}
+	for _, want := range []string{"whose own amount is denominated in that code", "not the flows touching an account that holds it"} {
+		if !strings.Contains(served["get_link_cycles"], want) {
+			t.Errorf("get_link_cycles does not say %q about its currency argument", want)
+		}
+	}
+	if want := "this filters the AMOUNT, not the accounts"; !strings.Contains(schemas["get_link_cycles"], want) {
+		t.Errorf("get_link_cycles' currency argument schema does not say %q", want)
+	}
+	// The dashboard tools' currency argument narrows the amounts, not the whole
+	// response: totalAccounts is a plain COUNT(*) over the user's accounts, so a
+	// model told otherwise would report a narrowed figure beside an unnarrowed
+	// one.
+	if !strings.Contains(schemas["get_dashboard_summary"], "totalAccounts still counts every account") {
+		t.Errorf("get_dashboard_summary's currency argument does not say that totalAccounts is not narrowed")
 	}
 }
 
