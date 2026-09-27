@@ -454,6 +454,44 @@ func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
 	}
 }
 
+// TestCurrencyScopeReadsTheProjectedCurrencyEverywhere pins the invariant the
+// whole feature rests on: the SELECT projection, the GROUP BY and the
+// `currency` predicate must all read COALESCE(NULLIF(a.currency, ''), 'INR'.
+//
+// accounts.currency is nullable, and the "" that a restored backup bundle can
+// carry reaches the column verbatim. If the WHERE omitted the NULLIF that the
+// SELECT has, `?currency=INR` would exclude exactly the account the filter
+// exists to find while the rest of the same response projected it as INR — a
+// silent drop of one row, with no error, which is the class of defect this
+// entire change was written to eliminate.
+//
+// One assertion spanning the whole statement, because three narrow ones would
+// each pass while the other two sites drifted: a reader cannot tell from a
+// test named for this invariant that it only ever checked the WHERE.
+func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	projected := `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\)`
+	// The projection and the GROUP BY, with the WHERE's predicate between them.
+	statement := "SELECT a\\.id, a\\.name, " + projected +
+		" AS currency[\\s\\S]*?GROUP BY a\\.id, a\\.name, " + projected
+	mock.ExpectQuery(statement).
+		WithArgs(testUserID()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
+
+	if _, err := srv.currencyScope(context.Background(), mock, testUserID(), scopeOptions{}); err != nil {
+		t.Fatalf("currencyScope: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestCurrencyScopeAlwaysReturnsAnEmptyCurrenciesSlice(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -517,6 +555,19 @@ import (
 // window still appears in the scope — moving them to the WHERE would drop it,
 // and the caller would be told a currency is absent when the account holding it
 // is simply quiet this month.
+//
+// `COALESCE(NULLIF(a.currency, ''), 'INR')` appears THREE times and all three
+// must stay identical: the SELECT projection, the GROUP BY, and the `currency`
+// predicate appended in currencyScope. accounts.currency is
+// `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL, so NULL is representable, and
+// NULLIF additionally covers the `''` a restored backup bundle can carry
+// (backup.go scans COALESCE(currency, '') and re-inserts it verbatim). If the
+// WHERE omits the NULLIF that the SELECT has, `?currency=INR` would exclude
+// exactly the account the filter exists to find, while the rest of the same
+// response projects it as INR. The literal is repeated rather than interpolated
+// from a const so the SQL has exactly two %s, matching the two filter
+// fragments; a third %s for the default would make the count fragile against
+// any future edit to this statement.
 const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0) AS income,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0) AS expense
@@ -526,15 +577,11 @@ const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') A
 	GROUP BY a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR')
 	ORDER BY a.name, a.id`
 
-// defaultCurrency reads both NULL and the empty string out of
-// accounts.currency. The column is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL
-// (migration 000001), so a row can genuinely hold NULL, and NULLIF additionally
-// covers a restored bundle carrying "". The API cannot create either —
-// CreateAccount normalises "" to "INR" and UpdateAccount keeps the existing
-// value through COALESCE(NULLIF(...), currency) — so this is defence at the one
-// edge that bypasses both write paths. It is the same idiom account.go already
-// uses, and without it a blank code would become a "" map key that every
-// consumer would then have to defend against.
+// defaultCurrency is the code an account is read as when its own is unset, and
+// it must match the literal inside scopeSQL's three
+// COALESCE(NULLIF(a.currency, ''), ...) expressions. See that comment for why
+// all three have to agree, and for why the literal is repeated rather than
+// interpolated from here.
 const defaultCurrency = "INR"
 
 // scopeOptions is the window one aggregate covers. It is the reporting
