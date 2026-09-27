@@ -118,6 +118,27 @@ func TestCurrencyAmountsAddAllocatesFromNil(t *testing.T) {
 	}
 }
 
+func TestCurrencyAmountsAddSkipsAZeroContribution(t *testing.T) {
+	// A missing key must read as zero, so a currency with no money in it is
+	// absent rather than present-and-zero. That is what makes len() mean "how
+	// many currencies this aggregate touched" — every account's currency
+	// appearing in every total even with nothing in it would make it
+	// meaningless — and it is the asymmetry Sub relies on for an account that
+	// only ever spends: it contributes a key to the expense side and none to
+	// the income side, and Sub still produces its negative net.
+	m := NewCurrencyAmounts()
+	m = m.Add("INR", 0)
+	if len(m) != 0 {
+		t.Errorf("a zero contribution created the key %v", m)
+	}
+
+	m = m.Add("INR", money.FromFloat(80))
+	m = m.Add("USD", money.FromFloat(80))
+	if got := m.Currencies(); len(got) != 2 || got[0] != "INR" || got[1] != "USD" {
+		t.Errorf("Currencies() = %v, want [INR USD]", got)
+	}
+}
+
 func TestCurrencyAmountsCurrenciesIsSorted(t *testing.T) {
 	got := CurrencyAmounts{"USD": 1, "INR": 2, "EUR": 3}.Currencies()
 
@@ -190,7 +211,20 @@ func NewCurrencyAmounts() CurrencyAmounts { return CurrencyAmounts{} }
 // Add folds one account's contribution in and returns the map, so it works both
 // on a map from NewCurrencyAmounts (which it mutates in place) and on a nil one
 // (which it cannot mutate, so it allocates and hands the new map back).
+//
+// A zero contribution adds NO key. That is what makes "a missing key reads as
+// zero" true everywhere rather than only by convention: a currency with no money
+// in it is simply absent, so len() counts the currencies the aggregate actually
+// touched, and an account that only ever spends contributes a key to the expense
+// side and none to the income side — which is exactly the asymmetry Sub needs to
+// still produce its negative net. (Contributions that later cancel to zero leave
+// the key in place; a present zero and an absent key are the same value to every
+// reader, and removing keys mid-accumulation would be a surprising thing for a
+// method named Add to do.)
 func (m CurrencyAmounts) Add(currency string, amount money.Amount) CurrencyAmounts {
+	if amount == 0 {
+		return m
+	}
 	if m == nil {
 		m = CurrencyAmounts{}
 	}
@@ -278,7 +312,7 @@ only spends visible as a negative net."
   - `type scopeOptions struct { DateFrom, DateTo, AccountID, Currency string }`
   - `type scopeResult struct { Scope models.CurrencyScope; Income, Expense models.CurrencyAmounts }` with `func (r scopeResult) Net() models.CurrencyAmounts`.
   - `func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.UUID, opts scopeOptions) (scopeResult, error)`
-  - `type scopeQueryer interface { QueryRow(ctx context.Context, sql string, args ...any) pgx.Row }`
+  - `type scopeQueryer interface { Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) }`
   - `const scopeSQL` — the exact statement, so tests can pin it.
 - Tasks 4–8 call `parseCurrency` and `currencyScope`.
 
@@ -529,7 +563,7 @@ func (r scopeResult) Net() models.CurrencyAmounts { return r.Income.Sub(r.Expens
 // scopeQueryer is the pool surface currencyScope needs, so a test can hand it a
 // pgxmock pool directly.
 type scopeQueryer interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // parseCurrency reads the `currency` query parameter and normalises it to the
@@ -560,30 +594,31 @@ func parseCurrency(c *gin.Context) (string, bool) {
 // currencyScope runs scopeSQL once and returns the response's currency scope
 // alongside the per-currency income and expense it folds from the same rows.
 func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.UUID, opts scopeOptions) (scopeResult, error) {
-	var (
-		joinConds  []string
-		whereConds []string
-		args       []any
-	)
 	param := 2
+	// add appends one already-formatted condition and its bound value. The
+	// caller builds the $n placeholder from param rather than letting add do
+	// it, because the currency predicate has to splice the column default into
+	// the fragment as well and one fmt.Sprintf cannot fill both a %s and a %d
+	// from different sources.
 	add := func(conds *[]string, fragment string, value any) {
-		*conds = append(*conds, fmt.Sprintf(fragment, param))
+		*conds = append(*conds, fragment)
 		args = append(args, value)
 		param++
 	}
 	if opts.DateFrom != "" {
-		add(&joinConds, " AND t.date >= $%d", opts.DateFrom)
+		add(&joinConds, fmt.Sprintf(" AND t.date >= $%d", param), opts.DateFrom)
 	}
 	if opts.DateTo != "" {
-		add(&joinConds, " AND t.date <= $%d", opts.DateTo)
+		add(&joinConds, fmt.Sprintf(" AND t.date <= $%d", param), opts.DateTo)
 	}
 	if opts.AccountID != "" {
-		add(&whereConds, " AND a.id = $%d", opts.AccountID)
+		add(&whereConds, fmt.Sprintf(" AND a.id = $%d", param), opts.AccountID)
 	}
 	if opts.Currency != "" {
 		// Compared against the same COALESCE the SELECT projects, so filtering
-		// by INR finds the accounts whose currency is genuinely unset.
-		add(&whereConds, " AND COALESCE(a.currency, '%s') = $%%d", defaultCurrency)
+		// by INR finds the accounts whose currency is genuinely unset rather
+		// than silently excluding them.
+		add(&whereConds, fmt.Sprintf(" AND COALESCE(a.currency, '%s') = $%d", defaultCurrency, param), opts.Currency)
 	}
 
 	stmt := fmt.Sprintf(scopeSQL, strings.Join(joinConds, ""), strings.Join(whereConds, ""))
@@ -599,9 +634,9 @@ func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.
 
 	for rows.Next() {
 		var (
-			id                 uuid.UUID
-			name, code        string
-			income, expense   money.Amount
+			id               uuid.UUID
+			name, code       string
+			income, expense  money.Amount
 		)
 		if err := rows.Scan(&id, &name, &code, &income, &expense); err != nil {
 			return scopeResult{}, err
@@ -627,56 +662,6 @@ func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.
 	return res, nil
 }
 ```
-
-**Two corrections to the above, which the test in Step 1 requires and which the draft above gets wrong — apply them:**
-
-The query must be a **`Query`** returning multiple rows, not `QueryRow`, and `scopeQueryer` must declare `Query`:
-
-```go
-// scopeQueryer is the pool surface currencyScope needs, so a test can hand it a
-// pgxmock pool directly.
-type scopeQueryer interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-```
-
-And the currency predicate is a plain positional placeholder, not a nested `fmt` argument:
-
-```go
-	if opts.Currency != "" {
-		// Compared against the same COALESCE the SELECT projects, so filtering
-		// by INR finds the accounts whose currency is genuinely unset.
-		add(&whereConds, " AND COALESCE(a.currency, '%s') = $%%d", defaultCurrency, opts.Currency)
-	}
-```
-
-with `add` taking the fragment pre-formatted:
-
-```go
-	// add appends one already-formatted condition and its bound value. The
-	// caller supplies the $n placeholder, because the currency predicate needs
-	// the column default spliced into the fragment as well.
-	add := func(conds *[]string, fragment string, value any) {
-		*conds = append(*conds, fragment)
-		args = append(args, value)
-		param++
-	}
-```
-
-and the date/account conditions building their own placeholder first:
-
-```go
-	if opts.DateFrom != "" {
-		add(&joinConds, fmt.Sprintf(" AND t.date >= $%d", param), opts.DateFrom)
-	}
-	if opts.DateTo != "" {
-		add(&joinConds, fmt.Sprintf(" AND t.date <= $%d", param), opts.DateTo)
-	}
-	if opts.AccountID != "" {
-		add(&whereConds, fmt.Sprintf(" AND a.id = $%d", param), opts.AccountID)
-	}
-```
-
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd backend && go test ./handlers/ -run 'TestParseCurrency|TestCurrencyScope' -count=1`
@@ -1061,7 +1046,7 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &summary))
 
 	// Every amount is a map, keyed by the currency that produced it.
-	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000), "USD": 0}, summary.TotalIncome)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000)}, summary.TotalIncome)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(30000.50), "USD": money.FromFloat(80)}, summary.TotalExpense)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(19999.50), "USD": -money.FromFloat(80)}, summary.TotalNet)
 
@@ -1371,7 +1356,7 @@ func TestGetMoneyFlowKeepsCurrenciesApartInTheGraph(t *testing.T) {
 	var graph models.MoneyFlowGraph
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &graph))
 
-	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000), "USD": 0}, graph.TotalIncome)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000)}, graph.TotalIncome)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(12000), "USD": money.FromFloat(300)}, graph.TotalExpense)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(38000), "USD": -money.FromFloat(300)}, graph.TotalNet)
 	assert.Equal(t, []string{"INR", "USD"}, graph.CurrencyScope.Currencies)
