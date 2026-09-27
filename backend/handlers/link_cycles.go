@@ -83,8 +83,8 @@ func (srv *Server) GetLinkCycles(c *gin.Context) {
 // with the money-flow queries, so the report and the Sankey always see the same
 // links.
 func queryAccountLinkDetails(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowLinkDetailRow, error) {
-	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID)
-	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID)
+	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID, "")
+	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID, "")
 	either := combineFlowConds(fromCond, toCond)
 
 	args := append([]any{userID}, fromArgs...)

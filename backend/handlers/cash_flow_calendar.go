@@ -166,7 +166,7 @@ func cashFlowMarkers(rows []models.Transaction, kind string) []models.CashFlowCa
 // per-day aggregates plus the window totals and the largest absolute daily net
 // (for client-side heatmap scaling).
 func queryDailyCashFlow(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]models.CashFlowCalendarDay, money.Amount, money.Amount, money.Amount, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID)
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, "")
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond

@@ -28,12 +28,14 @@ const (
 )
 
 // flowIncomeRow is one grouped credit stream: a category of money entering an
-// account.
+// account. currency is the account's, because the money the row sums is money in
+// that account's own ledger.
 type flowIncomeRow struct {
 	catID, catName, catColor string
 	groupID, groupColor      string
 	acctID, acctName         string
 	acctColor                string
+	currency                 string
 	total                    money.Amount
 }
 
@@ -42,6 +44,7 @@ type flowAcctCatRow struct {
 	acctID, acctName, acctColor string
 	catID, catName, catColor    string
 	groupID, groupColor         string
+	currency                    string
 	total                       money.Amount
 }
 
@@ -50,24 +53,30 @@ type flowCatPayeeRow struct {
 	catID, catName, catColor string
 	groupID, groupColor      string
 	payeeID, payeeName       string
+	currency                 string
 	total                    money.Amount
 }
 
-// flowLinkRow is a per-type rollup of the user's transaction links.
+// flowLinkRow is a per-type rollup of the user's transaction links. One type can
+// yield a row per currency, because the endpoints of a link need not agree, so
+// the caller folds the rows of a type together.
 type flowLinkRow struct {
-	typ   string
-	count int
-	total money.Amount
+	typ      string
+	currency string
+	count    int
+	total    money.Amount
 }
 
 // flowAcctLinkRow is one raw link whose endpoints are in different accounts. It
 // captures both endpoints' transaction types so the money direction (debit
 // account -> credit account) can be derived regardless of how the link was
-// stored.
+// stored. currency is the currency of amount — the account the amount was taken
+// from — not necessarily the currency of the account the money flows out of.
 type flowAcctLinkRow struct {
 	fromType, toType                        string
 	fromAcctID, fromAcctName, fromAcctColor string
 	toAcctID, toAcctName, toAcctColor       string
+	currency                                string
 	amount                                  money.Amount
 }
 
@@ -76,7 +85,7 @@ type flowAcctLinkRow struct {
 type flowAccountEdge struct {
 	srcID, srcName, srcColor string
 	dstID, dstName, dstColor string
-	value                    money.Amount
+	value                    models.CurrencyAmounts
 }
 
 // flowQueryer is the transactional read surface the flow queries use. *pgx.Tx
@@ -87,10 +96,15 @@ type flowQueryer interface {
 
 // GetMoneyFlow aggregates the user's transactions into a left-to-right Sankey
 // graph (money sources → accounts → spending categories → payees) over an
-// optional date range and account filter. Cross-account links (transfers,
-// refunds, cashbacks, bill payments) are drawn as account-to-account edges
-// after netting reciprocal pairs and dropping DFS back edges, so the graph
+// optional date range, account and currency filter. Cross-account links
+// (transfers, refunds, cashbacks, bill payments) are drawn as account-to-account
+// edges after netting reciprocal pairs and dropping DFS back edges, so the graph
 // stays acyclic; the same links are still rolled up per type in LinkSummary.
+//
+// Every amount is per-currency. With no account filter the window can span an INR
+// account and a USD one, and neither a node total, an edge width nor the
+// headline figures can be a single number, so each carries one amount per
+// currency alongside the scope that produced it.
 //
 // All reads run in a single read-only, repeatable-read transaction so the
 // stages reflect one consistent snapshot.
@@ -118,6 +132,12 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 			return
 		}
 	}
+	// The currency is parsed once here and passed down, so the scope query, the
+	// stage queries and the link queries all narrow on the same normalised code.
+	currency, ok := parseCurrency(c)
+	if !ok {
+		return
+	}
 
 	limit := defaultFlowNodeLimit
 	if raw := c.Query("limit"); raw != "" {
@@ -137,35 +157,51 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 	}
 	defer tx.Rollback(ctx)
 
-	incomeRows, err := queryIncomeFlows(ctx, tx, userID, dateFrom, dateTo, accountID)
+	// The scope query carries the headline totals and the accounts behind them.
+	// It reads accounts rather than transactions, so an account quiet in the
+	// window still appears and explains the currency it holds; the stage queries
+	// below are transaction-driven and cannot.
+	scope, err := srv.currencyScope(ctx, tx, userID, scopeOptions{
+		DateFrom:  dateFrom,
+		DateTo:    dateTo,
+		AccountID: accountID,
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetMoneyFlow (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	incomeRows, err := queryIncomeFlows(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlow (income flows)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	acctCatRows, err := queryAccountCategoryFlows(ctx, tx, userID, dateFrom, dateTo, accountID)
+	acctCatRows, err := queryAccountCategoryFlows(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlow (account-category flows)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	catPayeeRows, err := queryCategoryPayeeFlows(ctx, tx, userID, dateFrom, dateTo, accountID)
+	catPayeeRows, err := queryCategoryPayeeFlows(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlow (category-payee flows)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	linkRows, err := queryMoneyFlowLinks(ctx, tx, userID, dateFrom, dateTo, accountID)
+	linkRows, err := queryMoneyFlowLinks(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlow (link summary)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	acctLinkRows, err := queryAccountLinkFlows(ctx, tx, userID, dateFrom, dateTo, accountID)
+	acctLinkRows, err := queryAccountLinkFlows(ctx, tx, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlow (account links)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -173,6 +209,15 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 	}
 
 	graph := buildMoneyFlowGraph(incomeRows, acctCatRows, catPayeeRows, linkRows, acctLinkRows, limit)
+	// The totals come from the scope rather than from summing the stage rows, so
+	// the three headline figures and the nodes beside them describe the same
+	// accounts. TotalNet is the server's per-currency difference: income minus
+	// expense is only defined inside one currency, and only the server knows
+	// which currencies are in scope.
+	graph.TotalIncome = scope.Income
+	graph.TotalExpense = scope.Expense
+	graph.TotalNet = scope.Net()
+	graph.CurrencyScope = scope.Scope
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("GetMoneyFlow (commit)", slog.String("error", err.Error()))
@@ -184,9 +229,11 @@ func (srv *Server) GetMoneyFlow(c *gin.Context) {
 }
 
 // queryIncomeFlows groups every credit in the window by (category, account):
-// the source categories flowing into each account.
-func queryIncomeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowIncomeRow, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID)
+// the source categories flowing into each account. The account's currency is
+// projected and grouped with them, so the same category earning into two
+// currencies arrives as two rows and never becomes one total.
+func queryIncomeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]flowIncomeRow, error) {
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, currency)
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
@@ -195,13 +242,14 @@ func queryIncomeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dat
 		SELECT COALESCE(c.id::text, ''), COALESCE(c.name, 'Uncategorized'), COALESCE(c.color, ''),
 			   COALESCE(cg.id, ''), COALESCE(cg.color, ''),
 			   a.id::text, a.name, a.color,
+			   `+flowCurrency("a.currency")+` AS currency,
 			   COALESCE(SUM(t.amount), 0)
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
 		LEFT JOIN category_groups cg ON c.group_id = cg.id
 		WHERE t.user_id = $1 AND t.type = 'credit'`+filter+`
-		GROUP BY c.id, c.name, c.color, cg.id, cg.color, a.id, a.name, a.color`,
+		GROUP BY c.id, c.name, c.color, cg.id, cg.color, a.id, a.name, a.color, `+flowCurrency("a.currency"),
 		append([]any{userID}, args...)...)
 	if err != nil {
 		return nil, err
@@ -212,7 +260,7 @@ func queryIncomeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dat
 	for rows.Next() {
 		var r flowIncomeRow
 		if err := rows.Scan(&r.catID, &r.catName, &r.catColor, &r.groupID, &r.groupColor,
-			&r.acctID, &r.acctName, &r.acctColor, &r.total); err != nil {
+			&r.acctID, &r.acctName, &r.acctColor, &r.currency, &r.total); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -221,9 +269,11 @@ func queryIncomeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dat
 }
 
 // queryAccountCategoryFlows groups every debit in the window by (account,
-// category): where each account's money goes.
-func queryAccountCategoryFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowAcctCatRow, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID)
+// category): where each account's money goes. The account's currency rides along
+// for the same reason as in queryIncomeFlows: one category spent from an INR
+// account and a USD one is two flows, not one.
+func queryAccountCategoryFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]flowAcctCatRow, error) {
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, currency)
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
@@ -232,13 +282,14 @@ func queryAccountCategoryFlows(ctx context.Context, db flowQueryer, userID uuid.
 		SELECT a.id::text, a.name, a.color,
 			   COALESCE(c.id::text, ''), COALESCE(c.name, 'Uncategorized'), COALESCE(c.color, ''),
 			   COALESCE(cg.id, ''), COALESCE(cg.color, ''),
+			   `+flowCurrency("a.currency")+` AS currency,
 			   COALESCE(SUM(t.amount), 0)
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		LEFT JOIN categories c ON t.category_id = c.id
 		LEFT JOIN category_groups cg ON c.group_id = cg.id
 		WHERE t.user_id = $1 AND t.type = 'debit'`+filter+`
-		GROUP BY a.id, a.name, a.color, c.id, c.name, c.color, cg.id, cg.color`,
+		GROUP BY a.id, a.name, a.color, c.id, c.name, c.color, cg.id, cg.color, `+flowCurrency("a.currency"),
 		append([]any{userID}, args...)...)
 	if err != nil {
 		return nil, err
@@ -249,7 +300,8 @@ func queryAccountCategoryFlows(ctx context.Context, db flowQueryer, userID uuid.
 	for rows.Next() {
 		var r flowAcctCatRow
 		if err := rows.Scan(&r.acctID, &r.acctName, &r.acctColor,
-			&r.catID, &r.catName, &r.catColor, &r.groupID, &r.groupColor, &r.total); err != nil {
+			&r.catID, &r.catName, &r.catColor, &r.groupID, &r.groupColor,
+			&r.currency, &r.total); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -260,8 +312,14 @@ func queryAccountCategoryFlows(ctx context.Context, db flowQueryer, userID uuid.
 // queryCategoryPayeeFlows groups every debit in the window by (category,
 // payee): where each category's money ends up. This is also the authoritative
 // source of category-stage totals (it covers every debit exactly once).
-func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowCatPayeeRow, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID)
+//
+// The account's currency is in the grouping, not merely in the select. Grouping by
+// category and payee alone is what let debits in two currencies be merged into a
+// single row by the database, before any map existed to keep them apart: one
+// category paying one payee from a rupee account and a dollar account came back
+// as one amount that already no longer meant anything.
+func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]flowCatPayeeRow, error) {
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, currency)
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
@@ -270,6 +328,7 @@ func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UU
 		SELECT COALESCE(c.id::text, ''), COALESCE(c.name, 'Uncategorized'), COALESCE(c.color, ''),
 			   COALESCE(cg.id, ''), COALESCE(cg.color, ''),
 			   COALESCE(p.id::text, ''), COALESCE(p.name, 'No payee'),
+			   `+flowCurrency("a.currency")+` AS currency,
 			   COALESCE(SUM(t.amount), 0)
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
@@ -277,7 +336,7 @@ func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UU
 		LEFT JOIN category_groups cg ON c.group_id = cg.id
 		LEFT JOIN payees p ON t.payee_id = p.id
 		WHERE t.user_id = $1 AND t.type = 'debit'`+filter+`
-		GROUP BY c.id, c.name, c.color, cg.id, cg.color, p.id, p.name`,
+		GROUP BY c.id, c.name, c.color, cg.id, cg.color, p.id, p.name, `+flowCurrency("a.currency"),
 		append([]any{userID}, args...)...)
 	if err != nil {
 		return nil, err
@@ -288,7 +347,7 @@ func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UU
 	for rows.Next() {
 		var r flowCatPayeeRow
 		if err := rows.Scan(&r.catID, &r.catName, &r.catColor, &r.groupID, &r.groupColor,
-			&r.payeeID, &r.payeeName, &r.total); err != nil {
+			&r.payeeID, &r.payeeName, &r.currency, &r.total); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -300,16 +359,31 @@ func queryCategoryPayeeFlows(ctx context.Context, db flowQueryer, userID uuid.UU
 // side of each pair (or the credit when neither side is a debit). A link is
 // included when either endpoint falls inside the window/account filter, so an
 // account filter still surfaces that account's transfers to other accounts.
-func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowLinkRow, error) {
-	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID)
-	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID)
+//
+// The rollup is grouped by the currency of the value as well as by type, because
+// a link has two accounts: summing a type's amounts across them is exactly the
+// cross-currency total this endpoint is changing to refuse.
+func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]flowLinkRow, error) {
+	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID, "")
+	toCond, toArgs, next := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID, "")
 	either := combineFlowConds(fromCond, toCond)
 
 	args := append([]any{userID}, fromArgs...)
 	args = append(args, toArgs...)
 
+	// The currency predicate joins the endpoint predicates rather than going
+	// inside either of them, and it filters on the value's currency: admitting a
+	// link because *one* endpoint is in the requested currency would report its
+	// amount in whichever currency the amount happens to be denominated in, which
+	// may be the one the caller filtered out.
+	if currency != "" {
+		either += " AND " + flowCurrencyPredicate(linkCurrencyColumn, next)
+		args = append(args, currency)
+	}
+
 	rows, err := db.Query(ctx, `
 		SELECT l.type, COUNT(*),
+			   `+flowCurrency(linkCurrencyColumn)+` AS currency,
 			   COALESCE(SUM(CASE WHEN ft.type = 'debit' THEN ft.amount
 			                     WHEN tt.type = 'debit' THEN tt.amount
 			                     ELSE tt.amount END), 0)
@@ -319,7 +393,7 @@ func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, 
 		JOIN transactions tt ON l.to_txn_id = tt.id AND tt.user_id = l.user_id
 		JOIN accounts ta ON tt.account_id = ta.id
 		WHERE l.user_id = $1`+either+`
-		GROUP BY l.type
+		GROUP BY l.type, `+flowCurrency(linkCurrencyColumn)+`
 		ORDER BY l.type`, args...)
 	if err != nil {
 		return nil, err
@@ -329,7 +403,7 @@ func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, 
 	var out []flowLinkRow
 	for rows.Next() {
 		var r flowLinkRow
-		if err := rows.Scan(&r.typ, &r.count, &r.total); err != nil {
+		if err := rows.Scan(&r.typ, &r.count, &r.currency, &r.total); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -341,18 +415,24 @@ func queryMoneyFlowLinks(ctx context.Context, db flowQueryer, userID uuid.UUID, 
 // accounts, carrying both endpoints' transaction types so the money direction
 // can be derived. The same either-endpoint window predicate as the link summary
 // applies: a transfer is in scope when either side falls inside the window.
-func queryAccountLinkFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]flowAcctLinkRow, error) {
-	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID)
-	toCond, toArgs, _ := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID)
+func queryAccountLinkFlows(ctx context.Context, db flowQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]flowAcctLinkRow, error) {
+	fromCond, fromArgs, next := flowFilter("ft", "fa", 2, dateFrom, dateTo, accountID, "")
+	toCond, toArgs, next := flowFilter("tt", "ta", next, dateFrom, dateTo, accountID, "")
 	either := combineFlowConds(fromCond, toCond)
 
 	args := append([]any{userID}, fromArgs...)
 	args = append(args, toArgs...)
 
+	if currency != "" {
+		either += " AND " + flowCurrencyPredicate(linkCurrencyColumn, next)
+		args = append(args, currency)
+	}
+
 	rows, err := db.Query(ctx, `
 		SELECT ft.type, tt.type,
 			   fa.id::text, fa.name, fa.color,
 			   ta.id::text, ta.name, ta.color,
+			   `+flowCurrency(linkCurrencyColumn)+` AS currency,
 			   CASE WHEN ft.type = 'debit' THEN ft.amount ELSE tt.amount END
 		FROM links l
 		JOIN transactions ft ON l.from_txn_id = ft.id AND ft.user_id = l.user_id
@@ -372,7 +452,7 @@ func queryAccountLinkFlows(ctx context.Context, db flowQueryer, userID uuid.UUID
 		if err := rows.Scan(&r.fromType, &r.toType,
 			&r.fromAcctID, &r.fromAcctName, &r.fromAcctColor,
 			&r.toAcctID, &r.toAcctName, &r.toAcctColor,
-			&r.amount); err != nil {
+			&r.currency, &r.amount); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -410,7 +490,7 @@ func accountFlowEdges(rows []flowAcctLinkRow) []flowAccountEdge {
 // flowCycleEdge is one directed account leg of a circular flow.
 type flowCycleEdge struct {
 	srcID, dstID string
-	value        money.Amount
+	value        models.CurrencyAmounts
 }
 
 // flowCycle is one circular money flow between accounts. kind is "reciprocal"
@@ -451,6 +531,14 @@ func flowLinkEnds(r flowAcctLinkRow) (key [2]string, src, dst flowAccountEnd, ok
 // report (GetLinkCycles) can surface exactly what the graph had to hide. The
 // processing order is deterministic (sorted ids), so the same input always
 // yields the same edges and the same cycles.
+//
+// Which edges are drawn is decided by identity - the node pair, then the DFS
+// stack - not by which amount is larger, so making every value per-currency does
+// not re-order or re-choose among the graph's shapes. The one place amounts are
+// compared is the netting below, and that comparison now happens within one
+// currency: a pair whose two sides are in different currencies cannot be reduced
+// to one edge, so it stays a two-way flow and the DFS breaks it like any other
+// cycle. The reciprocal cycle carries the gross, per-currency legs either way.
 func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle) {
 	agg := map[[2]string]*flowAccountEdge{}
 	for _, r := range rows {
@@ -459,13 +547,13 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 			continue
 		}
 		if e, ok := agg[key]; ok {
-			e.value += r.amount
+			e.value = e.value.Add(r.currency, r.amount)
 			continue
 		}
 		agg[key] = &flowAccountEdge{
 			srcID: src.id, srcName: src.name, srcColor: src.color,
 			dstID: dst.id, dstName: dst.name, dstColor: dst.color,
-			value: r.amount,
+			value: models.NewCurrencyAmounts().Add(r.currency, r.amount),
 		}
 	}
 	// Net reciprocal pairs into a single edge in the dominant direction. This
@@ -495,6 +583,11 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 			continue
 		}
 		seen[rev] = true
+		// The cycle records the gross legs, before netting, so the report can
+		// show what circulated rather than what survived. It is recorded even when
+		// netting does resolve the pair, and equally when it cannot: a pair whose
+		// two sides are in different currencies stays a two-way flow, and the DFS
+		// below hides the one leg that would close the cycle.
 		cycles = append(cycles, flowCycle{
 			kind:  "reciprocal",
 			nodes: []string{key[0], key[1]},
@@ -503,15 +596,11 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 				{srcID: key[1], dstID: key[0], value: revEdge.value},
 			},
 		})
-		switch {
-		case edge.value > revEdge.value:
-			edge.value -= revEdge.value
-			delete(agg, rev)
-		case revEdge.value > edge.value:
-			revEdge.value -= edge.value
+		edge.value, revEdge.value = netFlowAmounts(edge.value, revEdge.value)
+		if len(edge.value) == 0 {
 			delete(agg, key)
-		default:
-			delete(agg, key)
+		}
+		if len(revEdge.value) == 0 {
 			delete(agg, rev)
 		}
 	}
@@ -577,11 +666,34 @@ func analyzeAccountFlows(rows []flowAcctLinkRow) ([]flowAccountEdge, []flowCycle
 	return kept, dedupeAndSortCycles(cycles)
 }
 
+// netFlowAmounts cancels two opposing amounts currency by currency and returns
+// what survives in each direction. Cancellation is only defined inside one
+// currency - a rupee cannot cancel a dollar - so each code is resolved on its own
+// and a reciprocal pair whose two sides are in different currencies survives in
+// both directions instead of being collapsed into whichever side happened to hold
+// the larger number. A side that nets away entirely comes back empty, which is
+// how the caller knows the edge no longer exists. Neither input is modified, so
+// the gross legs of the reciprocal cycle stay available.
+func netFlowAmounts(fwd, rev models.CurrencyAmounts) (models.CurrencyAmounts, models.CurrencyAmounts) {
+	outFwd, outRev := models.NewCurrencyAmounts(), models.NewCurrencyAmounts()
+	for code, amount := range fwd {
+		if net := amount - rev[code]; net > 0 {
+			outFwd[code] = net
+		}
+	}
+	for code, amount := range rev {
+		if net := amount - fwd[code]; net > 0 {
+			outRev[code] = net
+		}
+	}
+	return outFwd, outRev
+}
+
 // flowStackCycle builds the cycle closed by a back edge from the current DFS
 // stack: v is the already-on-stack node the edge points back at, so the loop is
 // stack[indexOf(v):] plus the closing leg. Legs carry the aggregated flow of
 // each consecutive pair.
-func flowStackCycle(agg map[[2]string]*flowAccountEdge, stack []string, v string, closing money.Amount) (flowCycle, bool) {
+func flowStackCycle(agg map[[2]string]*flowAccountEdge, stack []string, v string, closing models.CurrencyAmounts) (flowCycle, bool) {
 	start := -1
 	for i, id := range stack {
 		if id == v {
@@ -636,10 +748,46 @@ func dedupeAndSortCycles(cycles []flowCycle) []flowCycle {
 	return unique
 }
 
-// flowFilter renders the shared date/account predicates for one table-alias
-// pair, binding values into args and returning the rendered predicate (no
-// leading conjunction) plus the arguments and the next free parameter index.
-func flowFilter(dateAlias, accountAlias string, start int, dateFrom, dateTo, accountID string) (string, []any, int) {
+// flowCurrency is the one expression this file projects, groups by and filters
+// on to read an account's currency. accounts.currency is nullable and a restored
+// bundle can hold the empty string, so a site that dropped the NULLIF would
+// disagree with the others and drop a default-currency account from an explicit
+// ?currency=INR report while the rest of the same response still called it INR.
+// See the scopeSQL comment in currency.go for the full argument.
+//
+// It takes the column rather than the alias because the queries do not agree on
+// an alias: the four transaction-driven ones join `accounts a`, while the two
+// link queries reach the currency through `fa`/`ta`. Everything else about the
+// expression - the NULLIF, the default, the parenthesisation - comes from here,
+// so a future edit cannot make one site's spelling differ from another's.
+func flowCurrency(column string) string {
+	return fmt.Sprintf("COALESCE(NULLIF(%s, ''), '%s')", column, defaultCurrency)
+}
+
+// flowCurrencyPredicate is flowCurrency bound to a placeholder, for the
+// ?currency= filter. The expression is the one above for the reason that comment
+// gives: a predicate that compared the raw column would exclude every account
+// whose currency is merely unset.
+func flowCurrencyPredicate(column string, placeholder int) string {
+	return fmt.Sprintf("%s = $%d", flowCurrency(column), placeholder)
+}
+
+// linkCurrencyColumn names the account whose currency a link's value is
+// denominated in. The value is one of the two transactions' amounts, picked by
+// the same CASE that picks the amount itself, and a transaction's amount is
+// always in its own account's currency — so the currency of a link is the
+// currency of the account the CASE picked, and a link between two accounts in
+// different currencies reports one currency rather than a converted sum. The
+// inconsistency stays visible in the scope instead of being added away.
+const linkCurrencyColumn = "CASE WHEN ft.type = 'debit' THEN fa.currency ELSE ta.currency END"
+
+// flowFilter renders the shared date/account/currency predicates for one
+// table-alias pair, binding values into args and returning the rendered
+// predicate (no leading conjunction) plus the arguments and the next free
+// parameter index. currency is empty when no code was requested, which is also
+// what the two link queries pass: they narrow on the currency of the value
+// instead, which is not the same thing as either endpoint's account currency.
+func flowFilter(dateAlias, accountAlias string, start int, dateFrom, dateTo, accountID, currency string) (string, []any, int) {
 	var parts []string
 	var args []any
 	n := start
@@ -656,6 +804,16 @@ func flowFilter(dateAlias, accountAlias string, start int, dateFrom, dateTo, acc
 	if accountID != "" {
 		parts = append(parts, fmt.Sprintf("%s.id = $%d", accountAlias, n))
 		args = append(args, accountID)
+		n++
+	}
+	if currency != "" {
+		// The predicate belongs in the WHERE, which for a transaction-driven
+		// query is where the inner join to accounts makes it equivalent to the
+		// join's ON clause: a row that fails it has no account in scope at all.
+		// The opposite requirement — never drop a quiet account — belongs to the
+		// account-driven scope query, and lives in currencyScope.
+		parts = append(parts, flowCurrencyPredicate(accountAlias+".currency", n))
+		args = append(args, currency)
 		n++
 	}
 	return strings.Join(parts, " AND "), args, n
@@ -690,22 +848,35 @@ func flowPayeeNodeID(payeeID string) string {
 // caps the income/category/payee stages at limit (rolling the tail into an
 // "Other" node), then aggregates the edges through the same rollup so a node
 // and its edges stay consistent.
+//
+// Every total it produces is per-currency, because a node aggregates across
+// accounts. The three headline totals are left empty here: they come from the
+// currency-scope query, which reads accounts rather than transactions and so also
+// covers the accounts with no activity in the window; the caller fills them in.
 func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRow, catPayeeRows []flowCatPayeeRow, linkRows []flowLinkRow, acctLinkRows []flowAcctLinkRow, limit int) models.MoneyFlowGraph {
 	incomeNodes := map[string]*models.MoneyFlowNode{}
 	acctNodes := map[string]*models.MoneyFlowNode{}
 	catNodes := map[string]*models.MoneyFlowNode{}
 	payeeNodes := map[string]*models.MoneyFlowNode{}
-	acctIn := map[string]money.Amount{}
-	acctOut := map[string]money.Amount{}
+	acctIn := map[string]models.CurrencyAmounts{}
+	acctOut := map[string]models.CurrencyAmounts{}
 
-	var totalIncome, totalExpense money.Amount
-
-	addNode := func(m map[string]*models.MoneyFlowNode, kind, id, name, color, group string, amount money.Amount) {
+	addNode := func(m map[string]*models.MoneyFlowNode, kind, id, name, color, group, currency string, amount money.Amount) {
 		if n, ok := m[id]; ok {
-			n.Total += amount
+			n.Total = n.Total.Add(currency, amount)
 			return
 		}
-		m[id] = &models.MoneyFlowNode{ID: id, Name: name, Kind: kind, Color: color, Group: group, Total: amount}
+		m[id] = &models.MoneyFlowNode{
+			ID: id, Name: name, Kind: kind, Color: color, Group: group,
+			Total: models.NewCurrencyAmounts().Add(currency, amount),
+		}
+	}
+	addAccountFlow := func(m map[string]models.CurrencyAmounts, id, currency string, amount money.Amount) {
+		cur, ok := m[id]
+		if !ok {
+			cur = models.NewCurrencyAmounts()
+		}
+		m[id] = cur.Add(currency, amount)
 	}
 
 	// Income category color is the category's own swatch; the group is carried
@@ -716,16 +887,14 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		if color == "" {
 			color = r.groupColor
 		}
-		addNode(incomeNodes, "income", flowIncomeNodeID(r.catID), r.catName, color, r.groupID, r.total)
-		addNode(acctNodes, "account", flowAccountNodeID(r.acctID), r.acctName, r.acctColor, "", 0)
-		acctIn[flowAccountNodeID(r.acctID)] += r.total
-		totalIncome += r.total
+		addNode(incomeNodes, "income", flowIncomeNodeID(r.catID), r.catName, color, r.groupID, r.currency, r.total)
+		addNode(acctNodes, "account", flowAccountNodeID(r.acctID), r.acctName, r.acctColor, "", r.currency, 0)
+		addAccountFlow(acctIn, flowAccountNodeID(r.acctID), r.currency, r.total)
 	}
 
 	for _, r := range acctCatRows {
-		addNode(acctNodes, "account", flowAccountNodeID(r.acctID), r.acctName, r.acctColor, "", 0)
-		acctOut[flowAccountNodeID(r.acctID)] += r.total
-		totalExpense += r.total
+		addNode(acctNodes, "account", flowAccountNodeID(r.acctID), r.acctName, r.acctColor, "", r.currency, 0)
+		addAccountFlow(acctOut, flowAccountNodeID(r.acctID), r.currency, r.total)
 	}
 
 	// Category and payee totals both come from the category→payee grouping, so
@@ -736,29 +905,33 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		if color == "" {
 			color = r.catColor
 		}
-		addNode(catNodes, "category", flowCategoryNodeID(r.catID), r.catName, color, r.groupID, r.total)
-		addNode(payeeNodes, "payee", flowPayeeNodeID(r.payeeID), r.payeeName, "", "", r.total)
+		addNode(catNodes, "category", flowCategoryNodeID(r.catID), r.catName, color, r.groupID, r.currency, r.total)
+		addNode(payeeNodes, "payee", flowPayeeNodeID(r.payeeID), r.payeeName, "", "", r.currency, r.total)
 	}
 
 	// Cross-account link flows (transfers, refunds, cashbacks, bill payments)
 	// after netting and cycle-breaking so the account subgraph stays acyclic.
 	// An endpoint may be an account with no other activity in the window, so
-	// ensure its node exists before accumulating the link volume.
+	// ensure its node exists before accumulating the link volume. An edge's value
+	// carries the currency of the amount it was taken from, which is not
+	// necessarily the currency of the account the money flows out of — a link
+	// between two differently denominated accounts records that inconsistency
+	// rather than converting it away.
 	acctEdges := accountFlowEdges(acctLinkRows)
 	for _, e := range acctEdges {
-		addNode(acctNodes, "account", flowAccountNodeID(e.srcID), e.srcName, e.srcColor, "", 0)
-		addNode(acctNodes, "account", flowAccountNodeID(e.dstID), e.dstName, e.dstColor, "", 0)
-		acctOut[flowAccountNodeID(e.srcID)] += e.value
-		acctIn[flowAccountNodeID(e.dstID)] += e.value
+		addNode(acctNodes, "account", flowAccountNodeID(e.srcID), e.srcName, e.srcColor, "", "", 0)
+		addNode(acctNodes, "account", flowAccountNodeID(e.dstID), e.dstName, e.dstColor, "", "", 0)
+		for code, amount := range e.value {
+			addAccountFlow(acctOut, flowAccountNodeID(e.srcID), code, amount)
+			addAccountFlow(acctIn, flowAccountNodeID(e.dstID), code, amount)
+		}
 	}
 
 	// Account node volume is the larger of what flowed in and what flowed out,
-	// so the node reads as the money that passed through it.
+	// so the node reads as the money that passed through it. The comparison is
+	// per currency, because that is the only one that means anything.
 	for id, n := range acctNodes {
-		n.Total = acctIn[id]
-		if acctOut[id] > n.Total {
-			n.Total = acctOut[id]
-		}
+		n.Total = maxFlowAmounts(acctIn[id], acctOut[id])
 	}
 
 	incomeKept := keepTopFlowNodes(incomeNodes, limit)
@@ -773,19 +946,20 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 
 	type edge struct {
 		source, target string
-		value          money.Amount
+		value          models.CurrencyAmounts
 	}
 	edges := map[string]*edge{}
-	addEdge := func(source, target string, value money.Amount) {
+	addEdge := func(source, target, currency string, value money.Amount) {
 		if value <= 0 {
 			return
 		}
 		key := source + "\x00" + target
-		if e, ok := edges[key]; ok {
-			e.value += value
-		} else {
-			edges[key] = &edge{source: source, target: target, value: value}
+		e, ok := edges[key]
+		if !ok {
+			e = &edge{source: source, target: target, value: models.NewCurrencyAmounts()}
+			edges[key] = e
 		}
+		e.value = e.value.Add(currency, value)
 	}
 
 	rollup := func(id string, kept map[string]bool, other string) string {
@@ -799,6 +973,7 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		addEdge(
 			rollup(flowIncomeNodeID(r.catID), incomeKept, "income:other"),
 			flowAccountNodeID(r.acctID),
+			r.currency,
 			r.total,
 		)
 	}
@@ -806,6 +981,7 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		addEdge(
 			flowAccountNodeID(r.acctID),
 			rollup(flowCategoryNodeID(r.catID), catKept, "category:other"),
+			r.currency,
 			r.total,
 		)
 	}
@@ -813,11 +989,14 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		addEdge(
 			rollup(flowCategoryNodeID(r.catID), catKept, "category:other"),
 			rollup(flowPayeeNodeID(r.payeeID), payeeKept, "payee:other"),
+			r.currency,
 			r.total,
 		)
 	}
 	for _, e := range acctEdges {
-		addEdge(flowAccountNodeID(e.srcID), flowAccountNodeID(e.dstID), e.value)
+		for code, amount := range e.value {
+			addEdge(flowAccountNodeID(e.srcID), flowAccountNodeID(e.dstID), code, amount)
+		}
 	}
 
 	links := make([]models.MoneyFlowEdge, 0, len(edges))
@@ -831,9 +1010,24 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 		return links[i].Target < links[j].Target
 	})
 
-	summary := make([]models.MoneyFlowLinkSummary, 0, len(linkRows))
+	// One entry per link type, however many currencies its links spanned: the
+	// query returns a row per (type, currency), and a type whose links sit in two
+	// currencies is one summary holding two amounts, not two summaries.
+	byType := map[string]*models.MoneyFlowLinkSummary{}
+	var typeOrder []string
 	for _, r := range linkRows {
-		summary = append(summary, models.MoneyFlowLinkSummary{Type: r.typ, Count: r.count, Total: r.total})
+		s, ok := byType[r.typ]
+		if !ok {
+			s = &models.MoneyFlowLinkSummary{Type: r.typ, Total: models.NewCurrencyAmounts()}
+			byType[r.typ] = s
+			typeOrder = append(typeOrder, r.typ)
+		}
+		s.Count += r.count
+		s.Total = s.Total.Add(r.currency, r.total)
+	}
+	summary := make([]models.MoneyFlowLinkSummary, 0, len(typeOrder))
+	for _, typ := range typeOrder {
+		summary = append(summary, *byType[typ])
 	}
 
 	if nodes == nil {
@@ -843,22 +1037,80 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 	return models.MoneyFlowGraph{
 		Nodes:        nodes,
 		Links:        links,
-		TotalIncome:  totalIncome,
-		TotalExpense: totalExpense,
+		TotalIncome:  models.NewCurrencyAmounts(),
+		TotalExpense: models.NewCurrencyAmounts(),
+		TotalNet:     models.NewCurrencyAmounts(),
 		LinkSummary:  summary,
 	}
 }
 
+// maxFlowAmounts takes the larger of two per-currency totals, one currency at a
+// time. With a single currency this is the larger of the two as before; with two
+// it is the larger of each currency's, and no amount is ever compared against an
+// amount of a different currency. A currency absent from both is absent here, so
+// the result is always non-nil and marshals as {} rather than null.
+func maxFlowAmounts(flowIn, flowOut models.CurrencyAmounts) models.CurrencyAmounts {
+	out := models.NewCurrencyAmounts()
+	for code, amount := range flowIn {
+		if other := flowOut[code]; other > amount {
+			amount = other
+		}
+		out[code] = amount
+	}
+	for code, amount := range flowOut {
+		if _, ok := flowIn[code]; !ok {
+			out[code] = amount
+		}
+	}
+	return out
+}
+
+// compareFlowTotals orders two per-currency totals without ever adding across
+// currencies. It walks the union of the key sets, code by code in sorted order,
+// with an absent key reading as zero, so the order is total, depends on no
+// arbitrary choice of a reference currency, and is exactly the by-amount order it
+// replaces when there is only one currency. It returns 0 for equal totals, which
+// leaves the caller's id tiebreak — and so the stability of a capped stage —
+// deciding the order between two nodes that hold the same money.
+func compareFlowTotals(a, b models.CurrencyAmounts) int {
+	seen := make(map[string]bool, len(a)+len(b))
+	codes := make([]string, 0, len(a)+len(b))
+	for code := range a {
+		if !seen[code] {
+			seen[code] = true
+			codes = append(codes, code)
+		}
+	}
+	for code := range b {
+		if !seen[code] {
+			seen[code] = true
+			codes = append(codes, code)
+		}
+	}
+	sort.Strings(codes)
+	for _, code := range codes {
+		if a[code] == b[code] {
+			continue
+		}
+		if a[code] > b[code] {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
 // keepTopFlowNodes returns the ids of the limit highest-volume nodes. A nil or
-// negative limit keeps nothing; limit >= len keeps everything.
+// negative limit keeps nothing; limit >= len keeps everything. "Highest" is
+// compareFlowTotals' order over the per-currency totals.
 func keepTopFlowNodes(m map[string]*models.MoneyFlowNode, limit int) map[string]bool {
 	ids := make([]string, 0, len(m))
 	for id := range m {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		if m[ids[i]].Total != m[ids[j]].Total {
-			return m[ids[i]].Total > m[ids[j]].Total
+		if c := compareFlowTotals(m[ids[i]].Total, m[ids[j]].Total); c != 0 {
+			return c < 0
 		}
 		return ids[i] < ids[j]
 	})
@@ -884,8 +1136,8 @@ func orderedFlowNodes(m map[string]*models.MoneyFlowNode, kept map[string]bool, 
 		}
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		if m[ids[i]].Total != m[ids[j]].Total {
-			return m[ids[i]].Total > m[ids[j]].Total
+		if c := compareFlowTotals(m[ids[i]].Total, m[ids[j]].Total); c != 0 {
+			return c < 0
 		}
 		return ids[i] < ids[j]
 	})
@@ -896,12 +1148,17 @@ func orderedFlowNodes(m map[string]*models.MoneyFlowNode, kept map[string]bool, 
 	}
 
 	if otherID != "" && len(kept) < len(m) {
-		other := models.MoneyFlowNode{ID: otherID, Name: otherName, Kind: kind}
+		// The rolled-up node holds what its members held, per currency: a tail of
+		// three nodes in two currencies is two amounts, and neither of them is
+		// the sum of anything.
+		other := models.MoneyFlowNode{ID: otherID, Name: otherName, Kind: kind, Total: models.NewCurrencyAmounts()}
 		for id, n := range m {
 			if kept[id] {
 				continue
 			}
-			other.Total += n.Total
+			for code, amount := range n.Total {
+				other.Total = other.Total.Add(code, amount)
+			}
 			if other.Color == "" {
 				other.Color = n.Color
 			}

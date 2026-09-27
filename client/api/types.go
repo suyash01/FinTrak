@@ -867,38 +867,49 @@ type MonthlyData struct {
 // ---- Money flow ----
 
 // MoneyFlowNode is one node of the money-flow graph. Kind is income, account,
-// category or payee; IDs are stage-prefixed (e.g. "account:<uuid>").
+// category or payee; IDs are stage-prefixed (e.g. "account:<uuid>"). Total is
+// per-currency, because a node aggregates flows across accounts and a window
+// with no account filter can cover more than one.
 type MoneyFlowNode struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Kind  string `json:"kind"`
-	Color string `json:"color,omitempty"`
-	Group string `json:"group,omitempty"`
-	Total Amount `json:"total"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Kind  string          `json:"kind"`
+	Color string          `json:"color,omitempty"`
+	Group string          `json:"group,omitempty"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowEdge is one aggregated flow between two node IDs.
+// MoneyFlowEdge is one aggregated flow between two node IDs. Value is
+// per-currency for the same reason the nodes' totals are.
 type MoneyFlowEdge struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Value  Amount `json:"value"`
+	Source string          `json:"source"`
+	Target string          `json:"target"`
+	Value  CurrencyAmounts `json:"value"`
 }
 
-// MoneyFlowLinkSummary is a per-link-type rollup for the graph's window.
+// MoneyFlowLinkSummary is a per-link-type rollup for the graph's window. Total is
+// per-currency for a reason of its own: a link has a from-account and a
+// to-account, so one type's links can sit in different currencies even when the
+// window is a single account's.
 type MoneyFlowLinkSummary struct {
-	Type  string `json:"type"`
-	Count int    `json:"count"`
-	Total Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
 // MoneyFlowGraph is the GET /dashboard/money-flow response: an acyclic graph
-// plus the link-type summary that is not drawn as edges.
+// plus the link-type summary that is not drawn as edges. Every amount is
+// per-currency, TotalNet is the server's per-currency difference rather than a
+// subtraction to perform here, and CurrencyScope says which currencies the
+// response covers.
 type MoneyFlowGraph struct {
-	Nodes        []MoneyFlowNode        `json:"nodes"`
-	Links        []MoneyFlowEdge        `json:"links"`
-	TotalIncome  Amount                 `json:"totalIncome"`
-	TotalExpense Amount                 `json:"totalExpense"`
-	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
+	Nodes         []MoneyFlowNode        `json:"nodes"`
+	Links         []MoneyFlowEdge        `json:"links"`
+	TotalIncome   CurrencyAmounts        `json:"totalIncome"`
+	TotalExpense  CurrencyAmounts        `json:"totalExpense"`
+	TotalNet      CurrencyAmounts        `json:"totalNet"`
+	LinkSummary   []MoneyFlowLinkSummary `json:"linkSummary"`
+	CurrencyScope CurrencyScope          `json:"currencyScope"`
 }
 
 // MoneyFlowTimelinePeriod is one period of the flow timeline; the bounds are

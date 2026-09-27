@@ -4074,6 +4074,11 @@ paths:
         The income, category, and payee stages are each capped at `limit`
         nodes, with the remainder collapsed into an "Other" node.
 
+        Every amount is per-currency. With no account filter the window can span
+        an INR account and a USD one, and neither a node total, an edge width nor
+        the headline figures can be a single number, so each carries one amount
+        per currency alongside the `currencyScope` that produced it.
+
         The handler itself only reads (all its queries run in one read-only,
         repeatable-read transaction), but the route sits on the write-guard
         list with the sibling GETs that materialize billing cycles, so a
@@ -4101,6 +4106,22 @@ paths:
             type: string
             format: uuid
           description: Filter by account ID
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the whole response to accounts holding one currency code
+            (upper-case three-letter, case-insensitive). Amounts are always
+            reported per currency regardless; this chooses which accounts are in
+            scope, and every stage - the nodes, the edges and the link summary -
+            is narrowed with it, so no two of them describe different sets of
+            transactions. The link queries narrow on the currency of the link's
+            value rather than on either endpoint's account, because a link between
+            two differently denominated accounts reports the currency of the amount
+            it carries. A code that is not three letters is a 400.
         - in: query
           name: limit
           schema:
@@ -6025,7 +6046,11 @@ components:
           type: string
           description: Category group id for category and income nodes
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency volume. A node aggregates flows across accounts, so with
+            no account filter one node can cover an INR account and a USD one and
+            has no single volume.
 
     MoneyFlowEdge:
       type: object
@@ -6037,7 +6062,11 @@ components:
           type: string
           description: Target node id
         value:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency width of the flow. Both ends of a stage hold the same
+            kind of money, so an edge from an income node into an account is money
+            in that account's currency.
 
     MoneyFlowLinkSummary:
       type: object
@@ -6048,7 +6077,12 @@ components:
         count:
           type: integer
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency for a reason of its own: a link has a from-account and a
+            to-account, so one type's links can sit in different currencies even
+            when the window is a single account's. `count` covers every link of the
+            type; `total` holds one amount per currency those links span.
 
     MoneyFlowGraph:
       type: object
@@ -6062,13 +6096,21 @@ components:
           items:
             $ref: "#/components/schemas/MoneyFlowEdge"
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+        totalNet:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency), sent rather than left to a client to subtract two
+            currency-keyed objects.
         linkSummary:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowLinkSummary"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     LinkCycleAccount:
       type: object

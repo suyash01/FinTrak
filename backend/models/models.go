@@ -1035,38 +1035,57 @@ type MonthlyData struct {
 // display color (the category's base-group color for category nodes, the
 // account color for account nodes) and Group carries the category group id for
 // category and income nodes.
+//
+// Total is per-currency because a node aggregates flows across accounts, and a
+// window with no account filter can span an INR account and a USD one. An income
+// node fed by two accounts, or a category spent from both, is a node with no
+// single volume.
 type MoneyFlowNode struct {
-	ID    string       `json:"id"`
-	Name  string       `json:"name"`
-	Kind  string       `json:"kind"`
-	Color string       `json:"color,omitempty"`
-	Group string       `json:"group,omitempty"`
-	Total money.Amount `json:"total"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Kind  string          `json:"kind"`
+	Color string          `json:"color,omitempty"`
+	Group string          `json:"group,omitempty"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowEdge is one aggregated flow between two MoneyFlowNode IDs.
+// MoneyFlowEdge is one aggregated flow between two MoneyFlowNode IDs. Both ends
+// of a stage hold the same kind of money — an edge from an income node into an
+// account is money in that account's currency — so Value is per-currency for the
+// same reason the nodes' totals are: a window can cover more than one.
 type MoneyFlowEdge struct {
-	Source string       `json:"source"`
-	Target string       `json:"target"`
-	Value  money.Amount `json:"value"`
+	Source string          `json:"source"`
+	Target string          `json:"target"`
+	Value  CurrencyAmounts `json:"value"`
 }
 
 // MoneyFlowLinkSummary is a per-type rollup of the user's transaction links in
 // the same window (transfers, refunds, cashbacks, bill payments), shown beside
 // the graph rather than drawn as account-to-account edges.
+//
+// Total is per-currency for a reason of its own, not just the shared one: a link
+// has a from-account and a to-account, so a rollup over a type of link sums
+// amounts that can sit in different currencies even when the window is a single
+// account's.
 type MoneyFlowLinkSummary struct {
-	Type  string       `json:"type"`
-	Count int          `json:"count"`
-	Total money.Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowGraph is the response of GET /api/v1/dashboard/money-flow.
+// MoneyFlowGraph is the response of GET /api/v1/dashboard/money-flow. Every
+// amount on it is per-currency, and the three headline totals come from the same
+// currencyScope query the rest of the reporting endpoints use, so they describe
+// the same accounts the nodes do. TotalNet is computed here rather than left to a
+// client, because income minus expense is only defined inside one currency.
 type MoneyFlowGraph struct {
-	Nodes        []MoneyFlowNode        `json:"nodes"`
-	Links        []MoneyFlowEdge        `json:"links"`
-	TotalIncome  money.Amount           `json:"totalIncome"`
-	TotalExpense money.Amount           `json:"totalExpense"`
-	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
+	Nodes         []MoneyFlowNode        `json:"nodes"`
+	Links         []MoneyFlowEdge        `json:"links"`
+	TotalIncome   CurrencyAmounts        `json:"totalIncome"`
+	TotalExpense  CurrencyAmounts        `json:"totalExpense"`
+	TotalNet      CurrencyAmounts        `json:"totalNet"`
+	LinkSummary   []MoneyFlowLinkSummary `json:"linkSummary"`
+	CurrencyScope CurrencyScope          `json:"currencyScope"`
 }
 
 // Circular-money report types. The Sankey has to be acyclic, so the account

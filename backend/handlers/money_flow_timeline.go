@@ -67,7 +67,7 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 // queryMonthlyFlowTimeline groups the filtered transactions into calendar
 // months, returning the inclusive month bounds the client re-queries with.
 func queryMonthlyFlowTimeline(ctx context.Context, db cycleQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]models.MoneyFlowTimelinePeriod, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID)
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, "")
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
