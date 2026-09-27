@@ -26,6 +26,21 @@ func newDashboardTestRouter(srv *Server) *gin.Engine {
 	return r
 }
 
+// The window that cuts the top 15 per currency, spelled out rather than left
+// loose because the tiebreak is the point of it: without c.name and c.id after
+// SUM(t.amount) DESC, which 15 categories survive an equal-total tie is
+// arbitrary and can differ between two identical requests. Every category-query
+// expectation in this file matches it, so dropping the tiebreak fails a test
+// rather than silently making the list unstable.
+const catWindowRegex = `ROW_NUMBER\(\) OVER \(PARTITION BY COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) ORDER BY SUM\(t\.amount\) DESC, c\.name, c\.id\)`
+
+// The account-currency predicate, as it has to appear in every transaction-backed
+// section of the summary when ?currency= is supplied: one expression, one
+// placeholder. A section that dropped it would describe a wider window than the
+// stat cards beside it, which is the contradiction the test below exists to
+// catch, so each of those expectations matches this and binds the code.
+const currencyFilterRegex = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$2`
+
 func TestGetDashboardSummary(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -60,14 +75,15 @@ func TestGetDashboardSummary(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(accountID, "Savings", "INR", money.FromFloat(50000.00), money.FromFloat(30000.50)))
 
-	// 4. Expense by category
-	mock.ExpectQuery("t.type = 'debit' AND t.user_id").
+	// 4. Expense by category. The regexp pins the window's partition expression
+	// and its name/id tiebreak, not just that a debit query ran.
+	mock.ExpectQuery(catWindowRegex + "[\\s\\S]*t\\.type = 'debit' AND t\\.user_id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
 			AddRow(catID.String(), "Food", "#f97316", "utensils", "INR", money.FromFloat(12000.00), 8))
 
 	// 5. Income by category
-	mock.ExpectQuery("t.type = 'credit' AND t.user_id").
+	mock.ExpectQuery(catWindowRegex + "[\\s\\S]*t\\.type = 'credit' AND t\\.user_id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
 			AddRow(catID.String(), "Salary", "#22c55e", "wallet", "INR", money.FromFloat(50000.00), 1))
@@ -217,13 +233,127 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000)}, summary.MonthlyTrend[0].Income)
 	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(30000.50), "USD": money.FromFloat(80)}, summary.MonthlyTrend[0].Expense)
 
-	// The body carries no bare number for any of them: the old field names are
-	// gone rather than still holding a wrong value.
+	// The body carries a currency-keyed object for each of them: not a bare
+	// number, and not an absent field either, which a "is it a float?" check
+	// would wave through while the name quietly stopped being sent.
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
 	for _, field := range []string{"totalIncome", "totalExpense", "totalNet"} {
-		if _, isNumber := raw[field].(float64); isNumber {
-			t.Errorf("%s is a bare number in the response body", field)
+		amounts, isObject := raw[field].(map[string]any)
+		if !isObject || len(amounts) == 0 {
+			t.Errorf("%s = %v, want a currency-keyed object", field, raw[field])
+		}
+	}
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A ?currency= filter that reached only the stat cards would leave the trend and
+// the category breakdowns describing a wider window than the totals beside them:
+// the client renders USD 80.00 next to a July bar that includes someone's rupees
+// and neither number is wrong on its own. So the filter has to reach every
+// transaction-backed section, and this pins that it does.
+//
+// The row values below are what a filtered database returns - a mock matches the
+// statement, it does not execute it, so the guard is that every expectation
+// requires the same currency predicate in the same query and binds the same
+// normalised code. Drop the predicate from any one section and its expectation
+// stops matching, the handler answers 500, and this fails.
+func TestGetDashboardSummaryNarrowsEverySectionToTheCurrencyFilter(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+	r := newDashboardTestRouter(srv)
+	userID := testUserID()
+	acctUSD := uuid.New()
+
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+
+	// 1. The count.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(4))
+
+	// 2. The scope, which carries the same predicate.
+	mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctUSD, "Travel card", "USD", money.FromFloat(120), money.FromFloat(80)))
+
+	// 3/4. Both category breakdowns.
+	mock.ExpectQuery(catWindowRegex+"[\\s\\S]*t\\.type = 'debit'[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
+			AddRow("c1", "Travel", "#f00", "plane", "USD", money.FromFloat(80), 3))
+	mock.ExpectQuery(catWindowRegex+"[\\s\\S]*t\\.type = 'credit'[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
+			AddRow("c2", "Consulting", "#0f0", "briefcase", "USD", money.FromFloat(120), 1))
+
+	// 5. The trend.
+	mock.ExpectQuery("TO_CHAR\\(t.date, 'YYYY-MM'\\)[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
+			AddRow("2026-07", "USD", money.FromFloat(120), money.FromFloat(80)))
+
+	// 6. The recent list, which is a transaction-backed section too.
+	mock.ExpectQuery("SELECT t.id, t.account_id[\\s\\S]*"+currencyFilterRegex).
+		WithArgs(userID, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "account_id", "date", "description", "amount", "type",
+			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
+			"account_name", "category_name", "category_icon", "category_color",
+		}))
+	mock.ExpectCommit()
+
+	// Lower case on purpose: the bound argument is the normalised "USD", so a
+	// regression that forwarded the raw parameter would match nothing and report
+	// a quiet month with no error anywhere.
+	req, _ := http.NewRequest(http.MethodGet, "/dashboard/summary?currency=usd", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var summary models.DashboardSummary
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &summary))
+
+	assert.Equal(t, 4, summary.TotalTransactions)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(120)}, summary.TotalIncome)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(80)}, summary.TotalExpense)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(40)}, summary.TotalNet)
+	assert.Equal(t, []string{"USD"}, summary.CurrencyScope.Currencies)
+
+	// The sections that the finding was about: with a USD filter, no amount in
+	// them may name a second currency. Each of these holds exactly one key, so a
+	// section that had quietly kept every currency would show two.
+	require.Len(t, summary.ByCategory, 1)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(80)}, summary.ByCategory[0].Total)
+	require.Len(t, summary.IncomeByCategory, 1)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(120)}, summary.IncomeByCategory[0].Total)
+	require.Len(t, summary.MonthlyTrend, 1)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(120)}, summary.MonthlyTrend[0].Income)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(80)}, summary.MonthlyTrend[0].Expense)
+
+	// Every amount in the response is single-currency, so a client can read all
+	// of them as plain numbers without ever combining two of them.
+	for name, amounts := range map[string]models.CurrencyAmounts{
+		"totalIncome":    summary.TotalIncome,
+		"totalExpense":   summary.TotalExpense,
+		"totalNet":       summary.TotalNet,
+		"byCategory":     summary.ByCategory[0].Total,
+		"incomeCategory": summary.IncomeByCategory[0].Total,
+		"monthlyIncome":  summary.MonthlyTrend[0].Income,
+		"monthlyExpense": summary.MonthlyTrend[0].Expense,
+	} {
+		if code, _, ok := amounts.Single(); !ok || code != "USD" {
+			t.Errorf("%s = %v, want a single USD amount", name, amounts)
 		}
 	}
 
@@ -393,6 +523,12 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 	windowStart := "2026-05-06"
 	windowEnd := "2026-08-05"
 
+	// The billing-cycle view's shared filter fragment: the cycle window, then the
+	// account, then the currency filter if one was asked for (none here). The
+	// account id is bound as a uuid here, not as the query string the unbounded
+	// view passes, because the handler already parsed it.
+	cycleFilterArgs := []interface{}{userID, windowStart, windowEnd, accountID}
+
 	// 1. Account billing-day lookup
 	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(accountID, userID).
@@ -444,13 +580,20 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(accountID, "Savings", "INR", money.FromFloat(21000.00), money.FromFloat(6700.50)))
 
-	// 6. Transaction count across all displayed cycles
-	mock.ExpectQuery("SELECT COUNT\\(t.id\\) FROM transactions t").
-		WithArgs(userID, accountID, windowStart, windowEnd).
+	// 6. Transaction count across all displayed cycles. The window, the account
+	// and the (absent) currency filter are one shared fragment, so the count,
+	// the categories and the recent list all bind the same arguments in the same
+	// order - the count used to bind them differently and attribute by cycle id.
+	// The regexp pins the accounts join, which is what carries that filter.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t\\s+JOIN accounts a ON a\\.id = t\\.account_id").
+		WithArgs(cycleFilterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(18))
 
-	// 7. Per-cycle trend
-	mock.ExpectQuery("SELECT bc.label, bc.start_date, bc.end_date").
+	// 7. Per-cycle trend. The transactions are joined by the cycle's own date
+	// range rather than by t.billing_cycle_id, so the bars and the stat cards
+	// count the same transactions; the regexp pins that join so putting the
+	// cycle id back fails here.
+	mock.ExpectQuery("SELECT bc.label, bc.start_date, bc.end_date[\\s\\S]*t\\.date >= bc\\.start_date AND t\\.date <= bc\\.end_date").
 		WithArgs(accountID, userID, windowStart, windowEnd).
 		WillReturnRows(pgxmock.NewRows([]string{"label", "start_date", "end_date", "currency", "income", "expense"}).
 			AddRow("Jun 2026", start1, end1, "INR", money.FromFloat(5000.00), money.FromFloat(1200.00)).
@@ -459,20 +602,20 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 
 	// 8. Expense by category (cycle window)
 	mock.ExpectQuery("t.type = 'debit' AND t.user_id").
-		WithArgs(userID, windowStart, windowEnd, accountID).
+		WithArgs(cycleFilterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
 			AddRow(catID.String(), "Food", "#f97316", "utensils", "INR", money.FromFloat(2400.00), 6))
 
 	// 9. Income by category (cycle window)
 	mock.ExpectQuery("t.type = 'credit' AND t.user_id").
-		WithArgs(userID, windowStart, windowEnd, accountID).
+		WithArgs(cycleFilterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
 			AddRow(catID.String(), "Salary", "#22c55e", "wallet", "INR", money.FromFloat(10000.00), 1))
 
 	// 10. Recent transactions (across the displayed cycle window). The tags
 	// column is coalesced so a pre-existing NULL row serializes as an array.
 	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(t.tags, '{}') as tags")).
-		WithArgs(userID, accountID, windowStart, windowEnd).
+		WithArgs(cycleFilterArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "account_id", "date", "description", "amount", "type",
 			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
@@ -524,6 +667,86 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 	assert.Equal(t, "Zomato order", summary.RecentTransactions[0].Description)
 	assert.Equal(t, "Food", summary.RecentTransactions[0].CategoryName)
 
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The billing-cycle view narrows on the same ?currency= value the unbounded view
+// does, and the trend is the reason this needs its own test: that query numbers
+// its arguments itself (account, user, window, window, currency) instead of
+// taking the shared fragment, so its predicate sits at a fixed fifth
+// placeholder. Nothing but a test would notice if that constant and the argument
+// appended after it drifted apart, and a wrong placeholder is a query error
+// rather than a wrong number - which is the best available failure mode, but
+// still one to catch here rather than in production.
+func TestGetDashboardSummaryBillingCycleNarrowsToTheCurrencyFilter(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	srv := newTestServer(mock)
+
+	r := newDashboardTestRouter(srv)
+	userID := testUserID()
+	accountID := uuid.New()
+	cycleID := uuid.New()
+	start := time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	windowStart, windowEnd := "2026-07-06", "2026-08-05"
+
+	// The shared fragment's currency predicate is the fourth condition, so $5.
+	// The scope query numbers the same three filters and reaches $5 too.
+	const filterAt5 = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$5`
+
+	mock.ExpectQuery("SELECT a.billing_day").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+	expectBillingCyclesUpToDate(mock, userID, accountID, 5)
+
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(accountID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
+			AddRow(cycleID, start, end, "Aug 2026", 100.00, 2))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t[\\s\\S]*"+filterAt5).
+		WithArgs(userID, windowStart, windowEnd, accountID.String(), "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(accountID, "Savings", "INR", money.FromFloat(100), money.FromFloat(40)))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t[\\s\\S]*"+filterAt5).
+		WithArgs(userID, windowStart, windowEnd, accountID, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectQuery("SELECT bc.label, bc.start_date, bc.end_date[\\s\\S]*"+filterAt5).
+		WithArgs(accountID, userID, windowStart, windowEnd, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"label", "start_date", "end_date", "currency", "income", "expense"}).
+			AddRow("Aug 2026", start, end, "INR", money.FromFloat(100), money.FromFloat(40)))
+	mock.ExpectQuery("t.type = 'debit'[\\s\\S]*"+filterAt5).
+		WithArgs(userID, windowStart, windowEnd, accountID, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
+	mock.ExpectQuery("t.type = 'credit'[\\s\\S]*"+filterAt5).
+		WithArgs(userID, windowStart, windowEnd, accountID, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(t.tags, '{}') as tags")+"[\\s\\S]*"+filterAt5).
+		WithArgs(userID, windowStart, windowEnd, accountID, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "account_id", "date", "description", "amount", "type",
+			"category_id", "tags", "notes", "payee_id", "payee", "created_at",
+			"account_name", "category_name", "category_icon", "category_color",
+		}))
+	mock.ExpectCommit()
+
+	req, _ := http.NewRequest(http.MethodGet, "/dashboard/summary?groupBy=billing_cycle&accountId="+accountID.String()+"&currency=INR", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var summary models.DashboardSummary
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &summary))
+	assert.Equal(t, 2, summary.TotalTransactions)
+	assert.Equal(t, []string{"INR"}, summary.CurrencyScope.Currencies)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

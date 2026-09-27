@@ -4009,10 +4009,13 @@ paths:
             minLength: 3
             maxLength: 3
           description: >-
-            Filter to accounts in this currency (upper-case three-letter code,
-            case-insensitive). Amounts are reported per currency regardless;
-            this only narrows the scope. A code that is not three letters is a
-            400.
+            Narrow the whole response to accounts holding one currency code
+            (upper-case three-letter, case-insensitive). Amounts are always
+            reported per currency regardless; this chooses which accounts are in
+            scope, and every section - totals, category breakdowns, monthly trend
+            and the transaction list - is narrowed with it, so no two sections
+            describe different sets of transactions. A code that is not three
+            letters is a 400.
         - in: query
           name: groupBy
           schema:
@@ -5866,7 +5869,10 @@ components:
         account that contributed to it. One key means the value is exact for the
         whole scope it covers; more than one means the scope spans currencies and
         no total exists, so a consumer must either choose a currency or say it
-        cannot add them. An absent key reads as zero.
+        cannot add them. An absent key reads as zero. Subtracting two of these is
+        only defined within one currency, so where a difference is meaningful the
+        server computes and sends it (as `DashboardSummary.totalNet`) rather than
+        leaving a client to subtract the two maps.
       additionalProperties:
         type: number
 
@@ -5973,11 +5979,7 @@ components:
         totalExpense:
           $ref: "#/components/schemas/CurrencyAmounts"
         totalNet:
-          allOf:
-            - $ref: "#/components/schemas/CurrencyAmounts"
-          description: >-
-            Per-currency income minus expense, computed by the server. A client
-            must not derive it by subtracting `totalIncome` and `totalExpense`.
+          $ref: "#/components/schemas/CurrencyAmounts"
         byCategory:
           type: array
           items:

@@ -21,13 +21,42 @@ const (
 	billingCycleGroupBy  = "billing_cycle"
 	defaultBillingCycles = 12
 	maxBillingCycles     = 60
+	// trendCurrencyParam is the placeholder the billing-cycle trend's currency
+	// predicate binds. That query numbers its own arguments - account, user,
+	// window start, window end, currency - so the fifth is fixed rather than
+	// taken from the shared fragment's counter.
+	trendCurrencyParam = 5
 )
+
+// currencyPredicate returns the account-currency filter, or "" when no currency
+// was requested. It is the one expression every currency filter in this file
+// shares with currencyScope's projection, GROUP BY and predicate: accounts.currency
+// is nullable and a restored bundle can hold the empty string, so a site that
+// dropped the NULLIF would disagree with the others and report a default-currency
+// account as absent. See the scopeSQL comment for the full argument.
+func currencyPredicate(placeholder int) string {
+	return fmt.Sprintf("COALESCE(NULLIF(a.currency, ''), '%s') = $%d", defaultCurrency, placeholder)
+}
+
+// trendCurrencyFilter is currencyPredicate's counterpart for the billing-cycle
+// trend, which cannot use the shared fragment because it is driven by
+// billing_cycles rather than by transactions. It carries the same expression for
+// the same reason: the account-level filter has to narrow the trend bars too, or
+// a ?currency= response would show totals in one currency and bars in another.
+func trendCurrencyFilter(currency string) string {
+	if currency == "" {
+		return ""
+	}
+	return " AND " + currencyPredicate(trendCurrencyParam)
+}
 
 // GetDashboardSummary aggregates the user's financial overview in one response:
 // account and transaction counts, income/expense totals, per-category spend and
 // income (top 15 each), a monthly income/expense trend, and the 10 most recent
 // transactions. An optional date range, account and currency filter apply to
-// every transaction-backed section.
+// every transaction-backed section - the currency filter narrows the whole
+// response, so the totals, the breakdowns, the trend and the transaction list
+// never describe different sets of transactions.
 //
 // Every amount is per-currency. With no account filter the window can span an
 // INR account and a USD one, and no single figure can represent that, so the
@@ -62,9 +91,11 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	}
 
 	// Billing-cycle view: the whole summary is framed around the statement
-	// periods of a single account that has a billing day set.
+	// periods of a single account that has a billing day set. The currency is
+	// parsed above and passed down rather than read again, so both views filter
+	// on the same value.
 	if c.Query("groupBy") == billingCycleGroupBy {
-		srv.getDashboardSummaryBillingCycle(c)
+		srv.getDashboardSummaryBillingCycle(c, currency)
 		return
 	}
 
@@ -77,29 +108,43 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		recent            []models.Transaction
 	)
 
-	// Build transaction filters (date range + account). plainFilter is used by
-	// queries without a table alias; catFilter prefixes columns with t. for
-	// queries that join/alias the transactions table. Both number their
-	// placeholders identically, so a query can switch between them without
-	// touching its arguments.
-	plainFilter := ""
+	// One filter fragment serves every transaction-backed query below, all of
+	// which alias the transactions table as t and join accounts as a. It is
+	// numbered once, so no query can renumber another's placeholders.
+	//
+	// The currency predicate belongs here rather than in currencyScope alone: a
+	// filter that reached only the stat cards would leave the trend and the
+	// category breakdowns describing a wider window than the totals beside them,
+	// which is the silent-wrong-number case this change exists to remove. It
+	// reads the account and carries the same COALESCE(NULLIF(...), 'INR') the
+	// scope query uses in its projection, its GROUP BY and its own predicate -
+	// accounts.currency is nullable and a restored bundle can hold '', so all of
+	// them have to be the same expression (see currency.go).
+	//
+	// The predicate sits in the WHERE, which for these queries is the same place
+	// as the join's ON clause: every one of them is driven by transactions and
+	// inner-joins accounts, so a row that fails the predicate is one with no
+	// account in scope. It is the account-driven scope query that has to keep
+	// quiet accounts visible, and that guard lives in currencyScope, not here.
 	catFilter := ""
 	args := []any{userID}
 	paramIdx := 2
-	addCond := func(col, op string, val any) {
-		plainFilter += fmt.Sprintf(" AND %s %s $%d", col, op, paramIdx)
-		catFilter += fmt.Sprintf(" AND t.%s %s $%d", col, op, paramIdx)
+	addCond := func(cond string, val any) {
+		catFilter += fmt.Sprintf(" AND %s $%d", cond, paramIdx)
 		args = append(args, val)
 		paramIdx++
 	}
 	if dateFrom != "" {
-		addCond("date", ">=", dateFrom)
+		addCond("t.date >=", dateFrom)
 	}
 	if dateTo != "" {
-		addCond("date", "<=", dateTo)
+		addCond("t.date <=", dateTo)
 	}
 	if accountID != "" {
-		addCond("account_id", "=", accountID)
+		addCond("t.account_id =", accountID)
+	}
+	if currency != "" {
+		addCond(currencyPredicate(paramIdx), currency)
 	}
 
 	// Run every read in a single read-only, repeatable-read transaction so the
@@ -121,10 +166,14 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 
-	// Transaction count. A count has no currency, so it stays a plain COUNT
-	// rather than riding along with the income and expense sums - those come
-	// from the currency scope below, which keeps them apart per currency.
-	countQuery := `SELECT COUNT(*) FROM transactions WHERE user_id = $1` + plainFilter
+	// Transaction count. A count has no currency of its own, but it is still a
+	// transaction-backed section, so it counts what the rest of the response
+	// describes: accounts is joined for the currency filter, and the join is
+	// inner so a transaction whose account row is missing is left out rather
+	// than filed under the default currency.
+	countQuery := `SELECT COUNT(*) FROM transactions t
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1
+				 WHERE t.user_id = $1` + catFilter
 	if err := q.QueryRow(ctx, countQuery, args...).Scan(&totalTransactions); err != nil {
 		slog.Error("GetDashboardSummary (transaction count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -150,22 +199,27 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	//
 	// Three things make the window function legal and correct. Postgres
 	// evaluates windows after grouping, so SUM(t.amount) is available in the
-	// window's ORDER BY at this level. HAVING runs before it, so a category with
-	// no matching transaction - whose SUM is NULL and whose currency is NULL
-	// because the join found nothing - is already gone and cannot occupy a slot
-	// in the NULL-currency partition. And the chained LEFT JOIN accounts touches
-	// neither the t.date nor the t.account_id predicates catFilter carries, so
-	// the same fragment still numbers its placeholders the same way.
+	// window's ORDER BY at this level, as are the grouped c.name and c.id beside
+	// it. HAVING runs before it, and the inner join to accounts means a category
+	// with no matching transaction never produces a row at all, so the
+	// NULL-currency partition cannot exist and no unspend category can take a
+	// slot. And the filter fragment is spliced into the WHERE, which is where the
+	// inner join makes it equivalent to the ON clause.
+	//
+	// The window's ORDER BY ends in name and id on purpose: without them, rn
+	// among equal totals is arbitrary and which 15 categories survive could
+	// differ between two identical requests. The old LIMIT 15 carried the same
+	// tiebreak and it is what kept the list from swapping in and out.
 	//
 	// The outer ORDER BY is display order over rows that are already capped, not
 	// a ranking across currencies: nothing is compared, so nothing is added up.
 	catQuery := `SELECT id, name, color, icon, currency, total, count FROM (
 				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
-				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC) AS rn
+				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
-				 LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
@@ -220,10 +274,10 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	incomeCatQuery := `SELECT id, name, color, icon, currency, total, count FROM (
 				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
-				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC) AS rn
+				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
-				 LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
@@ -273,7 +327,9 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 
 	// Monthly trend. accounts is joined so a month can be split by currency: one
 	// month is one entry holding one amount per currency, not one entry per
-	// currency. The filter is catFilter because the columns are now qualified.
+	// currency. The join is inner, matching the category queries, so a
+	// transaction with no account row is left out of both rather than filed
+	// under the default currency in one and dropped from the other.
 	monthlyQuery := `SELECT TO_CHAR(t.date, 'YYYY-MM') as month,
 					 COALESCE(NULLIF(a.currency, ''), 'INR') as currency,
 					 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
@@ -404,22 +460,15 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 // last `cycles` cycles, the category breakdowns span that cycle window, and the
 // recent transactions come from the current cycle. Date-range filters are
 // ignored in this mode; the window is defined by billing cycles instead.
-func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
+// `currency` is the already-normalised ?currency filter, parsed by the caller
+// so both views narrow on the same value.
+func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency string) {
 	ctx := c
 	userID := auth.GetUserID(c)
 
 	accountID, err := uuid.Parse(c.Query("accountId"))
 	if err != nil {
 		validation.RespondError(c, "accountId is required for billing cycle view", http.StatusBadRequest)
-		return
-	}
-
-	// One account holds exactly one currency, so this filter cannot make the
-	// response multi-currency; it is still honoured so a caller asking for a
-	// currency the account does not have gets an empty report rather than one in
-	// the wrong currency.
-	currency, ok := parseCurrency(c)
-	if !ok {
 		return
 	}
 
@@ -527,10 +576,11 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		Label:     current.Label,
 	}
 
-	// Stat-card totals across every displayed cycle. The amounts come from the
-	// currency scope, windowed by the same cycle dates as everything else below,
-	// so the headline figures and the trend chart cannot describe different
-	// periods. The transaction count is separate because a count has no currency.
+	// Stat-card totals across every displayed cycle, from the currency scope.
+	// Every other section below is filtered by the same window, account and
+	// currency, so the headline figures, the trend and the count all describe the
+	// same transactions. A count has no currency of its own but it is still
+	// transaction-backed, so it takes the same filter.
 	scope, err := srv.currencyScope(ctx, q, userID, scopeOptions{
 		DateFrom:  windowStart,
 		DateTo:    windowEnd,
@@ -547,32 +597,62 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	summary.TotalNet = scope.Net()
 	summary.CurrencyScope = scope.Scope
 
-	cycleCountQuery := `SELECT COUNT(t.id)
-			 FROM transactions t
-			 JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
-			 WHERE t.user_id = $1 AND t.account_id = $2
-			   AND bc.end_date >= $3 AND bc.end_date <= $4`
-	if err := q.QueryRow(ctx, cycleCountQuery, userID, accountID, windowStart, windowEnd).
+	// One filter fragment for the transaction-backed queries below, numbered once
+	// so no query can renumber another's placeholders. The account's own
+	// currency filter rides along so a caller asking for a currency this account
+	// does not hold gets an empty report rather than one in the wrong currency.
+	catFilter := ""
+	catArgs := []any{userID}
+	paramIdx := 2
+	addCond := func(cond string, val any) {
+		catFilter += fmt.Sprintf(" AND %s $%d", cond, paramIdx)
+		catArgs = append(catArgs, val)
+		paramIdx++
+	}
+	addCond("t.date >=", windowStart)
+	addCond("t.date <=", windowEnd)
+	addCond("t.account_id =", accountID)
+	if currency != "" {
+		addCond(currencyPredicate(paramIdx), currency)
+	}
+
+	cycleCountQuery := `SELECT COUNT(*) FROM transactions t
+			 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1
+			 WHERE t.user_id = $1` + catFilter
+	if err := q.QueryRow(ctx, cycleCountQuery, catArgs...).
 		Scan(&summary.TotalTransactions); err != nil {
 		slog.Error("GetDashboardSummary (cycle window count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// Per-cycle trend over the window. The account is joined on for its currency,
-	// so the trend folds per currency like every other amount in this response.
+	// Per-cycle trend over the window. The account is joined for its currency, so
+	// the trend folds per currency like every other amount here, and the
+	// transactions are joined by the cycle's own date range rather than by
+	// t.billing_cycle_id.
+	//
+	// That join is the same set the stat cards count. Joining on
+	// billing_cycle_id instead would be a cheaper plan, but a transaction whose
+	// cycle assignment is detached or NULL would then be in the headline totals
+	// and in no bar at all, which is the disagreement this comment exists to
+	// prevent. Do not "optimise" the join back to the cycle id.
 	trendQuery := `SELECT bc.label, bc.start_date, bc.end_date,
 			 COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
 			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
 			 FROM billing_cycles bc
-			 LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
-			 LEFT JOIN accounts a ON a.id = bc.account_id
+			 JOIN accounts a ON a.id = bc.account_id AND a.user_id = $2
+			 LEFT JOIN transactions t ON t.account_id = bc.account_id AND t.user_id = $2
+			   AND t.date >= bc.start_date AND t.date <= bc.end_date
 			 WHERE bc.account_id = $1 AND bc.user_id = $2
-			   AND bc.end_date >= $3 AND bc.end_date <= $4
+			   AND bc.end_date >= $3 AND bc.end_date <= $4` + trendCurrencyFilter(currency) + `
 			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date, COALESCE(NULLIF(a.currency, ''), 'INR')
 			 ORDER BY bc.start_date ASC`
-	trendRows, err := q.Query(ctx, trendQuery, accountID, userID, windowStart, windowEnd)
+	trendArgs := []any{accountID, userID, windowStart, windowEnd}
+	if currency != "" {
+		trendArgs = append(trendArgs, currency)
+	}
+	trendRows, err := q.Query(ctx, trendQuery, trendArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (billing cycle trend)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -613,29 +693,17 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		summary.BillingCycleTrend = append(summary.BillingCycleTrend, *trend[label])
 	}
 
-	// Category breakdowns over the cycle window.
-	catFilter := ""
-	catArgs := []any{userID}
-	paramIdx := 2
-	addCond := func(col, op string, val any) {
-		catFilter += fmt.Sprintf(" AND t.%s %s $%d", col, op, paramIdx)
-		catArgs = append(catArgs, val)
-		paramIdx++
-	}
-	addCond("date", ">=", windowStart)
-	addCond("date", "<=", windowEnd)
-	addCond("account_id", "=", accountID)
-
 	// Category breakdowns over the cycle window; same name/id tiebreak as the
 	// unbounded summary so the top 15 are stable. The window is one account, so
 	// there is a single currency and the per-currency ROW_NUMBER the unbounded
 	// query needs would be a no-op partition here - a plain LIMIT 15 says the
-	// same thing.
+	// same thing. accounts is inner-joined for the same reason as there: a
+	// transaction with no account row is not this account's money.
 	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
-				 LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
@@ -686,7 +754,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
-				 LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
 				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
@@ -745,11 +813,10 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 					JOIN accounts a ON t.account_id = a.id
 					LEFT JOIN categories c ON t.category_id = c.id
 					LEFT JOIN payees p ON t.payee_id = p.id
-					WHERE t.user_id = $1 AND t.account_id = $2
-					  AND t.date >= $3 AND t.date <= $4
+					WHERE t.user_id = $1` + catFilter + `
 					ORDER BY ` + txnOrderByDate(false) + `
 					LIMIT 10`
-	recentRows, err := q.Query(ctx, recentQuery, userID, accountID, windowStart, windowEnd)
+	recentRows, err := q.Query(ctx, recentQuery, catArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (recent transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
