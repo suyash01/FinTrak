@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/fintrak/client/api"
@@ -231,16 +232,90 @@ func currencyScale(selected string, amounts api.CurrencyAmounts) float64 {
 	return largest
 }
 
-// currencyIsNegative reports whether a figure belongs in the deficit family: the
-// selected currency's own sign, or — with nothing selected — the map's, which
-// is negative only when it is negative in every currency it covers. A figure
-// negative in one currency and positive in another has no single sign, so it is
-// drawn neutral rather than resolved by guessing which currency meant it.
-func currencyIsNegative(selected string, amounts api.CurrencyAmounts) bool {
-	if value, ok := currencyValue(selected, amounts); ok {
-		return value.IsNegative()
+// currencySign is which way a per-currency figure points, as the three answers
+// the response can actually support. signNone is the whole reason it exists: a
+// figure negative in one currency and positive in another has no single sign, and
+// a two-valued sign cannot express that — the caller has to read its false as
+// either "positive" or "unknown", and it picked "positive", so a day that spent
+// in dollars and earned in rupees drew as a green surplus.
+type currencySign int
+
+const (
+	// signNone is the zero value on purpose. A currencySign that is read before
+	// it is set must land on the answer that claims nothing, and the value a
+	// fresh variable holds is the one a missing case would take.
+	signNone currencySign = iota
+	signNegative
+	signPositive
+)
+
+// currencySignOf reports which way a per-currency figure points: the selected
+// currency's own sign, or — with nothing selected — a sign only when the map
+// agrees with itself. The map is negative when every currency it covers is, and
+// positive when every one is; mixed is signNone.
+//
+// A currency on screen that the response never held is signNone whatever the
+// other entries say. currencyValue reports that case as "no figure", but a
+// figure of the wrong currency is not a figure of none, and reading the map's
+// agreement in its place would tell the user their INR day went up because a
+// USD day did.
+//
+// The three-valued answer is the point. A bool here has no way to say "this
+// figure has no sign", and every caller reading false as a surplus is how a
+// mixed-sign day became a green block.
+func currencySignOf(selected string, amounts api.CurrencyAmounts) currencySign {
+	if selected != "" {
+		value, ok := amounts[selected]
+		if !ok {
+			return signNone
+		}
+		switch {
+		case value.IsNegative():
+			return signNegative
+		case value.IsZero():
+			// A present zero is a figure, and zero is not a surplus. It falls
+			// through to the flat rendering every other screen gives it.
+			return signNone
+		default:
+			return signPositive
+		}
 	}
-	return amounts.IsNegative()
+	// No selected figure, so the map has to speak for itself, and it speaks by
+	// the rule CurrencyAmounts.IsNegative already states: negative only when
+	// every currency it covers is. A present zero is not negative, so it blocks a
+	// deficit the same way the type's own method blocks one — a day of INR 0.00
+	// against a USD 5.00 spend has not gone down, it has one currency that did
+	// nothing and another that spent. Positive is the mirror: every entry
+	// nonzero and not negative.
+	switch {
+	case len(amounts) == 0:
+		return signNone
+	case amounts.IsNegative():
+		return signNegative
+	}
+	for _, value := range amounts {
+		if value.IsNegative() || value.IsZero() {
+			return signNone
+		}
+	}
+	return signPositive
+}
+
+// style is the theme style a signed figure is drawn in, and what a figure with
+// no sign falls back to. It exists so the four callers cannot each pick their
+// own treatment of signNone, which is the mistake this type was made to stop.
+func (s currencySign) style(th Theme) lipgloss.Style {
+	switch s {
+	case signNegative:
+		return th.Negative
+	case signPositive:
+		return th.Positive
+	default:
+		// Deliberately muted rather than Positive: the screen does not know which
+		// way this figure points, and colouring it as though it did is the claim
+		// the payload refused to make.
+		return th.Subtle
+	}
 }
 
 // currencyAmount formats a display-only scale as money, for the one place that
@@ -275,15 +350,38 @@ func currencyNetText(selected string, amounts api.CurrencyAmounts) string {
 // response holds besides, for the frame line. It is built from the response's own
 // scope rather than from the screen's filter, so a window that turned out to span
 // more currencies than the accounts suggested is reported rather than hidden.
-// An empty label means there is nothing to say — one currency and no selection.
+//
+// A selection the response does not hold is not a report in that currency, so it
+// is not described as one: currencyLine says "no transactions in INR" for the
+// same state, and a label claiming "INR only" beside a figure saying there is
+// nothing would put the two halves of one screen in contradiction. An empty label
+// means there is nothing to say — one currency and no selection.
 func currencyScopeLabel(selected string, scope api.CurrencyScope) string {
 	others := make([]string, 0, len(scope.Currencies))
+	held := false
 	for _, code := range scope.Currencies {
-		if code != "" && code != selected {
-			others = append(others, code)
+		// An empty code is not a currency and must not be counted as the
+		// selection: with nothing selected, "" == "" would otherwise mark the
+		// report as holding the empty currency.
+		if code == "" {
+			continue
 		}
+		if code == selected {
+			held = true
+			continue
+		}
+		others = append(others, code)
 	}
+
 	switch {
+	case selected != "" && !held:
+		// The window has nothing in the currency on screen. Naming what it does
+		// hold is the whole of the answer, and it is the same answer currencyLine
+		// gives for the figures themselves.
+		if len(others) == 0 {
+			return "no " + selected + " in this window"
+		}
+		return "no " + selected + " in this window — showing " + strings.Join(others, ", ")
 	case selected != "" && len(others) == 0:
 		return selected + " only"
 	case selected != "":
@@ -293,7 +391,12 @@ func currencyScopeLabel(selected string, scope api.CurrencyScope) string {
 		// no choice being made and nothing to report.
 		return ""
 	default:
-		return "no currency selected — " + strings.Join(others, ", ") + ", never combined"
+		// The clause about the bars is here rather than repeated by each screen's
+		// own legend: with nothing chosen, dashLargest, stageMax and the strip's
+		// busiest all fall back to the largest single magnitude, and a reader of
+		// this line is a reader of a bar scaled by it.
+		return "no currency selected — " + strings.Join(others, ", ") +
+			", never combined; bars scale to the largest of them"
 	}
 }
 

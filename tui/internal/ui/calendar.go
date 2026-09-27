@@ -453,10 +453,9 @@ func (c *Calendar) header(width int) []string {
 		return []string{title}
 	}
 
-	netStyle := th.Positive
-	if currencyIsNegative(c.currency, c.data.Net) {
-		netStyle = th.Negative
-	}
+	// A window that netted a surplus in one currency and a deficit in another has
+	// no sign to colour by, and the muted style says so instead of picking one.
+	netStyle := currencySignOf(c.currency, c.data.Net).style(th)
 	totals := hstack(
 		th.Subtle.Render("income ")+currencyLine(c.currency, c.data.TotalIncome),
 		th.Subtle.Render("expense ")+currencyLine(c.currency, c.data.TotalExpense),
@@ -527,22 +526,24 @@ func (c *Calendar) dayCell(day time.Time) string {
 
 	block := "  "
 	style := th.Subtle
+	sign := currencySignOf(c.currency, entry.Net)
 	switch {
 	case !has || entry.Count == 0:
 		// Left blank: the API sends no day for a date without transactions.
-	case currencyIsNegative(c.currency, entry.Net):
+	case sign == signNegative:
 		block = strings.Repeat(calendarDeficit[c.level(entry.Net)], 2)
-		style = th.Negative
-	case currencyScale(c.currency, entry.Net) == 0:
-		// Flat, and for the same reason in two cases: the day's net is exactly
-		// zero, or the currency on screen has no key for the day at all, because
-		// no transaction in it touched that currency. A day with no sign in the
-		// currency on screen is not a deficit, and drawing it as one would report
-		// a figure the response does not hold.
-		block = "··"
-	default:
+		style = sign.style(th)
+	case sign == signPositive:
 		block = strings.Repeat(calendarSurplus[c.level(entry.Net)], 2)
-		style = th.Positive
+		style = sign.style(th)
+	default:
+		// Flat, for three distinct reasons that all mean the same thing on
+		// screen: the day's net is exactly zero, the currency on screen has no
+		// key for the day because no transaction in it touched that currency, or
+		// the day's net points different ways in different currencies. The last is
+		// the one that matters — the payload declined to give a sign, and a block
+		// drawn as though it had would be the screen inventing one.
+		block = "··"
 	}
 
 	cell := style.Render(fmt.Sprintf("%2d %s%s", day.Day(), block, flag))
@@ -645,10 +646,7 @@ func (c *Calendar) detailLine(width int) string {
 		return th.Subtle.Render(truncate(key+" · no transactions", width))
 	}
 
-	netStyle := th.Positive
-	if currencyIsNegative(c.currency, entry.Net) {
-		netStyle = th.Negative
-	}
+	netStyle := currencySignOf(c.currency, entry.Net).style(th)
 	line := hstack(
 		key,
 		"income "+currencyLine(c.currency, entry.Income),

@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -149,30 +150,170 @@ func TestCurrencyValueRefusesWithoutASelection(t *testing.T) {
 	}
 }
 
-// TestCurrencyIsNegativeNeedsEveryCurrency pins the sign rule the heatmap and
-// the timeline strip colour by: a figure negative in one currency and positive
-// in another has no single sign, so it is neither family rather than resolved by
-// guessing which currency was meant.
-func TestCurrencyIsNegativeNeedsEveryCurrency(t *testing.T) {
+// TestCurrencySignOfIsTriState pins the sign rule the heatmap and the timeline
+// strip colour by. The three-valued answer is the point: a bool could say "not
+// negative" for both "positive" and "no sign", and every caller read the second
+// as the first, which is how a day that spent in dollars and earned in rupees
+// drew as a green surplus.
+func TestCurrencySignOfIsTriState(t *testing.T) {
 	mixed := api.CurrencyAmounts{"INR": "-500.00", "USD": "5.00"}
 
-	if currencyIsNegative("", mixed) {
-		t.Error("a figure with no single sign was drawn as a deficit")
+	// The defect: one way down and one way up is not "positive".
+	if got := currencySignOf("", mixed); got != signNone {
+		t.Errorf("currencySignOf(unselected, mixed) = %v, want signNone", got)
 	}
 	// A selection resolves it, and only for the currency the user chose.
-	if !currencyIsNegative("INR", mixed) {
-		t.Error("the INR entry is negative and was not drawn as a deficit")
+	if got := currencySignOf("INR", mixed); got != signNegative {
+		t.Errorf("currencySignOf(INR, mixed) = %v, want signNegative", got)
 	}
-	if currencyIsNegative("USD", mixed) {
-		t.Error("the USD entry is positive and was drawn as a deficit")
+	if got := currencySignOf("USD", mixed); got != signPositive {
+		t.Errorf("currencySignOf(USD, mixed) = %v, want signPositive", got)
 	}
 
+	// Agreement across the currencies is what earns a sign with nothing selected.
 	both := api.CurrencyAmounts{"INR": "-500.00", "USD": "-5.00"}
-	if !currencyIsNegative("", both) {
-		t.Error("a figure negative in every currency was not drawn as a deficit")
+	if got := currencySignOf("", both); got != signNegative {
+		t.Errorf("currencySignOf(unselected, all negative) = %v, want signNegative", got)
 	}
-	if currencyIsNegative("", api.CurrencyAmounts{}) {
-		t.Error("an empty map has a sign")
+	bothUp := api.CurrencyAmounts{"INR": "500.00", "USD": "5.00"}
+	if got := currencySignOf("", bothUp); got != signPositive {
+		t.Errorf("currencySignOf(unselected, all positive) = %v, want signPositive", got)
+	}
+
+	// Neither an empty map, a present zero, nor an absent key is a surplus.
+	for name, amounts := range map[string]api.CurrencyAmounts{
+		"empty":  {},
+		"nil":    nil,
+		"zero":   {"INR": "0.00"},
+		"absent": {"INR": "0.00", "USD": "-5.00"},
+	} {
+		if got := currencySignOf("", amounts); got != signNone {
+			t.Errorf("currencySignOf(unselected, %s) = %v, want signNone", name, got)
+		}
+	}
+	// A currency on screen the response never held has no sign to read.
+	if got := currencySignOf("EUR", bothUp); got != signNone {
+		t.Errorf("currencySignOf(EUR, never held) = %v, want signNone", got)
+	}
+}
+
+// TestASignWithNoSignIsNeverDrawnAsASurplus is the render-level half of the
+// tri-state fix, and it exists because the helper test structurally cannot catch
+// this. Asserting that IsNegative returns false for a mixed map was already true
+// before the fix and was never the bug: the bug was in the four callers that read
+// that false as "positive". So this drives the actual rendering and looks for the
+// thing a reader would see.
+//
+// The day's net here is income in rupees against a card spend in dollars — the
+// exact shape that used to draw a full-intensity green surplus block.
+func TestASignWithNoSignIsNeverDrawnAsASurplus(t *testing.T) {
+	day := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC)
+	mixed := api.CurrencyAmounts{"INR": "500.00", "USD": "-500.00"}
+
+	t.Run("calendar cell", func(t *testing.T) {
+		c := NewCalendar(testCtx())
+		c.fetched = true
+		c.cursor = day
+		c.data = api.CashFlowCalendar{
+			Days:     []api.CashFlowCalendarDay{{Date: "2026-03-14", Net: mixed, Count: 2}},
+			MaxAbsNet: api.CurrencyAmounts{"INR": "1000.00", "USD": "1000.00"},
+		}
+		c.index()
+		c.buildMonths()
+
+		cell := c.dayCell(day)
+		// Checked for surplus glyphs rather than for a colour: the cell is styled
+		// as a whole, so the escape codes wrap the number and the block together
+		// and there is no per-block colour to match on.
+		for _, glyph := range calendarSurplus {
+			if strings.Contains(cell, glyph) {
+				t.Errorf("cell = %q, want no surplus block: the day's net has no single sign", cell)
+			}
+		}
+		// The flat marker, not a blank and not a surplus: the day happened, and
+		// the screen knows it, it just cannot say which way it went.
+		if !strings.Contains(cell, "··") {
+			t.Errorf("cell = %q, want the flat marker for a day with no sign", cell)
+		}
+		// A real deficit still draws its hatched block, and a real surplus a solid
+		// one, so the assertions above are not just a cell that stopped drawing
+		// anything. The screen indexes the days into its own map, so each case
+		// replaces the payload and re-indexes rather than editing the slice the
+		// lookup already copied out of.
+		c.data.Days = []api.CashFlowCalendarDay{{Date: "2026-03-14", Net: api.CurrencyAmounts{"INR": "-500.00"}, Count: 1}}
+		c.index()
+		if deficit := c.dayCell(day); !strings.Contains(deficit, calendarDeficit[1]) {
+			t.Errorf("cell = %q, want a deficit block for a real INR deficit", deficit)
+		}
+		c.data.Days = []api.CashFlowCalendarDay{{Date: "2026-03-14", Net: api.CurrencyAmounts{"INR": "500.00"}, Count: 1}}
+		c.index()
+		if up := c.dayCell(day); !strings.Contains(up, calendarSurplus[1]) {
+			t.Errorf("cell = %q, want a surplus block for a real INR surplus", up)
+		}
+	})
+
+	t.Run("calendar header", func(t *testing.T) {
+		c := NewCalendar(testCtx())
+		c.fetched = true
+		c.data = api.CashFlowCalendar{Net: mixed}
+		c.buildMonths()
+
+		header := strings.Join(c.header(200), "\n")
+		// The exact string the header renders, so the match below is on the
+		// style the net was actually drawn in rather than on a substring the
+		// renderer never wraps whole. The label is styled separately from the
+		// amount, so it is the amount alone that carries the sign's colour.
+		net := currencyNetText("", mixed)
+		if !strings.Contains(header, DefaultTheme().Subtle.Render(net)) {
+			t.Errorf("header = %q, want the net muted: it points both ways", header)
+		}
+		if strings.Contains(header, DefaultTheme().Positive.Render(net)) {
+			t.Errorf("header = %q, want no positive styling on a figure with no sign", header)
+		}
+		// The surplus colour on a real figure still shows, so the above is not
+		// just a header that stopped styling anything.
+		c.data.Net = api.CurrencyAmounts{"INR": "500.00"}
+		up := strings.Join(c.header(200), "\n")
+		if !strings.Contains(up, DefaultTheme().Positive.Render(currencyNetText("", c.data.Net))) {
+			t.Errorf("header = %q, want a single-currency surplus styled positive", up)
+		}
+	})
+
+	t.Run("money-flow period", func(t *testing.T) {
+		m := NewMoneyFlow(testCtx())
+		period := api.MoneyFlowTimelinePeriod{Key: "2026-03", Label: "March", Net: mixed}
+		line := m.periodLine(period, 0, 8, 0, false)
+
+		net := currencyNetText("", mixed)
+		if !strings.Contains(line, net) {
+			t.Fatalf("period line = %q, want the net rendered as %q", line, net)
+		}
+		if !strings.Contains(line, DefaultTheme().Subtle.Render(net)) {
+			t.Errorf("period line = %q, want the net muted: it points both ways", line)
+		}
+	})
+}
+
+// TestMixedSignStillRendersWhenACurrencyIsSelected is the other half: a selection
+// resolves a mixed figure for the currency chosen, and it must keep doing so, or
+// the tri-state fix would have cost every single-currency user their sign.
+func TestMixedSignStillRendersWhenACurrencyIsSelected(t *testing.T) {
+	mixed := api.CurrencyAmounts{"INR": "500.00", "USD": "-500.00"}
+
+	day := time.Date(2026, 3, 14, 0, 0, 0, 0, time.UTC)
+	c := NewCalendar(testCtx())
+	c.fetched = true
+	c.cursor = day
+	c.currency = "INR"
+	c.data = api.CashFlowCalendar{
+		Days:     []api.CashFlowCalendarDay{{Date: "2026-03-14", Net: mixed, Count: 2}},
+		MaxAbsNet: api.CurrencyAmounts{"INR": "1000.00"},
+	}
+	c.index()
+	c.buildMonths()
+
+	if cell := c.dayCell(day); !strings.Contains(cell, calendarSurplus[1]) {
+		t.Errorf("cell = %q, want the INR surplus block: INR selected resolves the sign", cell)
 	}
 }
 
@@ -188,10 +329,16 @@ func TestCurrencyScopeLabelSaysWhatIsNotShown(t *testing.T) {
 			t.Errorf("label = %q, missing %q", one, want)
 		}
 	}
-	// Nothing is chosen, so the label has to say the figures were never combined.
+	// Nothing is chosen, so the label has to say the figures were never combined
+	// and that the bars are scaled by the fallback — the clause that discloses
+	// dashLargest, stageMax and the strip's busiest all using the largest single
+	// magnitude when nothing is selected.
 	none := currencyScopeLabel("", scope)
 	if !strings.Contains(none, "no currency selected") || !strings.Contains(none, "EUR") {
 		t.Errorf("label = %q, want the unchosen state named with the currencies", none)
+	}
+	if !strings.Contains(none, "largest") {
+		t.Errorf("label = %q, want the bar-scale fallback disclosed", none)
 	}
 	// One currency and no choice: there is nothing to report, so the frame line
 	// is not filled with a notice about a decision nobody made.
@@ -200,6 +347,109 @@ func TestCurrencyScopeLabelSaysWhatIsNotShown(t *testing.T) {
 	}
 	if got := currencyScopeLabel("INR", api.CurrencyScope{Currencies: []string{"INR"}}); got != "INR only" {
 		t.Errorf("label = %q, want %q", got, "INR only")
+	}
+}
+
+// TestCurrencyScopeLabelDoesNotClaimACurrencyTheResponseLacks keeps the label and
+// the figures from disagreeing about one state. With INR selected over a window
+// that only holds USD, currencyLine says "no transactions in INR" — so a label
+// reading "INR only — not showing USD" would claim the report *is* in INR while
+// the numbers beside it say it holds nothing at all. The label has to be the one
+// that gives way.
+func TestCurrencyScopeLabelDoesNotClaimACurrencyTheResponseLacks(t *testing.T) {
+	scope := api.CurrencyScope{Currencies: []string{"USD"}}
+
+	only := currencyScopeLabel("INR", scope)
+	if strings.Contains(only, "INR only") {
+		t.Errorf("label = %q, want it not to claim the report is in INR", only)
+	}
+	if !strings.Contains(only, "no INR") {
+		t.Errorf("label = %q, want the absent currency named", only)
+	}
+	// What the report does hold is the whole of the answer.
+	if !strings.Contains(only, "USD") {
+		t.Errorf("label = %q, want the currency the response holds named", only)
+	}
+	// Nothing held at all is the degenerate case of the same thing.
+	if got := currencyScopeLabel("INR", api.CurrencyScope{}); !strings.Contains(got, "no INR") {
+		t.Errorf("label = %q, want the absent currency named for an empty response", got)
+	}
+	// And the figure and the label now agree, which is the point.
+	figures := currencyLine("INR", api.CurrencyAmounts{"USD": "120.00"})
+	if !strings.Contains(figures, "no transactions in INR") {
+		t.Errorf("figures = %q, want the same absence currencyLine has always reported", figures)
+	}
+
+	// An empty code in the scope is not a currency, and with nothing selected it
+	// must not be mistaken for the selection being satisfied.
+	if got := currencyScopeLabel("", api.CurrencyScope{Currencies: []string{""}}); got != "" {
+		t.Errorf("label = %q, want nothing said for a scope holding no currency", got)
+	}
+	if got := currencyScopeLabel("INR", api.CurrencyScope{Currencies: []string{"", "INR"}}); got != "INR only" {
+		t.Errorf("label = %q, want %q: the empty code is not a currency in scope", got, "INR only")
+	}
+}
+
+// TestLinkNotesQualifyTheCycleByItsKeyCount covers the two note helpers on the
+// fourth screen, which is outside the brief's file list and therefore uncovered
+// until now. The single-currency reading of a cycle's net is that it circulates
+// the loop; the multi-currency reading is that nothing circulates a loop whose
+// legs differ. Printing the first for a cycle that is the second is the same
+// false statement as every other finding in this pass.
+func TestLinkNotesQualifyTheCycleByItsKeyCount(t *testing.T) {
+	single := api.CurrencyAmounts{"INR": "5000.00"}
+	multi := api.CurrencyAmounts{"INR": "5000.00", "USD": "40.00"}
+
+	if got := linkNetNote(single); !strings.Contains(got, "what actually circulates") {
+		t.Errorf("net note = %q, want the single-currency reading", got)
+	}
+	if got := linkNetNote(multi); !strings.Contains(got, "per currency") {
+		t.Errorf("net note = %q, want the multi-currency reading", got)
+	}
+	// A multi-currency note must not also claim a circulation figure.
+	if strings.Contains(linkNetNote(multi), "what actually circulates") {
+		t.Errorf("net note = %q, want it not to claim anything circulates", linkNetNote(multi))
+	}
+
+	if got := linkCircularNote(single); !strings.Contains(got, "flows back") {
+		t.Errorf("circular note = %q, want the single-currency reading", got)
+	}
+	if got := linkCircularNote(multi); !strings.Contains(got, "never one combined figure") {
+		t.Errorf("circular note = %q, want the multi-currency reading", got)
+	}
+	// An empty report is not a multi-currency one, so it must not be told it is
+	// a set of per-currency figures.
+	if got := linkNetNote(nil); !strings.Contains(got, "what actually circulates") {
+		t.Errorf("net note for an empty report = %q, want the neutral reading", got)
+	}
+}
+
+// TestTheGraphHeaderShowsTheServersNet covers the money-flow net decision: the
+// response carries one (MoneyFlowGraph.TotalNet, the server's per-currency
+// difference), so the header states it rather than describing the graph as
+// having no net — the dashboard already shows the same figure, and two screens
+// disagreeing about whether the payload carries a net is the defect.
+func TestTheGraphHeaderShowsTheServersNet(t *testing.T) {
+	m := NewMoneyFlow(testCtx())
+	m.loaded = true
+	m.graph = api.MoneyFlowGraph{
+		TotalIncome:  api.CurrencyAmounts{"INR": "80000.00"},
+		TotalExpense: api.CurrencyAmounts{"INR": "20000.00"},
+		TotalNet:     api.CurrencyAmounts{"INR": "60000.00"},
+	}
+
+	header := strings.Join(m.headerLines(200), "\n")
+	if !strings.Contains(header, "net +60,000.00") {
+		t.Errorf("header = %q, want the server's net shown", header)
+	}
+	// A mixed-sign net is muted, and its text names the currencies.
+	m.graph.TotalNet = api.CurrencyAmounts{"INR": "60000.00", "USD": "-100.00"}
+	mixed := strings.Join(m.headerLines(200), "\n")
+	if !strings.Contains(mixed, "2 currencies") {
+		t.Errorf("header = %q, want the multi-currency net named", mixed)
+	}
+	if strings.Contains(mixed, DefaultTheme().Positive.Render(currencyNetText("", m.graph.TotalNet))) {
+		t.Errorf("header = %q, want the mixed-sign net muted", mixed)
 	}
 }
 
@@ -528,6 +778,64 @@ func TestTheCurrencySelectionStaysOffTheWire(t *testing.T) {
 	}
 	if got := c.filter.Currency; got != "" {
 		t.Errorf("the calendar request carries currency=%q", got)
+	}
+}
+
+// TestTheLinkPanelNeverCutsACurrencyCode pins the overflow trade where it was
+// being applied inconsistently. The panel budgets 12 cells for a total and is 32
+// wide, so a multi-currency figure cannot fit beside the label — and truncating
+// it there would cut a currency code out of the middle of a money line, which is
+// the one outcome padLeft is written to prevent. The amount takes its own rows
+// and wraps instead.
+func TestTheLinkPanelNeverCutsACurrencyCode(t *testing.T) {
+	m := NewMoneyFlow(testCtx())
+	m.loaded = true
+	m.graph = api.MoneyFlowGraph{
+		LinkSummary: []api.MoneyFlowLinkSummary{{
+			Type:  "transfer",
+			Count: 3,
+			Total:  api.CurrencyAmounts{"INR": "50000.00", "USD": "120.00"},
+		}},
+	}
+
+	panel := m.linkPanel(mfPanelWidth, 20)
+	// Both currency codes survive, and the total is not cut short of them.
+	for _, want := range []string{"INR", "USD", "50,000.00", "120.00"} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("panel = %q, missing %q: a currency code was cut from a money line", panel, want)
+		}
+	}
+	// A single-currency total still reads as one line, so the mixed-currency case
+	// is not simply a panel that always wraps now.
+	m.graph.LinkSummary[0].Total = api.CurrencyAmounts{"INR": "50000.00"}
+	single := m.linkPanel(mfPanelWidth, 20)
+	if !strings.Contains(single, "50,000.00") {
+		t.Errorf("panel = %q, want the single-currency total", single)
+	}
+}
+
+// TestTheLinksHeaderDoesNotTruncateTheCircularTotal is the same overflow issue in
+// the second place it appeared: the cycles header is truncated to the pane's
+// label width, so a per-currency total there would lose a code. The header
+// carries counts instead, and the report body opens with the total in full.
+func TestTheLinksHeaderDoesNotTruncateTheCircularTotal(t *testing.T) {
+	l := NewLinks(testCtx())
+	l.pane = linkPaneCycles
+	l.cycles = api.LinkCycleReport{
+		TotalCircular: api.CurrencyAmounts{"INR": "50000.00", "USD": "120.00"},
+		Cycles:        []api.LinkCycle{{Kind: "reciprocal"}},
+	}
+
+	header := l.headerLine(60)
+	if strings.Contains(header, "circular") {
+		t.Errorf("header = %q, want no total in a line that truncates mid-figure", header)
+	}
+	if !strings.Contains(header, "1 cycle") {
+		t.Errorf("header = %q, want the counts it does carry", header)
+	}
+	// And the report itself still states the total in full.
+	if body := strings.Join(l.cycleLines(), "\n"); !strings.Contains(body, "USD 120.00") {
+		t.Errorf("report = %q, want the total stated in full in the body", body)
 	}
 }
 

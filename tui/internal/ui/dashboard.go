@@ -405,6 +405,11 @@ func (d *Dashboard) currencyNotice() string {
 // go through currencyLine, so a window in two currencies is named rather than
 // rendered as one number: the net is the server's own per-currency difference,
 // which is the only subtraction anywhere near this figure.
+//
+// The net is coloured by its tri-state sign like every other money line on the
+// three screens. WarnText is not used for it any more: that styling meant "not
+// computed", and the figure now arrives computed — a real figure painted as
+// though it were a warning told the reader something the payload did not.
 func (d *Dashboard) cardLine(width int) string {
 	th := d.ctx.Theme
 	if !d.ready {
@@ -416,7 +421,8 @@ func (d *Dashboard) cardLine(width int) string {
 		th.Subtle.Render("Transactions") + " " + strconv.Itoa(s.TotalTransactions),
 		th.Subtle.Render("Income") + " " + th.Positive.Render(currencyLine(d.currency, s.TotalIncome)),
 		th.Subtle.Render("Expense") + " " + th.Negative.Render(currencyLine(d.currency, s.TotalExpense)),
-		th.Subtle.Render("Net") + " " + th.WarnText.Render(currencyLine(d.currency, s.TotalNet)),
+		th.Subtle.Render("Net") + " " + currencySignOf(d.currency, s.TotalNet).style(th).
+			Render(currencyLine(d.currency, s.TotalNet)),
 	}
 	return truncate(strings.Join(cards, "   "), width)
 }

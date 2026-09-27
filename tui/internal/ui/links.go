@@ -1016,8 +1016,11 @@ func (l *Links) headerLine(width int) string {
 			bits = append(bits, fmt.Sprintf("%d selected", n))
 		}
 	case linkPaneCycles:
+		// Counts only: the header is truncated to the pane's label width, and a
+		// per-currency total cut at that edge would lose a currency code from the
+		// middle of a figure. The report body opens with the total in full, so
+		// repeating it here would buy nothing and risk truncating it.
 		bits = append(bits,
-			"circular "+l.cycles.TotalCircular.Display(),
 			pluralise(len(l.cycles.Cycles), "cycle", "cycles"),
 			pluralise(len(l.cycles.OneSidedFlows), "one-sided flow", "one-sided flows"),
 			l.window.describe(l.ctx.Ref))
@@ -1170,8 +1173,12 @@ func (l *Links) cycleLines() []string {
 // the smallest leg *per currency* and no figure circulates the loop at all — a
 // loop whose legs are differently denominated has no single circulating amount —
 // so the line says that instead of repeating the single-currency claim.
+//
+// An empty or nil net is the single-currency case, not a multi-currency one: a
+// report with nothing in it has no differently denominated legs, and the
+// multi-currency note would diagnose a problem the payload does not have.
 func linkNetNote(net api.CurrencyAmounts) string {
-	if _, _, ok := net.Single(); ok {
+	if _, _, ok := net.Single(); ok || len(net) < 2 {
 		return "net is the smallest leg, i.e. what actually circulates"
 	}
 	return "net is the smallest leg per currency — nothing circulates a loop whose legs differ, and they are not added"
@@ -1180,7 +1187,7 @@ func linkNetNote(net api.CurrencyAmounts) string {
 // linkCircularNote qualifies the report's total, which carries LinkCycle.Net's
 // two readings for the same reason.
 func linkCircularNote(total api.CurrencyAmounts) string {
-	if _, _, ok := total.Single(); ok {
+	if _, _, ok := total.Single(); ok || len(total) < 2 {
 		return "the amount that flows back to where it started"
 	}
 	return "per currency, never one combined figure"

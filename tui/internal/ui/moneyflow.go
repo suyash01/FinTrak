@@ -906,15 +906,25 @@ func (p mfPlan) count() int {
 }
 
 // headerLines summarises the window the graph covers and the totals the server
-// reported. The graph response carries income and expense but no net, and the
-// client never does arithmetic on money, so no net is shown here. Every figure
-// goes through currencyLine, so a window in two currencies is named rather than
-// collapsed into one number.
+// reported. The response carries a net of its own — MoneyFlowGraph.TotalNet, the
+// server's per-currency difference folded from the same scope query as the two
+// totals beside it — so it is shown rather than described as absent; the client
+// still never subtracts money to produce one, and does not derive it from income
+// and expense. The dashboard's stat cards show the same figure for the same
+// reason, and a screen that said the graph had no net while its sibling showed
+// one would be the false statement all over again.
+//
+// Every figure goes through currencyLine, so a window in two currencies is named
+// rather than collapsed into one number, and the net is coloured by its
+// tri-state sign: a window that earned in one currency and spent in another has
+// none, and reads muted rather than green.
 func (m *MoneyFlow) headerLines(width int) []string {
 	th := m.ctx.Theme
 	title := th.Title.Render("Money flow")
 	title += th.Subtle.Render(" · ") + th.Positive.Render("in "+currencyLine(m.currency, m.graph.TotalIncome))
 	title += th.Subtle.Render(" · ") + th.Negative.Render("out "+currencyLine(m.currency, m.graph.TotalExpense))
+	title += th.Subtle.Render(" · ") +
+		currencySignOf(m.currency, m.graph.TotalNet).style(th).Render("net "+currencyNetText(m.currency, m.graph.TotalNet))
 	title += th.Subtle.Render(fmt.Sprintf(" · %s, %s",
 		pluralise(len(m.graph.Nodes), "node", "nodes"),
 		pluralise(len(m.graph.Links), "edge", "edges")))
@@ -1008,10 +1018,19 @@ func (m *MoneyFlow) linkPanel(width, height int) string {
 		lines = append(lines, th.Subtle.Render("none in this window"))
 	}
 	for _, summary := range m.graph.LinkSummary {
-		labelWidth := max(6, contentWidth-17)
-		lines = append(lines, pad(truncate(summary.Type, labelWidth), labelWidth)+
-			" "+padLeft(strconv.Itoa(summary.Count), 3)+
-			" "+padLeft(currencyLine(m.currency, summary.Total), 12))
+		// A per-currency total is far wider than the 12 cells this column budgets
+		// for it, and cutting one at the panel edge would drop a currency code
+		// from the middle of a figure — the one outcome padLeft exists to prevent.
+		// So the amount takes a row of its own and wraps instead: a
+		// mixed-currency rollup costs this panel a row per summary, and the
+		// height budget below elides the tail with a "…" rather than shortening a
+		// number.
+		lines = append(lines, th.Subtle.Render(
+			fmt.Sprintf("%s %s", summary.Type, pluralise(summary.Count, "link", "links"))))
+		for _, line := range strings.Split(
+			wrapText(currencyLine(m.currency, summary.Total), contentWidth), "\n") {
+			lines = append(lines, th.Money.Render(line))
+		}
 	}
 
 	// Clip the content to the rows the column has; the frame then closes around
@@ -1020,6 +1039,9 @@ func (m *MoneyFlow) linkPanel(width, height int) string {
 		lines = append(lines[:allowed-1], th.Subtle.Render("…"))
 	}
 	for i := range lines {
+		// Safe on the rows that are whole words and prose, and on a wrapped money
+		// line only where a single word is wider than the column — which
+		// wrapText has already broken as far as the column allows.
 		lines[i] = truncate(lines[i], contentWidth)
 	}
 	return trimToBox(th.Panel.Render(strings.Join(lines, "\n")), width, height)
@@ -1080,10 +1102,10 @@ func (m *MoneyFlow) periodLine(period api.MoneyFlowTimelinePeriod, index, barWid
 
 	split := mfSplitBar(th, m.currency, period.Income, period.Expense, busiest, barWidth)
 	net := currencyNetText(m.currency, period.Net)
-	netStyle := th.Positive
-	if currencyIsNegative(m.currency, period.Net) {
-		netStyle = th.Negative
-	}
+	// A period that earned in one currency and spent in another has no sign, and
+	// the muted style is what says so rather than reading the missing one as a
+	// surplus.
+	netStyle := currencySignOf(m.currency, period.Net).style(th)
 
 	if full {
 		return cursor + label + " " + split + "  " +
