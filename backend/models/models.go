@@ -948,21 +948,31 @@ type BulkDeleteLinksRequest struct {
 	IDs []uuid.UUID `json:"ids" binding:"required"`
 }
 
-// DashboardSummary aggregates a user's financial overview for the dashboard:
-// account/transaction counts, income and expense totals, spending and income
-// breakdowns by category, a monthly trend, and the most recent transactions.
+// DashboardSummary is the dashboard aggregate: account/transaction counts,
+// income and expense totals, spending and income breakdowns by category, a
+// monthly trend, and the most recent transactions. Every amount is a
+// CurrencyAmounts rather than a single figure, because the aggregate can span
+// accounts in more than one currency and no number can represent that; see
+// CurrencyAmounts. CurrencyScope names the accounts behind each currency so a
+// mixed-currency response explains itself.
+//
 // In billing-cycle view (groupBy=billing_cycle) the totals reflect the current
 // statement period, BillingCycleTrend replaces MonthlyTrend, and
 // CurrentCycle describes that in-progress period.
 type DashboardSummary struct {
-	TotalAccounts      int             `json:"totalAccounts"`
-	TotalTransactions  int             `json:"totalTransactions"`
-	TotalIncome        money.Amount    `json:"totalIncome"`
-	TotalExpense       money.Amount    `json:"totalExpense"`
+	TotalAccounts     int             `json:"totalAccounts"`
+	TotalTransactions int             `json:"totalTransactions"`
+	TotalIncome       CurrencyAmounts `json:"totalIncome"`
+	TotalExpense      CurrencyAmounts `json:"totalExpense"`
+	// TotalNet is the per-currency income minus expense, computed by the server.
+	// The client must not derive it by subtracting the two maps: that is the
+	// cross-currency arithmetic this shape exists to refuse.
+	TotalNet           CurrencyAmounts `json:"totalNet"`
 	ByCategory         []CategorySpend `json:"byCategory"`
 	IncomeByCategory   []CategorySpend `json:"incomeByCategory"`
 	MonthlyTrend       []MonthlyData   `json:"monthlyTrend"`
 	RecentTransactions []Transaction   `json:"recentTransactions"`
+	CurrencyScope      CurrencyScope   `json:"currencyScope"`
 	// Billing-cycle view (groupBy=billing_cycle): populated when the dashboard
 	// is framed around statement periods for a single billing-day account.
 	CurrentCycle      *CurrentCycleInfo       `json:"currentCycle,omitempty"`
@@ -979,30 +989,36 @@ type CurrentCycleInfo struct {
 }
 
 // BillingCycleTrendItem holds income and expense totals for one billing cycle,
-// keyed by its label (e.g. "Aug 2026").
+// keyed by its label (e.g. "Aug 2026"). The dates stay time.Time because the
+// cycle this item describes is a real timestamp pair, not a stored day string,
+// and the client renders them through the same formatter as every other date.
 type BillingCycleTrendItem struct {
-	Label     string       `json:"label"`
-	StartDate time.Time    `json:"startDate"`
-	EndDate   time.Time    `json:"endDate"`
-	Income    money.Amount `json:"income"`
-	Expense   money.Amount `json:"expense"`
+	Label     string          `json:"label"`
+	StartDate time.Time       `json:"startDate"`
+	EndDate   time.Time       `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
 }
 
-// CategorySpend aggregates spend/income for a single category.
+// CategorySpend aggregates spend/income for a single category. Total is
+// per-currency: a category can be spent in more than one currency at once, and
+// the two are not addable. CategoryID is the category's UUID as text, which is
+// what the JSON contract has always carried and what the per-currency fold keys
+// on.
 type CategorySpend struct {
-	CategoryID    uuid.UUID    `json:"categoryId"`
-	CategoryName  string       `json:"categoryName"`
-	CategoryColor string       `json:"categoryColor"`
-	CategoryIcon  string       `json:"categoryIcon"`
-	Total         money.Amount `json:"total"`
-	Count         int          `json:"count"`
+	CategoryID    string          `json:"categoryId"`
+	CategoryName  string          `json:"categoryName"`
+	CategoryColor string          `json:"categoryColor"`
+	CategoryIcon  string          `json:"categoryIcon"`
+	Total         CurrencyAmounts `json:"total"`
+	Count         int             `json:"count"`
 }
 
-// MonthlyData holds income and expense totals for one month (keyed "YYYY-MM").
+// MonthlyData holds one month's totals, keyed "YYYY-MM".
 type MonthlyData struct {
-	Month   string       `json:"month"`
-	Income  money.Amount `json:"income"`
-	Expense money.Amount `json:"expense"`
+	Month   string          `json:"month"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
 }
 
 // Money-flow Sankey types. GetMoneyFlow aggregates every transaction in a

@@ -784,18 +784,47 @@ type TransferSuggestion struct {
 
 // ---- Dashboard ----
 
+// CurrencyAmounts is one aggregate's value, keyed by the currency code of each
+// account that contributed to it. One key means the value is exact for the whole
+// scope it covers; more than one means the scope spans currencies and no total
+// exists, so a consumer must either choose a currency or say it cannot add them.
+// An absent key reads as zero.
+type CurrencyAmounts map[string]Amount
+
+// ScopedAccount is one account inside a response's currency scope, with the
+// per-currency income and expense it contributes.
+type ScopedAccount struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Currency string          `json:"currency"`
+	Income   CurrencyAmounts `json:"income"`
+	Expense  CurrencyAmounts `json:"expense"`
+}
+
+// CurrencyScope names every currency a response covers and the accounts behind
+// each one, so a mixed-currency result explains itself.
+type CurrencyScope struct {
+	Currencies []string        `json:"currencies"`
+	Accounts   []ScopedAccount `json:"accounts"`
+}
+
 // DashboardSummary is the dashboard aggregate. In billing-cycle view
 // BillingCycleTrend replaces MonthlyTrend and CurrentCycle describes the
-// in-progress period.
+// in-progress period. Every amount is a CurrencyAmounts: a window can span
+// accounts in more than one currency and no single number represents that.
+// TotalNet is the server's per-currency difference - do not derive it by
+// subtracting TotalIncome and TotalExpense.
 type DashboardSummary struct {
 	TotalAccounts      int                     `json:"totalAccounts"`
 	TotalTransactions  int                     `json:"totalTransactions"`
-	TotalIncome        Amount                  `json:"totalIncome"`
-	TotalExpense       Amount                  `json:"totalExpense"`
+	TotalIncome        CurrencyAmounts         `json:"totalIncome"`
+	TotalExpense       CurrencyAmounts         `json:"totalExpense"`
+	TotalNet           CurrencyAmounts         `json:"totalNet"`
 	ByCategory         []CategorySpend         `json:"byCategory"`
 	IncomeByCategory   []CategorySpend         `json:"incomeByCategory"`
 	MonthlyTrend       []MonthlyData           `json:"monthlyTrend"`
 	RecentTransactions []Transaction           `json:"recentTransactions"`
+	CurrencyScope      CurrencyScope           `json:"currencyScope"`
 	CurrentCycle       *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend  []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
 }
@@ -810,28 +839,29 @@ type CurrentCycleInfo struct {
 
 // BillingCycleTrendItem holds one cycle's income and expense totals.
 type BillingCycleTrendItem struct {
-	Label     string    `json:"label"`
-	StartDate time.Time `json:"startDate"`
-	EndDate   time.Time `json:"endDate"`
-	Income    Amount    `json:"income"`
-	Expense   Amount    `json:"expense"`
+	Label     string          `json:"label"`
+	StartDate time.Time       `json:"startDate"`
+	EndDate   time.Time       `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
 }
 
-// CategorySpend aggregates one category's total and transaction count.
+// CategorySpend aggregates one category's total and transaction count. Total is
+// per-currency: one category can be spent in more than one currency at once.
 type CategorySpend struct {
-	CategoryID    string `json:"categoryId"`
-	CategoryName  string `json:"categoryName"`
-	CategoryColor string `json:"categoryColor"`
-	CategoryIcon  string `json:"categoryIcon"`
-	Total         Amount `json:"total"`
-	Count         int    `json:"count"`
+	CategoryID    string          `json:"categoryId"`
+	CategoryName  string          `json:"categoryName"`
+	CategoryColor string          `json:"categoryColor"`
+	CategoryIcon  string          `json:"categoryIcon"`
+	Total         CurrencyAmounts `json:"total"`
+	Count         int             `json:"count"`
 }
 
 // MonthlyData holds one month's totals, keyed "YYYY-MM".
 type MonthlyData struct {
-	Month   string `json:"month"`
-	Income  Amount `json:"income"`
-	Expense Amount `json:"expense"`
+	Month   string          `json:"month"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
 }
 
 // ---- Money flow ----

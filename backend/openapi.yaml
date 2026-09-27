@@ -4003,6 +4003,17 @@ paths:
             format: uuid
           description: Filter by account ID
         - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Filter to accounts in this currency (upper-case three-letter code,
+            case-insensitive). Amounts are reported per currency regardless;
+            this only narrows the scope. A code that is not three letters is a
+            400.
+        - in: query
           name: groupBy
           schema:
             type: string
@@ -5848,6 +5859,49 @@ components:
         score:
           type: number
 
+    CurrencyAmounts:
+      type: object
+      description: >-
+        One aggregate's value, keyed by the currency code (ISO 4217) of each
+        account that contributed to it. One key means the value is exact for the
+        whole scope it covers; more than one means the scope spans currencies and
+        no total exists, so a consumer must either choose a currency or say it
+        cannot add them. An absent key reads as zero.
+      additionalProperties:
+        type: number
+
+    CurrencyScope:
+      type: object
+      description: >-
+        The currencies a response covers and the accounts behind each one, so a
+        mixed-currency result explains itself rather than dropping a currency
+        silently.
+      properties:
+        currencies:
+          type: array
+          description: Every currency in the response, sorted. Never null.
+          items:
+            type: string
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScopedAccount"
+
+    ScopedAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          type: string
+        income:
+          $ref: "#/components/schemas/CurrencyAmounts"
+        expense:
+          $ref: "#/components/schemas/CurrencyAmounts"
+
     CategorySpend:
       type: object
       properties:
@@ -5861,7 +5915,7 @@ components:
         categoryIcon:
           type: string
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
 
@@ -5872,9 +5926,9 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     CurrentCycleInfo:
       type: object
@@ -5903,9 +5957,9 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     DashboardSummary:
       type: object
@@ -5915,9 +5969,15 @@ components:
         totalTransactions:
           type: integer
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+        totalNet:
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency income minus expense, computed by the server. A client
+            must not derive it by subtracting `totalIncome` and `totalExpense`.
         byCategory:
           type: array
           items:
@@ -5934,6 +5994,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Transaction"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
         currentCycle:
           $ref: "#/components/schemas/CurrentCycleInfo"
         billingCycleTrend:
