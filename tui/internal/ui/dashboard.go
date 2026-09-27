@@ -45,12 +45,20 @@ const dashReportWidth = 100
 //
 // The headline stays pinned and the sections below it scroll, because the
 // figures the screen exists for must survive a short terminal.
+//
+// currency is the screen's own choice of which currency to render in, taken
+// from the window form. It is deliberately NOT part of the request: the server's
+// ?currency= filter drops the other currencies from the payload, and a screen
+// that had narrowed its own request could no longer name what it left out — the
+// notice this screen's currencyLine exists to print would have nothing to print.
+// So the request stays whole and the selection only chooses a key to read.
 type Dashboard struct {
 	ctx *Ctx
 
-	filter  api.DashboardFilter
-	summary api.DashboardSummary
-	ready   bool
+	filter   api.DashboardFilter
+	currency string
+	summary  api.DashboardSummary
+	ready    bool
 
 	// bodyOffset is the first section line the body pane shows, and paneHeight
 	// is how many fit. View records the height on each render so the paging keys
@@ -126,6 +134,10 @@ func (d *Dashboard) reload() tea.Cmd {
 // window while grouping by billing cycle, so those bounds are dropped in that
 // mode rather than sent and silently discarded; they stay on the struct so
 // switching back to the calendar view restores the user's window.
+//
+// WindowFilter carries a Currency of its own and it is left empty on purpose:
+// see the Dashboard type's comment. d.currency is a rendering choice, and a
+// request that narrowed to it would cost the screen its notice.
 func (d *Dashboard) request() api.DashboardFilter {
 	filter := d.filter
 	if filter.GroupBy == dashGroupByCycle {
@@ -262,19 +274,23 @@ func (d *Dashboard) stepCycles(delta int) tea.Cmd {
 }
 
 // openWindowForm edits the window the whole screen reports on: the inclusive
-// date range, the account, and how many statement periods a billing-cycle view
-// spans. Applying it is purely local, so the form closes itself and the reload
-// is issued from here.
+// date range, the account, the currency to read the figures in, and how many
+// statement periods a billing-cycle view spans. Applying it is purely local, so
+// the form closes itself and the reload is issued from here.
 func (d *Dashboard) openWindowForm() {
 	filter := d.filter
 	cycles := ""
 	if filter.Cycles > 0 {
 		cycles = strconv.Itoa(filter.Cycles)
 	}
+	currency := SelectField("Currency", d.currency, d.ctx.Ref.CurrencyOptions(), false)
+	currency.ClearLabel = "every currency"
+	currency.Help = "which currency to read the figures in; the others are named, never added"
 	fields := []Field{
 		{Label: "Date from", Kind: FieldText, Value: filter.DateFrom, Width: 14, Validate: optionalDate},
 		{Label: "Date to", Kind: FieldText, Value: filter.DateTo, Width: 14, Validate: optionalDate},
 		SelectField("Account", filter.AccountID, d.ctx.Ref.AccountOptions(), false),
+		currency,
 		{Label: "Cycles", Kind: FieldText, Value: cycles, Width: 6, Validate: positiveInt,
 			Help: "billing-cycle view only: 1-60, blank for the default of 12"},
 	}
@@ -283,6 +299,7 @@ func (d *Dashboard) openWindowForm() {
 		d.filter.DateFrom = strings.TrimSpace(f.Value("Date from"))
 		d.filter.DateTo = strings.TrimSpace(f.Value("Date to"))
 		d.filter.AccountID = f.Value("Account")
+		d.currency = f.Value("Currency")
 
 		entered := f.IntValue("Cycles")
 		switch {
@@ -337,19 +354,20 @@ func (d *Dashboard) View(width, height int) string {
 }
 
 // headLines renders the pinned headline: the framing line, the stat cards, and
-// the note that explains the absent net figure.
+// the note that explains where the net figure came from.
 func (d *Dashboard) headLines(width int) []string {
 	th := d.ctx.Theme
 	return []string{
 		d.frameLine(width),
 		d.cardLine(width),
-		th.Subtle.Render(truncate("net not computed — income and expense are shown exactly as the API returned them", width)),
+		th.Subtle.Render(truncate("net is the server's per-currency difference — this client never subtracts", width)),
 		"",
 	}
 }
 
 // frameLine names the view and the window it covers, so a filter left over from
-// an earlier session is visible without opening the form.
+// an earlier session is visible without opening the form, and the currency the
+// figures are read in with what the response holds besides it.
 func (d *Dashboard) frameLine(width int) string {
 	th := d.ctx.Theme
 	mode := "calendar-month view"
@@ -363,6 +381,9 @@ func (d *Dashboard) frameLine(width int) string {
 	if d.filter.GroupBy != dashGroupByCycle && (d.filter.DateFrom != "" || d.filter.DateTo != "") {
 		parts = append(parts, "dates "+defaultTo(d.filter.DateFrom, "…")+"…"+defaultTo(d.filter.DateTo, "…"))
 	}
+	if scope := d.currencyNotice(); scope != "" {
+		parts = append(parts, scope)
+	}
 	if !d.ready {
 		parts = append(parts, "loading…")
 	}
@@ -370,10 +391,20 @@ func (d *Dashboard) frameLine(width int) string {
 	return line + "  " + th.Subtle.Render(truncate(strings.Join(parts, " · "), max(10, width-11)))
 }
 
-// cardLine renders the headline counts and totals. Income and expense are shown
-// side by side and the net is marked uncomputed on purpose: every amount the API
-// returns is exact decimal text, and adding them is arithmetic the client is not
-// allowed to do.
+// currencyNotice names the currency on screen and the ones the response holds
+// besides it. It comes from the response's own scope, so a window that spans a
+// currency the account list never suggested is still reported.
+func (d *Dashboard) currencyNotice() string {
+	if !d.ready {
+		return ""
+	}
+	return currencyScopeLabel(d.currency, d.summary.CurrencyScope)
+}
+
+// cardLine renders the headline counts and totals. Income, expense and net all
+// go through currencyLine, so a window in two currencies is named rather than
+// rendered as one number: the net is the server's own per-currency difference,
+// which is the only subtraction anywhere near this figure.
 func (d *Dashboard) cardLine(width int) string {
 	th := d.ctx.Theme
 	if !d.ready {
@@ -383,9 +414,9 @@ func (d *Dashboard) cardLine(width int) string {
 	cards := []string{
 		th.Subtle.Render("Accounts") + " " + strconv.Itoa(s.TotalAccounts),
 		th.Subtle.Render("Transactions") + " " + strconv.Itoa(s.TotalTransactions),
-		th.Subtle.Render("Income") + " " + th.Positive.Render(s.TotalIncome.Display()),
-		th.Subtle.Render("Expense") + " " + th.Negative.Render(s.TotalExpense.Display()),
-		th.Subtle.Render("Net") + " " + th.WarnText.Render("not computed"),
+		th.Subtle.Render("Income") + " " + th.Positive.Render(currencyLine(d.currency, s.TotalIncome)),
+		th.Subtle.Render("Expense") + " " + th.Negative.Render(currencyLine(d.currency, s.TotalExpense)),
+		th.Subtle.Render("Net") + " " + th.WarnText.Render(currencyLine(d.currency, s.TotalNet)),
 	}
 	return truncate(strings.Join(cards, "   "), width)
 }
@@ -421,7 +452,8 @@ func (d *Dashboard) scrollLine(width, total int) string {
 // already returns these ordered by total descending and capped at fifteen, so
 // the list is shown as served: the client never sorts by amount, because
 // ordering two amounts would need the display-only float conversion that is
-// reserved for bar widths.
+// reserved for bar widths. The bar is scaled by the currency on screen, so a
+// quiet foreign category cannot flatten the one beside it.
 func (d *Dashboard) categorySection(title string, spends []api.CategorySpend, width int) []string {
 	th := d.ctx.Theme
 	lines := []string{th.PanelTitle.Render(truncate(title, width))}
@@ -429,14 +461,18 @@ func (d *Dashboard) categorySection(title string, spends []api.CategorySpend, wi
 		return append(lines, th.Subtle.Render("  none in this window"))
 	}
 	nameWidth, barWidth := dashCategoryWidths(width)
-	largest := dashLargest(spends)
+	largest := dashLargest(d.currency, spends)
 	for _, spend := range spends {
 		// An id with no joined name still has to render, so the shared helper
 		// supplies the id and then the uncategorized label.
 		name := categoryOr(spend.CategoryName, &spend.CategoryID)
-		lead := fmt.Sprintf("%-*s %6d %14s  ",
-			nameWidth, truncate(name, nameWidth), spend.Count, spend.Total.Display())
-		lines = append(lines, lead+bar(th, ratioOf(spend.Total, largest), barWidth))
+		// The amount column is padded to the width the budget reserved for it, and
+		// a per-currency total that outgrows it is allowed to: the bar is pushed
+		// right and the view's box clips the rest, which is a cosmetic cost against
+		// the alternative of hiding a currency the response reported.
+		lead := fmt.Sprintf("%-*s %6d %s  ",
+			nameWidth, truncate(name, nameWidth), spend.Count, padLeft(currencyLine(d.currency, spend.Total), 14))
+		lines = append(lines, lead+bar(th, ratioOfScale(currencyScale(d.currency, spend.Total), largest), barWidth))
 	}
 	return lines
 }
@@ -459,7 +495,7 @@ func (d *Dashboard) trendSection(width int) []string {
 		lines = append(lines, trendHeader(th, width))
 		for _, item := range trend {
 			label := defaultTo(item.Label, formatRange(item.StartDate, item.EndDate))
-			lines = append(lines, trendRow(th, label, item.Income, item.Expense, width))
+			lines = append(lines, d.trendRow(th, label, item.Income, item.Expense, width))
 		}
 		return lines
 	}
@@ -470,7 +506,7 @@ func (d *Dashboard) trendSection(width int) []string {
 	}
 	lines = append(lines, trendHeader(th, width))
 	for _, item := range trend {
-		lines = append(lines, trendRow(th, defaultTo(item.Month, "?"), item.Income, item.Expense, width))
+		lines = append(lines, d.trendRow(th, defaultTo(item.Month, "?"), item.Income, item.Expense, width))
 	}
 	return lines
 }
@@ -519,9 +555,12 @@ func (d *Dashboard) breakdown() string {
 	if d.filter.GroupBy != dashGroupByCycle && (d.filter.DateFrom != "" || d.filter.DateTo != "") {
 		fmt.Fprintf(&b, "Dates    %s…%s\n", defaultTo(d.filter.DateFrom, "…"), defaultTo(d.filter.DateTo, "…"))
 	}
+	if scope := d.currencyNotice(); scope != "" {
+		fmt.Fprintf(&b, "Currency %s\n", scope)
+	}
 	fmt.Fprintf(&b, "Accounts %d · Transactions %d\n", s.TotalAccounts, s.TotalTransactions)
-	fmt.Fprintf(&b, "Income   %s · Expense %s\n", s.TotalIncome.Display(), s.TotalExpense.Display())
-	b.WriteString("net not computed: the two totals above are shown exactly as the API returned them\n")
+	fmt.Fprintf(&b, "Income   %s · Expense %s\n", currencyLine(d.currency, s.TotalIncome), currencyLine(d.currency, s.TotalExpense))
+	fmt.Fprintf(&b, "Net      %s — the server's per-currency difference, not a subtraction made here\n", currencyLine(d.currency, s.TotalNet))
 	if cycle := s.CurrentCycle; cycle != nil {
 		fmt.Fprintf(&b, "Current cycle %s · %s\n", cycle.Label, formatRange(cycle.StartDate, cycle.EndDate))
 	}
@@ -541,12 +580,14 @@ func dashCategoryWidths(width int) (name, barWidth int) {
 }
 
 // dashLargest returns the largest total of a breakdown, which is the bar
-// denominator. It is read through the display-only float conversion and is never
-// shown: it only ever scales bars.
-func dashLargest(spends []api.CategorySpend) float64 {
+// denominator. It is the currency on screen's own figure, read through the
+// display-only float conversion and never shown: it only ever scales bars. A
+// breakdown the currency on screen never touched has no largest, which leaves
+// every bar in it flat rather than sized against a foreign account.
+func dashLargest(currency string, spends []api.CategorySpend) float64 {
 	largest := 0.0
 	for _, spend := range spends {
-		if value := spend.Total.Float64(); value > largest {
+		if value := currencyScale(currency, spend.Total); value > largest {
 			largest = value
 		}
 	}
@@ -570,12 +611,14 @@ func trendHeader(th Theme, width int) string {
 }
 
 // trendRow renders one period's income and expense. The amounts are padded
-// before they are coloured, so the escape codes cannot skew the columns.
-func trendRow(th Theme, label string, income, expense api.Amount, width int) string {
+// before they are coloured, so the escape codes cannot skew the columns, and
+// both go through currencyLine so a period the currency on screen never touched
+// says so instead of borrowing a neighbour's number.
+func (d *Dashboard) trendRow(th Theme, label string, income, expense api.CurrencyAmounts, width int) string {
 	labelWidth, amountWidth := dashTrendWidths(width)
 	return fmt.Sprintf("%-*s ", labelWidth, truncate(label, labelWidth)) +
-		th.Positive.Render(fmt.Sprintf("%*s", amountWidth, income.Display())) + "   " +
-		th.Negative.Render(fmt.Sprintf("%*s", amountWidth, expense.Display()))
+		th.Positive.Render(padLeft(currencyLine(d.currency, income), amountWidth)) + "   " +
+		th.Negative.Render(padLeft(currencyLine(d.currency, expense), amountWidth))
 }
 
 // dashRecentWidths splits a recent-transaction line: the date, account and

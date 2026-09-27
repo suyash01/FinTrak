@@ -16,6 +16,8 @@ package ui
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 
 	"charm.land/bubbles/v2/key"
@@ -211,6 +213,32 @@ func (r *RefData) AccountOptions() []Option {
 			label += " · closed"
 		}
 		out = append(out, Option{Value: a.ID, Label: label})
+	}
+	return out
+}
+
+// CurrencyOptions returns picker options for every currency the user's accounts
+// hold, in code order, with the unfiltered entry a currency selection needs.
+// A screen cannot know which currencies a *window* spans before it asks, so the
+// picker is built from the accounts it already holds; the response's own
+// currencyScope is what reports a window that turned out to span more, and that
+// is what currencyScopeLabel prints beside the selection.
+func (r *RefData) CurrencyOptions() []Option {
+	seen := map[string]bool{}
+	codes := make([]string, 0, len(r.Accounts))
+	for _, a := range r.Accounts {
+		code := strings.ToUpper(defaultTo(a.Currency, ""))
+		if code == "" || seen[code] {
+			continue
+		}
+		seen[code] = true
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+
+	out := make([]Option, 0, len(codes))
+	for _, code := range codes {
+		out = append(out, Option{Value: code, Label: code})
 	}
 	return out
 }

@@ -83,6 +83,14 @@ type MoneyFlow struct {
 
 	// window is the user's own filter, shared by the graph and the timeline.
 	window api.WindowFilter
+	// currency is the screen's own choice of which currency to render in, taken
+	// from the window form. It is deliberately NOT part of the request: the
+	// server's ?currency= filter drops the other currencies from the payload, and
+	// a screen that had narrowed its own request could no longer name what it left
+	// out — and a stage-sized bar and a per-period bar would then be denominated
+	// differently from the notice beside them. So the request stays whole and the
+	// selection only chooses a key to read.
+	currency string
 	// scrub is the timeline period the graph is currently narrowed to. It is
 	// kept apart from window so the strip keeps offering every period while the
 	// user moves from one to the next.
@@ -164,6 +172,9 @@ func (m *MoneyFlow) Refresh() tea.Cmd {
 
 // graphFilter is the graph request: the user's window, overridden by a scrubbed
 // period when one is active, plus the node cap (zero leaves the server default).
+// WindowFilter.Currency is left empty on purpose — see the MoneyFlow type's
+// comment: m.currency is a rendering choice, and narrowing the request to it
+// would cost the screen the notice that says what it is not showing.
 func (m *MoneyFlow) graphFilter() api.MoneyFlowFilter {
 	window := m.window
 	if m.scrub != nil {
@@ -173,7 +184,9 @@ func (m *MoneyFlow) graphFilter() api.MoneyFlowFilter {
 }
 
 // timelineFilter is the strip request. Cycles is only sent for the billing-cycle
-// framing, which is the only mode that reads it.
+// framing, which is the only mode that reads it, and for the same reason the
+// window's currency is not: the strip and the graph are read in one currency
+// between them.
 func (m *MoneyFlow) timelineFilter() api.TimelineFilter {
 	filter := api.TimelineFilter{WindowFilter: m.window, GroupBy: m.groupBy}
 	if m.groupBy == mfGroupBillingCycle {
@@ -472,7 +485,7 @@ func (m *MoneyFlow) flatten() {
 			}
 		}
 		sort.SliceStable(group, func(i, j int) bool {
-			vi, vj := group[i].Total.Float64(), group[j].Total.Float64()
+			vi, vj := currencyScale(m.currency, group[i].Total), currencyScale(m.currency, group[j].Total)
 			if vi != vj {
 				return vi > vj
 			}
@@ -512,14 +525,17 @@ func (m *MoneyFlow) clampPeriod() {
 }
 
 // stageMax is the largest node total in a stage, the denominator every bar in
-// that stage is drawn against so the bars compare within their own stage.
+// that stage is drawn against so the bars compare within their own stage. It is
+// the currency on screen's own figure; a stage the currency on screen never
+// touched has no largest, which leaves its bars flat rather than sized against a
+// foreign account.
 func (m *MoneyFlow) stageMax(kind string) float64 {
 	max := 0.0
 	for _, node := range m.nodes {
 		if node.Kind != kind {
 			continue
 		}
-		if value := node.Total.Float64(); value > max {
+		if value := currencyScale(m.currency, node.Total); value > max {
 			max = value
 		}
 	}
@@ -535,7 +551,8 @@ func (m *MoneyFlow) name(id string) string {
 }
 
 // edgesAround splits the graph's edges into those leaving and those arriving at
-// a node, each ordered by volume so the biggest flow reads first.
+// a node, each ordered by volume in the currency on screen so the biggest flow
+// in that currency reads first.
 func (m *MoneyFlow) edgesAround(id string) (out, in []api.MoneyFlowEdge) {
 	for _, edge := range m.graph.Links {
 		switch {
@@ -545,8 +562,8 @@ func (m *MoneyFlow) edgesAround(id string) (out, in []api.MoneyFlowEdge) {
 			in = append(in, edge)
 		}
 	}
-	mfSortEdges(out)
-	mfSortEdges(in)
+	mfSortEdges(m.currency, out)
+	mfSortEdges(m.currency, in)
 	return out, in
 }
 
@@ -589,11 +606,13 @@ func (m *MoneyFlow) traceLines(width int) []string {
 }
 
 // edgeLine renders one edge, keeping the value visible: it is the payload of the
-// line, so the names give way first. Amounts are ASCII, so len is their width.
+// line, so the names give way first. The width is measured on what is rendered
+// rather than counted in bytes, because a multi-currency value ends in an em
+// dash and would otherwise take two cells more than it shows.
 func (m *MoneyFlow) edgeLine(direction string, edge api.MoneyFlowEdge, width int) string {
-	value := edge.Value.Display()
+	value := currencyLine(m.currency, edge.Value)
 	line := "  " + direction + "  " + m.name(edge.Source) + " → " + m.name(edge.Target)
-	return truncate(line, max(8, width-len(value)-2)) + "  " + value
+	return truncate(line, max(8, width-ansi.StringWidth(value)-2)) + "  " + value
 }
 
 // traceBody is the modal view of one node: what it is, how large it is, and
@@ -607,8 +626,9 @@ func (m *MoneyFlow) traceBody(node api.MoneyFlowNode) string {
 	if node.Group != "" {
 		fmt.Fprintf(&b, "Group  %s\n", m.ctx.Ref.GroupName(node.Group))
 	}
-	fmt.Fprintf(&b, "Total  %s\n", node.Total.Display())
-	fmt.Fprintf(&b, "Share  %s of the largest %s node\n", bar(th, ratioOf(node.Total, m.stageMax(node.Kind)), 24), node.Kind)
+	fmt.Fprintf(&b, "Total  %s\n", currencyLine(m.currency, node.Total))
+	fmt.Fprintf(&b, "Share  %s of the largest %s node\n",
+		bar(th, ratioOfScale(currencyScale(m.currency, node.Total), m.stageMax(node.Kind)), 24), node.Kind)
 	if node.Color != "" {
 		fmt.Fprintf(&b, "Color  %s\n", node.Color)
 	}
@@ -629,7 +649,7 @@ func (m *MoneyFlow) traceBody(node api.MoneyFlowNode) string {
 			return
 		}
 		for _, edge := range edges {
-			fmt.Fprintf(&b, "  %s → %s  %s\n", m.name(edge.Source), m.name(edge.Target), edge.Value.Display())
+			fmt.Fprintf(&b, "  %s → %s  %s\n", m.name(edge.Source), m.name(edge.Target), currencyLine(m.currency, edge.Value))
 		}
 	}
 	out, in := m.edgesAround(node.ID)
@@ -685,14 +705,19 @@ func (m *MoneyFlow) openCyclesForm() {
 	}))
 }
 
-// openWindowForm edits the shared window. The date bounds are inclusive, the
-// same contract the timeline periods and the API use.
+// openWindowForm edits the shared window: the date bounds, the account, and the
+// currency the figures are read in. The date bounds are inclusive, the same
+// contract the timeline periods and the API use.
 func (m *MoneyFlow) openWindowForm() {
 	window := m.window
+	currency := SelectField("Currency", m.currency, m.ctx.Ref.CurrencyOptions(), false)
+	currency.ClearLabel = "every currency"
+	currency.Help = "which currency to read the figures and size the bars in; the others are named, never added"
 	fields := []Field{
 		{Label: "Date from", Kind: FieldText, Value: window.DateFrom, Width: 14, Validate: optionalDate, Help: "YYYY-MM-DD, inclusive; empty means open ended"},
 		{Label: "Date to", Kind: FieldText, Value: window.DateTo, Width: 14, Validate: optionalDate},
 		SelectField("Account", window.AccountID, m.ctx.Ref.AccountOptions(), false),
+		currency,
 	}
 	m.ctx.Open(NewForm("moneyflow.window", "Money flow window", fields, func(f *Form) tea.Cmd {
 		m.window = api.WindowFilter{
@@ -700,6 +725,7 @@ func (m *MoneyFlow) openWindowForm() {
 			DateTo:    f.Value("Date to"),
 			AccountID: f.Value("Account"),
 		}
+		m.currency = f.Value("Currency")
 		// The strip's period list changes with the window, so the selection is
 		// re-anchored on the newest period instead of pointing at a stale index.
 		m.period, m.offset, m.periodChosen = 0, 0, false
@@ -794,7 +820,9 @@ func (m *MoneyFlow) applyRows(width int) {
 }
 
 // nodeRow renders one node: its name, its group when there is room, its total,
-// and a bar proportional to the largest node in its stage.
+// and a bar proportional to the largest node in its stage *in the currency on
+// screen*, so a quiet foreign node neither shrinks nor is shrunk by a domestic
+// one.
 func (m *MoneyFlow) nodeRow(plan mfPlan, node api.MoneyFlowNode, stageMax float64) []Cell {
 	row := []Cell{Text("  " + node.Name)}
 	if plan.group > 0 {
@@ -805,10 +833,10 @@ func (m *MoneyFlow) nodeRow(plan mfPlan, node api.MoneyFlowNode, stageMax float6
 		row = append(row, Muted(group))
 	}
 	if plan.total > 0 {
-		row = append(row, Cell{Text: node.Total.Display(), Role: RoleMoney})
+		row = append(row, Cell{Text: currencyLine(m.currency, node.Total), Role: RoleMoney})
 	}
 	if plan.bar > 0 {
-		row = append(row, Cell{Text: bar(m.ctx.Theme, ratioOf(node.Total, stageMax), plan.bar)})
+		row = append(row, Cell{Text: bar(m.ctx.Theme, ratioOfScale(currencyScale(m.currency, node.Total), stageMax), plan.bar)})
 	}
 	return row
 }
@@ -879,12 +907,14 @@ func (p mfPlan) count() int {
 
 // headerLines summarises the window the graph covers and the totals the server
 // reported. The graph response carries income and expense but no net, and the
-// client never does arithmetic on money, so no net is shown here.
+// client never does arithmetic on money, so no net is shown here. Every figure
+// goes through currencyLine, so a window in two currencies is named rather than
+// collapsed into one number.
 func (m *MoneyFlow) headerLines(width int) []string {
 	th := m.ctx.Theme
 	title := th.Title.Render("Money flow")
-	title += th.Subtle.Render(" · ") + th.Positive.Render("in "+m.graph.TotalIncome.Display())
-	title += th.Subtle.Render(" · ") + th.Negative.Render("out "+m.graph.TotalExpense.Display())
+	title += th.Subtle.Render(" · ") + th.Positive.Render("in "+currencyLine(m.currency, m.graph.TotalIncome))
+	title += th.Subtle.Render(" · ") + th.Negative.Render("out "+currencyLine(m.currency, m.graph.TotalExpense))
 	title += th.Subtle.Render(fmt.Sprintf(" · %s, %s",
 		pluralise(len(m.graph.Nodes), "node", "nodes"),
 		pluralise(len(m.graph.Links), "edge", "edges")))
@@ -892,6 +922,9 @@ func (m *MoneyFlow) headerLines(width int) []string {
 	context := []string{mfWindowLabel(m.window)}
 	if m.window.AccountID != "" {
 		context = append([]string{"account " + m.ctx.Ref.AccountName(m.window.AccountID)}, context...)
+	}
+	if scope := m.currencyNotice(); scope != "" {
+		context = append(context, scope)
 	}
 	limit := fmt.Sprintf("limit %d", m.effectiveLimit())
 	if m.limit <= 0 {
@@ -916,6 +949,16 @@ func (m *MoneyFlow) headerLines(width int) []string {
 		lines = append(lines, th.Subtle.Render(truncate("links (netted, not drawn): "+m.linkSummaryLine(), width)))
 	}
 	return lines
+}
+
+// currencyNotice names the currency on screen and the ones the graph holds
+// besides it, read from the response's own scope so a window that spans a
+// currency the account list never suggested is still reported.
+func (m *MoneyFlow) currencyNotice() string {
+	if !m.loaded {
+		return ""
+	}
+	return currencyScopeLabel(m.currency, m.graph.CurrencyScope)
 }
 
 // mfWindowLabel describes the window in words, so an unbounded window does not
@@ -945,7 +988,7 @@ func (m *MoneyFlow) groupLabel() string {
 func (m *MoneyFlow) linkSummaryLine() string {
 	parts := make([]string, 0, len(m.graph.LinkSummary))
 	for _, summary := range m.graph.LinkSummary {
-		parts = append(parts, fmt.Sprintf("%s %d %s", summary.Type, summary.Count, summary.Total.Display()))
+		parts = append(parts, fmt.Sprintf("%s %d %s", summary.Type, summary.Count, currencyLine(m.currency, summary.Total)))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -967,8 +1010,8 @@ func (m *MoneyFlow) linkPanel(width, height int) string {
 	for _, summary := range m.graph.LinkSummary {
 		labelWidth := max(6, contentWidth-17)
 		lines = append(lines, pad(truncate(summary.Type, labelWidth), labelWidth)+
-			" "+mfPadLeft(strconv.Itoa(summary.Count), 3)+
-			" "+mfPadLeft(summary.Total.Display(), 12))
+			" "+padLeft(strconv.Itoa(summary.Count), 3)+
+			" "+padLeft(currencyLine(m.currency, summary.Total), 12))
 	}
 
 	// Clip the content to the rows the column has; the frame then closes around
@@ -982,19 +1025,11 @@ func (m *MoneyFlow) linkPanel(width, height int) string {
 	return trimToBox(th.Panel.Render(strings.Join(lines, "\n")), width, height)
 }
 
-// mfPadLeft right-aligns a value in a fixed number of cells, so the counts and
-// totals line up in the side panel.
-func mfPadLeft(value string, width int) string {
-	if current := ansi.StringWidth(value); current < width {
-		return strings.Repeat(" ", width-current) + value
-	}
-	return value
-}
-
 // timelineView renders the period strip: one line per period with its label, a
 // bar split into income and expense, and the period's own net. The net comes
 // from the API — the client never subtracts money — and the bars are scaled
-// against the busiest period in the strip so the periods compare at a glance.
+// against the busiest period in the strip *in the currency on screen*, so the
+// periods compare at a glance without a foreign account setting the scale.
 func (m *MoneyFlow) timelineView(width, height int) string {
 	th := m.ctx.Theme
 	periods := m.timeline.Periods
@@ -1013,7 +1048,8 @@ func (m *MoneyFlow) timelineView(width, height int) string {
 
 	busiest := 0.0
 	for _, period := range periods {
-		if total := period.Income.Float64() + period.Expense.Float64(); total > busiest {
+		total := currencyScale(m.currency, period.Income) + currencyScale(m.currency, period.Expense)
+		if total > busiest {
 			busiest = total
 		}
 	}
@@ -1042,42 +1078,32 @@ func (m *MoneyFlow) periodLine(period api.MoneyFlowTimelinePeriod, index, barWid
 		label += th.WarnText.Render(" scrubbed")
 	}
 
-	split := mfSplitBar(th, period.Income, period.Expense, busiest, barWidth)
-	net := mfNet(period.Net)
+	split := mfSplitBar(th, m.currency, period.Income, period.Expense, busiest, barWidth)
+	net := currencyNetText(m.currency, period.Net)
 	netStyle := th.Positive
-	if period.Net.IsNegative() {
+	if currencyIsNegative(m.currency, period.Net) {
 		netStyle = th.Negative
 	}
 
 	if full {
 		return cursor + label + " " + split + "  " +
-			th.Positive.Render("in "+period.Income.Display()) + "  " +
-			th.Negative.Render("out "+period.Expense.Display()) + "  " +
+			th.Positive.Render("in "+currencyLine(m.currency, period.Income)) + "  " +
+			th.Negative.Render("out "+currencyLine(m.currency, period.Expense)) + "  " +
 			netStyle.Render("net "+net)
 	}
 	return cursor + label + " " + split + "  " + netStyle.Render(net)
 }
 
-// mfNet renders a period's net with an explicit sign. The API sends the net
-// already signed, so signedAmount would be wrong here: it is built for credit
-// transactions, whose stored amount carries no sign of its own.
-func mfNet(amount api.Amount) string {
-	text := amount.Display()
-	if amount.IsZero() || amount.IsNegative() {
-		return text
-	}
-	return "+" + text
-}
-
 // mfSplitBar draws one period's income and expense as a single bar scaled
-// against the busiest period, so the periods are comparable. Both segments come
-// from display-only float conversions of the amounts the server sent.
-func mfSplitBar(th Theme, income, expense api.Amount, busiest float64, width int) string {
+// against the busiest period in the same currency, so the periods are
+// comparable. Both segments come from display-only float conversions of the
+// amounts the server sent, in the currency on screen.
+func mfSplitBar(th Theme, currency string, income, expense api.CurrencyAmounts, busiest float64, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	inWidth := mfSegment(income, busiest, width)
-	expenseWidth := mfSegment(expense, busiest, width)
+	inWidth := mfSegment(currency, income, busiest, width)
+	expenseWidth := mfSegment(currency, expense, busiest, width)
 	if inWidth+expenseWidth > width {
 		expenseWidth = width - inWidth
 	}
@@ -1087,18 +1113,22 @@ func mfSplitBar(th Theme, income, expense api.Amount, busiest float64, width int
 }
 
 // mfSegment sizes one part of a split bar, keeping a nonzero amount visible even
-// when it rounds down to nothing.
-func mfSegment(amount api.Amount, busiest float64, width int) int {
-	if amount.IsZero() {
+// when it rounds down to nothing. An amount the currency on screen does not hold
+// has no width here: a segment denominated in a currency the user is not looking
+// at is the same mistake as a bar scaled by it.
+func mfSegment(currency string, amounts api.CurrencyAmounts, busiest float64, width int) int {
+	value, ok := currencyValue(currency, amounts)
+	if !ok || value.IsZero() {
 		return 0
 	}
-	return min(max(int(ratioOf(amount, busiest)*float64(width)+0.5), 1), width)
+	return min(max(int(ratioOf(value, busiest)*float64(width)+0.5), 1), width)
 }
 
-// mfSortEdges orders edges by volume, biggest first.
-func mfSortEdges(edges []api.MoneyFlowEdge) {
+// mfSortEdges orders edges by volume, biggest first, in the currency on screen
+// so an edge in another currency cannot be pushed to the bottom of a trace.
+func mfSortEdges(currency string, edges []api.MoneyFlowEdge) {
 	sort.SliceStable(edges, func(i, j int) bool {
-		return edges[i].Value.Float64() > edges[j].Value.Float64()
+		return currencyScale(currency, edges[i].Value) > currencyScale(currency, edges[j].Value)
 	})
 }
 
