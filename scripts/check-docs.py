@@ -31,7 +31,7 @@ MERMAID_TYPES = {
 
 def markdown_files() -> list[Path]:
     files: list[Path] = []
-    for name in ("README.md", "AGENTS.md", "FLOWCHART.md"):
+    for name in ("README.md", "CONTRIBUTING.md", "AGENTS.md", "FLOWCHART.md"):
         path = ROOT / name
         if path.exists():
             files.append(path)
@@ -84,7 +84,7 @@ def check_mermaid(errors: list[str]) -> None:
             errors.append(f"{path.relative_to(ROOT)}:{start}: unterminated Mermaid block")
 
 
-def check_makefile_and_readme(errors: list[str]) -> None:
+def check_makefile_and_docs(errors: list[str]) -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     phony_match = re.search(r"^\.PHONY:\s*(.+)$", makefile, re.MULTILINE)
     if not phony_match:
@@ -95,10 +95,17 @@ def check_makefile_and_readme(errors: list[str]) -> None:
     for target in sorted(phony):
         if target not in help_text:
             errors.append(f"Makefile target {target!r} is missing from help")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    for target in set(MAKE_TARGET.findall(readme)):
-        if target not in phony:
-            errors.append(f"README mentions make {target}, but it is not a .PHONY target")
+    # Every doc that tells a reader which commands to run has its `make` targets
+    # checked, so a renamed or dropped target cannot leave stale instructions
+    # behind in the docs.
+    for name in ("README.md", "CONTRIBUTING.md"):
+        path = ROOT / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for target in sorted(set(MAKE_TARGET.findall(text))):
+            if target not in phony:
+                errors.append(f"{name} mentions make {target}, but it is not a .PHONY target")
 
 
 def check_openapi_descriptions(errors: list[str]) -> None:
@@ -123,7 +130,7 @@ def main() -> int:
     errors: list[str] = []
     check_links(errors)
     check_mermaid(errors)
-    check_makefile_and_readme(errors)
+    check_makefile_and_docs(errors)
     check_openapi_descriptions(errors)
     if errors:
         print("Documentation checks failed:")

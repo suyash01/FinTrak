@@ -1,0 +1,92 @@
+name: Feature request
+description: Propose a change to FinTrak, leading with the problem it solves.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please lead with the **problem**, not the solution. The maintainer may know
+        that a different approach already exists, or that the data model makes the
+        proposed one awkward — and this repository has no Discussions board yet, so
+        the "alternatives you considered" field below is where that conversation
+        happens.
+
+        Nothing here is committed to. Features are usually discussed before they are
+        scheduled, and a PR for a large one may be asked to split.
+
+  - type: input
+    id: ticket
+    attributes:
+      label: Ticket
+      description: >-
+        If this work will land as a pull request, its title has to be
+        `<ticket-id>: <short description>`, so include the ID here.
+      placeholder: "FIN-8"
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >-
+        Describe the situation, not the feature. What are you unable to do today,
+        and what does it cost you?
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of FinTrak does this touch?
+      description: Multiple concerns are better as multiple issues.
+      options:
+        - Backend API
+        - Data model / schema
+        - Frontend (web app / PWA / offline)
+        - Terminal client (TUI / SSH)
+        - MCP server
+        - Statement parser (PDF import)
+        - Bank file import (ISO 20022 / OFX)
+        - Paperless-ngx integration
+        - Dev stack / Docker / build
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What did you have in mind?
+      description: >-
+        Optional. Sketch it, or leave it blank and let the problem speak — a blank
+        field here is perfectly acceptable.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you already tried or ruled out?
+      description: >-
+        Workarounds, existing features you combined, approaches you rejected and
+        why. This is the part that most often changes the design.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: contribution
+    attributes:
+      label: Would you like to implement this?
+      description: >-
+        Say so here if you intend to open a pull request, so the design can be
+        agreed before you write it.
+      render: text
+    validations:
+      required: false
