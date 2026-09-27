@@ -288,7 +288,7 @@
       "terms": [{ "field": "ccy", "op": "=", "values": ["usd"], "negated": false, "position": 0 }],
       "diagnostics": [],
       "sql": {
-        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2))"],
+        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), 'INR') = $2))"],
         "args": ["USD"]
       }
     },
@@ -306,7 +306,7 @@
       "terms": [{ "field": "ccy", "op": "=", "values": ["usd", "eur"], "negated": false, "position": 0 }],
       "diagnostics": [],
       "sql": {
-        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2) OR EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $3))"],
+        "clauses": ["(EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), 'INR') = $2) OR EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), 'INR') = $3))"],
         "args": ["USD", "EUR"]
       }
     },
@@ -317,7 +317,7 @@
       "terms": [{ "field": "ccy", "op": "=", "values": ["usd"], "negated": true, "position": 0 }],
       "diagnostics": [],
       "sql": {
-        "clauses": ["NOT (EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $2))"],
+        "clauses": ["NOT (EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), 'INR') = $2))"],
         "args": ["USD"]
       }
     }

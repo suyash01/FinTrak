@@ -2237,8 +2237,8 @@ func TestIntegrationNullAndEmptyCurrencyReadsAsINR(t *testing.T) {
 	require.NotNil(t, gotEmpty)
 	require.Equal(t, "", *gotEmpty, "the empty account must really hold the empty string")
 
-	a.createTransaction(nullAcc.ID, nil, "2024-06-01", "From the null account", 300, "credit")
-	a.createTransaction(emptyAcc.ID, nil, "2024-06-02", "From the empty account", 200, "debit")
+	nullTxn := a.createTransaction(nullAcc.ID, nil, "2024-06-01", "From the null account", 300, "credit")
+	emptyTxn := a.createTransaction(emptyAcc.ID, nil, "2024-06-02", "From the empty account", 200, "debit")
 
 	const window = "dateFrom=2024-06-01&dateTo=2024-06-30"
 	wantIncome := models.CurrencyAmounts{"INR": money.FromFloat(300)}
@@ -2289,6 +2289,42 @@ func TestIntegrationNullAndEmptyCurrencyReadsAsINR(t *testing.T) {
 	require.Equal(t, wantIncome, summary.TotalIncome)
 	require.Equal(t, wantExpense, summary.TotalExpense)
 	require.Equal(t, 2, summary.TotalTransactions)
+
+	// The ledger's own currency term must agree with every reporting query above
+	// about what a currency *is*. `?q=ccy:inr` is a fourth spelling of the same
+	// expression, emitted by internal/query rather than by a handler, and it is
+	// the one surface a user reaches without touching a dashboard. Filtering on
+	// the raw column made these two accounts INR to every report and invisible to
+	// the ledger, so narrowing the dashboard to INR and then the ledger to INR
+	// showed two different sets of transactions with no error anywhere — the
+	// original defect class of this change set, in a new place.
+	//
+	// Asserted against the same two accounts rather than a fresh fixture, so the
+	// two surfaces are provably reading the same rows.
+	ledger := func(q string) map[uuid.UUID]bool {
+		var out struct {
+			Data []models.Transaction `json:"data"`
+		}
+		status, body := a.request(http.MethodGet, "/api/v1/transactions?"+q, nil)
+		require.Equal(t, http.StatusOK, status, "%s -> %s", q, body)
+		require.NoError(t, json.Unmarshal(body, &out))
+		ids := map[uuid.UUID]bool{}
+		for _, tx := range out.Data {
+			if !tx.IsSummary {
+				ids[tx.ID] = true
+			}
+		}
+		return ids
+	}
+	inrRows := ledger("q=ccy:inr")
+	require.True(t, inrRows[nullTxn], "the ledger must call the NULL-currency account's transaction INR")
+	require.True(t, inrRows[emptyTxn], "the ledger must call the empty-currency account's transaction INR")
+	// Lower case, because the term folds at bind time: "inr" binding against 'INR'
+	// would match nothing and hand back an empty ledger with no error to explain it.
+	require.Len(t, ledger("q=ccy:INR"), 2)
+	// And the negation, which is the same expression inside a NOT.
+	require.Empty(t, ledger("q=not%20ccy:inr"),
+		"neither account is in another currency, so the negation must exclude both")
 }
 
 // TestIntegrationCategoryTopFifteenIsPerCurrency runs the real window-function

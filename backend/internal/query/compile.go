@@ -160,6 +160,13 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 	return nil
 }
 
+// defaultCurrency is the code an account is read as when accounts.currency is
+// unset. It is the same value as handlers.defaultCurrency, repeated rather than
+// imported because this package is compiled into a separate parser surface and
+// must not depend on the handler package; the two comments are the coupling, and
+// a change to one has to change the other.
+const defaultCurrency = "INR"
+
 // currencyPredicate matches a transaction whose account holds one currency,
 // through a correlated EXISTS so the fragment still names only `transactions
 // t`. A join is not an option and the reason is at the top of this file: the
@@ -172,7 +179,19 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 // place. sink.Clause allocates each $n, so a csv is several placeholders and
 // never a hand-counted one, which is what would break the moment another term
 // preceded this one on the same query.
-const currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND ac.currency = $%d)"
+//
+// The COALESCE(NULLIF(...)) is load-bearing and is the one expression this
+// branch spells four times — here, in handlers/currency.go's scopeSQL projection
+// and GROUP BY, and in handlers.currencyPredicate — because
+// accounts.currency is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL and a
+// restored bundle can hold the empty string. Comparing the raw column, as this
+// did, makes the ledger disagree with the dashboard about what a currency *is*:
+// an account whose currency is unset is INR to every reporting query and to
+// nothing here, so `?currency=INR` on /transactions would silently omit the
+// transactions the same filter includes on /dashboard/summary. Two surfaces of
+// one product answering the same question differently, with no error, is the
+// exact class of defect this spelling exists to remove.
+const currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), '" + defaultCurrency + "') = $%d)"
 
 // emitCurrency binds a ccy term. Every value is folded to upper case here, at
 // bind time rather than at parse time, so the parser keeps what the user typed
