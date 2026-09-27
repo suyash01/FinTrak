@@ -1149,7 +1149,10 @@ type LinkCycleAccount struct {
 }
 
 // LinkCycleLeg is one directed account-to-account flow inside a cycle, with the
-// link types that make it up.
+// link types that make it up. Amount is per-currency, not because a leg might
+// cover several accounts but because the leg's two endpoints need not share a
+// currency: the figure is the flow between them, and between an INR account and
+// a USD one there is no sum.
 type LinkCycleLeg struct {
 	FromAccountID    string              `json:"fromAccountId"`
 	FromAccountName  string              `json:"fromAccountName"`
@@ -1157,30 +1160,41 @@ type LinkCycleLeg struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Amount           money.Amount        `json:"amount"`
+	Amount           CurrencyAmounts     `json:"amount"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
 // LinkCycle is one circular money flow between accounts. Kind is "reciprocal"
 // for a pair that flows both ways (netted into one edge for the Sankey) or
-// "cycle" for a longer loop broken by dropping its back edge. Net is the
-// smallest leg — the amount that actually circulates the whole loop — and Gross
-// the sum of the legs.
+// "cycle" for a longer loop broken by dropping its back edge. Gross is the sum
+// of the legs, per currency.
+//
+// Net is the smallest leg, and it is smallest *within one currency*: each key is
+// that currency's own smallest leg. With one currency across the cycle that is
+// the figure this field has always carried — the amount that actually circulates
+// the whole loop — and Single() returns it. With more than one it does not, and
+// must not: a loop that moves INR 1,000 and USD 12 circulates no amount at all,
+// because neither number describes the loop and their sum describes nothing. The
+// two keys are the honest local answer, and a client that calls Single() gets
+// ok=false and knows to say the loop moves two currencies rather than to add
+// them. There is deliberately no scalar fallback: the shape already carries the
+// answer a boolean would only restate.
 type LinkCycle struct {
 	Kind         string             `json:"kind"`
 	Accounts     []LinkCycleAccount `json:"accounts"`
 	Legs         []LinkCycleLeg     `json:"legs"`
-	Net          money.Amount       `json:"net"`
-	Gross        money.Amount       `json:"gross"`
+	Net          CurrencyAmounts    `json:"net"`
+	Gross        CurrencyAmounts    `json:"gross"`
 	Transactions int                `json:"transactions"`
 }
 
 // LinkFlowTypeTotal is a per-link-type rollup of an account-to-account flow.
+// Total is per-currency for the same reason the leg's amount is.
 type LinkFlowTypeTotal struct {
-	Type  string       `json:"type"`
-	Count int          `json:"count"`
-	Total money.Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
 // LinkOneSidedFlow is a directed account-to-account flow whose counterpart is
@@ -1196,19 +1210,30 @@ type LinkOneSidedFlow struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Total            money.Amount        `json:"total"`
+	Total            CurrencyAmounts     `json:"total"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
 // LinkCycleReport is the response of GET /api/v1/links/cycles.
+//
+// Every amount on it is a CurrencyAmounts. This is the one report that cannot
+// avoid the question: a link has a from-account and a to-account, so it sums two
+// accounts' transactions by construction, and those two hold whatever currencies
+// their owners gave them.
 type LinkCycleReport struct {
 	Cycles []LinkCycle `json:"cycles"`
-	// TotalCircular is the sum of every cycle's Net: the money that travels a
-	// full loop between the user's own accounts.
-	TotalCircular money.Amount `json:"totalCircular"`
+	// TotalCircular is the sum of every cycle's Net, per currency. It is the
+	// money that travels a full loop between the user's own accounts, and for a
+	// cycle spanning currencies that is per currency too — see LinkCycle.Net for
+	// why there is no single figure to report.
+	TotalCircular CurrencyAmounts `json:"totalCircular"`
 	// OneSidedFlows are directed pairs with no flow in the opposite direction.
 	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`
+	// CurrencyScope names every currency the report covers and the accounts
+	// behind each one, so a two-key amount is a fact the response states rather
+	// than an anomaly the client has to diagnose.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // Cash-flow calendar types. GetCashFlowCalendar returns one CashFlowCalendarDay

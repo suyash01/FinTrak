@@ -981,13 +981,15 @@ type LinkCycleAccount struct {
 }
 
 // LinkFlowTypeTotal is a per-link-type rollup of an account-to-account flow.
+// Total is per-currency, like the flow's own amount.
 type LinkFlowTypeTotal struct {
-	Type  string `json:"type"`
-	Count int    `json:"count"`
-	Total Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// LinkCycleLeg is one directed flow inside a cycle.
+// LinkCycleLeg is one directed flow inside a cycle. Amount is per-currency
+// because the leg's two accounts need not share one.
 type LinkCycleLeg struct {
 	FromAccountID    string              `json:"fromAccountId"`
 	FromAccountName  string              `json:"fromAccountName"`
@@ -995,21 +997,27 @@ type LinkCycleLeg struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Amount           Amount              `json:"amount"`
+	Amount           CurrencyAmounts     `json:"amount"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
 // LinkCycle is one circular money flow. Kind is "reciprocal" (a pair flowing
 // both ways, netted for the Sankey) or "cycle" (a longer loop broken by
-// dropping its back edge); Net is the smallest leg, i.e. what actually
-// circulates.
+// dropping its back edge).
+//
+// Net is the smallest leg per currency: each key is that currency's own smallest
+// leg. With one currency across the cycle it is what actually circulates the
+// loop and one key returns it; with more than one, no amount circulates the
+// loop and the keys are the honest local answer - so read Net only after
+// confirming it holds exactly one key, and say the loop moves several currencies
+// rather than adding them. Gross is the sum of the legs, per currency.
 type LinkCycle struct {
 	Kind         string             `json:"kind"`
 	Accounts     []LinkCycleAccount `json:"accounts"`
 	Legs         []LinkCycleLeg     `json:"legs"`
-	Net          Amount             `json:"net"`
-	Gross        Amount             `json:"gross"`
+	Net          CurrencyAmounts    `json:"net"`
+	Gross        CurrencyAmounts    `json:"gross"`
 	Transactions int                `json:"transactions"`
 }
 
@@ -1022,16 +1030,22 @@ type LinkOneSidedFlow struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Total            Amount              `json:"total"`
+	Total            CurrencyAmounts     `json:"total"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
-// LinkCycleReport is the GET /links/cycles response.
+// LinkCycleReport is the GET /links/cycles response. Every amount is a
+// CurrencyAmounts: a link joins two accounts, so this report sums two
+// accounts' transactions by construction and the two need not share a currency.
 type LinkCycleReport struct {
 	Cycles        []LinkCycle        `json:"cycles"`
-	TotalCircular Amount             `json:"totalCircular"`
+	TotalCircular CurrencyAmounts     `json:"totalCircular"`
 	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`
+	// CurrencyScope names every currency the report covers and the accounts
+	// behind each one, so a multi-key amount is a fact the response states
+	// rather than an anomaly to diagnose.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Cash-flow calendar ----

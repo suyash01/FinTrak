@@ -399,7 +399,7 @@ func routeCases() []routeCase {
 		{name: "cashback suggestions", method: "GET", path: "/links/cashback-suggestions", body: sugg,
 			query: map[string]string{"page": "1", "limit": "50"},
 			call:  func(ctx context.Context, c *Client) error { _, err := c.CashbackSuggestions(ctx, 1, 50); return err }},
-		{name: "link cycles", method: "GET", path: "/links/cycles", body: `{"cycles":[],"totalCircular":0,"oneSidedFlows":[]}`,
+		{name: "link cycles", method: "GET", path: "/links/cycles", body: `{"cycles":[],"totalCircular":{},"oneSidedFlows":[],"currencyScope":{"currencies":[],"accounts":[]}}`,
 			query: map[string]string{"accountId": idAcct},
 			call:  func(ctx context.Context, c *Client) error { _, err := c.LinkCycles(ctx, "", "", idAcct); return err }},
 

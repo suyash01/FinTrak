@@ -93,13 +93,17 @@ func (c *Client) CashbackSuggestions(ctx context.Context, page, limit int) (Sugg
 // cannot draw, because the graph has to stay acyclic. Reciprocal pairs (kind
 // "reciprocal") are netted into one edge and the back edges that close a longer
 // loop (kind "cycle") are dropped; both are returned here with their
-// participants, each leg's gross flow in the window, and the cycle's net — the
-// smallest leg, i.e. the amount that actually circulates the whole loop.
+// participants and each leg's gross flow in the window.
 // OneSidedFlows lists directed account flows with no flow in the opposite
 // direction: a genuinely one-way bill payment or refund looks exactly like a
 // half-entered transfer, which is why they are surfaced for review rather than
 // corrected. An empty dateFrom/dateTo leaves the window unbounded and an empty
 // accountID does not filter; a non-uuid accountID is rejected with 400.
+//
+// Every amount is a CurrencyAmounts, and a cycle's net is the smallest leg per
+// currency: it is the amount that circulates the whole loop only while the
+// cycle holds a single currency, which a link spanning two differently
+// denominated accounts does not. See LinkCycle.
 func (c *Client) LinkCycles(ctx context.Context, dateFrom, dateTo, accountID string) (LinkCycleReport, error) {
 	r := get("/links/cycles").
 		setQuery("dateFrom", dateFrom).

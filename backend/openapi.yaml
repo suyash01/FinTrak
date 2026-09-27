@@ -2855,13 +2855,22 @@ paths:
         draw. The graph has to stay acyclic, so reciprocal pairs are netted and
         the DFS back edges that close a longer loop are dropped; this endpoint
         returns exactly those discarded cycles (kind `reciprocal` for a
-        two-account loop, `cycle` for a longer one) with their participants, the
-        gross flow of each leg, and the amount that actually circulates the
-        whole loop. It also lists the directed account flows with no flow in the
-        opposite direction — a legitimately one-way bill payment or refund looks
-        the same as a half-entered transfer, which is why they are surfaced for
-        review rather than corrected. Leg amounts are gross flows within the
-        window (before netting).
+        two-account loop, `cycle` for a longer one) with their participants and
+        the gross flow of each leg. It also lists the directed account flows
+        with no flow in the opposite direction — a legitimately one-way bill
+        payment or refund looks the same as a half-entered transfer, which is
+        why they are surfaced for review rather than corrected. Leg amounts are
+        gross flows within the window (before netting).
+
+        Every amount is per-currency, and this endpoint has the least room to be
+        otherwise: a link has a from-account and a to-account, so it sums two
+        accounts' transactions by construction, and no account filter avoids the
+        question. A cycle whose legs are all in one currency reports `net` as
+        the amount that actually circulates the whole loop, exactly as before; a
+        cycle whose legs span currencies reports each currency's own smallest leg
+        and no single figure, because a loop moving INR 1,000 and USD 12
+        circulates no amount at all. `currencyScope` names the accounts behind
+        every currency in the response.
       operationId: getLinkCycles
       security:
         - AccessCookie: []
@@ -2885,6 +2894,23 @@ paths:
             type: string
             format: uuid
           description: Only links with either endpoint on this account
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the whole response to links whose amount is denominated in
+            one currency code (upper-case three-letter, case-insensitive), and
+            the accounts behind them. A link's amount is taken from one of its
+            two transactions, so this is the currency of the account that amount
+            came from — not necessarily the currency of the account the money
+            flows out of, and not a filter that picks links because one
+            *endpoint* holds the currency while reporting the amount in the
+            other's. Amounts are always reported per currency regardless; this
+            chooses which links and which accounts are in scope. A code that is
+            not three letters is a 400.
       responses:
         "200":
           description: Circular-money report
@@ -6239,7 +6265,9 @@ components:
 
     LinkFlowTypeTotal:
       type: object
-      description: Per-link-type rollup of one account-to-account flow.
+      description: >-
+        Per-link-type rollup of one account-to-account flow. `total` is per
+        currency, like the flow's own amount.
       properties:
         type:
           type: string
@@ -6247,13 +6275,13 @@ components:
         count:
           type: integer
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     LinkCycleLeg:
       type: object
       description: >-
         One directed leg of a cycle, running from `fromAccountId` to
-        `toAccountId`. `amount` is the gross flow in the window.
+        `toAccountId`. `amount` is the gross flow in the window, per currency.
       properties:
         fromAccountId:
           type: string
@@ -6270,7 +6298,7 @@ components:
         toAccountColor:
           type: string
         amount:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
         types:
@@ -6298,13 +6326,21 @@ components:
           items:
             $ref: "#/components/schemas/LinkCycleLeg"
         net:
-          type: number
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
           description: >-
-            The smallest leg — the amount that actually circulates the whole
-            loop.
+            The smallest leg, per currency: each key is that currency's own
+            smallest leg. With one currency across the cycle this is the amount
+            that actually circulates the whole loop. With more than one it is
+            not, and there is no such amount — a loop moving INR 1,000 and
+            USD 12 circulates nothing, because neither figure describes the loop
+            and their sum describes nothing either. A client asking what
+            circulates must therefore check that `net` holds exactly one key (a
+            key absent reads as zero; a present one is exact) and, when it holds
+            several, say that the loop moves that many currencies rather than
+            adding them.
         gross:
-          type: number
-          description: Sum of the legs.
+          $ref: "#/components/schemas/CurrencyAmounts"
         transactions:
           type: integer
           description: Number of links making up the cycle.
@@ -6330,7 +6366,7 @@ components:
         toAccountColor:
           type: string
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
         types:
@@ -6346,12 +6382,19 @@ components:
           items:
             $ref: "#/components/schemas/LinkCycle"
         totalCircular:
-          type: number
-          description: Sum of every cycle's `net`.
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Sum of every cycle's `net`, per currency. It is the money that
+            travels a full loop between the user's own accounts, and for a
+            cycle spanning currencies that is per currency too — see `LinkCycle.net`
+            for why there is no single figure to report.
         oneSidedFlows:
           type: array
           items:
             $ref: "#/components/schemas/LinkOneSidedFlow"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     CashFlowCalendarDay:
       type: object
