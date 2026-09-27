@@ -1,5 +1,5 @@
-import type { DragEvent, RefObject } from "react";
-import { FileSpreadsheet, FileText } from "lucide-react";
+import type { DragEvent, ReactNode, RefObject } from "react";
+import { FileCode2, FileSpreadsheet, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,14 +15,23 @@ import type { StatementExtractor } from "../../types";
 
 type FileInputEvent = { target: { files: FileList | File[] | null } };
 
+/**
+ * Which upload the user picked. `csv` and `pdf` need a column mapping and a
+ * parser extractor respectively; `bank` needs neither, because an ISO 20022 or
+ * OFX file already says what each field means.
+ */
+type Source = "csv" | "pdf" | "bank";
+
 interface UploadStepProps {
   statementMode: string;
   onStatementModeChange: (mode: string) => void;
   parsing: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
   pdfInputRef: RefObject<HTMLInputElement | null>;
+  bankFileRef: RefObject<HTMLInputElement | null>;
   onCsvUpload: (e: FileInputEvent) => void;
   onPdfUpload: (e: FileInputEvent) => void;
+  onBankFileUpload: (e: FileInputEvent) => void;
   extractor: string;
   onExtractorChange: (value: string) => void;
   extractors: StatementExtractor[];
@@ -30,27 +39,84 @@ interface UploadStepProps {
   onPdfPasswordChange: (value: string) => void;
 }
 
-// Step 2: choose the source (CSV or statement PDF) and upload a file. Owns the
-// two drag-and-drop dropzones; the actual parsing callbacks live in Import.
+interface SourceConfig {
+  id: Source;
+  label: string;
+  icon: typeof FileSpreadsheet;
+  accept: string;
+  dropzoneLabel: string;
+  idleHint: string;
+  /** Accessible name of the dropzone, which is also the file-picker trigger. */
+  pickerLabel: string;
+}
+
+const SOURCES: SourceConfig[] = [
+  {
+    id: "csv",
+    label: "CSV",
+    icon: FileSpreadsheet,
+    accept: ".csv",
+    dropzoneLabel: "Drop your CSV file here",
+    idleHint: "or click to browse. Supports .csv files from any bank.",
+    pickerLabel: "Upload CSV file",
+  },
+  {
+    id: "pdf",
+    label: "Statement PDF",
+    icon: FileText,
+    accept: ".pdf",
+    dropzoneLabel: "Drop your statement PDF here",
+    idleHint:
+      "or click to browse. The extracted transactions will be shown for review.",
+    pickerLabel: "Upload statement PDF",
+  },
+  {
+    id: "bank",
+    label: "Bank File",
+    icon: FileCode2,
+    accept: ".xml,.ofx,.qfx,.txt",
+    dropzoneLabel: "Drop your bank file here",
+    idleHint:
+      "or click to browse. Reads ISO 20022 (camt.052, camt.053) and OFX/QFX exports.",
+    pickerLabel: "Upload bank file",
+  },
+];
+
+// Step 2: choose the source (CSV, statement PDF, or a bank-supplied ISO 20022 /
+// OFX file) and upload it. Owns the dropzones; the parsing callbacks live in
+// Import.
 export default function UploadStep({
   statementMode,
   onStatementModeChange,
   parsing,
   fileInputRef,
   pdfInputRef,
+  bankFileRef,
   onCsvUpload,
   onPdfUpload,
+  onBankFileUpload,
   extractor,
   onExtractorChange,
   extractors,
   pdfPassword,
   onPdfPasswordChange,
 }: UploadStepProps) {
-  const handleDrop = (
-    e: DragEvent<HTMLDivElement>,
-    ref: RefObject<HTMLInputElement | null>,
-    upload: (event: FileInputEvent) => void,
-  ) => {
+  const source = SOURCES.find((s) => s.id === statementMode) ?? SOURCES[0];
+  const ref =
+    source.id === "csv"
+      ? fileInputRef
+      : source.id === "pdf"
+        ? pdfInputRef
+        : bankFileRef;
+  const upload =
+    source.id === "csv"
+      ? onCsvUpload
+      : source.id === "pdf"
+        ? onPdfUpload
+        : onBankFileUpload;
+  const busy = parsing && source.id !== "csv";
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.currentTarget.classList.remove("border-primary", "bg-card/80");
     const file = e.dataTransfer?.files[0];
@@ -63,131 +129,85 @@ export default function UploadStep({
     upload({ target: { files: [file] } });
   };
 
+  const Icon = source.icon;
+
   return (
     <div
       className="bg-card border border-border rounded-xl p-6"
       style={{ maxWidth: "600px" }}
     >
       <div className="flex gap-2 mb-6">
-        <Button
-          size="lg"
-          className={`flex-1 ${statementMode === "csv" ? "" : "text-muted-foreground hover:text-foreground"}`}
-          variant={statementMode === "csv" ? "default" : "outline"}
-          onClick={() => onStatementModeChange("csv")}
-        >
-          <FileSpreadsheet size={18} /> CSV
-        </Button>
-        <Button
-          size="lg"
-          className={`flex-1 ${statementMode === "pdf" ? "" : "text-muted-foreground hover:text-foreground"}`}
-          variant={statementMode === "pdf" ? "default" : "outline"}
-          onClick={() => onStatementModeChange("pdf")}
-        >
-          <FileText size={18} /> Statement PDF
-        </Button>
+        {SOURCES.map((s) => (
+          <Button
+            key={s.id}
+            size="lg"
+            className={`flex-1 ${source.id === s.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+            variant={source.id === s.id ? "default" : "outline"}
+            onClick={() => onStatementModeChange(s.id)}
+          >
+            <s.icon size={18} /> {s.label}
+          </Button>
+        ))}
       </div>
 
-      {statementMode === "csv" ? (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={source.pickerLabel}
+        className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-content text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
+        onClick={() => ref.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            ref.current?.click();
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.currentTarget.classList.add("border-primary", "bg-card/80");
+        }}
+        onDragLeave={(e) =>
+          e.currentTarget.classList.remove("border-primary", "bg-card/80")
+        }
+        onDrop={handleDrop}
+      >
+        <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4 group-hover:bg-primary/20 text-muted-foreground group-hover:text-primary transition-colors">
+          {busy ? <Spinner className="size-8 text-primary" /> : <Icon size={32} />}
+        </div>
+        <h3 className="text-lg font-semibold text-foreground mb-2">
+          {busy
+            ? source.id === "pdf"
+              ? "Parsing statement..."
+              : "Reading bank file..."
+            : source.dropzoneLabel}
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          {busy
+            ? source.id === "pdf"
+              ? "Extracting transactions from your statement."
+              : "Working out which format this file is."
+            : source.idleHint}
+        </p>
+      </div>
+      <input
+        ref={ref}
+        type="file"
+        accept={source.accept}
+        className="hidden"
+        onChange={(e) => {
+          upload(e);
+          // Clear the chosen file once the handler owns it: an input keeps its
+          // value, so re-selecting the same file after a failed parse would
+          // fire no change event and the retry would silently do nothing. Same
+          // reason as DataSettingsManager's backup input.
+          e.currentTarget.value = "";
+        }}
+      />
+
+      {/* The parser's own controls, which mean nothing for a file that already
+          states what each field is. */}
+      {source.id === "pdf" && (
         <>
-          <div
-            role="button"
-            tabIndex={0}
-            aria-label="Upload CSV file"
-            className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
-            onClick={() => fileInputRef.current?.click()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                fileInputRef.current?.click();
-              }
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.currentTarget.classList.add("border-primary", "bg-card/80");
-            }}
-            onDragLeave={(e) =>
-              e.currentTarget.classList.remove("border-primary", "bg-card/80")
-            }
-            onDrop={(e) => handleDrop(e, fileInputRef, onCsvUpload)}
-          >
-            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4 group-hover:bg-primary/20 text-muted-foreground group-hover:text-primary transition-colors">
-              <FileSpreadsheet size={32} />
-            </div>
-            <h3 className="text-lg font-semibold text-foreground mb-2">
-              Drop your CSV file here
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              or click to browse. Supports .csv files from any bank.
-            </p>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv"
-            className="hidden"
-            onChange={(e) => {
-              onCsvUpload(e);
-              // Clear the chosen file once the handler owns it: an input keeps
-              // its value, so re-selecting the same CSV after a failed parse
-              // would fire no change event and the retry would silently do
-              // nothing. Same reason as DataSettingsManager's backup input.
-              e.currentTarget.value = "";
-            }}
-          />
-        </>
-      ) : (
-        <>
-          <div
-            role="button"
-            tabIndex={0}
-            aria-label="Upload statement PDF"
-            className="border-2 border-dashed border-border bg-background/50 rounded-xl p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-colors hover:border-primary/50 hover:bg-card/50 group"
-            onClick={() => pdfInputRef.current?.click()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                pdfInputRef.current?.click();
-              }
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.currentTarget.classList.add("border-primary", "bg-card/80");
-            }}
-            onDragLeave={(e) =>
-              e.currentTarget.classList.remove("border-primary", "bg-card/80")
-            }
-            onDrop={(e) => handleDrop(e, pdfInputRef, onPdfUpload)}
-          >
-            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4 group-hover:bg-primary/20 text-muted-foreground group-hover:text-primary transition-colors">
-              {parsing ? (
-                <Spinner className="size-8 text-primary" />
-              ) : (
-                <FileText size={32} />
-              )}
-            </div>
-            <h3 className="text-lg font-semibold text-foreground mb-2">
-              {parsing
-                ? "Parsing statement..."
-                : "Drop your statement PDF here"}
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              {parsing
-                ? "Extracting transactions from your statement."
-                : "or click to browse. The extracted transactions will be shown for review."}
-            </p>
-          </div>
-          <input
-            ref={pdfInputRef}
-            type="file"
-            accept=".pdf"
-            className="hidden"
-            onChange={(e) => {
-              onPdfUpload(e);
-              // See the CSV input above: a retained value makes re-picking the
-              // same PDF (e.g. after a failed parse) a no-op.
-              e.currentTarget.value = "";
-            }}
-          />
           <div className="mt-4 flex flex-col gap-1.5">
             <Label htmlFor="import-extractor" className="text-muted-foreground">
               Extractor

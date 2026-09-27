@@ -37,6 +37,8 @@ import {
   type ColumnMapping,
   type CsvRow,
 } from "./importHelpers";
+import { allRows, parseBankFile, MAX_BANK_FILE_BYTES } from "../../lib/bankfiles";
+import type { ParsedDocument } from "../../lib/bankfiles";
 import ImportSteps from "./ImportSteps";
 import MappingStep from "./MappingStep";
 import UploadStep from "./UploadStep";
@@ -100,6 +102,11 @@ export default function Import() {
   const [extractors, setExtractors] = useState<StatementExtractor[]>([]);
   const [extractor, setExtractor] = useState("sbi_cc");
 
+  // Bank file (ISO 20022 / OFX) state. Kept as the whole parsed document rather
+  // than just its rows, because the preview step shows which statements the
+  // file described -- a bank file can carry more than one account.
+  const [bankDocument, setBankDocument] = useState<ParsedDocument | null>(null);
+
   // Import results
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -134,6 +141,26 @@ export default function Import() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const bankFileRef = useRef<HTMLInputElement | null>(null);
+
+  // Clear whichever source is not in play, so a previous source's rows can never
+  // leak into the next source's preview. `parsedTransactions` prefers
+  // `statementTxns` whenever it is set, so a stale value silently wins.
+  const clearOtherSources = (
+    keep: "csv" | "pdf" | "bank",
+  ) => {
+    if (keep !== "csv") {
+      setCsvData(null);
+      setCsvHeaders([]);
+    }
+    if (keep !== "pdf") {
+      setStatementTxns(null);
+      setStatementSummary(null);
+      setPdfFile(null);
+    }
+    if (keep !== "bank") setBankDocument(null);
+    setValidationErrors([]);
+  };
 
   useEffect(() => {
     api
@@ -241,12 +268,7 @@ export default function Import() {
       return;
     }
 
-    // Clear any previously parsed PDF so its rows can't leak into the CSV
-    // preview (parsedTransactions prefers statementTxns when non-null).
-    setStatementTxns(null);
-    setStatementSummary(null);
-    setValidationErrors([]);
-    setPdfFile(null);
+    clearOtherSources("csv");
 
     Papa.parse<CsvRow>(file, {
       header: true,
@@ -307,12 +329,54 @@ export default function Import() {
   }) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    // Clear any previously parsed CSV so its rows can't leak into the PDF
-    // preview if parsing fails.
-    setCsvData(null);
-    setCsvHeaders([]);
+    clearOtherSources("pdf");
     setPdfFile(file);
     await parsePdf(file, extractor);
+  };
+
+  // ---- Step 2: Upload a bank file (ISO 20022 / OFX) ----
+  //
+  // Read in the browser, like the CSV path, rather than forwarded to the
+  // statement parser: a bank file is not a PDF, and parsing it client-side keeps
+  // untrusted file content out of the API entirely. The rows produced are the
+  // same ImportTransaction[] every other source produces, so the preview,
+  // duplicate check and import below are unchanged.
+  const handleBankFileUpload = async (e: {
+    target: { files: FileList | File[] | null };
+  }) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > MAX_BANK_FILE_BYTES) {
+      toast.error(
+        `Bank file is too large (max ${Math.round(MAX_BANK_FILE_BYTES / (1024 * 1024))} MB).`,
+      );
+      return;
+    }
+    clearOtherSources("bank");
+    setParsing(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const document = parseBankFile(bytes);
+      const rows = allRows(document);
+      // A file with no usable rows is not an empty import: it is a file FinTrak
+      // could not read, and the diagnostics say why. Staying on the upload step
+      // keeps that reason next to the file rather than behind an empty table.
+      if (rows.length === 0) {
+        setBankDocument(document);
+        toast.error(
+          document.diagnostics[0]?.message ??
+            "No transactions could be read from this file.",
+        );
+        return;
+      }
+      setBankDocument(document);
+      setStatementTxns(rows);
+      setStep(4);
+    } catch (err) {
+      toast.error("Failed to read bank file: " + (err as Error).message);
+    } finally {
+      setParsing(false);
+    }
   };
 
   // ---- Step 3: Column Mapping ----
@@ -651,8 +715,10 @@ export default function Import() {
             parsing={parsing}
             fileInputRef={fileInputRef}
             pdfInputRef={pdfInputRef}
+            bankFileRef={bankFileRef}
             onCsvUpload={handleFileUpload}
             onPdfUpload={handlePdfUpload}
+            onBankFileUpload={handleBankFileUpload}
             extractor={extractor}
             onExtractorChange={setExtractor}
             extractors={extractors}
@@ -694,6 +760,10 @@ export default function Import() {
             onImportBillingCycleChange={setImportBillingCycleId}
             statementSummary={statementSummary}
             validationErrors={validationErrors}
+            bankDocument={bankDocument}
+            targetAccountName={
+              accounts.find((a) => a.id === selectedAccount)?.name || "this account"
+            }
             dupCount={dupCount}
             existingDupCount={existingDupCount}
             inFileDupCount={inFileDupCount}
@@ -740,6 +810,7 @@ export default function Import() {
               setPdfPassword("");
               setPdfDateFormat("auto");
               setPdfFile(null);
+              setBankDocument(null);
               setExistingRefresh((k) => k + 1);
             }}
           />
