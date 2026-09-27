@@ -2858,7 +2858,9 @@ func TestIntegrationCurrencyFilterNarrowsEveryReportingEndpoint(t *testing.T) {
 	require.Equal(t, []string{"USD"}, calendar.CurrencyScope.Currencies)
 	require.Len(t, calendar.Days, 1)
 	require.Equal(t, "2024-06-03", calendar.Days[0].Date)
-	require.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(200)}, calendar.Days[0].Net)
+	// The one USD day only ever spent, so its net is the negative of its expense.
+	require.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(-200)}, calendar.Days[0].Net)
+	require.Equal(t, usdExpense, calendar.Days[0].Expense)
 
 	var cycles models.LinkCycleReport
 	status, body = a.request(http.MethodGet, "/api/v1/links/cycles?"+window+"&currency=USD", nil)
@@ -2904,4 +2906,146 @@ func legCurrencies(legs []models.LinkCycleLeg) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestIntegrationDocumentedCurrencyFilterExceptions covers the three places
+// ?currency= deliberately does not narrow everything, as one claim.
+//
+// The filter's default is to narrow the whole response, which is why the
+// exception is worth stating three times over: a caller who reads "narrow the
+// response" and then finds an un-narrowed figure has been misled, and each of
+// these three is a *documented* answer rather than an accident. All three were
+// previously argued from the source - the filter answered 500 on the summary, so
+// the first of them could not even be observed - and a documentation review is
+// not a test.
+//
+//	1. /dashboard/summary's totalAccounts is a plain COUNT(*) over the user's
+//	   accounts and is not narrowed. AGENTS.md says so; openapi.yaml types the
+//	   field and says nothing, which is a gap in the machine-readable contract
+//	   noted in the report.
+//	2. /dashboard/money-flow narrows its two link stages by the currency the
+//	   link's *amount* is denominated in, not by either endpoint's account, so a
+//	   link is dropped even when one endpoint holds the requested currency.
+//	3. /dashboard/cash-flow-calendar's cycles and markers overlays are not
+//	   narrowed at all.
+func TestIntegrationDocumentedCurrencyFilterExceptions(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("exceptions@example.com")
+
+	inr := a.createAccountIn("Rupee Bank", "bank", "INR", nil)
+	usd := a.createAccountIn("Dollar Bank", "bank", "USD", nil)
+	card := a.createAccountIn("Rupee Card", "credit_card", "INR", billingDayPtr(15))
+	cats := a.categories()
+	groceries := categoryByName(t, cats, "Groceries")
+
+	a.createTransaction(inr.ID, &groceries.ID, "2024-06-02", "Big Bazaar", 1500, "debit")
+	a.createTransaction(usd.ID, &groceries.ID, "2024-06-03", "Whole Foods", 200, "debit")
+	a.createTransaction(card.ID, nil, "2024-06-15", "Card spend", 300, "debit")
+
+	// A link whose *amount* is denominated in USD: the debit leg is on the USD
+	// account, so linkCurrencyColumn picks fa.currency and the value is USD even
+	// though the other endpoint is the INR account holding the INR money.
+	usdLeg := a.createTransaction(usd.ID, nil, "2024-06-04", "Dollars out", 60, "debit")
+	inrLeg := a.createTransaction(inr.ID, nil, "2024-06-04", "Rupees in", 60, "credit")
+	a.call(http.MethodPost, "/api/v1/links", map[string]any{
+		"type": "transfer", "fromTxnId": usdLeg, "toTxnId": inrLeg,
+	}, http.StatusCreated, nil)
+
+	const window = "dateFrom=2024-06-01&dateTo=2024-06-30"
+
+	// (1) totalAccounts is not narrowed. Asserted as a contrast against the same
+	// request without the filter rather than as a bare constant, so it fails both
+	// ways: if the count starts following the filter, and if it starts counting
+	// something other than the user's accounts.
+	var unfiltered, usdFiltered models.DashboardSummary
+	status, body := a.request(http.MethodGet, "/api/v1/dashboard/summary?"+window, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &unfiltered))
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/summary?"+window+"&currency=USD", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &usdFiltered))
+
+	require.Equal(t, 3, unfiltered.TotalAccounts, "three accounts, one of each kind")
+	require.Equal(t, unfiltered.TotalAccounts, usdFiltered.TotalAccounts,
+		"totalAccounts is a plain COUNT(*) over the user's accounts and ?currency= does not narrow it")
+	// Everything beside it does narrow, which is what makes the exception a real
+	// exception rather than the filter being inert.
+	require.NotEqual(t, unfiltered.TotalTransactions, usdFiltered.TotalTransactions)
+	// Five transactions in the window: two on the INR account, two on the USD one
+	// (the spend and the link's debit leg), one on the card.
+	require.Equal(t, 5, unfiltered.TotalTransactions)
+	require.Equal(t, 2, usdFiltered.TotalTransactions)
+	// The USD window holds the 200 spend plus the link's own 60 debit leg, which
+	// is an ordinary transaction and counts here however it is linked.
+	require.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(260)}, usdFiltered.TotalExpense)
+	require.Equal(t, []string{"USD"}, usdFiltered.CurrencyScope.Currencies)
+
+	// (2) A link is in scope by the currency of its amount, not by either
+	// endpoint's account. The USD request must drop it, because its value is USD
+	// and the USD account's own money is not what a USD filter picks it by - it
+	// is the INR credit it is paired with that makes the trap: admitting the link
+	// because *one* endpoint holds the currency would report its amount in the
+	// account the value did not come from.
+	var usdGraph, inrGraph models.MoneyFlowGraph
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/money-flow?"+window+"&currency=USD", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &usdGraph))
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/money-flow?"+window+"&currency=INR", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &inrGraph))
+
+	transferTotal := func(g models.MoneyFlowGraph) models.CurrencyAmounts {
+		for _, s := range g.LinkSummary {
+			if s.Type == "transfer" {
+				return s.Total
+			}
+		}
+		return models.NewCurrencyAmounts()
+	}
+	// Unfiltered, the link is valued in USD - the currency of the account the
+	// amount came from, which is not the currency of the account it flows into.
+	require.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(60)}, transferTotal(unfilteredGraph(t, a, window)))
+	require.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(60)}, transferTotal(usdGraph),
+		"a USD filter keeps a link whose amount is USD, even though its other endpoint is INR")
+	require.Equal(t, models.NewCurrencyAmounts(), transferTotal(inrGraph),
+		"an INR filter drops a link whose amount is USD, even though its other endpoint is INR")
+
+	// (3) The calendar overlays are not narrowed. Proven here alongside the other
+	// two so the three exceptions are one claim; the marker-by-marker reading is
+	// in TestIntegrationCalendarOverlaysIgnoreTheCurrencyFilter.
+	var cal models.CashFlowCalendar
+	status, body = a.request(http.MethodGet,
+		"/api/v1/dashboard/cash-flow-calendar?"+window+"&currency=USD&accountId="+card.ID.String(), nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &cal))
+	require.Empty(t, cal.Days)
+	require.Empty(t, cal.CurrencyScope.Currencies)
+	require.NotEmpty(t, cal.Cycles)
+	require.NotEmpty(t, cal.Markers)
+	require.Equal(t, plainCalendarCycles(t, a, window, card.ID), cal.Cycles,
+		"the overlay is identical to the unfiltered one: ?currency= did not narrow it")
+}
+
+// unfilteredGraph reads the money-flow graph with no currency filter, for the
+// link-stage assertions that need the same window three ways.
+func unfilteredGraph(t *testing.T, a *apiClient, window string) models.MoneyFlowGraph {
+	t.Helper()
+	var graph models.MoneyFlowGraph
+	status, body := a.request(http.MethodGet, "/api/v1/dashboard/money-flow?"+window, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &graph))
+	return graph
+}
+
+// plainCalendarCycles reads the calendar with no currency filter and returns its
+// cycles, which is what the USD request has to reproduce exactly to show the
+// overlay was untouched.
+func plainCalendarCycles(t *testing.T, a *apiClient, window string, accountID uuid.UUID) []models.CashFlowCalendarCycle {
+	t.Helper()
+	var cal models.CashFlowCalendar
+	status, body := a.request(http.MethodGet,
+		"/api/v1/dashboard/cash-flow-calendar?"+window+"&accountId="+accountID.String(), nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &cal))
+	return cal.Cycles
 }

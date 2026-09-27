@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,15 +42,111 @@ const catWindowRegex = `ROW_NUMBER\(\) OVER \(PARTITION BY COALESCE\(NULLIF\(a\.
 // stat cards beside it, which is the contradiction the test below exists to
 // catch, so each of those expectations matches this and binds the code.
 //
-// Note what this regex cannot also do: pin that the placeholder appears exactly
-// once. That is not an oversight but a property of the matcher — pgxmock's
+// The trailing group is deliberately absent. This regex pins the predicate's
+// presence and its spelling, and it cannot also pin that the placeholder appears
+// exactly once — not an oversight but a property of the matcher: pgxmock's
 // QueryMatcherRegexp runs stripQuery over the actual statement first, collapsing
 // every whitespace run to a single space, so no pattern can tell `= $2` from
-// `= $2 $2` by what follows it, and a bare `= \$2` matches inside the malformed
-// `= $2 $2` too. That is how a statement PostgreSQL rejects passed thirteen tasks
-// and a per-task review: a matcher compares strings and cannot parse one, so
-// tightening this pattern is not available as a fix for anything.
+// `= $2 $2` by what follows it. A `= $2` also matches inside the malformed
+// `= $2 $2`, which is how a statement PostgreSQL rejects passed thirteen tasks and
+// a per-task review: a matcher compares strings and cannot parse one.
+// noAdjacentPlaceholders is the guard for that, and it runs on the raw statement;
+// see TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder.
 const currencyFilterRegex = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$2`
+
+// placeholderToken finds every $n in a statement. RE2 has no backreferences, so
+// the adjacency check below compares offsets rather than matching "$N ... $N".
+var placeholderToken = regexp.MustCompile(`\$\d+`)
+
+// noAdjacentPlaceholders is a pgxmock QueryMatcher that does everything the
+// default one does and then refuses a statement in which two placeholders are
+// separated by nothing but whitespace.
+//
+// That shape is the bug this change set shipped, and it is worth saying why it is
+// always a defect rather than a style: a placeholder is a parameter reference, so
+// `$2 $2` is not "the same parameter twice" the way `$1` on both sides of a join
+// is — it is two references with no operator or punctuation between them, which
+// PostgreSQL rejects with "syntax error at or near". Nothing in this repository
+// writes SQL in which that juxtaposition is legal, and the check is deliberately
+// general so it also catches a doubled placeholder that is not the currency's.
+//
+// It is a proxy for a syntax check, not a parser: it can tell that a statement is
+// malformed in this one specific way, and nothing else. The real guard is the
+// integration test, which asks PostgreSQL. This one exists because a unit test is
+// the only tier that runs on every commit, and the defect survived thirteen tasks
+// and a per-task review at exactly that tier.
+func noAdjacentPlaceholders(expectedSQL, actualSQL string) error {
+	if err := pgxmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL); err != nil {
+		return err
+	}
+	tokens := placeholderToken.FindAllStringIndex(actualSQL, -1)
+	for i := 1; i < len(tokens); i++ {
+		between := actualSQL[tokens[i-1][1]:tokens[i][0]]
+		if strings.TrimSpace(between) == "" {
+			return fmt.Errorf("statement has two placeholders separated only by %q: %q and %q near %q",
+				between,
+				actualSQL[tokens[i-1][0]:tokens[i-1][1]],
+				actualSQL[tokens[i][0]:tokens[i][1]],
+				contextAround(actualSQL, tokens[i][0]))
+		}
+	}
+	return nil
+}
+
+// contextAround returns a short window of a statement around an offset, so a
+// failure names where the statement went wrong instead of making a reader find it.
+func contextAround(s string, at int) string {
+	start := at - 40
+	if start < 0 {
+		start = 0
+	}
+	end := at + 40
+	if end > len(s) {
+		end = len(s)
+	}
+	return s[start:end]
+}
+
+// TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder proves the guard has teeth
+// before anything relies on it to have them: a matcher that accepts everything is
+// worse than no matcher, because it reads as coverage.
+//
+// The malformed form is the exact string the shipped code produced when a
+// self-contained currency predicate was handed to a closure that appends its own
+// placeholder. The well-formed ones are the shapes the fix actually emits.
+func TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder(t *testing.T) {
+	// The expectation is `.*` throughout, because noAdjacentPlaceholders delegates
+	// to the regexp matcher, which compiles the expectation: a literal statement
+	// containing `COUNT(*)` is not a valid regexp and would fail the delegation
+	// before the adjacency check was ever reached. Matching everything isolates
+	// the property under test — the raw statement, not the pattern.
+	const any = ".*"
+	const malformed = "SELECT COUNT(*) FROM t WHERE a.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2 $2"
+	const wellFormed = "SELECT COUNT(*) FROM t WHERE a.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2"
+
+	err := noAdjacentPlaceholders(any, malformed)
+	if err == nil {
+		t.Fatal("noAdjacentPlaceholders accepted a doubled placeholder; the guard is inert")
+	}
+	if !strings.Contains(err.Error(), "$2") {
+		t.Errorf("the failure should name the placeholder, got: %v", err)
+	}
+	if err := noAdjacentPlaceholders(any, wellFormed); err != nil {
+		t.Errorf("noAdjacentPlaceholders rejected a well-formed statement: %v", err)
+	}
+	// The same parameter legitimately referenced twice, with an operator between
+	// the references, is how this codebase writes a join; the guard must not
+	// mistake that for the defect.
+	const repeated = "SELECT COUNT(*) FROM t JOIN a ON a.id = t.account_id AND a.user_id = $1 WHERE t.user_id = $1"
+	if err := noAdjacentPlaceholders(any, repeated); err != nil {
+		t.Errorf("noAdjacentPlaceholders rejected a legitimate repeated placeholder: %v", err)
+	}
+	// And it must still delegate: a statement that does not match its expectation
+	// has to fail on the mismatch, not slip through the extra check.
+	if err := noAdjacentPlaceholders("SOMETHING_ELSE", wellFormed); err == nil {
+		t.Error("noAdjacentPlaceholders swallowed a mismatch it should have delegated")
+	}
+}
 
 func TestGetDashboardSummary(t *testing.T) {
 	mock, err := pgxmock.NewPool()
@@ -269,7 +367,10 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 // normalised code. Drop the predicate from any one section and its expectation
 // stops matching, the handler answers 500, and this fails.
 func TestGetDashboardSummaryNarrowsEverySectionToTheCurrencyFilter(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	// The guarded matcher, not the default one: this is the test that covers the
+	// fragment the currency predicate is spliced into, and the default matcher
+	// cannot tell `= $2` from the `= $2 $2` this endpoint used to send.
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +789,9 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 // rather than a wrong number - which is the best available failure mode, but
 // still one to catch here rather than in production.
 func TestGetDashboardSummaryBillingCycleNarrowsToTheCurrencyFilter(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	// Guarded for the same reason as the month view above: this view renders its
+	// own copy of the filter fragment, so it had its own copy of the defect.
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,8 +809,8 @@ func TestGetDashboardSummaryBillingCycleNarrowsToTheCurrencyFilter(t *testing.T)
 	// The shared fragment's currency predicate is the fourth condition, so $5.
 	// The scope query numbers the same three filters and reaches $5 too. This view
 	// builds its own copy of the fragment, so it carries the same caveat as
-	// currencyFilterRegex: the pattern pins the spelling, and nothing here pins
-	// the placeholder count.
+	// currencyFilterRegex: the regex pins the spelling, and noAdjacentPlaceholders
+	// pins the placeholder count.
 	const filterAt5 = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$5`
 
 	mock.ExpectQuery("SELECT a.billing_day").
