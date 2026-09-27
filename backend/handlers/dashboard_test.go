@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,16 +43,23 @@ const catWindowRegex = `ROW_NUMBER\(\) OVER \(PARTITION BY COALESCE\(NULLIF\(a\.
 // stat cards beside it, which is the contradiction the test below exists to
 // catch, so each of those expectations matches this and binds the code.
 //
-// The trailing group is deliberately absent. This regex pins the predicate's
-// presence and its spelling, and it cannot also pin that the placeholder appears
-// exactly once — not an oversight but a property of the matcher: pgxmock's
-// QueryMatcherRegexp runs stripQuery over the actual statement first, collapsing
-// every whitespace run to a single space, so no pattern can tell `= $2` from
-// `= $2 $2` by what follows it. A `= $2` also matches inside the malformed
-// `= $2 $2`, which is how a statement PostgreSQL rejects passed thirteen tasks and
-// a per-task review: a matcher compares strings and cannot parse one.
-// noAdjacentPlaceholders is the guard for that, and it runs on the raw statement;
-// see TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder.
+// This is a substring, and that limits what it can say. It pins the predicate's
+// presence and its spelling; it cannot also pin that the placeholder appears
+// exactly once, because pgxmock's QueryMatcherRegexp runs stripQuery over the
+// actual statement first, collapsing every whitespace run to a single space, and
+// then matches unanchored. So `= $2` is found inside the malformed `= $2 $2` and
+// these expectations passed against a statement PostgreSQL rejects — which is how
+// the defect survived thirteen tasks and a per-task review.
+//
+// To be precise about what is and is not possible here, since it is tempting to
+// assume the matcher is simply too weak: the *expected* side is a regex, so an
+// anchored `^…= \$2$` would discriminate, because stripQuery destroys newlines but
+// not the end of the string. It cannot help these expectations, which splice the
+// pattern into the middle of a longer one with `[\s\S]*` either side and so have
+// nothing to anchor to. The guard that does not depend on where the pattern sits
+// is noAdjacentPlaceholders, which reads the raw statement; see
+// TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder and
+// TestGuardedPoolRejectsADoubledPlaceholder.
 const currencyFilterRegex = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\) = \$2`
 
 // placeholderToken finds every $n in a statement. RE2 has no backreferences, so
@@ -115,30 +123,30 @@ func contextAround(s string, at int) string {
 // self-contained currency predicate was handed to a closure that appends its own
 // placeholder. The well-formed ones are the shapes the fix actually emits.
 func TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder(t *testing.T) {
-	// The expectation is `.*` throughout, because noAdjacentPlaceholders delegates
+	// The expectation matches everything, because noAdjacentPlaceholders delegates
 	// to the regexp matcher, which compiles the expectation: a literal statement
 	// containing `COUNT(*)` is not a valid regexp and would fail the delegation
 	// before the adjacency check was ever reached. Matching everything isolates
 	// the property under test — the raw statement, not the pattern.
-	const any = ".*"
+	const matchAll = ".*"
 	const malformed = "SELECT COUNT(*) FROM t WHERE a.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2 $2"
 	const wellFormed = "SELECT COUNT(*) FROM t WHERE a.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2"
 
-	err := noAdjacentPlaceholders(any, malformed)
+	err := noAdjacentPlaceholders(matchAll, malformed)
 	if err == nil {
 		t.Fatal("noAdjacentPlaceholders accepted a doubled placeholder; the guard is inert")
 	}
 	if !strings.Contains(err.Error(), "$2") {
 		t.Errorf("the failure should name the placeholder, got: %v", err)
 	}
-	if err := noAdjacentPlaceholders(any, wellFormed); err != nil {
+	if err := noAdjacentPlaceholders(matchAll, wellFormed); err != nil {
 		t.Errorf("noAdjacentPlaceholders rejected a well-formed statement: %v", err)
 	}
 	// The same parameter legitimately referenced twice, with an operator between
 	// the references, is how this codebase writes a join; the guard must not
 	// mistake that for the defect.
 	const repeated = "SELECT COUNT(*) FROM t JOIN a ON a.id = t.account_id AND a.user_id = $1 WHERE t.user_id = $1"
-	if err := noAdjacentPlaceholders(any, repeated); err != nil {
+	if err := noAdjacentPlaceholders(matchAll, repeated); err != nil {
 		t.Errorf("noAdjacentPlaceholders rejected a legitimate repeated placeholder: %v", err)
 	}
 	// And it must still delegate: a statement that does not match its expectation
@@ -146,6 +154,77 @@ func TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder(t *testing.T) {
 	if err := noAdjacentPlaceholders("SOMETHING_ELSE", wellFormed); err == nil {
 		t.Error("noAdjacentPlaceholders swallowed a mismatch it should have delegated")
 	}
+}
+
+// TestGuardedPoolRejectsADoubledPlaceholder asserts the guard is actually
+// *installed*, which is the one thing the test above cannot see.
+//
+// noAdjacentPlaceholders being correct says nothing about whether any pool uses
+// it. Deleting the two pgxmock.QueryMatcherOption calls that wire it in leaves
+// every test in this package green and every integration test green, because the
+// matcher is only ever consulted when a pool is built with it — so the guard
+// would be removed silently, and the defect it exists for would come back with
+// nothing red. This drives a real pool through the option and checks that a
+// doubled placeholder is refused at the boundary the wiring is supposed to
+// affect.
+//
+// It also states the guard's reach: the option is applied at exactly two
+// NewPool calls, both in this file, both covering the summary's currency-filter
+// fragment. A handler that grows its own currency fragment gets no protection
+// from this; extending it means adding the option there too, and this test is
+// where that shows up as something to do.
+func TestGuardedPoolRejectsADoubledPlaceholder(t *testing.T) {
+	const malformed = "SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2 $2"
+	const wellFormed = "SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2"
+
+	// One pool per case, each with exactly one expectation, so the assertion is
+	// about the matcher rather than about how a failed match interacts with
+	// pgxmock's expectation queue. The expectation is the escaped statement
+	// because pgxmock compiles it: `COUNT(*)` is not a valid regexp, and an
+	// expectation that fails to compile would reject everything and make this
+	// test pass for the wrong reason.
+	guarded := func(t *testing.T, sql string) error {
+		t.Helper()
+		mock := newGuardedDashboardPool(t)
+		mock.ExpectQuery(regexp.QuoteMeta(sql)).WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		rows, queryErr := mock.Query(context.Background(), sql)
+		if rows != nil {
+			rows.Close()
+		}
+		return queryErr
+	}
+
+	// A guarded pool refuses the doubled statement, even though the expectation
+	// matches it exactly. This is the assertion that fails if the option stops
+	// being installed: without the guard the expectation and the statement are
+	// identical and the query succeeds.
+	if err := guarded(t, malformed); err == nil {
+		t.Error("a guarded pool executed a doubled placeholder; the option is not installed")
+	}
+	// And accepts the well-formed one, so the guard discriminates rather than
+	// refusing everything.
+	if err := guarded(t, wellFormed); err != nil {
+		t.Errorf("a guarded pool rejected a well-formed statement: %v", err)
+	}
+}
+
+// newGuardedDashboardPool is the single place the summary's currency-filter tests
+// get their pool, so the matcher cannot be dropped from one of them and left in
+// the others.
+//
+// That was the weak link in the guard: noAdjacentPlaceholders being correct says
+// nothing about whether any pool is built with it, and a matcher is only ever
+// consulted when one is. Routing all three through here means removing the option
+// from any of them is either a compile error or a failure of
+// TestGuardedPoolRejectsADoubledPlaceholder, which goes through this too.
+func newGuardedDashboardPool(t *testing.T) pgxmock.PgxPoolIface {
+	t.Helper()
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	return mock
 }
 
 func TestGetDashboardSummary(t *testing.T) {
@@ -367,14 +446,10 @@ func TestGetDashboardSummaryRefusesToCombineCurrencies(t *testing.T) {
 // normalised code. Drop the predicate from any one section and its expectation
 // stops matching, the handler answers 500, and this fails.
 func TestGetDashboardSummaryNarrowsEverySectionToTheCurrencyFilter(t *testing.T) {
-	// The guarded matcher, not the default one: this is the test that covers the
+	// The guarded pool, not a default one: this is the test that covers the
 	// fragment the currency predicate is spliced into, and the default matcher
 	// cannot tell `= $2` from the `= $2 $2` this endpoint used to send.
-	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
+	mock := newGuardedDashboardPool(t)
 	srv := newTestServer(mock)
 	r := newDashboardTestRouter(srv)
 	userID := testUserID()
@@ -791,11 +866,7 @@ func TestGetDashboardSummaryBillingCycle(t *testing.T) {
 func TestGetDashboardSummaryBillingCycleNarrowsToTheCurrencyFilter(t *testing.T) {
 	// Guarded for the same reason as the month view above: this view renders its
 	// own copy of the filter fragment, so it had its own copy of the defect.
-	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
+	mock := newGuardedDashboardPool(t)
 	srv := newTestServer(mock)
 
 	r := newDashboardTestRouter(srv)

@@ -2260,8 +2260,20 @@ func TestIntegrationNullAndEmptyCurrencyReadsAsINR(t *testing.T) {
 	require.Equal(t, wantExpense, inrCalendar.TotalExpense)
 	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, inrCalendar.Net)
 	require.Len(t, inrCalendar.Days, 2)
-	// A blank currency would reach a consumer as a "" key on every one of these.
-	require.NotContains(t, string(body), `""`)
+	// A blank currency would reach a consumer as a "" key. Scoped to the field
+	// rather than the whole body: a substring search for `""` would also fail if the
+	// product ever gained an unrelated legitimately-empty string, which is a
+	// failure about something else entirely.
+	require.NotContains(t, string(body), `"currency":""`)
+	for _, acc := range inrCalendar.CurrencyScope.Accounts {
+		require.NotEmpty(t, acc.Currency, "account %q was named with a blank currency", acc.Name)
+		for code := range acc.Income {
+			require.NotEmpty(t, code, "an amount carried a blank currency key")
+		}
+		for code := range acc.Expense {
+			require.NotEmpty(t, code, "an amount carried a blank currency key")
+		}
+	}
 
 	// Filtering for a currency neither account holds excludes them, which is the
 	// same predicate agreeing with the same projection rather than the other way
@@ -2656,10 +2668,20 @@ func TestIntegrationCalendarOverlaysIgnoreTheCurrencyFilter(t *testing.T) {
 	// The overlay is the exception, and it is the named account's currency rather
 	// than the requested one. Every marker after the empty window is INR.
 	require.NotEmpty(t, filtered.Markers, "the overlay is not narrowed by ?currency=")
+	// A marker whose balance came to zero carries no key at all, the same third
+	// state the cycle loop below handles, so the length is checked before the
+	// index rather than after it: an empty map should read as a clean failure
+	// here, not panic the test binary.
+	markersWithMoney := 0
 	for _, marker := range filtered.Markers {
-		require.Equal(t, "INR", marker.Amount.Currencies()[0],
+		if len(marker.Amount) == 0 {
+			continue
+		}
+		markersWithMoney++
+		require.Equal(t, []string{"INR"}, marker.Amount.Currencies(),
 			"markers are keyed by the named account's own currency, which is the documented exception")
 	}
+	require.Positive(t, markersWithMoney, "at least one marker closes with a real balance")
 	require.Equal(t, plain.Markers[0].Amount, filtered.Markers[0].Amount,
 		"the same overlay, the same figure: nothing about it was narrowed")
 	// Cycles with a zero running balance carry no key at all, which is the third
@@ -2694,14 +2716,16 @@ func TestIntegrationCalendarOverlaysIgnoreTheCurrencyFilter(t *testing.T) {
 	require.Empty(t, quiet.Days)
 
 	// Asserted on the bytes, because {} and null are the same Go value to a
-	// decoder and only one of them is the documented third state.
-	for _, field := range []string{
-		`"totalIncome":{}`, `"totalExpense":{}`, `"net":{}`, `"maxAbsNet":{}`,
-	} {
-		require.Contains(t, string(body), field,
+	// decoder and only one of them is the documented third state. The `null` check
+	// is per-field for the same reason the {} check is: a body-wide search for
+	// the substring "null" would fail on any future nullable field anywhere in the
+	// response, which is a failure about something other than these four amounts.
+	for _, field := range []string{"totalIncome", "totalExpense", "net", "maxAbsNet"} {
+		require.Contains(t, string(body), `"`+field+`":{}`,
 			"an amount with no keys must serialize as {}, not null; body: %s", body)
+		require.NotContains(t, string(body), `"`+field+`":null`,
+			"an amount must serialize as {}, not null; body: %s", body)
 	}
-	require.NotContains(t, string(body), "null")
 }
 
 // TestIntegrationLinkCycleReportsTheValueCurrency runs the link queries' CASE
