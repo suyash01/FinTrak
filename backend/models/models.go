@@ -1266,22 +1266,25 @@ type CashFlowCalendar struct {
 // month (or billing cycle) so the Money Flow page can show a timeline strip and
 // scrub the Sankey's window to a period.
 
-// MoneyFlowTimelinePeriod is one period of the flow timeline. StartDate and
-// EndDate are inclusive YYYY-MM-DD bounds suitable for re-querying the flow.
+// MoneyFlowTimelinePeriod is one period of the flow timeline; the bounds are
+// inclusive and can be fed straight back into the graph query. Net is
+// per-currency because a difference within one currency is meaningful even
+// when the window as a whole spans several.
 type MoneyFlowTimelinePeriod struct {
-	Key       string       `json:"key"`
-	Label     string       `json:"label"`
-	StartDate string       `json:"startDate"`
-	EndDate   string       `json:"endDate"`
-	Income    money.Amount `json:"income"`
-	Expense   money.Amount `json:"expense"`
-	Net       money.Amount `json:"net"`
+	Key       string          `json:"key"`
+	Label     string          `json:"label"`
+	StartDate string          `json:"startDate"`
+	EndDate   string          `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
+	Net       CurrencyAmounts `json:"net"`
 }
 
 // MoneyFlowTimeline is the response of GET /api/v1/dashboard/money-flow/timeline.
 type MoneyFlowTimeline struct {
-	GroupBy string                    `json:"groupBy"`
-	Periods []MoneyFlowTimelinePeriod `json:"periods"`
+	GroupBy       string                    `json:"groupBy"`
+	Periods       []MoneyFlowTimelinePeriod `json:"periods"`
+	CurrencyScope CurrencyScope             `json:"currencyScope"`
 }
 
 // TransferSuggestion proposes that two transactions be linked, e.g. a debit and

@@ -25,19 +25,50 @@ func newMoneyFlowTimelineTestRouter(srv *Server) *gin.Engine {
 	return r
 }
 
+// The account-currency expression, as it has to appear in the SELECT projection
+// and in the ?currency= predicate of every query that reads it - and, through the
+// ordinal GROUP BY, in the grouping. The expectations match these rather than a
+// loose "a.currency" because pgxmock compares arguments with reflect.DeepEqual: a
+// respelled expression binds identically, so it would sail through a loose regexp
+// while disagreeing with the scope query the same response's currencyScope was
+// folded from - and would drop every account whose currency is merely unset out of
+// an explicit ?currency=INR report.
+const (
+	timelineCurrencyRegex     = `COALESCE\(NULLIF\(a\.currency, ''\), 'INR'\)`
+	timelineCurrencyProjRegex = timelineCurrencyRegex + ` AS currency`
+	// The shared filter binds the window first and the currency last, so with a
+	// window and no account the predicate lands on $4 - which is also where the
+	// scope query reaches, since it numbers the same filters in the same order.
+	timelineCurrencyPredRegex = timelineCurrencyRegex + ` = \$4`
+	// timelineMonthlyHead pins the currency as the *second* select expression,
+	// because the statement groups by ordinal: `GROUP BY 1, 2` means the month
+	// and the currency in that order, and a currency projected ahead of the month
+	// would silently group the wrong column.
+	timelineMonthlyHead = `(?s)SELECT date_trunc\('month', t\.date\)::date, ` + timelineCurrencyProjRegex
+	timelineMonthlyTail = `GROUP BY 1, 2`
+	// The scope query is the shared currencyScope statement, which puts the
+	// window in the join's ON so a quiet account still names its currency.
+	timelineScopeRegex = `FROM accounts a\s+LEFT JOIN transactions t`
+)
+
 func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	defer mock.Close()
 
 	userID := testUserID()
+	acctID := uuid.New()
 	dateFrom, dateTo := "2024-05-01", "2024-06-30"
 
-	mock.ExpectQuery("date_trunc\\('month', t.date\\)").
+	mock.ExpectQuery(timelineScopeRegex).
 		WithArgs(userID, dateFrom, dateTo).
-		WillReturnRows(pgxmock.NewRows([]string{"month", "income", "expense"}).
-			AddRow(time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC), 50000.0, 12000.0).
-			AddRow(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), 0.0, 3000.0))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctID, "Salary", "INR", money.FromFloat(50000), money.FromFloat(15000)))
+	mock.ExpectQuery(timelineMonthlyHead + `[\s\S]*` + timelineMonthlyTail).
+		WithArgs(userID, dateFrom, dateTo).
+		WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
+			AddRow(time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC), "INR", money.FromFloat(50000), money.FromFloat(12000)).
+			AddRow(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), "INR", 0, money.FromFloat(3000)))
 
 	req, _ := http.NewRequest(http.MethodGet,
 		"/dashboard/money-flow/timeline?dateFrom="+dateFrom+"&dateTo="+dateTo, nil)
@@ -55,11 +86,128 @@ func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
 	assert.Equal(t, "May 2024", timeline.Periods[0].Label)
 	assert.Equal(t, "2024-05-01", timeline.Periods[0].StartDate)
 	assert.Equal(t, "2024-05-31", timeline.Periods[0].EndDate)
-	assert.Equal(t, money.FromFloat(50000), timeline.Periods[0].Income)
-	assert.Equal(t, money.FromFloat(12000), timeline.Periods[0].Expense)
-	assert.Equal(t, money.FromFloat(38000), timeline.Periods[0].Net)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(50000)}, timeline.Periods[0].Income)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(12000)}, timeline.Periods[0].Expense)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(38000)}, timeline.Periods[0].Net)
+	if _, _, ok := timeline.Periods[0].Net.Single(); !ok {
+		t.Error("a single-currency period net did not report as a single amount")
+	}
 
-	assert.Equal(t, money.FromFloat(-3000), timeline.Periods[1].Net)
+	// June spent without earning, so its income map is empty rather than
+	// present-and-zero and its net is the negative of its expense.
+	assert.Equal(t, models.CurrencyAmounts{}, timeline.Periods[1].Income)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(-3000)}, timeline.Periods[1].Net)
+
+	assert.Equal(t, []string{"INR"}, timeline.CurrencyScope.Currencies)
+	require.Len(t, timeline.CurrencyScope.Accounts, 1)
+	assert.Equal(t, "Salary", timeline.CurrencyScope.Accounts[0].Name)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The bug this endpoint had: with no account filter, a month covering a USD
+// account and an INR one added dollars to rupees. A difference within one
+// currency is still meaningful, so the net survives - per currency, and with
+// nothing anywhere in the response taken across the two.
+func TestGetMoneyFlowTimelineRefusesACrossCurrencyNet(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	userID := testUserID()
+	acctINR, acctUSD := uuid.New(), uuid.New()
+	dateFrom, dateTo := "2024-05-01", "2024-06-30"
+	may := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(timelineScopeRegex).
+		WithArgs(userID, dateFrom, dateTo).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctINR, "Salary", "INR", money.FromFloat(50000), money.FromFloat(12000)).
+			AddRow(acctUSD, "Travel card", "USD", money.FromFloat(200), money.FromFloat(50)))
+	mock.ExpectQuery(timelineMonthlyHead + `[\s\S]*` + timelineMonthlyTail).
+		WithArgs(userID, dateFrom, dateTo).
+		WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
+			AddRow(may, "INR", money.FromFloat(50000), money.FromFloat(12000)).
+			AddRow(may, "USD", money.FromFloat(200), money.FromFloat(50)))
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"/dashboard/money-flow/timeline?dateFrom="+dateFrom+"&dateTo="+dateTo, nil)
+	w := httptest.NewRecorder()
+	newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var timeline models.MoneyFlowTimeline
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &timeline))
+
+	// One month, one period: the currency is part of the amount, not of the
+	// period's identity. Grouping the month without the currency let the
+	// database hand back one amount that had already added dollars to rupees,
+	// before any map existed to keep them apart.
+	require.Len(t, timeline.Periods, 1)
+	assert.Equal(t, models.CurrencyAmounts{
+		"INR": money.FromFloat(50000),
+		"USD": money.FromFloat(200),
+	}, timeline.Periods[0].Income)
+	assert.Equal(t, models.CurrencyAmounts{
+		"INR": money.FromFloat(38000),
+		"USD": money.FromFloat(150),
+	}, timeline.Periods[0].Net)
+	if _, _, ok := timeline.Periods[0].Net.Single(); ok {
+		t.Error("a two-currency period net reported as a single amount")
+	}
+
+	// The scope names both accounts, so a reader can see that USD 150.00 exists
+	// rather than inferring a single number from the sum of the two keys.
+	assert.Equal(t, []string{"INR", "USD"}, timeline.CurrencyScope.Currencies)
+	require.Len(t, timeline.CurrencyScope.Accounts, 2)
+	assert.Equal(t, "INR", timeline.CurrencyScope.Accounts[0].Currency)
+	assert.Equal(t, "USD", timeline.CurrencyScope.Accounts[1].Currency)
+
+	// The net reaches the wire as an object keyed by currency. A bare number
+	// here would be the cross-currency total this change exists to remove.
+	assert.Contains(t, w.Body.String(), `"net":{"INR":38000.00,"USD":150.00}`)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The projected-currency expression has to be the same one the scope query
+// projects, filters and groups by, and the ?currency= predicate has to be the
+// same one the projection renders - at every one of the three sites, in one
+// expectation. The bound argument alone cannot catch a respelling: pgxmock
+// compares arguments with reflect.DeepEqual, so a bare COALESCE(a.currency, ...)
+// in the projection would bind the same "USD" and pass every loose expectation.
+func TestGetMoneyFlowTimelinePinsTheProjectedCurrency(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	userID := testUserID()
+	acctID := uuid.New()
+	dateFrom, dateTo := "2024-05-01", "2024-06-30"
+
+	mock.ExpectQuery(timelineScopeRegex + `[\s\S]*` + timelineCurrencyPredRegex).
+		WithArgs(userID, dateFrom, dateTo, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctID, "Travel card", "USD", money.FromFloat(200), money.FromFloat(50)))
+	mock.ExpectQuery(timelineMonthlyHead +
+		`[\s\S]*t\.user_id = \$1 AND t\.date >= \$2 AND t\.date <= \$3 AND ` + timelineCurrencyPredRegex +
+		`[\s\S]*` + timelineMonthlyTail).
+		WithArgs(userID, dateFrom, dateTo, "USD").
+		WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
+			AddRow(time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC), "USD", money.FromFloat(200), money.FromFloat(50)))
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"/dashboard/money-flow/timeline?dateFrom="+dateFrom+"&dateTo="+dateTo+"&currency=usd", nil)
+	w := httptest.NewRecorder()
+	newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var timeline models.MoneyFlowTimeline
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &timeline))
+	// The filter was folded to upper case by the shared parser, so ?currency=usd
+	// finds the USD account rather than matching nothing and reporting zeroes.
+	assert.Equal(t, []string{"USD"}, timeline.CurrencyScope.Currencies)
+	assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(150)}, timeline.Periods[0].Net)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -74,18 +222,30 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 	start := time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC)
 
-	mock.ExpectQuery("SELECT a.billing_day").
+	// The account lookup also reads the account's currency: the branch is
+	// account-scoped, so one cycle - and one period - can only hold that one.
+	mock.ExpectQuery("SELECT a.billing_day, " + timelineCurrencyRegex).
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
 	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID, start, end, "Jun 2024", 500.0, 3))
+	// The scope covers the same cycle window the periods are read over, so the
+	// currency named beside the bars is the one the bars are in.
+	mock.ExpectQuery(timelineScopeRegex).
+		WithArgs(userID, start.Format("2006-01-02"), end.Format("2006-01-02"), acctID.String()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctID, "Savings", "INR", money.FromFloat(5000), money.FromFloat(1500)))
+	// A cycle with no transactions still yields a period, and its maps are empty
+	// objects rather than nulls.
+	cycleRows := pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}).
+		AddRow(cycleID, start, end, "Jun 2024", money.FromFloat(5000), money.FromFloat(1500)).
+		AddRow(uuid.New(), end.AddDate(0, 0, 1), end.AddDate(0, 1, 0), "Jul 2024", 0, 0)
 	mock.ExpectQuery("FROM billing_cycles bc").
 		WithArgs(acctID, userID, start.Format("2006-01-02"), end.Format("2006-01-02")).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}).
-			AddRow(cycleID, start, end, "Jun 2024", 5000.0, 1500.0))
+		WillReturnRows(cycleRows)
 
 	req, _ := http.NewRequest(http.MethodGet,
 		"/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String(), nil)
@@ -97,14 +257,101 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 	var timeline models.MoneyFlowTimeline
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &timeline))
 	assert.Equal(t, "billing_cycle", timeline.GroupBy)
-	require.Len(t, timeline.Periods, 1)
+	require.Len(t, timeline.Periods, 2)
 	assert.Equal(t, cycleID.String(), timeline.Periods[0].Key)
 	assert.Equal(t, "Jun 2024", timeline.Periods[0].Label)
 	assert.Equal(t, "2024-05-06", timeline.Periods[0].StartDate)
 	assert.Equal(t, "2024-06-05", timeline.Periods[0].EndDate)
-	assert.Equal(t, money.FromFloat(5000), timeline.Periods[0].Income)
-	assert.Equal(t, money.FromFloat(1500), timeline.Periods[0].Expense)
-	assert.Equal(t, money.FromFloat(3500), timeline.Periods[0].Net)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(5000)}, timeline.Periods[0].Income)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(1500)}, timeline.Periods[0].Expense)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(3500)}, timeline.Periods[0].Net)
+	// The branch is account-scoped, so the net is still readable as one number.
+	if _, _, ok := timeline.Periods[0].Net.Single(); !ok {
+		t.Error("an account-scoped period net did not report as a single amount")
+	}
+	assert.Equal(t, models.CurrencyAmounts{}, timeline.Periods[1].Income)
+	assert.Equal(t, models.CurrencyAmounts{}, timeline.Periods[1].Net)
+	assert.Equal(t, []string{"INR"}, timeline.CurrencyScope.Currencies)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The billing-cycle branch is one account, so it needs no per-currency grouping
+// - but it must still narrow on ?currency= rather than ignore it, and its cycle
+// query numbers its own arguments (account, user, window, window, currency) so
+// the predicate sits at a fixed fifth placeholder. Nothing but a test would notice
+// if that placeholder and the argument appended after it drifted apart.
+func TestGetMoneyFlowTimelineBillingCycleNarrowsToTheCurrencyFilter(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	userID := testUserID()
+	acctID := uuid.New()
+	cycleID := uuid.New()
+	start := time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC)
+	windowStart, windowEnd := start.Format("2006-01-02"), end.Format("2006-01-02")
+	const predAt5 = ` = \$5`
+
+	mock.ExpectQuery("SELECT a.billing_day").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
+	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
+			AddRow(cycleID, start, end, "Jun 2024", 3500.0, 3))
+	mock.ExpectQuery(timelineScopeRegex + `[\s\S]*` + timelineCurrencyRegex + predAt5).
+		WithArgs(userID, windowStart, windowEnd, acctID.String(), "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+			AddRow(acctID, "Savings", "INR", money.FromFloat(5000), money.FromFloat(1500)))
+	mock.ExpectQuery("FROM billing_cycles bc[\\s\\S]*JOIN accounts a ON a\\.id = bc\\.account_id[\\s\\S]*" +
+		timelineCurrencyRegex + predAt5).
+		WithArgs(acctID, userID, windowStart, windowEnd, "INR").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}).
+			AddRow(cycleID, start, end, "Jun 2024", money.FromFloat(5000), money.FromFloat(1500)))
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String()+"&currency=INR", nil)
+	w := httptest.NewRecorder()
+	newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var timeline models.MoneyFlowTimeline
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &timeline))
+	assert.Equal(t, []string{"INR"}, timeline.CurrencyScope.Currencies)
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(3500)}, timeline.Periods[0].Net)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An account with no statement periods returns before the scope query runs, so
+// this is the one response whose currencyScope is built here rather than folded.
+// It is still an object with two empty arrays: a null there would tell a client
+// the currencies are unknown where the truth is that there are none.
+func TestGetMoneyFlowTimelineBillingCycleNoCycles(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	userID := testUserID()
+	acctID := uuid.New()
+
+	mock.ExpectQuery("SELECT a.billing_day").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
+	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
+	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}))
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String(), nil)
+	w := httptest.NewRecorder()
+	newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.JSONEq(t, `{"groupBy":"billing_cycle","periods":[],"currencyScope":{"currencies":[],"accounts":[]}}`, w.Body.String())
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -123,7 +370,10 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 		require.NoError(t, err)
 		defer mock.Close()
 
-		mock.ExpectQuery("date_trunc\\('month', t.date\\)").
+		mock.ExpectQuery(timelineScopeRegex).
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
+		mock.ExpectQuery(timelineMonthlyHead).
 			WithArgs(userID).
 			WillReturnError(assert.AnError)
 
@@ -132,6 +382,29 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline", nil))
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("currency scope error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		mock.ExpectQuery(timelineScopeRegex).
+			WithArgs(userID).
+			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,
+			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline", nil))
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("invalid currency", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		newMoneyFlowTimelineTestRouter(newTestServer(nil)).ServeHTTP(w,
+			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline?currency=US", nil))
+		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	t.Run("billing cycle requires account id", func(t *testing.T) {
@@ -149,7 +422,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 		acctID := uuid.New()
 		mock.ExpectQuery("SELECT a.billing_day").
 			WithArgs(acctID, userID).
-			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(nil))
+			WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(nil, "INR"))
 
 		w := httptest.NewRecorder()
 		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,

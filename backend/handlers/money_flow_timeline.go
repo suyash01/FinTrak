@@ -23,6 +23,13 @@ import (
 // Periods are calendar months by default; with groupBy=billing_cycle (which
 // requires a single account that has a billing day) they are the account's
 // statement periods instead.
+//
+// Every amount is per-currency. The monthly view is transaction-driven and can
+// cover an INR account and a USD one, so a month is one period holding one amount
+// per currency, and the response names the accounts behind them. A period's net is
+// the difference inside one currency, computed by the server: that difference is
+// meaningful even when the period as a whole spans several, and no total is ever
+// taken across two.
 func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
@@ -49,25 +56,60 @@ func (srv *Server) GetMoneyFlowTimeline(c *gin.Context) {
 		}
 	}
 
-	if groupBy == billingCycleGroupBy {
-		srv.getMoneyFlowTimelineBillingCycle(c)
+	// The currency is parsed once here and passed down, so the scope query and
+	// the period query narrow on the same normalised code in both views.
+	currency, ok := parseCurrency(c)
+	if !ok {
 		return
 	}
 
-	periods, err := queryMonthlyFlowTimeline(ctx, srv.db, userID, dateFrom, dateTo, accountID)
+	if groupBy == billingCycleGroupBy {
+		srv.getMoneyFlowTimelineBillingCycle(c, currency)
+		return
+	}
+
+	// The scope query names the currencies the periods below are reported in. It
+	// reads accounts rather than transactions, so an account quiet in the window
+	// still appears and explains the currency it holds - which is what lets a
+	// caller see a currency holding no transaction in the window at all, rather
+	// than a period list silently missing it.
+	scope, err := srv.currencyScope(ctx, srv.db, userID, scopeOptions{
+		DateFrom:  dateFrom,
+		DateTo:    dateTo,
+		AccountID: accountID,
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	periods, err := queryMonthlyFlowTimeline(ctx, srv.db, userID, dateFrom, dateTo, accountID, currency)
 	if err != nil {
 		slog.Error("GetMoneyFlowTimeline (monthly)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	c.JSON(http.StatusOK, models.MoneyFlowTimeline{GroupBy: "month", Periods: periods})
+	c.JSON(http.StatusOK, models.MoneyFlowTimeline{
+		GroupBy:       "month",
+		Periods:       periods,
+		CurrencyScope: scope.Scope,
+	})
 }
 
 // queryMonthlyFlowTimeline groups the filtered transactions into calendar
 // months, returning the inclusive month bounds the client re-queries with.
-func queryMonthlyFlowTimeline(ctx context.Context, db cycleQueryer, userID uuid.UUID, dateFrom, dateTo, accountID string) ([]models.MoneyFlowTimelinePeriod, error) {
-	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, "")
+//
+// The account's currency is projected and grouped with the month, so one month is
+// one period holding one amount per currency rather than one period per currency.
+// The grouping is by ordinal: the currency is the second select expression, so
+// `GROUP BY 1, 2` reads the month and the currency, and `ORDER BY 1, 2` returns
+// each month in one piece with its currencies in a fixed order. Grouping the month
+// without the currency is what added dollars to rupees.
+func queryMonthlyFlowTimeline(ctx context.Context, db cycleQueryer, userID uuid.UUID, dateFrom, dateTo, accountID, currency string) ([]models.MoneyFlowTimelinePeriod, error) {
+	cond, args, _ := flowFilter("t", "a", 2, dateFrom, dateTo, accountID, currency)
 	filter := ""
 	if cond != "" {
 		filter = " AND " + cond
@@ -75,44 +117,73 @@ func queryMonthlyFlowTimeline(ctx context.Context, db cycleQueryer, userID uuid.
 
 	rows, err := db.Query(ctx, `
 		SELECT date_trunc('month', t.date)::date,
+			   `+flowCurrency("a.currency")+` AS currency,
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
 		FROM transactions t
 		JOIN accounts a ON t.account_id = a.id
 		WHERE t.user_id = $1`+filter+`
-		GROUP BY 1
-		ORDER BY 1`, append([]any{userID}, args...)...)
+		GROUP BY 1, 2
+		ORDER BY 1, 2`, append([]any{userID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	periods := []models.MoneyFlowTimelinePeriod{}
+	// The rows arrive in month order, one per month per currency, so the fold
+	// keeps the months it has seen in the order it saw them.
+	byKey := map[string]*models.MoneyFlowTimelinePeriod{}
+	var keys []string
 	for rows.Next() {
 		var start time.Time
+		var code string
 		var income, expense money.Amount
-		if err := rows.Scan(&start, &income, &expense); err != nil {
+		if err := rows.Scan(&start, &code, &income, &expense); err != nil {
 			return nil, err
 		}
 		start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
-		end := time.Date(start.Year(), start.Month()+1, 0, 0, 0, 0, 0, time.UTC)
-		periods = append(periods, models.MoneyFlowTimelinePeriod{
-			Key:       start.Format("2006-01"),
-			Label:     start.Format("Jan 2006"),
-			StartDate: start.Format("2006-01-02"),
-			EndDate:   end.Format("2006-01-02"),
-			Income:    income,
-			Expense:   expense,
-			Net:       income - expense,
-		})
+		key := start.Format("2006-01")
+		entry, ok := byKey[key]
+		if !ok {
+			end := time.Date(start.Year(), start.Month()+1, 0, 0, 0, 0, 0, time.UTC)
+			entry = &models.MoneyFlowTimelinePeriod{
+				Key:       key,
+				Label:     start.Format("Jan 2006"),
+				StartDate: start.Format("2006-01-02"),
+				EndDate:   end.Format("2006-01-02"),
+				Income:    models.NewCurrencyAmounts(),
+				Expense:   models.NewCurrencyAmounts(),
+			}
+			byKey[key] = entry
+			keys = append(keys, key)
+		}
+		entry.Income.Add(code, income)
+		entry.Expense.Add(code, expense)
 	}
-	return periods, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	periods := make([]models.MoneyFlowTimelinePeriod, 0, len(keys))
+	for _, key := range keys {
+		entry := byKey[key]
+		// Net is the difference inside one currency, and the server takes it: a
+		// client subtracting two currency-keyed objects by hand is how a number
+		// across two currencies comes back. Sub takes the union of the keys and
+		// reads a missing one as zero, so a month that only spent still reports
+		// its negative net under the currency it spent in.
+		entry.Net = entry.Income.Sub(entry.Expense)
+		periods = append(periods, *entry)
+	}
+	return periods, nil
 }
 
 // getMoneyFlowTimelineBillingCycle frames the timeline around the statement
 // periods of one billing-day account, mirroring the dashboard's billing-cycle
-// window: the last `cycles` cycles ending with the current one.
-func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
+// window: the last `cycles` cycles ending with the current one. `currency` is the
+// already-normalised ?currency filter, parsed by the caller so both views narrow
+// on the same value.
+func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency string) {
 	ctx := c
 	userID := auth.GetUserID(c)
 
@@ -122,11 +193,17 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
 		return
 	}
 
+	// The account's currency is read once here rather than per period: a cycle
+	// belongs to exactly one account, and the API only lets a transaction be
+	// assigned to a cycle of its own account, so every period of this timeline is
+	// in that one currency. The maps below are per-currency for consistency with
+	// the monthly view, not because this window can span currencies.
 	var billingDay *int
+	var accountCurrency string
 	err = srv.db.QueryRow(ctx,
-		`SELECT a.billing_day
+		`SELECT a.billing_day, `+flowCurrency("a.currency")+`
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&billingDay)
+		accountID, userID).Scan(&billingDay, &accountCurrency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -160,7 +237,13 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
 		return
 	}
 	if len(cycles) == 0 {
-		c.JSON(http.StatusOK, models.MoneyFlowTimeline{GroupBy: billingCycleGroupBy, Periods: []models.MoneyFlowTimelinePeriod{}})
+		// No cycle means no window, so the response covers no currency rather
+		// than an unnamed one: both arrays are empty, never null.
+		c.JSON(http.StatusOK, models.MoneyFlowTimeline{
+			GroupBy:       billingCycleGroupBy,
+			Periods:       []models.MoneyFlowTimelinePeriod{},
+			CurrencyScope: models.CurrencyScope{Currencies: []string{}, Accounts: []models.ScopedAccount{}},
+		})
 		return
 	}
 
@@ -180,17 +263,44 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
 	windowStart := window[0].StartDate.Format("2006-01-02")
 	windowEnd := window[len(window)-1].EndDate.Format("2006-01-02")
 
+	scope, err := srv.currencyScope(ctx, srv.db, userID, scopeOptions{
+		DateFrom:  windowStart,
+		DateTo:    windowEnd,
+		AccountID: accountID.String(),
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// The ?currency= filter narrows the periods as well as the scope, so the two
+	// cannot disagree about which currencies are in the response. The accounts
+	// join is on the cycle's own account rather than on the transaction's, so it
+	// is an inner join that drops no cycle - joining through the transaction would
+	// turn the LEFT JOIN below into an inner one and lose every cycle with no
+	// transactions in it. The predicate sits in the WHERE, which is where a
+	// transaction-driven filter belongs; the "never drop a quiet account" rule
+	// belongs to the account-driven scope query, and lives in currencyScope.
+	cycleFilter := ""
+	cycleArgs := []any{accountID, userID, windowStart, windowEnd}
+	if currency != "" {
+		cycleFilter = " AND " + flowCurrencyPredicate("a.currency", len(cycleArgs)+1)
+		cycleArgs = append(cycleArgs, currency)
+	}
+
 	rows, err := srv.db.Query(ctx, `
 		SELECT bc.id, bc.start_date, bc.end_date, bc.label,
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
 		FROM billing_cycles bc
 		LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
+		JOIN accounts a ON a.id = bc.account_id
 		WHERE bc.account_id = $1 AND bc.user_id = $2
-		  AND bc.end_date >= $3 AND bc.end_date <= $4
+		  AND bc.end_date >= $3 AND bc.end_date <= $4`+cycleFilter+`
 		GROUP BY bc.id, bc.start_date, bc.end_date, bc.label
-		ORDER BY bc.start_date ASC`,
-		accountID, userID, windowStart, windowEnd)
+		ORDER BY bc.start_date ASC`, cycleArgs...)
 	if err != nil {
 		slog.Error("GetMoneyFlowTimeline (cycle periods)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -209,16 +319,22 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context) {
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		incomeAmt := models.NewCurrencyAmounts().Add(accountCurrency, income)
+		expenseAmt := models.NewCurrencyAmounts().Add(accountCurrency, expense)
 		periods = append(periods, models.MoneyFlowTimelinePeriod{
 			Key:       id.String(),
 			Label:     label,
 			StartDate: start.Format("2006-01-02"),
 			EndDate:   end.Format("2006-01-02"),
-			Income:    income,
-			Expense:   expense,
-			Net:       income - expense,
+			Income:    incomeAmt,
+			Expense:   expenseAmt,
+			Net:       incomeAmt.Sub(expenseAmt),
 		})
 	}
 
-	c.JSON(http.StatusOK, models.MoneyFlowTimeline{GroupBy: billingCycleGroupBy, Periods: periods})
+	c.JSON(http.StatusOK, models.MoneyFlowTimeline{
+		GroupBy:       billingCycleGroupBy,
+		Periods:       periods,
+		CurrencyScope: scope.Scope,
+	})
 }

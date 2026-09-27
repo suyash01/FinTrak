@@ -946,21 +946,29 @@ type MoneyFlowGraph struct {
 }
 
 // MoneyFlowTimelinePeriod is one period of the flow timeline; the bounds are
-// inclusive and can be fed straight back into the graph query.
+// inclusive and can be fed straight back into the graph query. Net is
+// per-currency because a difference within one currency is meaningful even
+// when the window as a whole spans several.
 type MoneyFlowTimelinePeriod struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	StartDate string `json:"startDate"`
-	EndDate   string `json:"endDate"`
-	Income    Amount `json:"income"`
-	Expense   Amount `json:"expense"`
-	Net       Amount `json:"net"`
+	Key       string          `json:"key"`
+	Label     string          `json:"label"`
+	StartDate string          `json:"startDate"`
+	EndDate   string          `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
+	Net       CurrencyAmounts `json:"net"`
 }
 
 // MoneyFlowTimeline is the GET /dashboard/money-flow/timeline response.
 type MoneyFlowTimeline struct {
 	GroupBy string                    `json:"groupBy"`
 	Periods []MoneyFlowTimelinePeriod `json:"periods"`
+	// CurrencyScope names every currency the periods cover and the accounts
+	// behind it. A month can hold an INR amount and a USD one, and the net is
+	// the difference inside one currency, so Periods[0].Net is a map and not a
+	// number: Single is the only way to read one out, and it declines unless the
+	// period holds exactly one currency.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Circular money ----

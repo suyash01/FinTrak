@@ -1158,8 +1158,11 @@ func TestIntegrationMoneyFlowAccountEdgesAndTimeline(t *testing.T) {
 	a.call(http.MethodGet, "/api/v1/dashboard/money-flow/timeline?dateFrom=2024-06-01&dateTo=2024-06-30", nil, http.StatusOK, &timeline)
 	require.Len(t, timeline.Periods, 1)
 	require.Equal(t, "2024-06", timeline.Periods[0].Key)
-	require.Equal(t, money.FromFloat(500), timeline.Periods[0].Income)
-	require.Equal(t, money.FromFloat(500), timeline.Periods[0].Expense)
+	// Per-currency: both accounts default to INR, so the month holds one key.
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(500)}, timeline.Periods[0].Income)
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(500)}, timeline.Periods[0].Expense)
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(0)}, timeline.Periods[0].Net)
+	require.Equal(t, []string{"INR"}, timeline.CurrencyScope.Currencies)
 }
 
 // TestIntegrationMoneyFlowShowsCategorizedPayeeTransactions guards the

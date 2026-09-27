@@ -4186,6 +4186,11 @@ paths:
         `groupBy=billing_cycle` (which requires an account with a `billingDay`)
         they are the account's statement periods for the last `cycles` cycles.
 
+        Every amount is per-currency. A month can cover an INR account and a USD
+        one, so a month is one period holding one amount per currency - and
+        `net` is the difference inside one currency, which is meaningful even
+        when the period spans several. There is no total across them.
+
         This is not a pure read: with `groupBy=billing_cycle` the handler
         materializes the account's missing billing cycles (INSERT) and
         back-fills transactions' cycle assignment, so a cross-site request is
@@ -4214,6 +4219,18 @@ paths:
             format: uuid
           description: Filter by account ID
         - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency regardless;
+            this chooses which money is in scope, and both the periods and the
+            `currencyScope` are narrowed with it, so the two cannot name
+            different currencies. A code that is not three letters is a 400.
+        - in: query
           name: groupBy
           schema:
             type: string
@@ -4234,7 +4251,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/MoneyFlowTimeline"
         "400":
-          description: Invalid accountId, or billing-cycle view without a billing-day account
+          description: Invalid accountId or currency, or billing-cycle view without a billing-day account
           content:
             application/json:
               schema:
@@ -6406,11 +6423,21 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency). A difference inside one currency is meaningful even when
+            the period spans several, which is why this survives as a map rather
+            than being dropped; a total across two currencies is not defined at
+            all, so a client needing one must choose a currency.
+
+            A period that only spent has no `income` key and a negative `net`
+            under the currency it spent in: a zero contribution adds no key, and
+            a missing key reads as zero.
 
     MoneyFlowTimeline:
       type: object
@@ -6422,6 +6449,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowTimelinePeriod"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     # ============= Recurring Series =============
     RecurringSeries:
