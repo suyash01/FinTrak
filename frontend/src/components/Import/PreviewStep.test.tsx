@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PreviewStep from "./PreviewStep";
+import { parseBankFile } from "../../lib/bankfiles";
+import { OFX_TWO_ACCOUNTS } from "../../lib/bankfiles/fixtures";
 import type { ImportTransaction } from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
@@ -34,6 +36,8 @@ function renderStep(overrides: Partial<Parameters<typeof PreviewStep>[0]> = {}) 
     onImportBillingCycleChange: vi.fn(),
     statementSummary: null,
     validationErrors: [],
+    bankDocument: null,
+    targetAccountName: "Savings",
     dupCount: 0,
     existingDupCount: 0,
     inFileDupCount: 0,
@@ -57,6 +61,25 @@ function renderStep(overrides: Partial<Parameters<typeof PreviewStep>[0]> = {}) 
 }
 
 describe("PreviewStep", () => {
+  it("shows what a bank file contained, and where its rows will land", () => {
+    // A bank file can describe several accounts, and all of them are imported
+    // into the one account chosen in the wizard. That has to be visible before
+    // the import is committed, not inferred from a row count afterwards.
+    const document = parseBankFile(new TextEncoder().encode(OFX_TWO_ACCOUNTS));
+    renderStep({ statementTxns: TXNS, bankDocument: document });
+
+    expect(screen.getByText(/OFX \/ QFX/)).toBeInTheDocument();
+    expect(screen.getByText(/2 statements/)).toBeInTheDocument();
+    expect(screen.getByText("50100234567890")).toBeInTheDocument();
+    expect(screen.getByText("50100999888777")).toBeInTheDocument();
+    expect(screen.getByText("Savings")).toBeInTheDocument();
+  });
+
+  it("shows no bank file summary for a CSV or PDF import", () => {
+    renderStep({ statementTxns: TXNS, pdfFile: new File(["x"], "s.pdf") });
+    expect(screen.queryByText(/Bank File/)).not.toBeInTheDocument();
+  });
+
   it("summarises the parsed transactions and the import count", () => {
     renderStep();
     expect(

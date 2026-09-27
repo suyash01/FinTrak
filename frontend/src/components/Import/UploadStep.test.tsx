@@ -33,8 +33,10 @@ function renderStep(overrides: Partial<Parameters<typeof UploadStep>[0]> = {}) {
     parsing: false,
     fileInputRef: createRef<HTMLInputElement>(),
     pdfInputRef: createRef<HTMLInputElement>(),
+    bankFileRef: createRef<HTMLInputElement>(),
     onCsvUpload: vi.fn(),
     onPdfUpload: vi.fn(),
+    onBankFileUpload: vi.fn(),
     extractor: "sbi_cc",
     onExtractorChange: vi.fn(),
     extractors: [],
@@ -213,5 +215,67 @@ describe("UploadStep", () => {
     expect(
       await screen.findByRole("option", { name: "SBI Credit Card" }),
     ).toBeInTheDocument();
+  });
+
+  // ---- Bank file (ISO 20022 / OFX) source ----
+
+  it("offers a bank file source alongside CSV and statement PDF", () => {
+    renderStep();
+    expect(screen.getByRole("button", { name: /bank file/i })).toBeInTheDocument();
+  });
+
+  it("switches to the bank file source on request", async () => {
+    const user = userEvent.setup();
+    const { props } = renderStep();
+    await user.click(screen.getByRole("button", { name: /bank file/i }));
+    expect(props.onStatementModeChange).toHaveBeenCalledWith("bank");
+  });
+
+  it("shows the bank file dropzone and names the formats it reads", () => {
+    renderStep({ statementMode: "bank" });
+    expect(screen.getByText("Drop your bank file here")).toBeInTheDocument();
+    expect(screen.getByText(/ISO 20022|OFX/)).toBeInTheDocument();
+  });
+
+  it("hides the PDF-only controls in bank file mode", () => {
+    // An extractor and a PDF password mean nothing for an XML or SGML file, and
+    // offering them would imply they do something.
+    renderStep({ statementMode: "bank" });
+    expect(screen.queryByText("Extractor")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Password (if the PDF is protected)"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("forwards a dropped bank file to onBankFileUpload", () => {
+    const { props } = renderStep({ statementMode: "bank" });
+    const file = new File(["<OFX>"], "statement.xml", { type: "text/xml" });
+    fireEvent.drop(screen.getByRole("button", { name: "Upload bank file" }), {
+      dataTransfer: { files: [file] },
+    });
+    expect(props.onBankFileUpload).toHaveBeenCalledWith({
+      target: { files: [file] },
+    });
+  });
+
+  it("clears the bank file input so the same file can be re-selected after a failed read", async () => {
+    // A retained value makes a retry with the same file fire no change event,
+    // so the retry would silently do nothing. The CSV and PDF inputs already
+    // clear for exactly this reason.
+    const user = userEvent.setup();
+    const { container, props } = renderStep({ statementMode: "bank" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("bank file input not found");
+    const file = new File(["<OFX>"], "statement.xml", { type: "text/xml" });
+
+    await user.upload(input, file);
+    expect(input.value).toBe("");
+    await user.upload(input, file);
+    expect(props.onBankFileUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the reading state in bank file mode", () => {
+    renderStep({ statementMode: "bank", parsing: true });
+    expect(screen.getByText("Reading bank file...")).toBeInTheDocument();
   });
 });

@@ -1,8 +1,10 @@
 import { type Dispatch, type SetStateAction } from "react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { DATE_FORMAT_OPTIONS, type CsvRow } from "./importHelpers";
+import BankFileSummary from "./BankFileSummary";
 import ImportPreviewTable from "./ImportPreviewTable";
 import ParseWarnings from "./ParseWarnings";
+import type { ParsedDocument } from "../../lib/bankfiles";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
@@ -36,6 +38,10 @@ interface PreviewStepProps {
   onImportBillingCycleChange: (id: string) => void;
   statementSummary: Record<string, string | number> | null;
   validationErrors: string[];
+  /** The bank file the rows came from, when they came from one. */
+  bankDocument: ParsedDocument | null;
+  /** The FinTrak account every row will be imported into. */
+  targetAccountName: string;
   dupCount: number;
   existingDupCount: number;
   inFileDupCount: number;
@@ -71,6 +77,8 @@ export default function PreviewStep({
   onImportBillingCycleChange,
   statementSummary,
   validationErrors,
+  bankDocument,
+  targetAccountName,
   dupCount,
   existingDupCount,
   inFileDupCount,
@@ -226,6 +234,13 @@ export default function PreviewStep({
             to reprocess the same file.
           </p>
         </div>
+      )}
+
+      {bankDocument && (
+        <BankFileSummary
+          document={bankDocument}
+          targetAccount={targetAccountName}
+        />
       )}
 
       {statementSummary && (
