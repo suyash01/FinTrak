@@ -518,21 +518,24 @@ import (
 // window still appears in the scope — moving them to the WHERE would drop it,
 // and the caller would be told a currency is absent when the account holding it
 // is simply quiet this month.
-const scopeSQL = `SELECT a.id, a.name, COALESCE(a.currency, 'INR') AS currency,
+const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0) AS income,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0) AS expense
 	FROM accounts a
 	LEFT JOIN transactions t ON t.account_id = a.id AND t.user_id = $1%s
 	WHERE a.user_id = $1%s
-	GROUP BY a.id, a.name, COALESCE(a.currency, 'INR')
+	GROUP BY a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR')
 	ORDER BY a.name, a.id`
 
-// defaultCurrency reads NULL out of accounts.currency. The column is
-// `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL (migration 000001), so a row can
-// genuinely hold NULL — a legacy bundle can restore one — and a NULL would
-// otherwise become a "" key in the map, which every consumer would then have to
-// defend against. Reading it here means the column's default is what the code
-// promises, everywhere.
+// defaultCurrency reads both NULL and the empty string out of
+// accounts.currency. The column is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL
+// (migration 000001), so a row can genuinely hold NULL, and NULLIF additionally
+// covers a restored bundle carrying "". The API cannot create either —
+// CreateAccount normalises "" to "INR" and UpdateAccount keeps the existing
+// value through COALESCE(NULLIF(...), currency) — so this is defence at the one
+// edge that bypasses both write paths. It is the same idiom account.go already
+// uses, and without it a blank code would become a "" map key that every
+// consumer would then have to defend against.
 const defaultCurrency = "INR"
 
 // scopeOptions is the window one aggregate covers. It is the reporting
@@ -1116,14 +1119,14 @@ Replace the scalar query with the scope call, after the `TotalAccounts` count:
 
 ```go
 	catQuery := `SELECT id, name, color, icon, currency, total, count FROM (
-				 SELECT c.id, c.name, c.color, c.icon, COALESCE(a.currency, 'INR') AS currency,
+				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
-				        ROW_NUMBER() OVER (PARTITION BY COALESCE(a.currency, 'INR') ORDER BY SUM(t.amount) DESC) AS rn
+				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC) AS rn
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
 				 LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(a.currency, 'INR')
+				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ) ranked WHERE rn <= 15
 				 ORDER BY total DESC, name, id`
@@ -1221,7 +1224,7 @@ That function is already account-scoped, so its scope query is trivially single-
 	scope, err := currencyScope(ctx, tx, userID, scopeOptions{AccountID: accountID, Currency: currency})
 ```
 
-and `TotalIncome`/`TotalExpense` come from it, with `TotalNet` from `scope.Net()`. The cycle, trend and category queries gain `COALESCE(a.currency, 'INR')` and fold the same way. Because an account has exactly one currency, the `ROW_NUMBER` partition is not needed here — keep that function's `LIMIT 15` as it is.
+and `TotalIncome`/`TotalExpense` come from it, with `TotalNet` from `scope.Net()`. The cycle, trend and category queries gain `COALESCE(NULLIF(a.currency, ''), 'INR')` and fold the same way. Because an account has exactly one currency, the `ROW_NUMBER` partition is not needed here — keep that function's `LIMIT 15` as it is.
 
 - [ ] **Step 9: Update the remaining dashboard tests**
 
@@ -1399,12 +1402,12 @@ func flowFilter(dateAlias, accountAlias string, start int, dateFrom, dateTo, acc
 }
 ```
 
-Update all four call sites (`queryIncomeFlows`, `queryAccountCategoryFlows`, `queryCategoryPayeeFlows`, `queryMoneyFlowLinks`) for the new parameter, and add `COALESCE(a.currency, 'INR') AS currency` to each one's select and group-by.
+Update all four call sites (`queryIncomeFlows`, `queryAccountCategoryFlows`, `queryCategoryPayeeFlows`, `queryMoneyFlowLinks`) for the new parameter, and add `COALESCE(NULLIF(a.currency, ''), 'INR') AS currency` to each one's select and group-by.
 
 `queryCategoryPayeeFlows` is the one that must gain the account to its `GROUP BY` as well as its select — today it groups by category and payee only, so different-currency debits are already merged into one row before any map exists:
 
 ```sql
-	GROUP BY c.id, c.name, c.color, cg.id, cg.color, p.id, p.name, COALESCE(a.currency, 'INR')
+	GROUP BY c.id, c.name, c.color, cg.id, cg.color, p.id, p.name, COALESCE(NULLIF(a.currency, ''), 'INR')
 ```
 
 - [ ] **Step 5: Fold the graph assembly in Go**
@@ -1494,7 +1497,7 @@ Expected: FAIL.
 
 - [ ] **Step 4: Implement**
 
-Read the currency, run the scope query, add `COALESCE(a.currency, 'INR')` to the monthly query's select and `GROUP BY 1` becomes `GROUP BY 1, 2` (with the currency as the second select expression), and fold per period and currency. Compute each period's net with `Sub`, never across the map:
+Read the currency, run the scope query, add `COALESCE(NULLIF(a.currency, ''), 'INR')` to the monthly query's select and `GROUP BY 1` becomes `GROUP BY 1, 2` (with the currency as the second select expression), and fold per period and currency. Compute each period's net with `Sub`, never across the map:
 
 ```go
 			entry.Net = entry.Income.Sub(entry.Expense)
@@ -1606,7 +1609,7 @@ Expected: FAIL.
 
 - [ ] **Step 4: Implement**
 
-Read the currency, run the scope query, add `COALESCE(a.currency, 'INR')` to the daily query's select and group-by, and replace the Go-side window totals (`cash_flow_calendar.go:207-215`) and `maxAbsNet` with per-currency folds:
+Read the currency, run the scope query, add `COALESCE(NULLIF(a.currency, ''), 'INR')` to the daily query's select and group-by, and replace the Go-side window totals (`cash_flow_calendar.go:207-215`) and `maxAbsNet` with per-currency folds:
 
 ```go
 	maxAbs := models.NewCurrencyAmounts()
