@@ -2308,10 +2308,10 @@ Expected: FAIL — the tools do not send `currency`.
 
 - [ ] **Step 3: Add the argument and forward it**
 
-In `tools_dashboard.go`, add `Currency` to `windowArgs`, `summaryArgs` and `moneyFlowArgs`:
+In `tools_dashboard.go`, add `Currency` to `windowArgs`, `summaryArgs` and `moneyFlowArgs`. The clause about the account count is deliberately **field-free**, because `summaryArgs` is shared by `get_dashboard_summary` and `get_money_flow_timeline` and only the first has a `totalAccounts` — naming the field would advertise one on a response that has no such field, which is a worse defect than breadth:
 
 ```go
-	Currency string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters); totalAccounts still counts every account; without it every amount is returned keyed by currency"`
+	Currency string `json:"currency,omitempty" jsonschema:"narrow the AMOUNTS in the response to the accounts holding this currency code (three letters); any account count in the response is not narrowed by this argument; without it every amount is returned keyed by currency"`
 ```
 
 and pass `Currency: in.Currency` into each `api.WindowFilter`. Do the same for the link-cycles tool in `tools_links.go`.
