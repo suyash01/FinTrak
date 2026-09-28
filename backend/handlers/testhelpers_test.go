@@ -45,3 +45,27 @@ func newMockServer(t *testing.T) (*Server, pgxmock.PgxPoolIface) {
 	t.Cleanup(mock.Close)
 	return newTestServer(mock), mock
 }
+
+// newGuardedPool builds a mock pool with the adjacent-placeholder guard installed.
+//
+// pgxmock has no package-wide default for a QueryMatcher: the matcher is only ever
+// consulted by a pool built with QueryMatcherOption, so a guard that is correct
+// and installed on one pool says nothing about the next pool. That is why this
+// exists rather than a bare pgxmock.NewPool() at each site — see
+// noAdjacentPlaceholders in dashboard_test.go for the defect it catches, and
+// TestGuardedPoolRejectsADoubledPlaceholder for the proof it has teeth.
+//
+// Every test whose SQL contains one of the currency fragments should build its
+// pool here rather than with pgxmock.NewPool(), because those fragments are the
+// ones the guard exists for: they are assembled from a COALESCE expression plus a
+// placeholder, which is exactly the shape that produced `= $4 $4` and a 500 from
+// PostgreSQL on every request. A doubled placeholder is invisible to the regexp
+// matcher these tests otherwise use — pgxmock's stripQuery collapses whitespace
+// before an unanchored match, so `= $2` is found inside the malformed `= $2 $2`.
+//
+// Closing the pool is left to the caller, so this returns the same shape as
+// pgxmock.NewPool and a test can still defer or register its own cleanup.
+func newGuardedPool(t *testing.T) (pgxmock.PgxPoolIface, error) {
+	t.Helper()
+	return pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
+}

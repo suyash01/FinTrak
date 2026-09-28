@@ -346,7 +346,7 @@ func newLinkCyclesTestRouter(srv *Server) *gin.Engine {
 }
 
 func TestGetLinkCycles(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -397,7 +397,7 @@ func TestGetLinkCycles(t *testing.T) {
 // USD leg, and neither figure is addable to the other: the old report's single
 // "net" was exactly the twelve dollars plus a thousand rupees.
 func TestGetLinkCyclesRefusesACrossCurrencyTotal(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -453,7 +453,7 @@ func TestGetLinkCyclesRefusesACrossCurrencyTotal(t *testing.T) {
 // currencyScope was folded from, and would put a "" key in the leg's amounts
 // for an account whose currency is only unset.
 func TestGetLinkCyclesPinsTheProjectedCurrency(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -539,7 +539,7 @@ func TestGetLinkCyclesErrors(t *testing.T) {
 	userID := testUserID()
 
 	t.Run("begin", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -554,7 +554,7 @@ func TestGetLinkCyclesErrors(t *testing.T) {
 	})
 
 	t.Run("currency scope", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -569,7 +569,7 @@ func TestGetLinkCyclesErrors(t *testing.T) {
 	})
 
 	t.Run("details", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -590,7 +590,7 @@ func TestGetLinkCyclesErrors(t *testing.T) {
 	// so the response is withheld rather than sent from a transaction Postgres
 	// has already discarded.
 	t.Run("commit", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -619,7 +619,7 @@ func TestGetLinkCyclesErrors(t *testing.T) {
 func TestQueryAccountLinkDetailsPropagatesARowError(t *testing.T) {
 	boom := errors.New("connection reset mid-fold")
 
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 

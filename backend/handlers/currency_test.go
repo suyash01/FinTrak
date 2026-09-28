@@ -60,7 +60,7 @@ func TestParseCurrencyNormalisesCaseAndRejectsAnythingElse(t *testing.T) {
 }
 
 func TestCurrencyScopeFoldsPerCurrencyTotalsAndNamesEveryAccount(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCurrencyScopeFoldsPerCurrencyTotalsAndNamesEveryAccount(t *testing.T) {
 }
 
 func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestCurrencyScopeAppliesAccountAndCurrencyFilters(t *testing.T) {
 }
 
 func TestCurrencyScopeKeepsTheDateFilterInTheJoinNotTheWhere(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestCurrencyScopeKeepsTheDateFilterInTheJoinNotTheWhere(t *testing.T) {
 }
 
 func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestCurrencyScopeReadsTheProjectedCurrencyEverywhere(t *testing.T) {
 }
 
 func TestCurrencyScopeReportsAFailedQueryRatherThanAnEmptyScope(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCurrencyScopeReportsAFailedQueryRatherThanAnEmptyScope(t *testing.T) {
 }
 
 func TestCurrencyScopePropagatesARowError(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestCurrencyScopePropagatesARowError(t *testing.T) {
 }
 
 func TestCurrencyScopePropagatesAnUnreadableColumn(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestCurrencyScopePropagatesAnUnreadableColumn(t *testing.T) {
 }
 
 func TestCurrencyScopeAlwaysReturnsAnEmptyCurrenciesSlice(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
