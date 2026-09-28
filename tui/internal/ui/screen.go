@@ -200,6 +200,23 @@ func (r *RefData) LoanAccounts() []api.Account {
 	return out
 }
 
+// LoanAccountOptions returns picker options for the loan/EMI accounts only, by
+// bare name — a loan is already identified as one by the field asking for it, so
+// the account-type suffix AccountOptions appends would be noise here.
+//
+// It exists because two callers need this list and neither is AccountOptions: the
+// bulk-attach form, and the transaction filter's loanAccountId. An empty result
+// is a legitimate answer (a user with no loans), so it is the caller's job to
+// decide whether that is worth reporting.
+func (r *RefData) LoanAccountOptions() []Option {
+	loans := r.LoanAccounts()
+	out := make([]Option, 0, len(loans))
+	for _, loan := range loans {
+		out = append(out, Option{Value: loan.ID, Label: loan.Name})
+	}
+	return out
+}
+
 // AccountOptions returns picker options for every account, with the loan, bank
 // and credit-card names differentiated.
 func (r *RefData) AccountOptions() []Option {
