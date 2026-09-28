@@ -99,6 +99,7 @@ function graph(overrides: Partial<MoneyFlowGraph> = {}): MoneyFlowGraph {
     totalExpense: { INR: 12000 },
     totalNet: { INR: 38000 },
     linkSummary: [{ type: "transfer", count: 2, total: { INR: 30000 } }],
+    suppressedCycles: [],
     currencyScope: oneCurrencyScope(),
     ...overrides,
   };
@@ -259,6 +260,116 @@ describe("MoneyFlow", () => {
     await screen.findByText("Money Flow");
     await waitFor(() => expect(apiMock.getLinkCycles).toHaveBeenCalled());
     expect(screen.queryByText("Circular Money")).not.toBeInTheDocument();
+  });
+
+  // The graph and the linked-transfers rollup are two totals for one sum, and
+  // the rollup counts every link whatever the graph did with it. suppressedCycles
+  // is the difference, per currency — and it travels in the graph response, not
+  // in the /links/cycles one, so a failure to load the per-cycle detail must not
+  // take the reconciliation with it: that is exactly the state where a reader is
+  // looking at two totals with nothing to reconcile them.
+  describe("the withheld cycles the graph could not draw", () => {
+    function suppressedGraph() {
+      return graph({
+        suppressedCycles: [
+          {
+            kind: "reciprocal",
+            accounts: ["a1", "a2"],
+            legs: [
+              {
+                from: "a1",
+                to: "a2",
+                gross: { INR: 8000 },
+                discarded: { INR: 5000 },
+              },
+              {
+                from: "a2",
+                to: "a1",
+                // Netting cannot cancel a rupee against a dollar, so a leg in a
+                // second currency loses all of it — which is the case a client
+                // asks about and the reason the amounts are per currency.
+                gross: { USD: 40 },
+                discarded: { USD: 40 },
+              },
+            ],
+          },
+        ],
+        currencyScope: {
+          currencies: ["INR", "USD"],
+          accounts: [
+            ...oneCurrencyScope().accounts,
+            {
+              id: "a2",
+              name: "Card",
+              currency: "USD",
+              income: {},
+              expense: { USD: 40 },
+            },
+          ],
+        },
+      });
+    }
+
+    it("reports the per-currency amounts withheld, and says the list is not the test", async () => {
+      apiMock.getMoneyFlow.mockResolvedValue(suppressedGraph());
+      render(page());
+
+      expect(await screen.findByText("Withheld from the graph")).toBeInTheDocument();
+      // Both currencies named with their own withheld amounts, and no sum of
+      // them: the graph is short of two different figures, not one.
+      expect(
+        screen.getByText(`Checking → Card: ${formatOne(8000, "INR")} flowed`),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(`${formatOne(5000, "INR")} not in the graph`),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(`Card → Checking: ${formatOne(40, "USD")} flowed`),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(`${formatOne(40, "USD")} not in the graph`),
+      ).toBeInTheDocument();
+
+      // The constraint, in the words a reader would act on: emptiness answers
+      // "was a cycle netted", not "did a currency go missing".
+      expect(
+        screen.getByText(/never from whether this list has anything/i),
+      ).toBeInTheDocument();
+    });
+
+    it("survives the per-cycle report failing to load", async () => {
+      apiMock.getMoneyFlow.mockResolvedValue(suppressedGraph());
+      apiMock.getLinkCycles.mockRejectedValue(new Error("load failed"));
+      render(page());
+
+      // No cycle detail, but the reconciliation between the two totals is still
+      // on screen — it came from the graph, not from the request that failed.
+      expect(await screen.findByText("Withheld from the graph")).toBeInTheDocument();
+      expect(
+        screen.getByText(`${formatOne(5000, "INR")} not in the graph`),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Cycles between your accounts")).toBeNull();
+    });
+
+    // The plan's constraint on a cycle's net: it is a per-currency local
+    // minimum, so it is a circulation figure only while the loop holds one
+    // currency. The MCP states this on the same data, so the SPA printing
+    // "INR 3,000.00 circulating" for a two-currency rollup would be two surfaces
+    // disagreeing about the sentence this branch wrote for it.
+    it("refuses a circulation figure for a multi-currency total", async () => {
+      apiMock.getLinkCycles.mockResolvedValue(
+        cycleReport({ totalCircular: { INR: 3000, USD: 40 } }),
+      );
+      render(page());
+
+      await screen.findByText("Cycles between your accounts");
+      expect(
+        screen.queryByText(`${formatOne(3000, "INR")} circulating`),
+      ).toBeNull();
+      expect(
+        screen.getByText(/2 currencies: .* — not combined circulating/),
+      ).toBeInTheDocument();
+    });
   });
 
   it("passes the account filter and node limit to the API", async () => {

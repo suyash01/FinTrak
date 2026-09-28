@@ -340,6 +340,37 @@ export interface MoneyFlowLinkSummary {
   total: CurrencyAmounts;
 }
 
+/**
+ * One leg of a cycle the graph could not draw, and what it removed from it.
+ *
+ * `gross` is the leg's full flow before anything was netted away; `discarded` is
+ * the part of it that is in no node total and no edge of the drawing. A currency
+ * present in `gross` but absent from the graph is in `discarded`, per currency —
+ * which is the question a client asks, and the reason the field is per currency
+ * rather than one number.
+ */
+export interface MoneyFlowSuppressedLeg {
+  from: string;
+  to: string;
+  gross: CurrencyAmounts;
+  discarded: CurrencyAmounts;
+}
+
+/**
+ * One circular account-to-account flow the graph cannot draw, with the money it
+ * removed. A Sankey must stay acyclic, so reciprocal pairs are netted and longer
+ * loops are broken by dropping their back edge.
+ *
+ * `accounts` holds the participants in flow order as ids — the same accounts
+ * `currencyScope` names — and each leg runs from `accounts[i]` to
+ * `accounts[(i+1) % length]`.
+ */
+export interface MoneyFlowSuppressedCycle {
+  kind: "reciprocal" | "cycle";
+  accounts: string[];
+  legs: MoneyFlowSuppressedLeg[];
+}
+
 export interface MoneyFlowGraph {
   nodes: MoneyFlowNode[];
   links: MoneyFlowEdge[];
@@ -348,6 +379,11 @@ export interface MoneyFlowGraph {
   // Server-computed for the same reason as DashboardSummary.totalNet.
   totalNet: CurrencyAmounts;
   linkSummary: MoneyFlowLinkSummary[];
+  // What the cycle-break removed from the drawing. The linkSummary rollup
+  // already counts these same links, so the graph and the rollup state two
+  // different totals for the same money unless this is reported: never null,
+  // and empty when nothing was withheld.
+  suppressedCycles: MoneyFlowSuppressedCycle[];
   currencyScope: CurrencyScope;
 }
 

@@ -28,6 +28,7 @@ import { useRefetchOnFocus } from "../../lib/useRefetchOnFocus";
 import {
   formatOne,
   formatScoped,
+  formatScopedMulti,
   signClass,
   signOf,
   useCurrencyScope,
@@ -57,10 +58,12 @@ import {
   periodRange,
 } from "../../lib/dates";
 import type {
+  CurrencyAmounts,
   LinkCycleReport,
   MoneyFlowGraph,
   MoneyFlowLinkSummary,
   MoneyFlowNode,
+  MoneyFlowSuppressedCycle,
   MoneyFlowTimeline,
   MoneyFlowTimelineGroupBy,
   MoneyFlowTimelinePeriod,
@@ -221,6 +224,17 @@ export default function MoneyFlow() {
   // screen showing two of them at once is the defect this change exists to stop.
   const { code, codes, setCode, scoped, others } = useCurrencyScope(
     data?.currencyScope,
+  );
+
+  // The suppressed cycles name their accounts as ids — the same ones the graph's
+  // scope names with their display metadata — so the disclosure resolves them
+  // here rather than each carrying a second copy of every name.
+  const accountName = useCallback(
+    (id: string) =>
+      data?.currencyScope.accounts.find((a) => a.id === id)?.name ??
+      accounts.find((a) => a.id === id)?.name ??
+      id,
+    [data, accounts],
   );
 
   useEffect(() => {
@@ -767,7 +781,7 @@ export default function MoneyFlow() {
           </Card>
         </div>
 
-        {cycles && (
+        {(cycles || data.suppressedCycles.length > 0) && (
           <Card size={compactLayout ? "sm" : "default"} className="mt-6">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
@@ -778,7 +792,12 @@ export default function MoneyFlow() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <CircularMoneyPanel report={cycles} code={code} />
+              <CircularMoneyPanel
+                report={cycles}
+                suppressed={data.suppressedCycles}
+                nameOf={accountName}
+                code={code}
+              />
             </CardContent>
           </Card>
         )}
@@ -897,6 +916,99 @@ function StatCard({
   );
 }
 
+// circulatingText renders the figure circulating a set of cycles, and refuses
+// when there is not one. A cycle's net is a per-currency local minimum, so it is
+// the amount circulating the loop only while the loop holds a single currency;
+// across currencies each key is that currency's own smallest leg and no figure
+// stands for the set. Rendering the selected currency's key unconditioned is the
+// sentence this branch wrote the constraint against, and the MCP honours it on
+// the same data, so the two surfaces must not disagree about it.
+function circulatingText(total: CurrencyAmounts, code: string): string {
+  return Object.keys(total).length === 1
+    ? formatScoped(total, code)
+    : formatScopedMulti(total);
+}
+
+// SuppressedCyclesSection is the reconciliation between the two totals the
+// money-flow screen shows for the same money: the graph, which cannot draw a
+// cycle, and the linked-transfers rollup above it, which counts every link
+// whatever the graph did with it. Without this, the reader is shown two
+// different totals for one sum with nothing to explain the difference.
+//
+// The paragraph states the constraint the field's own shape rests on, because it
+// is the one a reader would otherwise get wrong: the list is non-empty for any
+// netted reciprocal pair, including a pair that netted to nothing, so "is this
+// list empty" is not the test for whether a currency went missing from the
+// graph. The per-currency withheld amounts are.
+function SuppressedCyclesSection({
+  suppressed,
+  nameOf,
+}: {
+  suppressed: MoneyFlowSuppressedCycle[];
+  nameOf: (id: string) => string;
+}) {
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-medium text-foreground">
+        Withheld from the graph
+      </h3>
+      <p className="mb-2 text-xs text-muted-foreground">
+        A graph that stays acyclic has to give something up: a pair flowing both
+        ways is netted into one edge, and a back edge that would close a longer
+        loop is dropped. The transfers above count these links anyway, so the two
+        totals differ by exactly what is listed here. This list is not empty only
+        when a currency went missing — a pair that netted to nothing is listed
+        too — so whether a currency is missing from the graph is read from the
+        per-currency amounts below, never from whether this list has anything in
+        it.
+      </p>
+      <div className="space-y-2">
+        {suppressed.map((c, i) => (
+          <div
+            key={`${c.kind}-${i}`}
+            className="rounded-lg border border-border px-3 py-2"
+          >
+            <div className="text-xs text-muted-foreground">
+              {c.kind === "reciprocal"
+                ? "Two-way pair"
+                : `${c.accounts.length}-account loop`}
+              {c.accounts.length > 0 && (
+                <> — {c.accounts.map(nameOf).join(" → ")} → {nameOf(c.accounts[0])}</>
+              )}
+            </div>
+            {c.legs.map((leg) => (
+              <div
+                key={`${leg.from}-${leg.to}`}
+                className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs"
+              >
+                <span className="text-muted-foreground">
+                  {nameOf(leg.from)} → {nameOf(leg.to)}:{" "}
+                  {formatScopedMulti(leg.gross)} flowed
+                </span>
+                <span className="font-medium text-muted-foreground">
+                  {withheldText(leg.discarded)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// withheldText is one leg's per-currency remainder, or the fact that there is
+// none. The multi-currency refusal is used rather than the selected currency's
+// own figure because the withheld money is precisely the money the selected view
+// is not showing: hiding it behind the selection would answer the question this
+// section exists to answer with the same absence the graph had.
+function withheldText(discarded: CurrencyAmounts): string {
+  if (Object.keys(discarded).length === 0) {
+    return "none of it is in the graph";
+  }
+  return `${formatScopedMulti(discarded)} not in the graph`;
+}
+
 function LinkSummaryPanel({
   summary,
   code,
@@ -944,16 +1056,27 @@ function LinkSummaryPanel({
 }
 
 // CircularMoneyPanel surfaces what the Sankey cannot draw: the account cycles
-// its cycle-breaking nets away or drops, and the account-to-account flows with
-// no counterpart in the opposite direction.
+// its cycle-breaking nets away or drops, the account-to-account flows with
+// no counterpart in the opposite direction, and — the half the graph and the
+// linked-transfers rollup otherwise state two totals for without — the money
+// that breaking those cycles withheld from the drawing.
+//
+// `report` is the separate /links/cycles request, and it is optional: the
+// withheld amounts travel in the graph response itself, so a failure to load the
+// per-cycle detail must not take the reconciliation with it. That is the case
+// where a reader most needs to know the graph is not showing everything.
 function CircularMoneyPanel({
   report,
+  suppressed,
+  nameOf,
   code,
 }: {
-  report: LinkCycleReport;
+  report: LinkCycleReport | null | undefined;
+  suppressed: MoneyFlowSuppressedCycle[];
+  nameOf: (id: string) => string;
   code: string;
 }) {
-  if (report.cycles.length === 0 && report.oneSidedFlows.length === 0) {
+  if ((!report || (report.cycles.length === 0 && report.oneSidedFlows.length === 0)) && suppressed.length === 0) {
     return (
       <div className="text-sm text-muted-foreground py-6 text-center">
         No circular or one-way account flows in this range.
@@ -963,16 +1086,29 @@ function CircularMoneyPanel({
 
   return (
     <div className="space-y-5">
-      {report.cycles.length > 0 && (
+      {suppressed.length > 0 && (
+        <SuppressedCyclesSection
+          suppressed={suppressed}
+          nameOf={nameOf}
+        />
+      )}
+
+      {report && report.cycles.length > 0 && (
         <div>
           <div className="mb-2 flex items-baseline justify-between gap-3">
             <h3 className="text-sm font-medium text-foreground">
               Cycles between your accounts
             </h3>
             <span className="text-xs text-muted-foreground">
-              {formatScoped(report.totalCircular, code)} circulating
+              {circulatingText(report.totalCircular, code)} circulating
             </span>
           </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            A cycle&apos;s net is the money circulating the whole loop only while
+            the loop holds a single currency. Across currencies each key is that
+            currency&apos;s own smallest leg, so there is no single figure
+            circulating and none is given.
+          </p>
           <div className="space-y-2">
             {report.cycles.map((c, i) => (
               <div
@@ -1029,7 +1165,7 @@ function CircularMoneyPanel({
         </div>
       )}
 
-      {report.oneSidedFlows.length > 0 && (
+      {report && report.oneSidedFlows.length > 0 && (
         <div>
           <h3 className="mb-2 text-sm font-medium text-foreground">
             One-way account flows
