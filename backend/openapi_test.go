@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"regexp"
 	"sort"
@@ -321,6 +322,104 @@ func TestOpenAPIDocumentsOnlyRegisteredRoutes(t *testing.T) {
 				strings.ToUpper(method), path)
 		}
 	}
+}
+
+// suppressedCyclesDoc reaches one description: the MoneyFlowSuppressedCycle
+// `accounts` field, which is the only place in any response that tells a reader
+// an id resolves in currencyScope.
+type suppressedCyclesDoc struct {
+	Components struct {
+		Schemas struct {
+			MoneyFlowSuppressedCycle struct {
+				Properties struct {
+					Accounts struct {
+						Description string `yaml:"description"`
+					} `yaml:"accounts"`
+				} `yaml:"properties"`
+			} `yaml:"MoneyFlowSuppressedCycle"`
+		} `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+// TestSuppressedCycleAccountsQualifiesItsScopeClaim pins the qualification on
+// MoneyFlowSuppressedCycle.Accounts.
+//
+// The field said `currencyScope` "already names every one of them with its
+// display metadata", and that is not always true. A link's value currency is the
+// currency of the account the amount came from (linkCurrencyColumn), not of both
+// its endpoints, so under ?currency=USD a suppressed cycle can name an account
+// whose own currency is not USD - one currencyScope does not list. The sibling
+// claim about the graph's nodes is honest about exactly this ("a non-USD account
+// can appear in a ?currency=USD graph"); this one was not, and it is the one
+// place a reader is told an id resolves.
+//
+// Prose is not something a route-parity test or a schema comparison can police,
+// so this does: it reads the claim as written, in the spec and in the two
+// comments that are its source, and fails if the unconditional version is back.
+// The alternative is a comment that was correct once and is checked by nobody.
+func TestSuppressedCycleAccountsQualifiesItsScopeClaim(t *testing.T) {
+	var doc suppressedCyclesDoc
+	require.NoError(t, yaml.Unmarshal(openAPISpec, &doc))
+	specClaim := strings.Join(strings.Fields(doc.Components.Schemas.MoneyFlowSuppressedCycle.
+		Properties.Accounts.Description), " ")
+	require.NotEmpty(t, specClaim, "the accounts description is gone; nothing left to qualify")
+
+	// The reason the unconditional claim was wrong, in the words of the node
+	// sentence that was already careful about it.
+	const reason = "not of both its endpoints"
+	const unconditional = "names every one of them"
+
+	assert.NotContains(t, specClaim, unconditional,
+		"the spec promises unconditionally what the value-currency exception does not deliver; qualify it")
+	assert.Contains(t, specClaim, reason,
+		"the spec must say why a participant may fall outside currencyScope, not just that it might")
+
+	// The same claim in the two comments it is written from, so the spec cannot be
+	// corrected while the source of the wording still asserts the strong version.
+	// The assertion is on the comment text alone rather than on the whole file, so
+	// a failure names the sentence and not three thousand lines of context.
+	for name, claim := range map[string]string{
+		"models.go Accounts":        docCommentBefore(t, "models/models.go", "type MoneyFlowSuppressedCycle struct", "Accounts lists the participants"),
+		"money_flow.go suppressed":  docCommentBefore(t, "handlers/money_flow.go", "func suppressedFlowCycles(", "suppressedFlowCycles renders"),
+	} {
+		assert.NotContainsf(t, claim, unconditional,
+			"%s still makes the unconditional claim, so the spec's qualification is only as good as its source", name)
+		assert.Containsf(t, claim, reason,
+			"%s must say why a participant can fall outside currencyScope, not merely that it might", name)
+	}
+}
+
+// docCommentBefore returns the contiguous // comment block immediately above
+// marker, which is the doc comment of the declaration that follows it. Scoping
+// the assertion to a comment is what lets a test police prose: the claim is
+// prose, and a whole-file substring check would either be too broad (it would
+// trip on an unrelated sentence) or too narrow to read in a failure.
+func docCommentBefore(t *testing.T, path, marker, firstLineContains string) string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	require.NoError(t, err)
+	at := strings.Index(string(src), marker)
+	require.Greater(t, at, 0, "%s no longer contains %q", path, marker)
+
+	lines := strings.Split(string(src[:at]), "\n")
+	// The slice ends on the newline before the marker, so the last element is
+	// empty; skip the blank tail before walking back over the comment.
+	end := len(lines) - 1
+	for end >= 0 && strings.TrimSpace(lines[end]) == "" {
+		end--
+	}
+	var block []string
+	for i := end; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		block = append([]string{line}, block...)
+	}
+	require.NotEmpty(t, block, "the declaration at %s has no doc comment", path)
+	assert.Contains(t, strings.Join(block, "\n"), firstLineContains,
+		"the comment above %q is not the one this test reads; update the marker", path)
+	return strings.Join(block, "\n")
 }
 
 // TestServeOpenAPISpec checks the embedded document is actually served.

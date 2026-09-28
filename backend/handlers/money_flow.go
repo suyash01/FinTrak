@@ -1083,8 +1083,12 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 }
 
 // suppressedFlowCycles renders the cycles the graph could not draw. Accounts are
-// left as ids, because CurrencyScope already names every one of them with its
+// left as ids, because CurrencyScope normally names the participants with their
 // display metadata and a second copy here would be a second thing to keep right.
+// "Normally" is a real exception rather than a hedge: a link's value currency is
+// the currency of the account the amount came from, not of both its endpoints, so
+// under ?currency= a suppressed cycle can name an account CurrencyScope does not
+// list. The spec says so on the field, and this is where the ids come from.
 // The list is empty rather than nil so "nothing was hidden" is a fact the response
 // states, not one a client has to infer from an absent field.
 func suppressedFlowCycles(cycles []flowCycle) []models.MoneyFlowSuppressedCycle {

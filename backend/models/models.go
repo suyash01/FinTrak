@@ -1106,9 +1106,16 @@ type MoneyFlowSuppressedLeg struct {
 // different one in LinkSummary for the same money, with nothing to reconcile them.
 //
 // Accounts lists the participants in flow order as account ids, each leg running
-// from Accounts[i] to Accounts[(i+1)%len(Accounts)] — the same accounts
-// CurrencyScope names, so a reader can resolve them without this type carrying a
-// second copy of the display metadata.
+// from Accounts[i] to Accounts[(i+1)%len(Accounts)]. It does not carry the display
+// metadata a second time, because CurrencyScope normally names the participants
+// with their display metadata - but "normally" is the operative word, and the
+// qualification is stated here rather than left for a reader to discover: a
+// link's value is denominated in the currency of the account the amount came
+// from, not of both its endpoints, so under a ?currency= filter a suppressed
+// cycle can name an account whose own currency is not the one requested. This is
+// the same exception the graph's nodes make explicit, and it is the one place in
+// the response where a reader is told an id resolves, so a participant
+// CurrencyScope does not list is a real possibility and not a contradiction.
 type MoneyFlowSuppressedCycle struct {
 	Kind     string                   `json:"kind"`
 	Accounts []string                 `json:"accounts"`

@@ -6278,8 +6278,17 @@ components:
           type: array
           description: >-
             The participants in flow order, each leg running from accounts[i] to
-            accounts[(i+1) mod len]. Account ids only: `currencyScope` already
-            names every one of them with its display metadata.
+            accounts[(i+1) mod len]. Account ids only, and `currencyScope`
+            normally names the participants with their display metadata - except
+            that a link's value is denominated in the currency of the account
+            the amount came from, not of both its endpoints, so under a
+            `?currency=` filter a suppressed cycle can name an account whose own
+            currency is not the one requested. That is the same exception the
+            graph's nodes make explicit (a non-USD account can appear in a
+            `?currency=USD` graph), and it is stated here because this is the one
+            place in the response where a reader is told an id resolves: an id
+            `currencyScope` does not list has to be resolved elsewhere. The
+            display metadata is deliberately not carried a second time.
           items:
             type: string
         legs:
