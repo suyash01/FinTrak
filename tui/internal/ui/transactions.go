@@ -29,6 +29,21 @@ type Transactions struct {
 	rows   []api.Transaction
 	info   api.TransactionPage
 	filter api.TransactionFilter
+	// queryText is the `q` expression as the user TYPED it, kept beside the
+	// resolved filter.Query because resolution is lossy in the wrong direction:
+	// filter.Query holds ids, and a form pre-filled from it would show "cat:c1"
+	// rather than "cat:Groceries", and re-resolving an id this client had
+	// already produced is a second lookup that can fail. The form is pre-filled
+	// from this instead, so what the user sees is what they wrote and re-applying
+	// it unchanged is a no-op.
+	queryText string
+	// localQueryDiags are the terms THIS client dropped while resolving the names
+	// in a `q` expression, kept beside the server's own queryDiagnostics because
+	// they answer the same question: is the list on screen narrower than what was
+	// asked for? A term resolved here never reaches the server, so the server
+	// cannot report it, and without these the user would read a widened result as
+	// the answer.
+	localQueryDiags []api.QueryDiagnostic
 	// seq numbers this screen's list requests, so a response can be matched to
 	// the request that asked for it.
 	seq uint64
@@ -480,12 +495,15 @@ func (t *Transactions) cycleSort() {
 // openFilterForm opens the filter editor: one control per TransactionFilter field
 // the ledger list can narrow by.
 //
-// It does not cover the query grammar, and the comment used to claim it did. The
-// `q` expression is reachable over HTTP and is not offered here, because the
-// server resolves no names: `q` takes ids, so `cat:Groceries` matches nothing and
-// a user would have to paste a UUID. The named controls below are the answer for
-// this client, which is also what the MCP server's own tool description advises.
-// See #39.
+// The Query field is the `q` expression, and it is safe to offer here only
+// because the names in it are resolved before the request is built. The server
+// resolves no names — `q` takes ids, so `cat:Groceries` sent verbatim would bind
+// a string against a uuid column and return an empty ledger — so resolveQuery
+// below turns each name into an id against the reference data this screen
+// already holds. That is the same step the web app performs in
+// frontend/src/lib/query/resolve.ts, and the reason the grammar is a single text
+// field rather than eleven more pickers: one field buys every field in the
+// grammar, including the ones no picker covers. See #39.
 func (t *Transactions) openFilterForm() {
 	ref := t.ctx.Ref
 	filter := t.filter
@@ -495,6 +513,10 @@ func (t *Transactions) openFilterForm() {
 	series := ref.RecurringSeriesField(filter.RecurringID)
 	fields := []Field{
 		{Label: "Search", Kind: FieldText, Value: filter.Search, Width: 40, Help: "description, notes, payee or tags"},
+		{
+			Label: "Query", Kind: FieldText, Value: t.queryText, Width: 40,
+			Help: "q: cat:Groceries amt>500 - names are fine, quote a value with a space",
+		},
 		SelectField("Account", filter.AccountID, ref.AccountOptions(), false),
 		SelectField("Category", filter.CategoryID, append([]Option{{Value: api.UncategorizedCategory, Label: "Uncategorized"}}, ref.CategoryOptions()...), false),
 		SelectField("Group", filter.GroupID, ref.GroupOptions(), false),
@@ -523,12 +545,21 @@ func (t *Transactions) openFilterForm() {
 		{Label: "Page", Kind: FieldText, Value: strconv.Itoa(filter.Page), Width: 6, Validate: positiveInt},
 	}
 	t.ctx.Open(NewForm("txn.filter", "Filter transactions", fields, func(f *Form) tea.Cmd {
+		// The names are resolved here, before the filter is built, so every
+		// consumer of t.filter — this reload, the next page, an export — carries an
+		// expression the server can actually act on rather than one that would come
+		// back empty. A term that resolved to nothing is dropped and reported, so
+		// the user is told the result is wider than they asked for.
+		query, diags := resolveQuery(f.Value("Query"), t.ctx.Ref)
+		t.queryText = f.Value("Query")
+		t.localQueryDiags = diags
 		t.filter = api.TransactionFilter{
 			AccountID:       f.Value("Account"),
 			CategoryID:      f.Value("Category"),
 			GroupID:         f.Value("Group"),
 			PayeeID:         f.Value("Payee"),
 			Search:          f.Value("Search"),
+			Query:           query,
 			Type:            f.Value("Type"),
 			DateFrom:        f.Value("Date from"),
 			DateTo:          f.Value("Date to"),
@@ -546,6 +577,9 @@ func (t *Transactions) openFilterForm() {
 			Page:            f.IntValue("Page"),
 		}
 		f.Close()
+		for _, d := range diags {
+			t.ctx.Notify(LevelError, "query: %s", d.Message)
+		}
 		t.ctx.Notify(LevelInfo, "filters applied")
 		return t.reload()
 	}))
@@ -927,26 +961,20 @@ func (t *Transactions) headerLine(width int) string {
 	return line
 }
 
-// queryIgnoredNote reports terms the server dropped from the `q` expression, or
-// "" when it dropped none.
+// queryIgnoredNote reports terms dropped from the `q` expression, or "" when none
+// were. It counts the ones THIS client dropped while resolving names as well as
+// the ones the server dropped: both mean the same thing to the person reading
+// the list, which is that it is wider than they asked for.
 //
-// The server resolves no names and never rejects an unusable term: it drops it
-// and says so in the response's queryDiagnostics, because a term it refused
-// would fail the whole search over one typo. But a dropped constraint SILENTLY
-// WIDENS the result set, so the rows on screen are broader than the user asked
-// for and the only honest response is to say so. The web app puts this in a
+// The server never rejects an unusable term — it drops it and says so in the
+// response's queryDiagnostics, because a term it refused would fail the whole
+// search over one typo. But a dropped constraint SILENTLY WIDENS the result set,
+// so the only honest response is to say so. The web app puts this in a
 // persistent banner for exactly that reason; a status-bar toast would be the
 // wrong shape here, because the condition holds for as long as the filter does
 // and a toast scrolls away.
-//
-// Nothing in this client sends `q` today, so the server cannot currently return
-// a non-empty list — the filter form has no query field, and a bare `q` would
-// take ids rather than the names a person types. This reads the field anyway, and
-// the test drives it with a synthetic response, so the day a query field lands
-// this is already wired rather than being the thing that silently widens
-// results. See #39.
 func (t *Transactions) queryIgnoredNote() string {
-	n := len(t.info.QueryDiagnostics)
+	n := len(t.info.QueryDiagnostics) + len(t.localQueryDiags)
 	if n == 0 {
 		return ""
 	}
