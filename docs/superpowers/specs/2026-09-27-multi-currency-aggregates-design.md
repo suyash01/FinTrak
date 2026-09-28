@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-27
 **Issue:** #35 (also closes #40, #41, #42)
-**Status:** approved, ready to plan
+**Status:** implemented. This design shipped on `fix/multi-currency-aggregates` (issues #35, #40, #41, #42); `docs/superpowers/plans/2026-09-27-multi-currency-aggregates.md` is the 3,100-line plan that carried it out. It is kept as the record of why the change was made, with §4 and §5 corrected to the shape that shipped — where this document and the code disagree, the code is right.
 
 ---
 
@@ -19,7 +19,9 @@ means a single-account user never sees it: it is invisible exactly when it is
 harmless, and wrong exactly when it matters. Nothing errors — the number is just
 wrong.
 
-The sites, all with an **optional** account filter:
+The sites, all with an **optional** account filter. These line numbers are as
+they stood **before** this change and are kept as the record of the bug; §4 names
+the query that replaced the first row's.
 
 | Site | File:lines |
 | --- | --- |
@@ -64,23 +66,49 @@ are not looking at"* instead of silently dropping it.
 ## 4. The core query
 
 One helper, shared by all five aggregate endpoints, replaces the blind scalar
-total **and** produces the scope block:
+total **and** produces the scope block. This is the shape it shipped as —
+`scopeSQL` in `backend/handlers/currency.go:43-50`, with its two filter fragments
+spliced in as `%s`:
 
 ```sql
-SELECT a.id, a.name, a.currency,
-       COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0),
-       COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0)
+SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+       COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0) AS income,
+       COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0) AS expense
 FROM accounts a
-LEFT JOIN transactions t ON t.account_id = a.id AND t.user_id = $1 <date conds>
-WHERE a.user_id = $1 <account conds> <currency cond>
-GROUP BY a.id, a.name, a.currency
+LEFT JOIN transactions t ON t.account_id = a.id AND t.user_id = $1%s
+WHERE a.user_id = $1%s
+GROUP BY a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR')
 ORDER BY a.name, a.id
 ```
 
+**What moved from the sketch above this one, and why.** The draft read
+`a.currency` in all three positions — the projection, the `GROUP BY` and the
+`?currency=` predicate. The shipped statement reads
+`COALESCE(NULLIF(a.currency, ''), 'INR')` in all three, and the three must stay
+alike. `accounts.currency` is `VARCHAR(3) DEFAULT 'INR'` with no `NOT NULL`, so
+both a NULL and the empty string are representable, and a restored bundle writes
+the empty string through verbatim: `backup.go:162` exports
+`COALESCE(currency, '')` and re-inserts it unchanged. A bare
+`COALESCE(a.currency, 'INR')` in the predicate alone would then disagree with the
+other two and drop such an account from an explicit `?currency=INR` report while
+the rest of the same response still called it INR — so the `NULLIF` is
+load-bearing, not defensive styling. The date bounds go in the `JOIN`'s `ON` and
+not the `WHERE`, so an account with no transactions in the window still appears
+in the scope; moving them would tell a client a currency is absent when the
+account holding it is simply quiet this month. The `'INR'` literal is repeated
+rather than interpolated from `defaultCurrency` on purpose: a third `%s` would
+make the placeholder count fragile against any later edit, and the value is a
+fixed column default, not a configurable knob. All of this is argued at length in
+the comment above the constant, which is where a change to it belongs.
+
 Its rows are simultaneously the per-currency headline totals and the accounts
-behind `currencyScope`, so `dashboard.go:107`'s `scalarQuery` disappears into it.
-Every *other* aggregate keeps its own query but selects `a.currency` and folds
-rows into a map in Go.
+behind `currencyScope`, so `dashboard.go`'s old `scalarQuery` disappeared into it.
+Every *other* aggregate keeps its own query but selects the same currency
+expression and folds rows into a map in Go.
+
+This is still the first read of `accounts.currency` by any aggregate in the
+codebase — the column was stored, validated, returned and backed up, and nothing
+that computed a number consulted it.
 
 This is the first read of `accounts.currency` by any aggregate in the codebase.
 
