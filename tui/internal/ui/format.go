@@ -452,17 +452,6 @@ func pluralise(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, plural)
 }
 
-// sumAmountsForDisplay adds amounts for a display-only total such as a bar
-// denominator. It parses through the display-only float conversion, so the
-// result must never be shown as currency or sent to the API.
-func sumAmountsForDisplay(amounts []api.Amount) float64 {
-	total := 0.0
-	for _, a := range amounts {
-		total += a.Float64()
-	}
-	return total
-}
-
 // ratioOf reports amount/total for a bar width, guarding a zero denominator.
 func ratioOf(amount api.Amount, total float64) float64 {
 	if total == 0 {

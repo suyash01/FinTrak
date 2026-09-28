@@ -598,6 +598,13 @@ func (c *Calendar) legendLine(width int) string {
 		th.Subtle.Render(scale),
 		th.Positive.Render("▁▄█ surplus"),
 		th.Negative.Render("░▒▓ deficit"),
+		// The flat cell is the one glyph that means "the payload declined to give
+		// a sign": zero, no key for the currency on screen, or a day that points
+		// different ways in different currencies. In a monochrome terminal the
+		// shading is the only cue there is, so an unlabelled flat cell is a state
+		// the user cannot read at all — and it is the state this whole change
+		// exists to be able to show.
+		th.Subtle.Render("·· no sign"),
 		th.WarnText.Render("│ cycle start"),
 		th.WarnText.Render("◆ marker"),
 	}

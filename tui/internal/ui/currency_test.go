@@ -688,6 +688,31 @@ func TestCalendarLegendNamesTheScaleItActuallyUses(t *testing.T) {
 	}
 }
 
+// TestCalendarLegendNamesTheFlatCell is the legend's other half. A monochrome
+// terminal has nothing but the shading to go on, and the flat cell is the one
+// glyph that means the payload gave no sign at all — a day that netted to zero, a
+// day the currency on screen never touched, or a day that points different ways
+// in different currencies. The last is the case this whole change exists to be
+// able to show, and an unlabelled cell is a state the user cannot read, so the
+// legend has to carry it alongside the surplus, deficit and overlay glyphs.
+func TestCalendarLegendNamesTheFlatCell(t *testing.T) {
+	c := NewCalendar(testCtx())
+	c.fetched = true
+	c.data = api.CashFlowCalendar{
+		MaxAbsNet:     api.CurrencyAmounts{"INR": "1000.00"},
+		CurrencyScope: api.CurrencyScope{Currencies: []string{"INR"}},
+	}
+	c.currency = "INR"
+
+	got := c.legendLine(200)
+	// Every glyph dayCell can draw is named, so none of them is a mystery.
+	for _, want := range []string{"surplus", "deficit", "··", "no sign", "cycle start", "marker"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("legend = %q, does not name %q", got, want)
+		}
+	}
+}
+
 // TestCurrencyLineSurvivesANilMap is the decode path's case: a field the API
 // omitted arrives as a nil map, and a nil map rendered through the len() branch
 // must still say so rather than panic on the Single call below it.
