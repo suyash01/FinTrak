@@ -784,18 +784,47 @@ type TransferSuggestion struct {
 
 // ---- Dashboard ----
 
+// CurrencyAmounts is one aggregate's value, keyed by the currency code of each
+// account that contributed to it. One key means the value is exact for the whole
+// scope it covers; more than one means the scope spans currencies and no total
+// exists, so a consumer must either choose a currency or say it cannot add them.
+// An absent key reads as zero.
+type CurrencyAmounts map[string]Amount
+
+// ScopedAccount is one account inside a response's currency scope, with the
+// per-currency income and expense it contributes.
+type ScopedAccount struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Currency string          `json:"currency"`
+	Income   CurrencyAmounts `json:"income"`
+	Expense  CurrencyAmounts `json:"expense"`
+}
+
+// CurrencyScope names every currency a response covers and the accounts behind
+// each one, so a mixed-currency result explains itself.
+type CurrencyScope struct {
+	Currencies []string        `json:"currencies"`
+	Accounts   []ScopedAccount `json:"accounts"`
+}
+
 // DashboardSummary is the dashboard aggregate. In billing-cycle view
 // BillingCycleTrend replaces MonthlyTrend and CurrentCycle describes the
-// in-progress period.
+// in-progress period. Every amount is a CurrencyAmounts: a window can span
+// accounts in more than one currency and no single number represents that.
+// TotalNet is the server's per-currency difference - do not derive it by
+// subtracting TotalIncome and TotalExpense.
 type DashboardSummary struct {
 	TotalAccounts      int                     `json:"totalAccounts"`
 	TotalTransactions  int                     `json:"totalTransactions"`
-	TotalIncome        Amount                  `json:"totalIncome"`
-	TotalExpense       Amount                  `json:"totalExpense"`
+	TotalIncome        CurrencyAmounts         `json:"totalIncome"`
+	TotalExpense       CurrencyAmounts         `json:"totalExpense"`
+	TotalNet           CurrencyAmounts         `json:"totalNet"`
 	ByCategory         []CategorySpend         `json:"byCategory"`
 	IncomeByCategory   []CategorySpend         `json:"incomeByCategory"`
 	MonthlyTrend       []MonthlyData           `json:"monthlyTrend"`
 	RecentTransactions []Transaction           `json:"recentTransactions"`
+	CurrencyScope      CurrencyScope           `json:"currencyScope"`
 	CurrentCycle       *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend  []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
 }
@@ -810,83 +839,136 @@ type CurrentCycleInfo struct {
 
 // BillingCycleTrendItem holds one cycle's income and expense totals.
 type BillingCycleTrendItem struct {
-	Label     string    `json:"label"`
-	StartDate time.Time `json:"startDate"`
-	EndDate   time.Time `json:"endDate"`
-	Income    Amount    `json:"income"`
-	Expense   Amount    `json:"expense"`
+	Label     string          `json:"label"`
+	StartDate time.Time       `json:"startDate"`
+	EndDate   time.Time       `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
 }
 
-// CategorySpend aggregates one category's total and transaction count.
+// CategorySpend aggregates one category's total and transaction count. Total is
+// per-currency: one category can be spent in more than one currency at once.
 type CategorySpend struct {
-	CategoryID    string `json:"categoryId"`
-	CategoryName  string `json:"categoryName"`
-	CategoryColor string `json:"categoryColor"`
-	CategoryIcon  string `json:"categoryIcon"`
-	Total         Amount `json:"total"`
-	Count         int    `json:"count"`
+	CategoryID    string          `json:"categoryId"`
+	CategoryName  string          `json:"categoryName"`
+	CategoryColor string          `json:"categoryColor"`
+	CategoryIcon  string          `json:"categoryIcon"`
+	Total         CurrencyAmounts `json:"total"`
+	Count         int             `json:"count"`
 }
 
 // MonthlyData holds one month's totals, keyed "YYYY-MM".
 type MonthlyData struct {
-	Month   string `json:"month"`
-	Income  Amount `json:"income"`
-	Expense Amount `json:"expense"`
+	Month   string          `json:"month"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
 }
 
 // ---- Money flow ----
 
 // MoneyFlowNode is one node of the money-flow graph. Kind is income, account,
-// category or payee; IDs are stage-prefixed (e.g. "account:<uuid>").
+// category or payee; IDs are stage-prefixed (e.g. "account:<uuid>"). Total is
+// per-currency, because a node aggregates flows across accounts and a window
+// with no account filter can cover more than one.
 type MoneyFlowNode struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Kind  string `json:"kind"`
-	Color string `json:"color,omitempty"`
-	Group string `json:"group,omitempty"`
-	Total Amount `json:"total"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Kind  string          `json:"kind"`
+	Color string          `json:"color,omitempty"`
+	Group string          `json:"group,omitempty"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowEdge is one aggregated flow between two node IDs.
+// MoneyFlowEdge is one aggregated flow between two node IDs. Value is
+// per-currency for the same reason the nodes' totals are.
 type MoneyFlowEdge struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Value  Amount `json:"value"`
+	Source string          `json:"source"`
+	Target string          `json:"target"`
+	Value  CurrencyAmounts `json:"value"`
 }
 
-// MoneyFlowLinkSummary is a per-link-type rollup for the graph's window.
+// MoneyFlowLinkSummary is a per-link-type rollup for the graph's window. Total is
+// per-currency for a reason of its own: a link has a from-account and a
+// to-account, so one type's links can sit in different currencies even when the
+// window is a single account's.
 type MoneyFlowLinkSummary struct {
-	Type  string `json:"type"`
-	Count int    `json:"count"`
-	Total Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// MoneyFlowGraph is the GET /dashboard/money-flow response: an acyclic graph
-// plus the link-type summary that is not drawn as edges.
+// MoneyFlowSuppressedLeg is one leg of a cycle the graph could not draw, and
+// what it removed from that leg. Gross is the leg's full flow, per currency,
+// before netting; Discarded is the part of it that is in no node total and no
+// edge, per currency. It is already inside the graph's TotalIncome/TotalExpense -
+// these legs are ordinary transactions - so it is reported, never added again.
+type MoneyFlowSuppressedLeg struct {
+	From      string          `json:"from"`
+	To        string          `json:"to"`
+	Gross     CurrencyAmounts `json:"gross"`
+	Discarded CurrencyAmounts `json:"discarded"`
+}
+
+// MoneyFlowSuppressedCycle is one circular account-to-account flow the graph
+// cannot draw, with the amounts it removed. Kind is "reciprocal" for a pair that
+// flowed both ways and "cycle" for a longer loop; netting cancelled a currency
+// against its own reverse, and the cycle break dropped whatever netting could not
+// reduce - which, since one currency cannot cancel another, is a whole currency
+// in a link between differently denominated accounts.
+//
+// Accounts lists the participants in flow order as ids, each leg running from
+// Accounts[i] to Accounts[(i+1) mod len]; the graph's CurrencyScope already names
+// every one of them.
+type MoneyFlowSuppressedCycle struct {
+	Kind     string                   `json:"kind"`
+	Accounts []string                 `json:"accounts"`
+	Legs     []MoneyFlowSuppressedLeg `json:"legs"`
+}
+
+// MoneyFlowGraph is the GET /dashboard/money-flow response: an acyclic graph,
+// the link-type summary that is not drawn as edges, and the cycles that were.
+// Every amount is per-currency, TotalNet is the server's per-currency difference
+// rather than a subtraction to perform here, and CurrencyScope says which
+// currencies the response covers.
+//
+// SuppressedCycles is the response's account for anything CurrencyScope names but
+// the graph does not draw: a currency in scope whose only flows were circular and
+// were therefore removed. It is empty, never nil, when nothing was removed.
 type MoneyFlowGraph struct {
-	Nodes        []MoneyFlowNode        `json:"nodes"`
-	Links        []MoneyFlowEdge        `json:"links"`
-	TotalIncome  Amount                 `json:"totalIncome"`
-	TotalExpense Amount                 `json:"totalExpense"`
-	LinkSummary  []MoneyFlowLinkSummary `json:"linkSummary"`
+	Nodes            []MoneyFlowNode            `json:"nodes"`
+	Links            []MoneyFlowEdge            `json:"links"`
+	TotalIncome      CurrencyAmounts            `json:"totalIncome"`
+	TotalExpense     CurrencyAmounts            `json:"totalExpense"`
+	TotalNet         CurrencyAmounts            `json:"totalNet"`
+	LinkSummary      []MoneyFlowLinkSummary     `json:"linkSummary"`
+	SuppressedCycles []MoneyFlowSuppressedCycle `json:"suppressedCycles"`
+	CurrencyScope    CurrencyScope              `json:"currencyScope"`
 }
 
 // MoneyFlowTimelinePeriod is one period of the flow timeline; the bounds are
-// inclusive and can be fed straight back into the graph query.
+// inclusive and can be fed straight back into the graph query. Net is
+// per-currency because a difference within one currency is meaningful even
+// when the window as a whole spans several.
 type MoneyFlowTimelinePeriod struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	StartDate string `json:"startDate"`
-	EndDate   string `json:"endDate"`
-	Income    Amount `json:"income"`
-	Expense   Amount `json:"expense"`
-	Net       Amount `json:"net"`
+	Key       string          `json:"key"`
+	Label     string          `json:"label"`
+	StartDate string          `json:"startDate"`
+	EndDate   string          `json:"endDate"`
+	Income    CurrencyAmounts `json:"income"`
+	Expense   CurrencyAmounts `json:"expense"`
+	Net       CurrencyAmounts `json:"net"`
 }
 
 // MoneyFlowTimeline is the GET /dashboard/money-flow/timeline response.
 type MoneyFlowTimeline struct {
 	GroupBy string                    `json:"groupBy"`
 	Periods []MoneyFlowTimelinePeriod `json:"periods"`
+	// CurrencyScope names every currency the periods cover and the accounts
+	// behind it. A month can hold an INR amount and a USD one, and the net is
+	// the difference inside one currency, so Periods[0].Net is a map and not a
+	// number: Single is the only way to read one out, and it declines unless the
+	// period holds exactly one currency.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Circular money ----
@@ -899,13 +981,15 @@ type LinkCycleAccount struct {
 }
 
 // LinkFlowTypeTotal is a per-link-type rollup of an account-to-account flow.
+// Total is per-currency, like the flow's own amount.
 type LinkFlowTypeTotal struct {
-	Type  string `json:"type"`
-	Count int    `json:"count"`
-	Total Amount `json:"total"`
+	Type  string          `json:"type"`
+	Count int             `json:"count"`
+	Total CurrencyAmounts `json:"total"`
 }
 
-// LinkCycleLeg is one directed flow inside a cycle.
+// LinkCycleLeg is one directed flow inside a cycle. Amount is per-currency
+// because the leg's two accounts need not share one.
 type LinkCycleLeg struct {
 	FromAccountID    string              `json:"fromAccountId"`
 	FromAccountName  string              `json:"fromAccountName"`
@@ -913,21 +997,31 @@ type LinkCycleLeg struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Amount           Amount              `json:"amount"`
+	Amount           CurrencyAmounts     `json:"amount"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
 // LinkCycle is one circular money flow. Kind is "reciprocal" (a pair flowing
 // both ways, netted for the Sankey) or "cycle" (a longer loop broken by
-// dropping its back edge); Net is the smallest leg, i.e. what actually
-// circulates.
+// dropping its back edge).
+//
+// Net is the smallest leg, and the number of keys decides which of two readings
+// applies. One key: the legs are all in one currency, and that key is the amount
+// that circulates the whole loop - the single number this field used to hold
+// outright. More than one key: each key is that currency's own smallest leg, a
+// per-currency local figure and NOT a circulation figure. Nothing circulates a
+// loop whose legs are denominated differently, so check the key count before
+// rendering Net as a scalar: one key is the circulation, and several means the
+// loop moves that many currencies and none of them is what circulates it. Do not
+// add the keys and do not pick the smallest. Gross is the sum of the legs, per
+// currency, and is never a combined figure either.
 type LinkCycle struct {
 	Kind         string             `json:"kind"`
 	Accounts     []LinkCycleAccount `json:"accounts"`
 	Legs         []LinkCycleLeg     `json:"legs"`
-	Net          Amount             `json:"net"`
-	Gross        Amount             `json:"gross"`
+	Net          CurrencyAmounts    `json:"net"`
+	Gross        CurrencyAmounts    `json:"gross"`
 	Transactions int                `json:"transactions"`
 }
 
@@ -940,47 +1034,61 @@ type LinkOneSidedFlow struct {
 	ToAccountID      string              `json:"toAccountId"`
 	ToAccountName    string              `json:"toAccountName"`
 	ToAccountColor   string              `json:"toAccountColor,omitempty"`
-	Total            Amount              `json:"total"`
+	Total            CurrencyAmounts     `json:"total"`
 	Count            int                 `json:"count"`
 	Types            []LinkFlowTypeTotal `json:"types"`
 }
 
-// LinkCycleReport is the GET /links/cycles response.
+// LinkCycleReport is the GET /links/cycles response. Every amount is a
+// CurrencyAmounts: a link joins two accounts, so this report sums two
+// accounts' transactions by construction and the two need not share a currency.
 type LinkCycleReport struct {
-	Cycles        []LinkCycle        `json:"cycles"`
-	TotalCircular Amount             `json:"totalCircular"`
+	Cycles []LinkCycle `json:"cycles"`
+	// TotalCircular is the sum of every cycle's Net, per currency. Despite the
+	// name it is never a single combined figure and, for a cycle spanning
+	// currencies, not a circulation figure either - it carries LinkCycle.Net's
+	// two readings and the same key-count signal. It is for the single-currency
+	// case, where one key returns the money that travels a full loop.
+	TotalCircular CurrencyAmounts     `json:"totalCircular"`
 	OneSidedFlows []LinkOneSidedFlow `json:"oneSidedFlows"`
+	// CurrencyScope names every currency the report covers and the accounts
+	// behind each one, so a multi-key amount is a fact the response states
+	// rather than an anomaly to diagnose.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Cash-flow calendar ----
 
 // CashFlowCalendarDay is one day of daily net flow; days without transactions
-// are omitted and filled in by the UI.
+// are omitted and filled in by the UI. Net is per-currency, so a day on which
+// one currency spent and another earned has a net in both.
 type CashFlowCalendarDay struct {
-	Date    string `json:"date"`
-	Income  Amount `json:"income"`
-	Expense Amount `json:"expense"`
-	Net     Amount `json:"net"`
-	Count   int    `json:"count"`
+	Date    string          `json:"date"`
+	Income  CurrencyAmounts `json:"income"`
+	Expense CurrencyAmounts `json:"expense"`
+	Net     CurrencyAmounts `json:"net"`
+	Count   int             `json:"count"`
 }
 
 // CashFlowCalendarMarker is a synthetic summary point (a month-end running
-// balance or a cycle's total outstanding).
+// balance or a cycle's total outstanding). The overlay belongs to one account,
+// so Amount holds that account's single key; it is a map anyway, so a client
+// never has to learn two shapes for the same field.
 type CashFlowCalendarMarker struct {
-	Date   string `json:"date"`
-	Label  string `json:"label"`
-	Kind   string `json:"kind"`
-	Amount Amount `json:"amount"`
+	Date   string          `json:"date"`
+	Label  string          `json:"label"`
+	Kind   string          `json:"kind"`
+	Amount CurrencyAmounts `json:"amount"`
 }
 
 // CashFlowCalendarCycle is a billing-cycle boundary so the calendar can mark
-// statement periods.
+// statement periods. Outstanding is the one account's own currency.
 type CashFlowCalendarCycle struct {
-	ID          string    `json:"id"`
-	Label       string    `json:"label"`
-	StartDate   time.Time `json:"startDate"`
-	EndDate     time.Time `json:"endDate"`
-	Outstanding Amount    `json:"outstanding"`
+	ID          string          `json:"id"`
+	Label       string          `json:"label"`
+	StartDate   time.Time       `json:"startDate"`
+	EndDate     time.Time       `json:"endDate"`
+	Outstanding CurrencyAmounts `json:"outstanding"`
 }
 
 // CashFlowCalendar is the GET /dashboard/cash-flow-calendar response.
@@ -988,10 +1096,19 @@ type CashFlowCalendar struct {
 	Days         []CashFlowCalendarDay    `json:"days"`
 	Markers      []CashFlowCalendarMarker `json:"markers"`
 	Cycles       []CashFlowCalendarCycle  `json:"cycles"`
-	TotalIncome  Amount                   `json:"totalIncome"`
-	TotalExpense Amount                   `json:"totalExpense"`
-	Net          Amount                   `json:"net"`
-	MaxAbsNet    Amount                   `json:"maxAbsNet"`
+	TotalIncome  CurrencyAmounts           `json:"totalIncome"`
+	TotalExpense CurrencyAmounts           `json:"totalExpense"`
+	Net          CurrencyAmounts           `json:"net"`
+	// MaxAbsNet is the largest absolute daily net **per currency**, the
+	// denominator the heatmap divides by. One scale across currencies is
+	// meaningless - it renders a quiet foreign account's real deficit as a flat
+	// cell beside a large domestic one - so a caller picks its own currency's
+	// entry rather than reading a single number.
+	MaxAbsNet CurrencyAmounts `json:"maxAbsNet"`
+	// CurrencyScope names every currency the days cover and the accounts behind
+	// it, and is where the window totals above come from: the same query the
+	// dashboard summary uses.
+	CurrencyScope CurrencyScope `json:"currencyScope"`
 }
 
 // ---- Recurring series ----

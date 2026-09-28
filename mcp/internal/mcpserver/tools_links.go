@@ -37,6 +37,11 @@ type linkCyclesArgs struct {
 	DateFrom  string `json:"dateFrom,omitempty" jsonschema:"inclusive start date, YYYY-MM-DD"`
 	DateTo    string `json:"dateTo,omitempty" jsonschema:"inclusive end date, YYYY-MM-DD"`
 	AccountID string `json:"accountId,omitempty" jsonschema:"restrict the flows to one account id"`
+	// Currency reads the amount, not the account: this endpoint's two legs can
+	// sit in two currencies, so the same word means the opposite of what it means
+	// on the dashboard tools and a model guessing would get a wrong answer
+	// rather than an error. The jsonschema text says so where the model reads it.
+	Currency string `json:"currency,omitempty" jsonschema:"keep only the flows whose own amount is denominated in this currency code (three letters, case-insensitive); this filters the AMOUNT, not the accounts, which is the opposite of the same argument on the dashboard tools"`
 }
 
 func linkTools() []Tool {
@@ -72,7 +77,11 @@ func linkTools() []Tool {
 			Title: "Report account link cycles",
 			Description: "The account-to-account flows the money-flow graph cannot draw because it has to stay acyclic: reciprocal pairs " +
 				"netted into one edge, the back edges that closed a longer loop, and one-sided flows that look like a half-entered " +
-				"transfer. Useful for explaining why a transfer pair is not visible as a flow.",
+				"transfer. Useful for explaining why a transfer pair is not visible as a flow. A link joins two accounts that need not " +
+				"share a currency, so every amount here is per currency: a cycle's net is that currency's own smallest leg, which is " +
+				"the money circulating the whole loop only while the loop holds a single currency, and totalCircular carries the same " +
+				"qualification. Its currency argument therefore does not mean what it means on the dashboard tools: it keeps the " +
+				"flows whose own amount is denominated in that code, not the flows touching an account that holds it. " + perCurrencyAmounts,
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/links/cycles"},
 			install: installLinkCycles,
 		},
@@ -103,6 +112,8 @@ func installCashbackSuggestions(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 
 func installLinkCycles(s *mcp.Server, c *api.Client, tool *mcp.Tool) {
 	addReadTool(s, tool, func(ctx context.Context, in linkCyclesArgs) (any, error) {
-		return c.LinkCycles(ctx, in.DateFrom, in.DateTo, in.AccountID)
+		return c.LinkCycles(ctx, api.LinkCyclesFilter{
+			DateFrom: in.DateFrom, DateTo: in.DateTo, AccountID: in.AccountID, Currency: in.Currency,
+		})
 	})
 }

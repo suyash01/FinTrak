@@ -9,6 +9,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
@@ -20,13 +21,46 @@ const (
 	billingCycleGroupBy  = "billing_cycle"
 	defaultBillingCycles = 12
 	maxBillingCycles     = 60
+	// trendCurrencyParam is the placeholder the billing-cycle trend's currency
+	// predicate binds. That query numbers its own arguments - account, user,
+	// window start, window end, currency - so the fifth is fixed rather than
+	// taken from the shared fragment's counter.
+	trendCurrencyParam = 5
 )
+
+// currencyPredicate returns the account-currency filter, or "" when no currency
+// was requested. It is the one expression every currency filter in this file
+// shares with currencyScope's projection, GROUP BY and predicate: accounts.currency
+// is nullable and a restored bundle can hold the empty string, so a site that
+// dropped the NULLIF would disagree with the others and report a default-currency
+// account as absent. See the scopeSQL comment for the full argument.
+func currencyPredicate(placeholder int) string {
+	return fmt.Sprintf("COALESCE(NULLIF(a.currency, ''), '%s') = $%d", defaultCurrency, placeholder)
+}
+
+// trendCurrencyFilter is currencyPredicate's counterpart for the billing-cycle
+// trend, which cannot use the shared fragment because it is driven by
+// billing_cycles rather than by transactions. It carries the same expression for
+// the same reason: the account-level filter has to narrow the trend bars too, or
+// a ?currency= response would show totals in one currency and bars in another.
+func trendCurrencyFilter(currency string) string {
+	if currency == "" {
+		return ""
+	}
+	return " AND " + currencyPredicate(trendCurrencyParam)
+}
 
 // GetDashboardSummary aggregates the user's financial overview in one response:
 // account and transaction counts, income/expense totals, per-category spend and
 // income (top 15 each), a monthly income/expense trend, and the 10 most recent
-// transactions. An optional date range and account filter apply to every
-// transaction-backed section.
+// transactions. An optional date range, account and currency filter apply to
+// every transaction-backed section - the currency filter narrows the whole
+// response, so the totals, the breakdowns, the trend and the transaction list
+// never describe different sets of transactions.
+//
+// Every amount is per-currency. With no account filter the window can span an
+// INR account and a USD one, and no single figure can represent that, so the
+// response carries one amount per currency alongside the scope that produced it.
 func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
@@ -51,37 +85,83 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 			return
 		}
 	}
-
-	// Billing-cycle view: the whole summary is framed around the statement
-	// periods of a single account that has a billing day set.
-	if c.Query("groupBy") == billingCycleGroupBy {
-		srv.getDashboardSummaryBillingCycle(c)
+	currency, ok := parseCurrency(c)
+	if !ok {
 		return
 	}
 
-	var summary models.DashboardSummary
+	// Billing-cycle view: the whole summary is framed around the statement
+	// periods of a single account that has a billing day set. The currency is
+	// parsed above and passed down rather than read again, so both views filter
+	// on the same value.
+	if c.Query("groupBy") == billingCycleGroupBy {
+		srv.getDashboardSummaryBillingCycle(c, currency)
+		return
+	}
 
-	// Build transaction filters (date range + account). plainFilter is used by
-	// queries without a table alias; catFilter prefixes columns with t. for
-	// queries that join/alias the transactions table.
-	plainFilter := ""
+	var (
+		totalAccounts     int
+		totalTransactions int
+		byCategory        []models.CategorySpend
+		incomeByCategory  []models.CategorySpend
+		monthlyTrend      []models.MonthlyData
+		recent            []models.Transaction
+	)
+
+	// One filter fragment serves every transaction-backed query below, all of
+	// which alias the transactions table as t and join accounts as a. It is
+	// numbered once, so no query can renumber another's placeholders.
+	//
+	// The currency predicate belongs here rather than in currencyScope alone: a
+	// filter that reached only the stat cards would leave the trend and the
+	// category breakdowns describing a wider window than the totals beside them,
+	// which is the silent-wrong-number case this change exists to remove. It
+	// reads the account and carries the same COALESCE(NULLIF(...), 'INR') the
+	// scope query uses in its projection, its GROUP BY and its own predicate -
+	// accounts.currency is nullable and a restored bundle can hold '', so all of
+	// them have to be the same expression (see currency.go).
+	//
+	// The predicate sits in the WHERE, which for these queries is the same place
+	// as the join's ON clause: every one of them is driven by transactions and
+	// inner-joins accounts, so a row that fails the predicate is one with no
+	// account in scope. It is the account-driven scope query that has to keep
+	// quiet accounts visible, and that guard lives in currencyScope, not here.
+	//
+	// Two closers build that fragment, and neither can do the other's job.
+	// addCond owns the placeholder and appends it to an operator, which is what
+	// the three column comparisons need. addFragment takes a condition that
+	// already carries its own and binds only the value, which is what a currency
+	// predicate needs: currencyPredicate renders a whole comparison, so handing
+	// it to addCond produced `= $4 $4` and PostgreSQL rejected the statement.
+	// That is the same shape currency.go's add has always had — a pre-formatted
+	// fragment plus a bound value, with the caller building the $n — and it was
+	// right there and wrong here only because addCond predates any
+	// self-contained predicate. Two closures, one job each, is cheaper than
+	// teaching one of them to guess which kind of condition it was handed.
 	catFilter := ""
 	args := []any{userID}
 	paramIdx := 2
-	addCond := func(col, op string, val any) {
-		plainFilter += fmt.Sprintf(" AND %s %s $%d", col, op, paramIdx)
-		catFilter += fmt.Sprintf(" AND t.%s %s $%d", col, op, paramIdx)
+	addCond := func(cond string, val any) {
+		catFilter += fmt.Sprintf(" AND %s $%d", cond, paramIdx)
+		args = append(args, val)
+		paramIdx++
+	}
+	addFragment := func(fragment string, val any) {
+		catFilter += " AND " + fragment
 		args = append(args, val)
 		paramIdx++
 	}
 	if dateFrom != "" {
-		addCond("date", ">=", dateFrom)
+		addCond("t.date >=", dateFrom)
 	}
 	if dateTo != "" {
-		addCond("date", "<=", dateTo)
+		addCond("t.date <=", dateTo)
 	}
 	if accountID != "" {
-		addCond("account_id", "=", accountID)
+		addCond("t.account_id =", accountID)
+	}
+	if currency != "" {
+		addFragment(currencyPredicate(paramIdx), currency)
 	}
 
 	// Run every read in a single read-only, repeatable-read transaction so the
@@ -97,33 +177,71 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	q := tx
 
 	// Total accounts
-	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&summary.TotalAccounts); err != nil {
+	if err := q.QueryRow(ctx, "SELECT COUNT(*) FROM accounts WHERE user_id = $1", userID).Scan(&totalAccounts); err != nil {
 		slog.Error("GetDashboardSummary (total accounts)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// Transaction count, income, and expense totals in a single round-trip.
-	scalarQuery := `SELECT COUNT(*),
-					 COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0),
-					 COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0)
-					 FROM transactions WHERE user_id = $1` + plainFilter
-	if err := q.QueryRow(ctx, scalarQuery, args...).Scan(&summary.TotalTransactions, &summary.TotalIncome, &summary.TotalExpense); err != nil {
-		slog.Error("GetDashboardSummary (totals)", slog.String("error", err.Error()))
+	// Transaction count. A count has no currency of its own, but it is still a
+	// transaction-backed section, so it counts what the rest of the response
+	// describes: accounts is joined for the currency filter, and the join is
+	// inner so a transaction whose account row is missing is left out rather
+	// than filed under the default currency.
+	countQuery := `SELECT COUNT(*) FROM transactions t
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1
+				 WHERE t.user_id = $1` + catFilter
+	if err := q.QueryRow(ctx, countQuery, args...).Scan(&totalTransactions); err != nil {
+		slog.Error("GetDashboardSummary (transaction count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// By category (expenses only). The top 15 are cut by name/id after the
-	// total so equal-spend categories can't swap in and out between fetches.
-	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
+	// Income and expense per currency, and the accounts each currency came from.
+	scope, err := srv.currencyScope(ctx, q, userID, scopeOptions{
+		DateFrom:  dateFrom,
+		DateTo:    dateTo,
+		AccountID: accountID,
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetDashboardSummary (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// By category (expenses only). The top 15 are cut per currency, so "top 15
+	// by spend" keeps meaning the 15 biggest categories *of one currency* rather
+	// than 15 rows drawn from an ordering that compares rupees with dollars.
+	//
+	// Three things make the window function legal and correct. Postgres
+	// evaluates windows after grouping, so SUM(t.amount) is available in the
+	// window's ORDER BY at this level, as are the grouped c.name and c.id beside
+	// it. HAVING runs before it, and the inner join to accounts means a category
+	// with no matching transaction never produces a row at all, so the
+	// NULL-currency partition cannot exist and no unspend category can take a
+	// slot. And the filter fragment is spliced into the WHERE, which is where the
+	// inner join makes it equivalent to the ON clause.
+	//
+	// The window's ORDER BY ends in name and id on purpose: without them, rn
+	// among equal totals is arbitrary and which 15 categories survive could
+	// differ between two identical requests. The old LIMIT 15 carried the same
+	// tiebreak and it is what kept the list from swapping in and out.
+	//
+	// The outer ORDER BY is display order over rows that are already capped, not
+	// a ranking across currencies: nothing is compared, so nothing is added up.
+	catQuery := `SELECT id, name, color, icon, currency, total, count FROM (
+				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
+				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon
+				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC, c.name, c.id
-				 LIMIT 15`
+				 ) ranked WHERE rn <= 15
+				 ORDER BY total DESC, name, id`
 
 	catRows, err := q.Query(ctx, catQuery, args...)
 	if err != nil {
@@ -132,25 +250,56 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 	defer catRows.Close()
+	// One category can be spent in more than one currency, so the query returns a
+	// row per (category, currency) pair and the fold puts them back together into
+	// one entry per category, in the order the query returned them.
+	totals := map[string]*models.CategorySpend{}
+	order := []string{}
 	for catRows.Next() {
-		var cs models.CategorySpend
-		if err := catRows.Scan(&cs.CategoryID, &cs.CategoryName, &cs.CategoryColor, &cs.CategoryIcon, &cs.Total, &cs.Count); err != nil {
+		var (
+			id, name, color, icon, code string
+			total                       money.Amount
+			count                       int
+		)
+		if err := catRows.Scan(&id, &name, &color, &icon, &code, &total, &count); err != nil {
 			slog.Error("GetDashboardSummary scan (by category)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.ByCategory = append(summary.ByCategory, cs)
+		entry, ok := totals[id]
+		if !ok {
+			entry = &models.CategorySpend{
+				CategoryID: id, CategoryName: name, CategoryColor: color,
+				CategoryIcon: icon, Total: models.NewCurrencyAmounts(),
+			}
+			totals[id] = entry
+			order = append(order, id)
+		}
+		entry.Total.Add(code, total)
+		entry.Count += count
+	}
+	if err := catRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (by category rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, id := range order {
+		byCategory = append(byCategory, *totals[id])
 	}
 
 	// By category (income only)
-	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
+	incomeCatQuery := `SELECT id, name, color, icon, currency, total, count FROM (
+				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
+				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1` + catFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon
+				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
-				 ORDER BY total DESC, c.name, c.id
-				 LIMIT 15`
+				 ) ranked WHERE rn <= 15
+				 ORDER BY total DESC, name, id`
 
 	incomeCatRows, err := q.Query(ctx, incomeCatQuery, args...)
 	if err != nil {
@@ -159,23 +308,53 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 	defer incomeCatRows.Close()
+	incomeTotals := map[string]*models.CategorySpend{}
+	incomeOrder := []string{}
 	for incomeCatRows.Next() {
-		var cs models.CategorySpend
-		if err := incomeCatRows.Scan(&cs.CategoryID, &cs.CategoryName, &cs.CategoryColor, &cs.CategoryIcon, &cs.Total, &cs.Count); err != nil {
+		var (
+			id, name, color, icon, code string
+			total                       money.Amount
+			count                       int
+		)
+		if err := incomeCatRows.Scan(&id, &name, &color, &icon, &code, &total, &count); err != nil {
 			slog.Error("GetDashboardSummary scan (income by category)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.IncomeByCategory = append(summary.IncomeByCategory, cs)
+		entry, ok := incomeTotals[id]
+		if !ok {
+			entry = &models.CategorySpend{
+				CategoryID: id, CategoryName: name, CategoryColor: color,
+				CategoryIcon: icon, Total: models.NewCurrencyAmounts(),
+			}
+			incomeTotals[id] = entry
+			incomeOrder = append(incomeOrder, id)
+		}
+		entry.Total.Add(code, total)
+		entry.Count += count
+	}
+	if err := incomeCatRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (income by category rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, id := range incomeOrder {
+		incomeByCategory = append(incomeByCategory, *incomeTotals[id])
 	}
 
-	// Monthly trend
-	monthlyQuery := `SELECT TO_CHAR(date, 'YYYY-MM') as month,
-					 COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) as income,
-					 COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) as expense
-					 FROM transactions
-					 WHERE user_id = $1` + plainFilter + `
-					 GROUP BY TO_CHAR(date, 'YYYY-MM')
+	// Monthly trend. accounts is joined so a month can be split by currency: one
+	// month is one entry holding one amount per currency, not one entry per
+	// currency. The join is inner, matching the category queries, so a
+	// transaction with no account row is left out of both rather than filed
+	// under the default currency in one and dropped from the other.
+	monthlyQuery := `SELECT TO_CHAR(t.date, 'YYYY-MM') as month,
+					 COALESCE(NULLIF(a.currency, ''), 'INR') as currency,
+					 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
+					 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
+					 FROM transactions t
+					 JOIN accounts a ON t.account_id = a.id
+					 WHERE t.user_id = $1` + catFilter + `
+					 GROUP BY TO_CHAR(t.date, 'YYYY-MM'), COALESCE(NULLIF(a.currency, ''), 'INR')
 					 ORDER BY month`
 
 	monthRows, err := q.Query(ctx, monthlyQuery, args...)
@@ -185,14 +364,32 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 	defer monthRows.Close()
+	trend := map[string]*models.MonthlyData{}
+	trendOrder := []string{}
 	for monthRows.Next() {
-		var md models.MonthlyData
-		if err := monthRows.Scan(&md.Month, &md.Income, &md.Expense); err != nil {
+		var month, code string
+		var income, expense money.Amount
+		if err := monthRows.Scan(&month, &code, &income, &expense); err != nil {
 			slog.Error("GetDashboardSummary scan (monthly trend)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.MonthlyTrend = append(summary.MonthlyTrend, md)
+		entry, ok := trend[month]
+		if !ok {
+			entry = &models.MonthlyData{Month: month, Income: models.NewCurrencyAmounts(), Expense: models.NewCurrencyAmounts()}
+			trend[month] = entry
+			trendOrder = append(trendOrder, month)
+		}
+		entry.Income.Add(code, income)
+		entry.Expense.Add(code, expense)
+	}
+	if err := monthRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (monthly trend rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, month := range trendOrder {
+		monthlyTrend = append(monthlyTrend, *trend[month])
 	}
 
 	// Recent transactions
@@ -226,20 +423,43 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.RecentTransactions = append(summary.RecentTransactions, t)
+		recent = append(recent, t)
+	}
+	if err := recentRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (recent transactions rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
-	if summary.ByCategory == nil {
-		summary.ByCategory = []models.CategorySpend{}
+	// Empty slices rather than nil, so the body carries [] and a client does not
+	// have to tell an absent list from a null one.
+	if byCategory == nil {
+		byCategory = []models.CategorySpend{}
 	}
-	if summary.IncomeByCategory == nil {
-		summary.IncomeByCategory = []models.CategorySpend{}
+	if incomeByCategory == nil {
+		incomeByCategory = []models.CategorySpend{}
 	}
-	if summary.MonthlyTrend == nil {
-		summary.MonthlyTrend = []models.MonthlyData{}
+	if monthlyTrend == nil {
+		monthlyTrend = []models.MonthlyData{}
 	}
-	if summary.RecentTransactions == nil {
-		summary.RecentTransactions = []models.Transaction{}
+	if recent == nil {
+		recent = []models.Transaction{}
+	}
+
+	// TotalNet is the server's per-currency difference, not a subtraction the
+	// client performs: income minus expense is only defined inside one currency,
+	// and only the server knows which currencies are in scope.
+	summary := models.DashboardSummary{
+		TotalAccounts:      totalAccounts,
+		TotalTransactions:  totalTransactions,
+		TotalIncome:        scope.Income,
+		TotalExpense:       scope.Expense,
+		TotalNet:           scope.Net(),
+		ByCategory:         byCategory,
+		IncomeByCategory:   incomeByCategory,
+		MonthlyTrend:       monthlyTrend,
+		RecentTransactions: recent,
+		CurrencyScope:      scope.Scope,
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -257,7 +477,9 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 // last `cycles` cycles, the category breakdowns span that cycle window, and the
 // recent transactions come from the current cycle. Date-range filters are
 // ignored in this mode; the window is defined by billing cycles instead.
-func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
+// `currency` is the already-normalised ?currency filter, parsed by the caller
+// so both views narrow on the same value.
+func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency string) {
 	ctx := c
 	userID := auth.GetUserID(c)
 
@@ -317,7 +539,14 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 
+	// The amount maps start empty rather than nil: this response is built before
+	// the window exists, and a nil map marshals as null, which would be a
+	// contract break on the early return below.
 	summary := models.DashboardSummary{
+		TotalIncome:        models.NewCurrencyAmounts(),
+		TotalExpense:       models.NewCurrencyAmounts(),
+		TotalNet:           models.NewCurrencyAmounts(),
+		CurrencyScope:      models.CurrencyScope{Currencies: []string{}, Accounts: []models.ScopedAccount{}},
 		ByCategory:         []models.CategorySpend{},
 		IncomeByCategory:   []models.CategorySpend{},
 		MonthlyTrend:       []models.MonthlyData{},
@@ -333,6 +562,8 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 	}
 
 	if len(cycles) == 0 {
+		// No cycle means no window, so the summary stays the empty one built
+		// above: the response covers no currency rather than an unnamed one.
 		c.JSON(http.StatusOK, summary)
 		return
 	}
@@ -362,70 +593,146 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		Label:     current.Label,
 	}
 
-	// Window totals (stat cards): income, expense, and transaction count across
-	// every displayed cycle, attributed by the stored cycle assignment so the
-	// headline numbers agree with the trend chart and the billing-cycles page.
-	cycleStatsQuery := `SELECT COUNT(t.id),
-			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
-			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
-			 FROM transactions t
-			 JOIN billing_cycles bc ON t.billing_cycle_id = bc.id
-			 WHERE t.user_id = $1 AND t.account_id = $2
-			   AND bc.end_date >= $3 AND bc.end_date <= $4`
-	if err := q.QueryRow(ctx, cycleStatsQuery, userID, accountID, windowStart, windowEnd).
-		Scan(&summary.TotalTransactions, &summary.TotalIncome, &summary.TotalExpense); err != nil {
-		slog.Error("GetDashboardSummary (cycle window stats)", slog.String("error", err.Error()))
+	// Stat-card totals across every displayed cycle, from the currency scope.
+	// Every other section below is filtered by the same window, account and
+	// currency, so the headline figures, the trend and the count all describe the
+	// same transactions. A count has no currency of its own but it is still
+	// transaction-backed, so it takes the same filter.
+	scope, err := srv.currencyScope(ctx, q, userID, scopeOptions{
+		DateFrom:  windowStart,
+		DateTo:    windowEnd,
+		AccountID: accountID.String(),
+		Currency:  currency,
+	})
+	if err != nil {
+		slog.Error("GetDashboardSummary (currency scope)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	summary.TotalIncome = scope.Income
+	summary.TotalExpense = scope.Expense
+	summary.TotalNet = scope.Net()
+	summary.CurrencyScope = scope.Scope
+
+	// One filter fragment for the transaction-backed queries below, numbered once
+	// so no query can renumber another's placeholders. The account's own
+	// currency filter rides along so a caller asking for a currency this account
+	// does not hold gets an empty report rather than one in the wrong currency.
+	//
+	// Two closers, for the reason given at the month view's copy: addCond owns
+	// the placeholder and takes an operator, addFragment takes a condition that
+	// already carries one. A currency predicate is the second kind, and routing
+	// it through the first is what made this endpoint answer 500 before.
+	catFilter := ""
+	catArgs := []any{userID}
+	paramIdx := 2
+	addCond := func(cond string, val any) {
+		catFilter += fmt.Sprintf(" AND %s $%d", cond, paramIdx)
+		catArgs = append(catArgs, val)
+		paramIdx++
+	}
+	addFragment := func(fragment string, val any) {
+		catFilter += " AND " + fragment
+		catArgs = append(catArgs, val)
+		paramIdx++
+	}
+	addCond("t.date >=", windowStart)
+	addCond("t.date <=", windowEnd)
+	addCond("t.account_id =", accountID)
+	if currency != "" {
+		addFragment(currencyPredicate(paramIdx), currency)
+	}
+
+	cycleCountQuery := `SELECT COUNT(*) FROM transactions t
+			 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1
+			 WHERE t.user_id = $1` + catFilter
+	if err := q.QueryRow(ctx, cycleCountQuery, catArgs...).
+		Scan(&summary.TotalTransactions); err != nil {
+		slog.Error("GetDashboardSummary (cycle window count)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	// Per-cycle trend over the window.
+	// Per-cycle trend over the window. The account is joined for its currency, so
+	// the trend folds per currency like every other amount here, and the
+	// transactions are joined by the cycle's own date range rather than by
+	// t.billing_cycle_id.
+	//
+	// That join is the same set the stat cards count. Joining on
+	// billing_cycle_id instead would be a cheaper plan, but a transaction whose
+	// cycle assignment is detached or NULL would then be in the headline totals
+	// and in no bar at all, which is the disagreement this comment exists to
+	// prevent. Do not "optimise" the join back to the cycle id.
 	trendQuery := `SELECT bc.label, bc.start_date, bc.end_date,
+			 COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
 			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
 			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
 			 FROM billing_cycles bc
-			 LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
+			 JOIN accounts a ON a.id = bc.account_id AND a.user_id = $2
+			 LEFT JOIN transactions t ON t.account_id = bc.account_id AND t.user_id = $2
+			   AND t.date >= bc.start_date AND t.date <= bc.end_date
 			 WHERE bc.account_id = $1 AND bc.user_id = $2
-			   AND bc.end_date >= $3 AND bc.end_date <= $4
-			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date
+			   AND bc.end_date >= $3 AND bc.end_date <= $4` + trendCurrencyFilter(currency) + `
+			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date, COALESCE(NULLIF(a.currency, ''), 'INR')
 			 ORDER BY bc.start_date ASC`
-	trendRows, err := q.Query(ctx, trendQuery, accountID, userID, windowStart, windowEnd)
+	trendArgs := []any{accountID, userID, windowStart, windowEnd}
+	if currency != "" {
+		trendArgs = append(trendArgs, currency)
+	}
+	trendRows, err := q.Query(ctx, trendQuery, trendArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (billing cycle trend)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer trendRows.Close()
+	// Folded by label because one cycle can carry more than one currency row; an
+	// account's cycle labels are unique, so the key identifies the cycle.
+	trend := map[string]*models.BillingCycleTrendItem{}
+	trendOrder := []string{}
 	for trendRows.Next() {
 		var item models.BillingCycleTrendItem
-		if err := trendRows.Scan(&item.Label, &item.StartDate, &item.EndDate, &item.Income, &item.Expense); err != nil {
+		var code string
+		var income, expense money.Amount
+		if err := trendRows.Scan(&item.Label, &item.StartDate, &item.EndDate, &code, &income, &expense); err != nil {
 			slog.Error("GetDashboardSummary scan (billing cycle trend)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.BillingCycleTrend = append(summary.BillingCycleTrend, item)
+		entry, ok := trend[item.Label]
+		if !ok {
+			entry = &models.BillingCycleTrendItem{
+				Label: item.Label, StartDate: item.StartDate, EndDate: item.EndDate,
+				Income: models.NewCurrencyAmounts(), Expense: models.NewCurrencyAmounts(),
+			}
+			trend[item.Label] = entry
+			trendOrder = append(trendOrder, item.Label)
+		}
+		entry.Income.Add(code, income)
+		entry.Expense.Add(code, expense)
 	}
-
-	// Category breakdowns over the cycle window.
-	catFilter := ""
-	catArgs := []any{userID}
-	paramIdx := 2
-	addCond := func(col, op string, val any) {
-		catFilter += fmt.Sprintf(" AND t.%s %s $%d", col, op, paramIdx)
-		catArgs = append(catArgs, val)
-		paramIdx++
+	if err := trendRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (billing cycle trend rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
-	addCond("date", ">=", windowStart)
-	addCond("date", "<=", windowEnd)
-	addCond("account_id", "=", accountID)
+	for _, label := range trendOrder {
+		summary.BillingCycleTrend = append(summary.BillingCycleTrend, *trend[label])
+	}
 
 	// Category breakdowns over the cycle window; same name/id tiebreak as the
-	// unbounded summary so the top 15 are stable.
-	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
+	// unbounded summary so the top 15 are stable. The window is one account, so
+	// there is a single currency and the per-currency ROW_NUMBER the unbounded
+	// query needs would be a no-op partition here - a plain LIMIT 15 says the
+	// same thing. accounts is inner-joined for the same reason as there: a
+	// transaction with no account row is not this account's money.
+	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1` + catFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon
+				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
@@ -436,21 +743,47 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 	defer catRows.Close()
+	totals := map[string]*models.CategorySpend{}
+	order := []string{}
 	for catRows.Next() {
-		var cs models.CategorySpend
-		if err := catRows.Scan(&cs.CategoryID, &cs.CategoryName, &cs.CategoryColor, &cs.CategoryIcon, &cs.Total, &cs.Count); err != nil {
+		var (
+			id, name, color, icon, code string
+			total                       money.Amount
+			count                       int
+		)
+		if err := catRows.Scan(&id, &name, &color, &icon, &code, &total, &count); err != nil {
 			slog.Error("GetDashboardSummary scan (by category)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.ByCategory = append(summary.ByCategory, cs)
+		entry, ok := totals[id]
+		if !ok {
+			entry = &models.CategorySpend{
+				CategoryID: id, CategoryName: name, CategoryColor: color,
+				CategoryIcon: icon, Total: models.NewCurrencyAmounts(),
+			}
+			totals[id] = entry
+			order = append(order, id)
+		}
+		entry.Total.Add(code, total)
+		entry.Count += count
+	}
+	if err := catRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (by category rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, id := range order {
+		summary.ByCategory = append(summary.ByCategory, *totals[id])
 	}
 
-	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
+	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
-				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1` + catFilter + `
+				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
+				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon
+				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
@@ -461,14 +794,38 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 		return
 	}
 	defer incomeCatRows.Close()
+	incomeTotals := map[string]*models.CategorySpend{}
+	incomeOrder := []string{}
 	for incomeCatRows.Next() {
-		var cs models.CategorySpend
-		if err := incomeCatRows.Scan(&cs.CategoryID, &cs.CategoryName, &cs.CategoryColor, &cs.CategoryIcon, &cs.Total, &cs.Count); err != nil {
+		var (
+			id, name, color, icon, code string
+			total                       money.Amount
+			count                       int
+		)
+		if err := incomeCatRows.Scan(&id, &name, &color, &icon, &code, &total, &count); err != nil {
 			slog.Error("GetDashboardSummary scan (income by category)", slog.String("error", err.Error()))
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		summary.IncomeByCategory = append(summary.IncomeByCategory, cs)
+		entry, ok := incomeTotals[id]
+		if !ok {
+			entry = &models.CategorySpend{
+				CategoryID: id, CategoryName: name, CategoryColor: color,
+				CategoryIcon: icon, Total: models.NewCurrencyAmounts(),
+			}
+			incomeTotals[id] = entry
+			incomeOrder = append(incomeOrder, id)
+		}
+		entry.Total.Add(code, total)
+		entry.Count += count
+	}
+	if err := incomeCatRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (income by category rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, id := range incomeOrder {
+		summary.IncomeByCategory = append(summary.IncomeByCategory, *incomeTotals[id])
 	}
 
 	// Recent transactions across the displayed cycle window (so the list is
@@ -483,11 +840,10 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 					JOIN accounts a ON t.account_id = a.id
 					LEFT JOIN categories c ON t.category_id = c.id
 					LEFT JOIN payees p ON t.payee_id = p.id
-					WHERE t.user_id = $1 AND t.account_id = $2
-					  AND t.date >= $3 AND t.date <= $4
+					WHERE t.user_id = $1` + catFilter + `
 					ORDER BY ` + txnOrderByDate(false) + `
 					LIMIT 10`
-	recentRows, err := q.Query(ctx, recentQuery, userID, accountID, windowStart, windowEnd)
+	recentRows, err := q.Query(ctx, recentQuery, catArgs...)
 	if err != nil {
 		slog.Error("GetDashboardSummary (recent transactions)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
@@ -504,6 +860,11 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context) {
 			return
 		}
 		summary.RecentTransactions = append(summary.RecentTransactions, t)
+	}
+	if err := recentRows.Err(); err != nil {
+		slog.Error("GetDashboardSummary (recent transactions rows)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {

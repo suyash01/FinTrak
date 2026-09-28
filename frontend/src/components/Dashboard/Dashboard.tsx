@@ -19,7 +19,23 @@ import { formatCurrency, formatDate } from "../../utils/formatters";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import { useOffline } from "../../context/OfflineContext";
+import {
+  formatAxis,
+  formatOne,
+  formatScoped,
+  signClass,
+  signOf,
+  useCurrencyScope,
+  type ScopedAmount,
+} from "@/lib/currency";
+import {
+  foldRecurringMonthly,
+  recurringNetClass,
+  recurringTotalText,
+} from "@/lib/recurringTotals";
+import type { CurrencyAmounts } from "@/types";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
+import MultiCurrencyNotice from "@/components/MultiCurrencyNotice/MultiCurrencyNotice";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -61,6 +77,28 @@ const ALL_ACCOUNTS = "all";
 
 const recentColumnHelper = createColumnHelper<Transaction>();
 
+/**
+ * projectScoped copies a chart row with the selected currency's figure written
+ * over each named amount field. Recharts reads plain numbers, not maps, so a
+ * series has to be projected before it is drawn; the trend bar chart and the
+ * category pie both go through this one function so the two cannot drift onto
+ * different keys.
+ */
+function projectScoped<
+  K extends PropertyKey,
+  T extends Record<K, CurrencyAmounts>,
+>(
+  row: T,
+  fields: readonly K[],
+  scoped: ScopedAmount,
+): Omit<T, K> & Record<K, number> {
+  const out = { ...row } as Record<string, unknown>;
+  for (const field of fields) {
+    out[field as string] = scoped(row[field]);
+  }
+  return out as Omit<T, K> & Record<K, number>;
+}
+
 export default function Dashboard() {
   const { accounts } = useDomainData();
   const [data, setData] = useState<DashboardSummary | null>(null);
@@ -93,6 +131,11 @@ export default function Dashboard() {
   // syncedAt changes when the offline outbox writes something, which is what
   // makes the summary reload entries recorded while it showed saved data.
   const { syncedAt } = useOffline();
+  // The whole report is shown in one currency; the response carries every
+  // currency in the window, so this never refetches.
+  const { code, codes, setCode, scoped, others } = useCurrencyScope(
+    data?.currencyScope,
+  );
 
   const selectedAccount = accounts.find((a) => a.id === accountId);
   const isBillingCycleMode = groupBy === "billing_cycle";
@@ -333,11 +376,13 @@ export default function Dashboard() {
 
   if (!data) return null;
 
-  const netSavings = data.totalIncome - data.totalExpense;
   const trendData: Array<MonthlyData | BillingCycleTrendItem> =
     isBillingCycleMode
       ? data.billingCycleTrend ?? []
       : data.monthlyTrend ?? [];
+  const trendSeries = trendData.map((point) =>
+    projectScoped(point, ["income", "expense"], scoped),
+  );
   const trendXKey = isBillingCycleMode ? "label" : "month";
   const hasTrend = trendData.length > 0;
 
@@ -362,6 +407,23 @@ export default function Dashboard() {
             triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
             extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
           />
+          {codes.length > 0 && (
+            <Select value={code} onValueChange={setCode}>
+              <SelectTrigger
+                aria-label="Currency"
+                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-32`}
+              >
+                <SelectValue placeholder="Currency" />
+              </SelectTrigger>
+              <SelectContent>
+                {codes.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           {isBillingCycleMode ? (
             <Select value={cycles} onValueChange={setCycles}>
               <SelectTrigger
@@ -454,6 +516,7 @@ export default function Dashboard() {
           </p>
         )}
         {/* Stats */}
+        <MultiCurrencyNotice accounts={others} selected={code} />
         <div
           className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 ${compactLayout ? "gap-3 mb-4" : "gap-5 mb-6"}`}
         >
@@ -469,7 +532,7 @@ export default function Dashboard() {
                 Total Income
               </div>
               <div className="text-2xl font-bold text-chart-3">
-                {formatCurrency(data.totalIncome)}
+                {formatScoped(data.totalIncome, code)}
               </div>
             </CardContent>
           </Card>
@@ -482,7 +545,7 @@ export default function Dashboard() {
                 Total Expenses
               </div>
               <div className="text-2xl font-bold text-destructive">
-                {formatCurrency(data.totalExpense)}
+                {formatScoped(data.totalExpense, code)}
               </div>
             </CardContent>
           </Card>
@@ -494,10 +557,14 @@ export default function Dashboard() {
               <div className="text-xs text-muted-foreground mb-1">
                 Net Savings
               </div>
+              {/* The server's net, read through the sign table rather than
+                  `>= 0`: a currency the window never held has no sign to
+                  report, and colouring it a surplus is the claim this shape
+                  exists to refuse. */}
               <div
-                className={`text-2xl font-bold ${netSavings >= 0 ? "text-chart-3" : "text-destructive"}`}
+                className={`text-2xl font-bold ${signClass[signOf(data.totalNet, code)]}`}
               >
-                {formatCurrency(netSavings)}
+                {formatScoped(data.totalNet, code)}
               </div>
             </CardContent>
           </Card>
@@ -539,7 +606,7 @@ export default function Dashboard() {
             <CardContent className="flex-1 min-h-70">
               {hasTrend ? (
                 <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={trendData} barGap={4}>
+                  <BarChart data={trendSeries} barGap={4}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                     <XAxis
                       dataKey={trendXKey}
@@ -549,7 +616,7 @@ export default function Dashboard() {
                     <YAxis
                       stroke="var(--muted-foreground)"
                       fontSize={12}
-                      tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}k`}
+                      tickFormatter={(v) => formatAxis(Number(v), code)}
                     />
                     <Tooltip
                       contentStyle={{
@@ -558,7 +625,7 @@ export default function Dashboard() {
                         borderRadius: "8px",
                         color: "var(--foreground)",
                       }}
-                      formatter={(v) => formatCurrency(Number(v))}
+                      formatter={(v) => formatOne(Number(v), code)}
                     />
                     <Bar
                       dataKey="income"
@@ -588,11 +655,15 @@ export default function Dashboard() {
             title="Spending by Category"
             categories={data.byCategory}
             emptyMessage="No categorized expenses yet"
+            code={code}
+            scoped={scoped}
           />
           <CategoryPieSection
             title="Income by Category"
             categories={data.incomeByCategory}
             emptyMessage="No categorized income yet"
+            code={code}
+            scoped={scoped}
           />
         </div>
 
@@ -636,6 +707,7 @@ function RecurringSection({
   accountId: string;
 }) {
   const { compactLayout } = useSettings();
+  const { accounts } = useDomainData();
 
   // Respect the dashboard's account filter so the card stays consistent with
   // the rest of the page.
@@ -645,12 +717,10 @@ function RecurringSection({
   if (relevant.length === 0) return null;
 
   const active = relevant.filter((s) => s.active);
-  const monthlyExpense = active
-    .filter((s) => s.type === "debit")
-    .reduce((sum, s) => sum + s.monthlyAmount, 0);
-  const monthlyIncome = active
-    .filter((s) => s.type === "credit")
-    .reduce((sum, s) => sum + s.monthlyAmount, 0);
+  // Folded per currency, like the figures above them: a forecast that spans a
+  // rupee account and a dollar one has no monthly total, and the net is a
+  // difference inside one currency rather than a subtraction of two sums.
+  const totals = foldRecurringMonthly(active, accounts);
   const upcoming = active
     .filter((s) => s.nextDueDate)
     .sort((a, b) =>
@@ -681,7 +751,7 @@ function RecurringSection({
               Monthly recurring expenses
             </div>
             <div className="text-xl font-bold text-destructive">
-              {formatCurrency(monthlyExpense)}
+              {recurringTotalText(totals.expense, totals.unplaced)}
             </div>
           </div>
           <div>
@@ -689,24 +759,24 @@ function RecurringSection({
               Monthly recurring income
             </div>
             <div className="text-xl font-bold text-chart-3">
-              {formatCurrency(monthlyIncome)}
+              {recurringTotalText(totals.income, totals.unplaced)}
             </div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground mb-1">
               Net per month
             </div>
-            <div
-              className={`text-xl font-bold ${
-                monthlyIncome - monthlyExpense >= 0
-                  ? "text-chart-3"
-                  : "text-destructive"
-              }`}
-            >
-              {formatCurrency(monthlyIncome - monthlyExpense)}
+            <div className={`text-xl font-bold ${recurringNetClass(totals.net)}`}>
+              {recurringTotalText(totals.net, totals.unplaced)}
             </div>
           </div>
         </div>
+        {totals.unplaced.length > 0 && (
+          <p className="mb-3 text-[13px] text-muted-foreground">
+            Not counted: {totals.unplaced.join(", ")} — the account this series
+            bills against has no readable currency.
+          </p>
+        )}
         {upcoming.length > 0 && (
           <div className="space-y-1.5">
             {upcoming.map((s) => (
@@ -757,12 +827,21 @@ function CategoryPieSection({
   title,
   categories,
   emptyMessage,
+  code,
+  scoped,
 }: {
   title: string;
   categories: CategorySpend[];
   emptyMessage: string;
+  code: string;
+  scoped: ScopedAmount;
 }) {
   const { compactLayout } = useSettings();
+  // The same projection the trend chart uses, so the pie cannot end up reading a
+  // different currency's slice than the bar beside it.
+  const series = (categories ?? []).map((cat) =>
+    projectScoped(cat, ["total"], scoped),
+  );
   return (
     <Card
       size={compactLayout ? "sm" : "default"}
@@ -780,7 +859,7 @@ function CategoryPieSection({
               <ResponsiveContainer width="100%" height={280}>
                 <PieChart>
                   <Pie
-                    data={categories}
+                    data={series}
                     dataKey="total"
                     nameKey="categoryName"
                     cx="50%"
@@ -804,7 +883,7 @@ function CategoryPieSection({
                       borderRadius: "8px",
                       color: "var(--foreground)",
                     }}
-                    formatter={(v) => formatCurrency(Number(v))}
+                    formatter={(v) => formatOne(Number(v), code)}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -821,7 +900,7 @@ function CategoryPieSection({
                   />
                   <span className="flex-1 truncate">{cat.categoryName}</span>
                   <span className="font-medium text-foreground">
-                    {formatCurrency(cat.total)}
+                    {formatScoped(cat.total, code)}
                   </span>
                 </div>
               ))}

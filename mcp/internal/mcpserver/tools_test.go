@@ -49,16 +49,16 @@ var sampleArgs = map[string]map[string]any{
 	"list_links":                  {"type": "transfer"},
 	"get_transfer_suggestions":    {"limit": 5},
 	"get_cashback_suggestions":    {},
-	"get_link_cycles":             {"accountId": testAccountID},
+	"get_link_cycles":             {"accountId": testAccountID, "currency": "INR"},
 	"list_recurring":              {},
 	"forecast_recurring":          {"id": testSeriesID, "count": 3},
 	"get_recurring_suggestions":   {"id": testSeriesID},
 	"list_recurring_transactions": {"id": testSeriesID},
 	"list_recurring_terms":        {"id": testSeriesID},
-	"get_dashboard_summary":       {"accountId": testAccountID, "groupBy": "billing_cycle", "cycles": 3},
-	"get_money_flow":              {"limit": 5},
-	"get_money_flow_timeline":     {},
-	"get_cash_flow_calendar":      {"dateFrom": "2026-01-01", "dateTo": "2026-01-31"},
+	"get_dashboard_summary":       {"accountId": testAccountID, "groupBy": "billing_cycle", "cycles": 3, "currency": "INR"},
+	"get_money_flow":              {"limit": 5, "currency": "INR"},
+	"get_money_flow_timeline":     {"currency": "INR"},
+	"get_cash_flow_calendar":      {"dateFrom": "2026-01-01", "dateTo": "2026-01-31", "currency": "INR"},
 	"list_paperless_documents":    {"search": "receipt", "pageSize": 5},
 }
 
@@ -89,16 +89,16 @@ var expectedQuery = map[string]url.Values{
 	"list_links":                  {"type": {"transfer"}},
 	"get_transfer_suggestions":    {"limit": {"5"}},
 	"get_cashback_suggestions":    {},
-	"get_link_cycles":             {"accountId": {testAccountID}},
+	"get_link_cycles":             {"accountId": {testAccountID}, "currency": {"INR"}},
 	"list_recurring":              {},
 	"forecast_recurring":          {"count": {"3"}},
 	"get_recurring_suggestions":   {},
 	"list_recurring_transactions": {},
 	"list_recurring_terms":        {},
-	"get_dashboard_summary":       {"accountId": {testAccountID}, "groupBy": {"billing_cycle"}, "cycles": {"3"}},
-	"get_money_flow":              {"limit": {"5"}},
-	"get_money_flow_timeline":     {},
-	"get_cash_flow_calendar":      {"dateFrom": {"2026-01-01"}, "dateTo": {"2026-01-31"}},
+	"get_dashboard_summary":       {"accountId": {testAccountID}, "groupBy": {"billing_cycle"}, "cycles": {"3"}, "currency": {"INR"}},
+	"get_money_flow":              {"limit": {"5"}, "currency": {"INR"}},
+	"get_money_flow_timeline":     {"currency": {"INR"}},
+	"get_cash_flow_calendar":      {"dateFrom": {"2026-01-01"}, "dateTo": {"2026-01-31"}, "currency": {"INR"}},
 	"list_paperless_documents":    {"pageSize": {"5"}, "search": {"receipt"}},
 }
 
@@ -502,6 +502,274 @@ func TestUnpagedToolsCapTheirResponse(t *testing.T) {
 				t.Errorf("%s reported truncated=%v, want %v", tc.tool, page.Truncated, tc.truncated)
 			}
 		})
+	}
+}
+
+// TestReportingToolsStateThePerCurrencyRule keeps the one promise this package
+// makes in prose checkable. The reporting tools' amounts are keyed by currency
+// because the API will not add across them, and nothing in the Go types or the
+// wire can make a model honour that: a description saying "the total" is
+// actionable and wrong, and a model reads the description, not the type. So
+// each of them must carry the rule, in the text the client serves, and the
+// server instructions must state it too — a tool description is read on its own,
+// and the instructions are not guaranteed to be in context for every client.
+//
+// The expectations below are the rule's WORDS, not the constants that hold them,
+// on purpose. Asserting strings.Contains(description, perCurrencyAmounts) checks
+// that a concatenation happened: reword the constant back to promising a total
+// and that check still passes, five times over, on the exact tools this rule
+// exists for. So each fragment is written out here, and a reworded constant that
+// re-promises a total, or drops the instruction not to sum, fails here.
+func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
+	reporting := []string{
+		"get_dashboard_summary",
+		"get_money_flow",
+		"get_money_flow_timeline",
+		"get_cash_flow_calendar",
+		"get_link_cycles",
+	}
+	// The shape rule, in the fragments a model needs: what an amount is, what a
+	// key count decides, that no total exists, and the two things never to do.
+	rule := []string{
+		"keyed by currency code",
+		"no total is returned",
+		"Never sum the keys",
+		"never pick one silently",
+		"currencyScope",
+	}
+	// The third state the key count has. A currency with no money in the window
+	// contributes nothing — Add skips a zero — so a scope can hold no keys at
+	// all, and a model told "one key" or "several keys" has no rule for that and
+	// reads the absence as a failed or truncated call. It is not an error and not
+	// absent data: it is a scope in which that currency has no money, so the
+	// reading is zero. Kept out of `rule` so it is its own requirement on all
+	// five tools, the way emptyWhenNoMoney is, rather than one of the fragments a
+	// reworded constant can shed silently.
+	emptyIsZero := "an amount with no keys"
+	// The narrowing half, and the tools it is true of. Only get_dashboard_summary
+	// and get_money_flow_timeline select the accounts holding the code outright;
+	// get_money_flow's link stages and get_cash_flow_calendar's overlays are
+	// narrowed differently, so the plain claim is not what their descriptions
+	// say. `narrowing` is also the list get_link_cycles must not contain.
+	narrowing := []string{"selects the accounts holding that currency code"}
+	accountNarrowed := []string{"get_dashboard_summary", "get_money_flow_timeline"}
+	// A narrowed window holds one currency, not necessarily one key. Add skips a
+	// zero contribution, so a window holding no money in the requested currency
+	// answers with an empty object, and a model told the amounts come back
+	// "under a single key" looks for the key, finds none, and calls it a failure
+	// rather than an empty window. So the qualification is its own requirement,
+	// not part of `narrowing`: it is a statement about an empty result, and
+	// get_link_cycles is not barred from making it.
+	emptyWhenNoMoney := "or under none at all"
+	// The two qualified forms, held to the same words-not-constants rule: each
+	// must carry its exception, and neither may carry the unqualified claim.
+	qualified := map[string]string{
+		"get_money_flow":         "they keep only the links whose own amount is denominated in that currency",
+		"get_cash_flow_calendar": "keyed by that account's own currency, which this argument does not narrow",
+	}
+
+	stub := newStubAPI(t)
+	session := connect(t, stub.client(t))
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	served := make(map[string]string, len(listed.Tools))
+	schemas := make(map[string]string, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		served[tool.Name] = tool.Description
+		if tool.InputSchema != nil {
+			raw, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatalf("marshalling the %s input schema: %v", tool.Name, err)
+			}
+			schemas[tool.Name] = string(raw)
+		}
+	}
+
+	for _, name := range reporting {
+		for _, want := range rule {
+			if !strings.Contains(served[name], want) {
+				t.Errorf("%s does not tell the model %q", name, want)
+			}
+		}
+		if !strings.Contains(served[name], emptyIsZero) {
+			t.Errorf("%s does not say that %q is a zero rather than a failed call", name, emptyIsZero)
+		}
+	}
+	// The instructions carry the rule in their own words rather than quoting a
+	// constant, and are the only place a client hears it without having chosen a
+	// tool, so the same fragments are asked of them.
+	for _, want := range []string{"keyed by currency code", "no total", `"currency" argument`} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("the server instructions do not say %q", want)
+		}
+	}
+	// The instructions must not enumerate the five reporting tools, and the test
+	// for that is scoped to the paragraph that carries the money rule rather than
+	// to the whole constant. That scoping is not a convenience: the read-only
+	// qualification at the top of the instructions names four of the five for an
+	// unrelated reason — they are the ones that materialize billing-cycle rows on
+	// read — and that list is correct, so a whole-constant check could only fail
+	// by deleting true information. What must not come back is the aggregate
+	// tools named as the aggregate ones, which is what the design gave up in
+	// order to keep one copy of the rule per place a model reads it: the shape
+	// rule is perCurrencyAmounts, appended to each of the five descriptions, and
+	// re-listing them here would put the same rule in a sixth place with nothing
+	// to check it against. Both halves are pinned — the sentence that hands the
+	// question to the tool, and the absence of the names it hands it to.
+	moneyParagraph := ""
+	for _, para := range strings.Split(instructions, "\n\n") {
+		if strings.Contains(para, "Money is decimal major units") {
+			moneyParagraph = para
+		}
+	}
+	if moneyParagraph == "" {
+		t.Fatal("the server instructions have no paragraph opening on the money rule, so the two checks below would pass vacuously")
+	}
+	if want := "is in that tool's own description"; !strings.Contains(moneyParagraph, want) {
+		t.Errorf("the instructions do not hand the aggregate-tool question to each tool's description: no %q in the money paragraph", want)
+	}
+	for _, name := range reporting {
+		if strings.Contains(moneyParagraph, name) {
+			t.Errorf("the instructions' money paragraph names %s; the aggregate tools are enumerated in their own descriptions, not here", name)
+		}
+	}
+	// The instructions must not point at a total the API refuses to produce: a
+	// model that reads "no total" and is then told where to ask for one is sent
+	// to a tool that will hand it back the two keys it was just told not to add.
+	for _, banned := range []string{"when a total is what the user wants"} {
+		if strings.Contains(instructions, banned) {
+			t.Errorf("the server instructions still promise a total: %q", banned)
+		}
+	}
+	for _, name := range accountNarrowed {
+		for _, want := range narrowing {
+			if !strings.Contains(served[name], want) {
+				t.Errorf("%s does not say %q about its currency argument", name, want)
+			}
+		}
+		if !strings.Contains(served[name], emptyWhenNoMoney) {
+			t.Errorf("%s promises the amounts come back under a key, but a window holding no money in that currency answers with none", name)
+		}
+	}
+	for name, want := range qualified {
+		if !strings.Contains(served[name], want) {
+			t.Errorf("%s does not qualify its currency argument: %q", name, want)
+		}
+		if strings.Contains(served[name], "so every amount then comes back with a single key") {
+			t.Errorf("%s claims the currency argument narrows every amount, which is wrong for it", name)
+		}
+	}
+	// The withholding and its replacement are pinned together, because either
+	// half alone leaves get_link_cycles the one tool whose currency argument
+	// nothing explains: the account-narrowing reading must be absent (it is the
+	// wrong one for this endpoint), and the amount-narrowing reading must be
+	// present in both places a model reads it — the description, and the
+	// argument's own schema text.
+	for _, banned := range narrowing {
+		if strings.Contains(served["get_link_cycles"], banned) {
+			t.Errorf("get_link_cycles offers the account-narrowing reading %q, which is the wrong one for it", banned)
+		}
+	}
+	for _, want := range []string{"whose own amount is denominated in that code", "not the flows touching an account that holds it"} {
+		if !strings.Contains(served["get_link_cycles"], want) {
+			t.Errorf("get_link_cycles does not say %q about its currency argument", want)
+		}
+	}
+	if want := "this filters the AMOUNT, not the accounts"; !strings.Contains(schemas["get_link_cycles"], want) {
+		t.Errorf("get_link_cycles' currency argument schema does not say %q", want)
+	}
+	// The dashboard tools' currency argument narrows the amounts, not the whole
+	// response: totalAccounts is a plain COUNT(*) over the user's accounts, so a
+	// model told otherwise would report a narrowed figure beside an unnarrowed
+	// one.
+	if !strings.Contains(schemas["get_dashboard_summary"], "totalAccounts still counts every account") {
+		t.Errorf("get_dashboard_summary's currency argument does not say that totalAccounts is not narrowed")
+	}
+	// get_money_flow's two link stages narrow on the currency of the link's own
+	// value rather than on the endpoint accounts, so the account-narrowing
+	// reading is the wrong one for part of that tool and has to be qualified
+	// where the model reads it.
+	if !strings.Contains(schemas["get_money_flow"], "they keep only the links whose own amount is denominated in that currency") {
+		t.Errorf("get_money_flow's currency argument does not say that its link stages narrow on the link amount, not the accounts")
+	}
+	// get_cash_flow_calendar's overlays belong to the one account and are keyed by
+	// that account's currency, which the filter does not narrow, so a currency the
+	// response was filtered to exclude can still be the one an overlay is reported
+	// in. A model reading "narrow the AMOUNTS" alone would read that figure as
+	// being in the requested currency.
+	if !strings.Contains(schemas["get_cash_flow_calendar"], "the billing-cycle and summary-row overlays are NOT narrowed by it") {
+		t.Errorf("get_cash_flow_calendar's currency argument does not say that its overlays are not narrowed")
+	}
+}
+
+// TestMoneyFlowStatesItsOwnNetAndTheCycleBreak keeps get_money_flow's two
+// additions checkable, because they are the two claims a model acts on and
+// neither is inferable from the payload.
+//
+// totalNet is the same new field on the same new type as get_dashboard_summary's,
+// which that tool's description already forbids deriving; a tool that returns
+// the field without saying so leaves the model free to subtract two maps, which
+// is the arithmetic the type exists to refuse. suppressedCycles is sharper,
+// because nothing in the wire tells a model the field is there: the cycles it
+// lists are precisely the flows the graph did not draw, so a description that
+// only says "already cycle-free" and "a per-link-type rollup that is not drawn"
+// reads as "nothing was withheld" and never reaches for it. The TUI tells its
+// user the same graph nets pairs in pairs or drops them; a model reading only
+// this description currently has strictly less information than the terminal
+// user.
+//
+// The expectations are the WORDS again, for the reason the rule above gives: a
+// reworded sentence that goes back to promising a total, or to implying the
+// field is empty when nothing went missing, passes a constant-identity check
+// five times over. So the fragments are written out, including the two the
+// constraint depends on — that the field is non-empty for any netted reciprocal
+// pair, and that the per-currency discarded amounts are where a missing currency
+// is read rather than the field's emptiness.
+func TestMoneyFlowStatesItsOwnNetAndTheCycleBreak(t *testing.T) {
+	stub := newStubAPI(t)
+	session := connect(t, stub.client(t))
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var desc string
+	for _, tool := range listed.Tools {
+		if tool.Name == "get_money_flow" {
+			desc = tool.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("get_money_flow is not served")
+	}
+
+	for _, want := range []string{
+		// The server's own difference, and the instruction not to derive it.
+		"totalNet is the server's own per-currency difference",
+		"do not derive it by subtracting totalExpense from totalIncome",
+		// What the field is, named, with the two things that cost the graph.
+		"suppressedCycles",
+		"reciprocal pair netted into a single edge",
+		"back edge that closed a longer loop",
+		"per-currency amount the break removed",
+		// The constraint: emptiness is not the test, the discarded amounts are.
+		"non-empty whenever anything was netted",
+		"read the discarded amounts per currency",
+		"never test suppressedCycles for emptiness",
+		// And it is already counted, so nothing is added to it.
+		"already counts those same links",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("get_money_flow does not tell the model %q", want)
+		}
+	}
+
+	// The claim must not be the opposite one: a field that is empty only when a
+	// currency went missing would be exactly the sentence that sends a model
+	// looking for an emptiness test this branch forbids.
+	if strings.Contains(desc, "empty when no currency") {
+		t.Error("get_money_flow claims suppressedCycles is empty when no currency went missing, which is false")
 	}
 }
 

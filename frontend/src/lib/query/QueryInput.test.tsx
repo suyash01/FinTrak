@@ -222,6 +222,9 @@ describe("QueryInput grammar sheet", () => {
     expect(
       screen.getByText("a decimal in major units, e.g. 50 or 50.75; supports > >= < <= = !="),
     ).toBeTruthy();
+    // ccy is the field whose description must NOT fall through to the text
+    // default: it takes no free text, and `~` on it is rejected.
+    expect(screen.getByText("a three-letter currency code, e.g. USD; any case")).toBeTruthy();
   });
 
   // The sheet used to promise "an id, or none / uncategorized" for all four uuid

@@ -85,6 +85,38 @@ func (srv *Server) GetBillingCycles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": cycles})
 }
 
+// cycleClock is the clock ensureBillingCycles reads "today" from, and it is a
+// variable rather than a direct time.Now() for a reason that is easy to miss and
+// expensive to get wrong.
+//
+// Which months get cycles — and therefore where the dashboard's window starts
+// and ends, and whether a transaction on a given day falls inside it at all —
+// depends on where today falls relative to the account's billing day. On the
+// 1st to the billing day the newest cycle ends on *this* month's billing date;
+// from the day after, it ends on next month's. So the same account and the same
+// two transactions describe different windows on the 15th and the 16th. A test
+// that could only observe one of those states would be a test that passes part
+// of every month and is silently wrong for the rest, which is worse than a
+// failure because nothing goes red to point at it.
+var cycleClock = time.Now
+
+// SetCycleClockForTest overrides the clock ensureBillingCycles reads and returns
+// a function that restores the previous one. Passing nil restores the real
+// clock.
+//
+// It is exported only so the opt-in integration suite can drive the generator
+// from a chosen date: that suite lives in package main and cannot reach an
+// unexported package variable, and a build-tagged alternative would leave it
+// unable to run the scenario at all. No product path calls it.
+func SetCycleClockForTest(fn func() time.Time) (restore func()) {
+	prev := cycleClock
+	if fn == nil {
+		fn = time.Now
+	}
+	cycleClock = fn
+	return func() { cycleClock = prev }
+}
+
 // ensureBillingCycles creates any missing billing cycles for an account that
 // has a billing day set (one per month, ending on the account's billing day)
 // and then back-fills the suggested default: every unassigned transaction is
@@ -148,7 +180,7 @@ func ensureBillingCycles(ctx context.Context, tx pgx.Tx, userID, accountID uuid.
 		return err
 	}
 
-	today := dateOnly(time.Now())
+	today := dateOnly(cycleClock())
 	months := billingCycleMonths(firstDate, today, billingDay)
 
 	// If every desired month already has a cycle we can skip the per-month

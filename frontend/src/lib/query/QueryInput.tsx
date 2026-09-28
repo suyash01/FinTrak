@@ -295,6 +295,8 @@ function describeField(def: FieldDef): string {
       return `YYYY-MM-DD or ${DATE_PERIODS.join(" / ")}; supports > >= < <= = !=`;
     case "tags":
       return "a tag name, comma-separated for any of";
+    case "currency":
+      return "a three-letter currency code, e.g. USD; any case";
     default:
       return "text; ~ is contains";
   }

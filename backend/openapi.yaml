@@ -1075,7 +1075,7 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring), optionally prefixed with `not`, or
+            linked, recurring, ccy), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
@@ -1083,8 +1083,11 @@ paths:
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
             `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
-            most 32 terms and 2000 characters.
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
+            `ccy` is a three-letter currency code, matched against the
+            transaction's *account's* currency and folded to upper case, with an
+            unset or empty account currency read as INR — the same reading every
+            reporting endpoint gives it. At most 32 terms and 2000 characters.
 
 
             An unusable term is never an error: it is dropped and reported in
@@ -1645,7 +1648,7 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring), optionally prefixed with `not`, or
+            linked, recurring, ccy), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
@@ -1653,8 +1656,11 @@ paths:
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
             `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period. At
-            most 32 terms and 2000 characters.
+            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
+            `ccy` is a three-letter currency code, matched against the
+            transaction's *account's* currency and folded to upper case, with an
+            unset or empty account currency read as INR — the same reading every
+            reporting endpoint gives it. At most 32 terms and 2000 characters.
 
 
             An unusable term is never an error: it is dropped, and this endpoint
@@ -2855,13 +2861,24 @@ paths:
         draw. The graph has to stay acyclic, so reciprocal pairs are netted and
         the DFS back edges that close a longer loop are dropped; this endpoint
         returns exactly those discarded cycles (kind `reciprocal` for a
-        two-account loop, `cycle` for a longer one) with their participants, the
-        gross flow of each leg, and the amount that actually circulates the
-        whole loop. It also lists the directed account flows with no flow in the
-        opposite direction — a legitimately one-way bill payment or refund looks
-        the same as a half-entered transfer, which is why they are surfaced for
-        review rather than corrected. Leg amounts are gross flows within the
-        window (before netting).
+        two-account loop, `cycle` for a longer one) with their participants and
+        the gross flow of each leg. It also lists the directed account flows
+        with no flow in the opposite direction — a legitimately one-way bill
+        payment or refund looks the same as a half-entered transfer, which is
+        why they are surfaced for review rather than corrected. Leg amounts are
+        gross flows within the window (before netting).
+
+        Every amount is per-currency, and this endpoint has the least room to be
+        otherwise: a link has a from-account and a to-account, so it sums two
+        accounts' transactions by construction, and no account filter avoids the
+        question. Read `LinkCycle.net`'s description before rendering it: with one
+        key it is the amount that circulates the whole loop, and with several it
+        is a per-currency local figure and the loop circulates nothing.
+        `currencyScope` names the accounts behind every currency in the response —
+        the accounts holding that currency, so under `?currency=USD` it lists the
+        USD ones, and a reported leg's other endpoint may be an account it does not
+        list, because the filter narrows on the currency of the *amount*, which is
+        not necessarily either endpoint's account currency.
       operationId: getLinkCycles
       security:
         - AccessCookie: []
@@ -2885,6 +2902,23 @@ paths:
             type: string
             format: uuid
           description: Only links with either endpoint on this account
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the whole response to links whose amount is denominated in
+            one currency code (upper-case three-letter, case-insensitive), and
+            the accounts behind them. A link's amount is taken from one of its
+            two transactions, so this is the currency of the account that amount
+            came from — not necessarily the currency of the account the money
+            flows out of, and not a filter that picks links because one
+            *endpoint* holds the currency while reporting the amount in the
+            other's. Amounts are always reported per currency regardless; this
+            chooses which links and which accounts are in scope. A code that is
+            not three letters is a 400.
       responses:
         "200":
           description: Circular-money report
@@ -2893,7 +2927,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LinkCycleReport"
         "400":
-          description: Invalid accountId
+          description: Invalid accountId, a dateFrom/dateTo that is not YYYY-MM-DD, or a currency that is not three letters
           content:
             application/json:
               schema:
@@ -4003,6 +4037,30 @@ paths:
             format: uuid
           description: Filter by account ID
         - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the whole response to accounts holding one currency code
+            (upper-case three-letter, case-insensitive). Amounts are always
+            reported per currency regardless; this chooses which accounts are in
+            scope, and every section that describes transactions - totals,
+            category breakdowns, monthly trend and the transaction list - is
+            narrowed with it, so no two of those describe different sets of
+            transactions. A code that is not three letters is a 400.
+
+            Three things are not narrowed, each for a stated reason, so that
+            reading "the whole response" as absolute would be a misreading rather
+            than a discovery. `totalAccounts` is a plain `COUNT(*)` over the
+            user's accounts and keeps counting all of them; `currencyScope` is
+            what lists the accounts actually in scope, and it is narrowed. In
+            `groupBy=billing_cycle` the per-cycle trend bars are narrowed too.
+            An account whose `currency` is unset or empty is treated as INR here,
+            exactly as every other currency read in the product treats it, so
+            `currency=INR` includes it rather than silently excluding it.
+        - in: query
           name: groupBy
           schema:
             type: string
@@ -4060,6 +4118,17 @@ paths:
         The income, category, and payee stages are each capped at `limit`
         nodes, with the remainder collapsed into an "Other" node.
 
+        Every amount is per-currency. With no account filter the window can span
+        an INR account and a USD one, and neither a node total, an edge width nor
+        the headline figures can be a single number, so each carries one amount
+        per currency alongside the `currencyScope` that produced it.
+
+        The graph is acyclic, so circular account-to-account flows are netted away
+        or broken. `suppressedCycles` reports those cycles and the amounts they
+        removed, per currency: a currency that `currencyScope` names but that
+        appears in no node and no edge is named there, so the two can be
+        reconciled without guessing.
+
         The handler itself only reads (all its queries run in one read-only,
         repeatable-read transaction), but the route sits on the write-guard
         list with the sibling GETs that materialize billing cycles, so a
@@ -4087,6 +4156,30 @@ paths:
             type: string
             format: uuid
           description: Filter by account ID
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency regardless;
+            this chooses which money is in scope. A code that is not
+            three letters is a 400.
+
+            The transaction-driven stages and the totals narrow on the account's
+            own currency. The two link queries narrow on the currency of the
+            link's *value* - the account the amount came from - which is not
+            either endpoint's currency when a link joins two differently
+            denominated accounts. Two consequences follow, and neither is a
+            rounding detail: a link whose amount is denominated in another
+            currency is *dropped* even though one of its endpoints is an account
+            in the requested currency, and a link whose value *is* in the
+            requested currency still contributes a node for its other endpoint,
+            so a non-USD account can appear in a `?currency=USD` graph. The
+            filter is on the money, not on the accounts, so the stages do not
+            all describe the same set of transactions.
         - in: query
           name: limit
           schema:
@@ -4136,6 +4229,11 @@ paths:
         `groupBy=billing_cycle` (which requires an account with a `billingDay`)
         they are the account's statement periods for the last `cycles` cycles.
 
+        Every amount is per-currency. A month can cover an INR account and a USD
+        one, so a month is one period holding one amount per currency - and
+        `net` is the difference inside one currency, which is meaningful even
+        when the period spans several. There is no total across them.
+
         This is not a pure read: with `groupBy=billing_cycle` the handler
         materializes the account's missing billing cycles (INSERT) and
         back-fills transactions' cycle assignment, so a cross-site request is
@@ -4164,6 +4262,18 @@ paths:
             format: uuid
           description: Filter by account ID
         - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency regardless;
+            this chooses which money is in scope, and both the periods and the
+            `currencyScope` are narrowed with it, so the two cannot name
+            different currencies. A code that is not three letters is a 400.
+        - in: query
           name: groupBy
           schema:
             type: string
@@ -4184,7 +4294,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/MoneyFlowTimeline"
         "400":
-          description: Invalid accountId, or billing-cycle view without a billing-day account
+          description: Invalid accountId or currency, or billing-cycle view without a billing-day account
           content:
             application/json:
               schema:
@@ -4231,6 +4341,11 @@ paths:
         billing day, the handler materializes the account's missing billing
         cycles (INSERT) and back-fills transactions' cycle assignment, so a
         cross-site request is refused.
+
+        Every amount is per-currency, `maxAbsNet` included: a day can hold an
+        INR amount and a USD one, and neither its net nor the denominator that
+        renders it can be a single number. The client picks its own currency's
+        scale from `maxAbsNet`.
       operationId: getCashFlowCalendar
       security:
         - AccessCookie: []
@@ -4256,6 +4371,25 @@ paths:
           description: >-
             Filter by account ID. When provided, billing-cycle boundaries and
             synthetic summary markers for that account are included.
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: >-
+            Narrow the response to one currency code (upper-case three-letter,
+            case-insensitive). Amounts are always reported per currency
+            regardless; this chooses which money is in scope, and both the days
+            and the `currencyScope` are narrowed with it, so the two cannot name
+            different currencies. A code that is not three letters is a 400.
+
+            The `cycles` and `markers` overlays are the exception: they belong to
+            the single account named by `accountId` and are keyed by that
+            account's own currency, which this parameter does not narrow. So
+            `?currency=USD&accountId=<an INR account with a billing day>` answers
+            with empty days and an empty `currencyScope` beside that account's
+            cycle outstanding reported in INR.
       responses:
         "200":
           description: Cash-flow calendar
@@ -5848,6 +5982,85 @@ components:
         score:
           type: number
 
+    CurrencyAmounts:
+      type: object
+      description: >-
+        One aggregate's value, keyed by the currency code of each account that
+        contributed to it. The key is whatever the account's own `currency`
+        column holds, upper-cased, defaulting to `INR`; nothing checks that those
+        three characters name a real currency, so a client must not validate the
+        code against a list of ISO 4217 codes and reject a response over it. One
+        key means the value is exact for the whole scope it covers; more than one
+        means the scope spans currencies and no total exists, so a consumer must
+        either choose a currency or say it cannot add them. An absent key reads as
+        zero. Every value is a JSON **number** in decimal major units - the wire
+        form is `{"INR": 5000.00}`, unquoted - never a string. Subtracting two of
+        these is only defined within one currency, so where a difference is
+        meaningful the server computes and sends it (as
+        `DashboardSummary.totalNet`) rather than leaving a client to subtract the
+        two maps.
+      additionalProperties:
+        type: number
+
+    CurrencyScope:
+      type: object
+      description: >-
+        The currencies a response covers and the accounts behind each one, so a
+        mixed-currency result explains itself rather than dropping a currency
+        silently.
+      properties:
+        currencies:
+          type: array
+          description: Every currency in the response, sorted. Never null.
+          items:
+            type: string
+        accounts:
+          type: array
+          description: >-
+            The accounts behind the currencies above, one entry per account in
+            the window whether or not it moved money. Never null.
+          items:
+            $ref: "#/components/schemas/ScopedAccount"
+
+    ScopedAccount:
+      type: object
+      description: >-
+        One account inside a response's scope, with the income and expense it
+        contributes. It is what lets a client say what a currency it is not
+        currently displaying is worth, rather than dropping it silently. An
+        account is listed because it is in the window, not because it has
+        money in it, so the two amounts below are {} far more often than a
+        consumer expects.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The account's id, the same id its transactions and links carry.
+        name:
+          type: string
+          description: The account's display name.
+        currency:
+          type: string
+          description: >-
+            The account's own currency, and the single key its income and expense
+            below are held under. An account holds one currency, so a client that
+            wanted a bare number here has to look at the two maps rather than at
+            this field.
+        income:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            What the account received in the window. Always a single-key map
+            under `currency`, and **empty ({}) when the account only spent** -
+            the ordinary case for a card, and the one a consumer most needs told:
+            it is the state that distinguishes "this account earned nothing" from
+            "this account earned nothing in the currency you are looking at".
+        expense:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            What the account paid in the window, in the same shape and for the
+            same reason as `income`: one key, or {} when the account only
+            received.
+
     CategorySpend:
       type: object
       properties:
@@ -5861,7 +6074,7 @@ components:
         categoryIcon:
           type: string
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
 
@@ -5872,9 +6085,9 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     CurrentCycleInfo:
       type: object
@@ -5903,21 +6116,34 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     DashboardSummary:
       type: object
       properties:
         totalAccounts:
           type: integer
+          description: >-
+            How many accounts the user has. This is a plain `COUNT(*)` over their
+            accounts and the `currency` parameter does **not** narrow it, so a
+            response filtered to one currency still reports every account they
+            own. Use `currencyScope.accounts` for the accounts actually in scope;
+            that list is narrowed, and it is the one that says which accounts a
+            figure came from.
         totalTransactions:
           type: integer
+          description: >-
+            How many transactions the response's window covers. Unlike
+            `totalAccounts` this is transaction-backed, so the `currency`,
+            `accountId` and date parameters all narrow it.
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+        totalNet:
+          $ref: "#/components/schemas/CurrencyAmounts"
         byCategory:
           type: array
           items:
@@ -5934,6 +6160,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Transaction"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
         currentCycle:
           $ref: "#/components/schemas/CurrentCycleInfo"
         billingCycleTrend:
@@ -5961,7 +6189,11 @@ components:
           type: string
           description: Category group id for category and income nodes
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency volume. A node aggregates flows across accounts, so with
+            no account filter one node can cover an INR account and a USD one and
+            has no single volume.
 
     MoneyFlowEdge:
       type: object
@@ -5973,7 +6205,11 @@ components:
           type: string
           description: Target node id
         value:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency width of the flow. Both ends of a stage hold the same
+            kind of money, so an edge from an income node into an account is money
+            in that account's currency.
 
     MoneyFlowLinkSummary:
       type: object
@@ -5984,7 +6220,12 @@ components:
         count:
           type: integer
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Per-currency for a reason of its own: a link has a from-account and a
+            to-account, so one type's links can sit in different currencies even
+            when the window is a single account's. `count` covers every link of the
+            type; `total` holds one amount per currency those links span.
 
     MoneyFlowGraph:
       type: object
@@ -5998,13 +6239,95 @@ components:
           items:
             $ref: "#/components/schemas/MoneyFlowEdge"
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+        totalNet:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency), sent rather than left to a client to subtract two
+            currency-keyed objects.
         linkSummary:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowLinkSummary"
+        suppressedCycles:
+          type: array
+          description: >-
+            The circular account-to-account flows the graph could not draw, with
+            the amounts they removed. A Sankey must stay acyclic, so reciprocal
+            pairs are netted and longer loops are broken by dropping their back
+            edge; this is where the money that went missing is disclosed. Without
+            it a node total could quietly lack a currency that `currencyScope`
+            names, while `linkSummary` still counted the same money, and the one
+            response would state two totals with nothing to reconcile them. Empty
+            when nothing was removed; never null.
+          items:
+            $ref: "#/components/schemas/MoneyFlowSuppressedCycle"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
+
+    MoneyFlowSuppressedLeg:
+      type: object
+      description: >-
+        One leg of a suppressed cycle, and what the graph removed from it. A leg
+        whose `discarded` is non-empty and whose `gross` holds a currency the
+        graph draws nowhere is how a reader finds a currency that is in scope and
+        in no band.
+      properties:
+        from:
+          type: string
+          description: Source account id, one of the enclosing cycle's `accounts`.
+        to:
+          type: string
+          description: Target account id, one of the enclosing cycle's `accounts`.
+        gross:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The leg's full flow, per currency, before anything was netted away.
+        discarded:
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The part of `gross` that is in no node total and no edge, per currency.
+            Already inside `MoneyFlowGraph.totalIncome`/`totalExpense` — these legs
+            are ordinary transactions — so a client reports it, it does not add it
+            to the totals again.
+
+    MoneyFlowSuppressedCycle:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [reciprocal, cycle]
+          description: >-
+            `reciprocal` for a pair that flowed both ways (netted into one edge),
+            `cycle` for a longer loop broken by dropping its back edge. Netting
+            cancels a currency against its own reverse; the break drops whatever
+            netting could not reduce, which - since one currency cannot cancel
+            another - is a whole currency in a link between differently
+            denominated accounts.
+        accounts:
+          type: array
+          description: >-
+            The participants in flow order, each leg running from accounts[i] to
+            accounts[(i+1) mod len]. Account ids only, and `currencyScope`
+            normally names the participants with their display metadata - except
+            that a link's value is denominated in the currency of the account
+            the amount came from, not of both its endpoints, so under a
+            `?currency=` filter a suppressed cycle can name an account whose own
+            currency is not the one requested. That is the same exception the
+            graph's nodes make explicit (a non-USD account can appear in a
+            `?currency=USD` graph), and it is stated here because this is the one
+            place in the response where a reader is told an id resolves: an id
+            `currencyScope` does not list has to be resolved elsewhere. The
+            display metadata is deliberately not carried a second time.
+          items:
+            type: string
+        legs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MoneyFlowSuppressedLeg"
 
     LinkCycleAccount:
       type: object
@@ -6019,7 +6342,9 @@ components:
 
     LinkFlowTypeTotal:
       type: object
-      description: Per-link-type rollup of one account-to-account flow.
+      description: >-
+        Per-link-type rollup of one account-to-account flow. `total` is per
+        currency, like the flow's own amount.
       properties:
         type:
           type: string
@@ -6027,13 +6352,13 @@ components:
         count:
           type: integer
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
 
     LinkCycleLeg:
       type: object
       description: >-
         One directed leg of a cycle, running from `fromAccountId` to
-        `toAccountId`. `amount` is the gross flow in the window.
+        `toAccountId`. `amount` is the gross flow in the window, per currency.
       properties:
         fromAccountId:
           type: string
@@ -6050,7 +6375,7 @@ components:
         toAccountColor:
           type: string
         amount:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
         types:
@@ -6078,13 +6403,30 @@ components:
           items:
             $ref: "#/components/schemas/LinkCycleLeg"
         net:
-          type: number
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
           description: >-
-            The smallest leg — the amount that actually circulates the whole
-            loop.
+            The smallest leg. There are exactly two readings and the number of
+            keys decides which applies. **One key** — the cycle's legs are all in
+            one currency, so that key is the amount that actually circulates the
+            whole loop, exactly as before this field became a map. **More than one
+            key** — each key is that currency's own smallest leg: a per-currency
+            local figure, and *not* a circulation figure. Nothing circulates a loop
+            whose legs are denominated differently; one that moves INR 1,000 one way
+            and USD 12 the other moves two amounts of two currencies, and neither
+            describes the loop. Since an absent key reads as zero, the honest
+            circulation for such a cycle is zero in every currency, not the smaller
+            of its keys. A client asking "what circulates this loop" must therefore
+            check the key count first: one key, use it; several, report that the
+            loop moves more than one currency and show the per-currency keys as they
+            are, rather than adding them or picking the smallest.
         gross:
-          type: number
-          description: Sum of the legs.
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The sum of the legs, per currency. Like `net` it is never a single
+            combined figure, and for a cycle spanning currencies it is the sum of
+            flows that were never combined anywhere.
         transactions:
           type: integer
           description: Number of links making up the cycle.
@@ -6110,7 +6452,7 @@ components:
         toAccountColor:
           type: string
         total:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         count:
           type: integer
         types:
@@ -6126,12 +6468,21 @@ components:
           items:
             $ref: "#/components/schemas/LinkCycle"
         totalCircular:
-          type: number
-          description: Sum of every cycle's `net`.
+          allOf:
+            - $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Sum of every cycle's `net`, per currency. Despite the name it is never
+            a single combined figure, and for a cycle spanning currencies it is
+            not a circulation figure either: it carries `LinkCycle.net`'s two
+            readings, and its key count is the same signal. It is for the
+            single-currency case, where it is the money that travels a full loop
+            between the user's own accounts and one key returns it.
         oneSidedFlows:
           type: array
           items:
             $ref: "#/components/schemas/LinkOneSidedFlow"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     CashFlowCalendarDay:
       type: object
@@ -6140,13 +6491,20 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency). A day on which one currency spent and another earned has a
+            net in both, and neither is a total of the other. A day that only
+            spent has no `income` key and a negative `net` under the currency it
+            spent in.
         count:
           type: integer
+          description: Transactions posted that day, across every currency in scope.
 
     CashFlowCalendarMarker:
       type: object
@@ -6161,7 +6519,11 @@ components:
           type: string
           enum: [balance, outstanding]
         amount:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The overlay belongs to the selected account, so `amount` holds that
+            account's single key. It is a map anyway, so a client never has to
+            learn two shapes for the same field.
 
     CashFlowCalendarCycle:
       type: object
@@ -6178,7 +6540,10 @@ components:
           type: string
           format: date
         outstanding:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The running balance through the cycle end, in the account's own
+            currency - one key, never a sum of two.
 
     CashFlowCalendar:
       type: object
@@ -6196,14 +6561,33 @@ components:
           items:
             $ref: "#/components/schemas/CashFlowCalendarCycle"
         totalIncome:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         totalExpense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The window's per-currency difference, computed by the server from the
+            same scope query the dashboard summary uses, so the two cannot
+            disagree about the window they describe.
         maxAbsNet:
-          type: number
-          description: Largest absolute daily net in the window, for heatmap scaling.
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            Largest absolute daily net **per currency**, for heatmap scaling. It
+            is per currency because a single scale across currencies is
+            meaningless: it would make a quiet foreign account's real deficit
+            render as a flat cell next to a large domestic one. The client picks
+            its own currency's denominator; the server never compares one
+            currency's amount with another's. A currency with no key is one
+            whose every day in the window nets exactly zero - a day is carried by
+            its transactions, and its `net` does carry the currency even at zero,
+            while the scale cannot reach a maximum of nothing. So the denominator
+            a client needs can be absent, and under this schema's own rule (an
+            absent key reads as zero) that is the correct reading rather than a
+            missing field: divide by it and the currency's cells render flat, as
+            they should, rather than dividing by nothing.
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     MoneyFlowTimelinePeriod:
       type: object
@@ -6220,11 +6604,21 @@ components:
           type: string
           format: date
         income:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         expense:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
         net:
-          type: number
+          $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            The server's per-currency difference (income minus expense within one
+            currency). A difference inside one currency is meaningful even when
+            the period spans several, which is why this survives as a map rather
+            than being dropped; a total across two currencies is not defined at
+            all, so a client needing one must choose a currency.
+
+            A period that only spent has no `income` key and a negative `net`
+            under the currency it spent in: a zero contribution adds no key, and
+            a missing key reads as zero.
 
     MoneyFlowTimeline:
       type: object
@@ -6236,6 +6630,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MoneyFlowTimelinePeriod"
+        currencyScope:
+          $ref: "#/components/schemas/CurrencyScope"
 
     # ============= Recurring Series =============
     RecurringSeries:

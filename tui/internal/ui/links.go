@@ -243,11 +243,21 @@ func (l *Links) reloadSuggestions() tea.Cmd {
 	})
 }
 
-// reloadCycles fetches the circular-money report for the current window.
+// reloadCycles fetches the circular-money report for the current window. The
+// filter's Currency is left empty on purpose: it selects on the currency of the
+// account a leg's *amount* came from, which is not the currency of the account
+// the money flows out of, so filling it from a picker built out of account
+// currencies would quietly answer a different question. Nothing in this module
+// offers that selection.
 func (l *Links) reloadCycles() tea.Cmd {
 	window := l.window
+	filter := api.LinkCyclesFilter{
+		DateFrom:  window.dateFrom,
+		DateTo:    window.dateTo,
+		AccountID: window.accountID,
+	}
 	return load("links.cycles", func(ctx context.Context) (api.LinkCycleReport, error) {
-		return l.ctx.Client.LinkCycles(ctx, window.dateFrom, window.dateTo, window.accountID)
+		return l.ctx.Client.LinkCycles(ctx, filter)
 	})
 }
 
@@ -1006,8 +1016,11 @@ func (l *Links) headerLine(width int) string {
 			bits = append(bits, fmt.Sprintf("%d selected", n))
 		}
 	case linkPaneCycles:
+		// Counts only: the header is truncated to the pane's label width, and a
+		// per-currency total cut at that edge would lose a currency code from the
+		// middle of a figure. The report body opens with the total in full, so
+		// repeating it here would buy nothing and risk truncating it.
 		bits = append(bits,
-			"circular "+l.cycles.TotalCircular.Display(),
 			pluralise(len(l.cycles.Cycles), "cycle", "cycles"),
 			pluralise(len(l.cycles.OneSidedFlows), "one-sided flow", "one-sided flows"),
 			l.window.describe(l.ctx.Ref))
@@ -1108,15 +1121,16 @@ func (l *Links) cyclesView(height int) string {
 }
 
 // cycleLines builds the report. Net is the cycle's smallest leg — the amount
-// that actually circulates the whole loop — so it is shown next to gross, which
-// is what simply moves.
+// that actually circulates the whole loop, but only while the loop holds one
+// currency — so it is shown next to gross, which is what simply moves, and the
+// note beside it changes with the number of keys the response sent.
 func (l *Links) cycleLines() []string {
 	th := l.ctx.Theme
 	report := l.cycles
 
 	lines := []string{
 		th.Header.Render("total circular  "+report.TotalCircular.Display()) +
-			"  " + th.Subtle.Render("the amount that flows back to where it started"),
+			"  " + th.Subtle.Render(linkCircularNote(report.TotalCircular)),
 	}
 	if len(report.Cycles) == 0 {
 		lines = append(lines, th.Subtle.Render("  no circular flows in this window"))
@@ -1133,7 +1147,7 @@ func (l *Links) cycleLines() []string {
 			lines = append(lines, "   "+th.Subtle.Render("leg    ")+linkLegLine(leg))
 		}
 		lines = append(lines, "   "+th.Subtle.Render("net    ")+th.Money.Render(cycle.Net.Display())+
-			th.Subtle.Render("   gross "+cycle.Gross.Display()+" · net is the smallest leg, i.e. what actually circulates"))
+			th.Subtle.Render("   gross "+cycle.Gross.Display()+" · "+linkNetNote(cycle.Net)))
 	}
 
 	lines = append(lines, "")
@@ -1152,6 +1166,31 @@ func (l *Links) cycleLines() []string {
 		lines = append(lines, "   "+text)
 	}
 	return lines
+}
+
+// linkNetNote qualifies a cycle's net. With one currency the net is the smallest
+// leg, which is the amount that travels the whole loop. With more than one it is
+// the smallest leg *per currency* and no figure circulates the loop at all — a
+// loop whose legs are differently denominated has no single circulating amount —
+// so the line says that instead of repeating the single-currency claim.
+//
+// An empty or nil net is the single-currency case, not a multi-currency one: a
+// report with nothing in it has no differently denominated legs, and the
+// multi-currency note would diagnose a problem the payload does not have.
+func linkNetNote(net api.CurrencyAmounts) string {
+	if _, _, ok := net.Single(); ok || len(net) < 2 {
+		return "net is the smallest leg, i.e. what actually circulates"
+	}
+	return "net is the smallest leg per currency — nothing circulates a loop whose legs differ, and they are not added"
+}
+
+// linkCircularNote qualifies the report's total, which carries LinkCycle.Net's
+// two readings for the same reason.
+func linkCircularNote(total api.CurrencyAmounts) string {
+	if _, _, ok := total.Single(); ok || len(total) < 2 {
+		return "the amount that flows back to where it started"
+	}
+	return "per currency, never one combined figure"
 }
 
 // linkCycleRoute draws a cycle's participants in flow order; a longer loop is

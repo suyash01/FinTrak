@@ -43,14 +43,22 @@ var (
 // transactions, so the screen owns the gap filling: it draws a continuous
 // Sunday-first month grid, blanks the days the API omitted, and shades each day
 // against MaxAbsNet — the scale reference the API computes, which the TUI only
-// ever divides by. When the window names one account the payload also carries
-// billing-cycle boundaries and synthetic markers (month-end running balance,
-// per-cycle outstanding), which the grid separates and the overlay list prints;
-// those figures are the server's, never recomputed here. The screen is read-only
-// and calls no mutation, so it owns no done message.
+// ever divides by, in the currency on screen. When the window names one account
+// the payload also carries billing-cycle boundaries and synthetic markers
+// (month-end running balance, per-cycle outstanding), which the grid separates and
+// the overlay list prints; those figures are the server's, never recomputed here.
+// The screen is read-only and calls no mutation, so it owns no done message.
+//
+// currency is the screen's own choice of which currency to shade and read in,
+// taken from the window form. It is deliberately NOT part of the request: the
+// server's ?currency= filter drops the other currencies from MaxAbsNet and from
+// every day, and one scale across currencies is exactly the mistake this screen
+// must not make — so the request stays whole, the shading reads the selected
+// currency's own entry, and the legend says which entries it left out.
 type Calendar struct {
-	ctx    *Ctx
-	filter api.WindowFilter
+	ctx      *Ctx
+	filter   api.WindowFilter
+	currency string
 
 	data    api.CashFlowCalendar
 	fetched bool
@@ -317,8 +325,13 @@ func (c *Calendar) monthIndex() int {
 
 // openWindowForm edits the request window. The submit is local — it rewrites the
 // filter and asks for a fresh payload — so the form closes itself instead of
-// waiting for a mutation to report back.
+// waiting for a mutation to report back. WindowFilter.Currency is left empty on
+// purpose: c.currency is a rendering choice, and a request narrowed to it would
+// cost the screen the legend that says which currencies it is not showing.
 func (c *Calendar) openWindowForm() {
+	currency := SelectField("Currency", c.currency, c.ctx.Ref.CurrencyOptions(), false)
+	currency.ClearLabel = "every currency"
+	currency.Help = "which currency to shade and read in; the others are named, never added"
 	fields := []Field{
 		{
 			Label: "From", Kind: FieldText, Value: c.filter.DateFrom, Placeholder: "YYYY-MM-DD", Width: 12,
@@ -329,6 +342,7 @@ func (c *Calendar) openWindowForm() {
 			Validate: optionalDate, Help: "inclusive; blank means the server's default end",
 		},
 		SelectField("Account", c.filter.AccountID, c.ctx.Ref.AccountOptions(), false),
+		currency,
 	}
 	c.ctx.Open(NewForm("calendar.window", "Cash-flow window", fields, func(f *Form) tea.Cmd {
 		from, to := strings.TrimSpace(f.Value("From")), strings.TrimSpace(f.Value("To"))
@@ -338,6 +352,7 @@ func (c *Calendar) openWindowForm() {
 			return nil
 		}
 		c.filter = api.WindowFilter{DateFrom: from, DateTo: to, AccountID: f.Value("Account")}
+		c.currency = f.Value("Currency")
 		c.fetched = false
 		f.Close()
 		return c.reload()
@@ -355,21 +370,21 @@ func (c *Calendar) openDayInfo() {
 		fmt.Fprintf(&b, "No transactions on %s.\n", key)
 	} else {
 		fmt.Fprintf(&b, "Date     %s\n", key)
-		fmt.Fprintf(&b, "Income   %s\n", entry.Income.Display())
-		fmt.Fprintf(&b, "Expense  %s\n", entry.Expense.Display())
-		fmt.Fprintf(&b, "Net      %s\n", calendarNetText(entry.Net))
+		fmt.Fprintf(&b, "Income   %s\n", currencyLine(c.currency, entry.Income))
+		fmt.Fprintf(&b, "Expense  %s\n", currencyLine(c.currency, entry.Expense))
+		fmt.Fprintf(&b, "Net      %s\n", currencyNetText(c.currency, entry.Net))
 		fmt.Fprintf(&b, "Count    %s\n", pluralise(entry.Count, "transaction", "transactions"))
 	}
 
 	if markers := c.markers[key]; len(markers) > 0 {
 		b.WriteString("\nServer markers\n")
 		for _, marker := range markers {
-			fmt.Fprintf(&b, "  %-18s %10s  %s\n", calendarMarkerKind(marker.Kind), marker.Amount.Display(), marker.Label)
+			fmt.Fprintf(&b, "  %-18s %10s  %s\n", calendarMarkerKind(marker.Kind), currencyLine(c.currency, marker.Amount), marker.Label)
 		}
 	}
 	if cycle, ok := c.cycleFor(c.cursor); ok {
 		fmt.Fprintf(&b, "\nBilling cycle\n  %s\n  %s\n  outstanding %s\n",
-			cycle.Label, formatRange(cycle.StartDate, cycle.EndDate), cycle.Outstanding.Display())
+			cycle.Label, formatRange(cycle.StartDate, cycle.EndDate), currencyLine(c.currency, cycle.Outstanding))
 	}
 
 	c.ctx.Open(NewInfo("Day "+key, b.String()).WithFooter(
@@ -438,14 +453,13 @@ func (c *Calendar) header(width int) []string {
 		return []string{title}
 	}
 
-	netStyle := th.Positive
-	if c.data.Net.IsNegative() {
-		netStyle = th.Negative
-	}
+	// A window that netted a surplus in one currency and a deficit in another has
+	// no sign to colour by, and the muted style says so instead of picking one.
+	netStyle := currencySignOf(c.currency, c.data.Net).style(th)
 	totals := hstack(
-		th.Subtle.Render("income ")+c.data.TotalIncome.Display(),
-		th.Subtle.Render("expense ")+c.data.TotalExpense.Display(),
-		th.Subtle.Render("net ")+netStyle.Render(calendarNetText(c.data.Net)),
+		th.Subtle.Render("income ")+currencyLine(c.currency, c.data.TotalIncome),
+		th.Subtle.Render("expense ")+currencyLine(c.currency, c.data.TotalExpense),
+		th.Subtle.Render("net ")+netStyle.Render(currencyNetText(c.currency, c.data.Net)),
 		th.Subtle.Render(pluralise(len(c.data.Days), "active day", "active days")),
 	)
 	return []string{title, truncate(totals, width)}
@@ -497,8 +511,9 @@ func (c *Calendar) cellSeparator(day time.Time) string {
 }
 
 // dayCell renders one day: its number, an intensity block scaled by the server's
-// MaxAbsNet, and a diamond when the server attached a summary marker to the day.
-// A day the API omitted stays muted and blank, which is how a gap reads.
+// MaxAbsNet *for the currency on screen*, and a diamond when the server attached
+// a summary marker to the day. A day the API omitted stays muted and blank,
+// which is how a gap reads.
 func (c *Calendar) dayCell(day time.Time) string {
 	th := c.ctx.Theme
 	key := day.Format(api.DateLayout)
@@ -511,17 +526,24 @@ func (c *Calendar) dayCell(day time.Time) string {
 
 	block := "  "
 	style := th.Subtle
+	sign := currencySignOf(c.currency, entry.Net)
 	switch {
 	case !has || entry.Count == 0:
 		// Left blank: the API sends no day for a date without transactions.
-	case entry.Net.IsNegative():
-		block = strings.Repeat(calendarDeficit[calendarLevel(entry.Net, c.data.MaxAbsNet)], 2)
-		style = th.Negative
-	case entry.Net.IsZero():
-		block = "··"
+	case sign == signNegative:
+		block = strings.Repeat(calendarDeficit[c.level(entry.Net)], 2)
+		style = sign.style(th)
+	case sign == signPositive:
+		block = strings.Repeat(calendarSurplus[c.level(entry.Net)], 2)
+		style = sign.style(th)
 	default:
-		block = strings.Repeat(calendarSurplus[calendarLevel(entry.Net, c.data.MaxAbsNet)], 2)
-		style = th.Positive
+		// Flat, for three distinct reasons that all mean the same thing on
+		// screen: the day's net is exactly zero, the currency on screen has no
+		// key for the day because no transaction in it touched that currency, or
+		// the day's net points different ways in different currencies. The last is
+		// the one that matters — the payload declined to give a sign, and a block
+		// drawn as though it had would be the screen inventing one.
+		block = "··"
 	}
 
 	cell := style.Render(fmt.Sprintf("%2d %s%s", day.Day(), block, flag))
@@ -531,16 +553,63 @@ func (c *Calendar) dayCell(day time.Time) string {
 	return cell
 }
 
+// level buckets a day's magnitude in the currency on screen into the three-glyph
+// scale, using the server's MaxAbsNet for that same currency as the denominator —
+// the API owns that reference and the TUI must not rescale it.
+//
+// A currency whose every day nets exactly zero has no key in MaxAbsNet at all,
+// because the server's own Add skips a zero contribution, so the denominator is
+// absent rather than zero. ratioOfScale is what turns that into a flat cell, by
+// the same zero-denominator rule the other bar helpers have always relied on; a
+// per-currency MaxAbsNet does not need a second guard here, and a guard that
+// duplicates one would be untested.
+func (c *Calendar) level(net api.CurrencyAmounts) int {
+	ratio := ratioOfScale(currencyScale(c.currency, net), currencyScale(c.currency, c.data.MaxAbsNet))
+	if ratio < 0 {
+		ratio = -ratio
+	}
+	switch {
+	case ratio > 0.67:
+		return 2
+	case ratio > 0.34:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // legendLine states the scale and the glyph vocabulary, since the shading is
-// the only cue a colour-blind or monochrome terminal has.
+// the only cue a colour-blind or monochrome terminal has. The scale is the
+// server's MaxAbsNet for the currency on screen, and the notice beside it names
+// the entries being left out — one scale across currencies is the mistake this
+// change exists to stop, so the legend says which currencies it did not use.
 func (c *Calendar) legendLine(width int) string {
 	th := c.ctx.Theme
+	scale := "server max |net| " + currencyLine(c.currency, c.data.MaxAbsNet)
+	if c.currency == "" && len(c.data.MaxAbsNet) > 1 {
+		// With nothing chosen the cells are scaled by the largest single currency,
+		// because there is no currency to prefer. Print that number rather than
+		// the whole map, so the legend shows the scale that is actually in use
+		// instead of a per-currency list that reads like a promise of more.
+		scale = fmt.Sprintf("server max |net| %s (the largest of %d currencies, none selected)",
+			currencyAmount(currencyScale("", c.data.MaxAbsNet)), len(c.data.MaxAbsNet))
+	}
 	parts := []string{
-		th.Subtle.Render("server max |net| " + c.data.MaxAbsNet.Display()),
+		th.Subtle.Render(scale),
 		th.Positive.Render("▁▄█ surplus"),
 		th.Negative.Render("░▒▓ deficit"),
+		// The flat cell is the one glyph that means "the payload declined to give
+		// a sign": zero, no key for the currency on screen, or a day that points
+		// different ways in different currencies. In a monochrome terminal the
+		// shading is the only cue there is, so an unlabelled flat cell is a state
+		// the user cannot read at all — and it is the state this whole change
+		// exists to be able to show.
+		th.Subtle.Render("·· no sign"),
 		th.WarnText.Render("│ cycle start"),
 		th.WarnText.Render("◆ marker"),
+	}
+	if notice := currencyScopeLabel(c.currency, c.data.CurrencyScope); notice != "" {
+		parts = append(parts, th.WarnText.Render(notice))
 	}
 	return truncate(strings.Join(parts, th.Subtle.Render(" · ")), width)
 }
@@ -560,11 +629,11 @@ func (c *Calendar) overlayLines(width, budget int) []string {
 	}
 	for _, cycle := range c.data.Cycles {
 		rows = append(rows, th.Subtle.Render(fmt.Sprintf("  cycle  %-20s %-25s outstanding %s",
-			truncate(cycle.Label, 20), formatRange(cycle.StartDate, cycle.EndDate), cycle.Outstanding.Display())))
+			truncate(cycle.Label, 20), formatRange(cycle.StartDate, cycle.EndDate), currencyLine(c.currency, cycle.Outstanding))))
 	}
 	for _, marker := range c.data.Markers {
 		rows = append(rows, th.Subtle.Render(fmt.Sprintf("  marker %-10s %-18s %12s  %s",
-			marker.Date, calendarMarkerKind(marker.Kind), marker.Amount.Display(), marker.Label)))
+			marker.Date, calendarMarkerKind(marker.Kind), currencyLine(c.currency, marker.Amount), marker.Label)))
 	}
 	if len(rows) > budget {
 		hidden := len(rows) - budget + 1
@@ -584,15 +653,12 @@ func (c *Calendar) detailLine(width int) string {
 		return th.Subtle.Render(truncate(key+" · no transactions", width))
 	}
 
-	netStyle := th.Positive
-	if entry.Net.IsNegative() {
-		netStyle = th.Negative
-	}
+	netStyle := currencySignOf(c.currency, entry.Net).style(th)
 	line := hstack(
 		key,
-		"income "+entry.Income.Display(),
-		"expense "+entry.Expense.Display(),
-		"net "+netStyle.Render(calendarNetText(entry.Net)),
+		"income "+currencyLine(c.currency, entry.Income),
+		"expense "+currencyLine(c.currency, entry.Expense),
+		"net "+netStyle.Render(currencyNetText(c.currency, entry.Net)),
 		pluralise(entry.Count, "transaction", "transactions"),
 	)
 	return truncate(line, width)
@@ -629,34 +695,6 @@ func calendarSameDayInMonth(t, month time.Time) time.Time {
 func calendarParseDate(value string) (time.Time, bool) {
 	t, err := time.Parse(api.DateLayout, strings.TrimSpace(value))
 	return t, err == nil
-}
-
-// calendarLevel buckets a day's magnitude into the three-glyph scale, using the
-// server's MaxAbsNet as the denominator — the API owns that reference and the
-// TUI must not rescale it. ratioOf is the display-only conversion shared with
-// the bar helpers.
-func calendarLevel(net, maxAbs api.Amount) int {
-	ratio := ratioOf(net, maxAbs.Float64())
-	if ratio < 0 {
-		ratio = -ratio
-	}
-	switch {
-	case ratio > 0.67:
-		return 2
-	case ratio > 0.34:
-		return 1
-	default:
-		return 0
-	}
-}
-
-// calendarNetText renders a signed net figure. The API's Amount already carries
-// its sign, so this only adds the "+" a surplus has earned.
-func calendarNetText(a api.Amount) string {
-	if a.IsZero() || a.IsNegative() {
-		return a.Display()
-	}
-	return "+" + a.Display()
 }
 
 // calendarMarkerKind spells a marker kind the way the overlay list labels it.

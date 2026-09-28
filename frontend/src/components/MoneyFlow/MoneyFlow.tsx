@@ -25,10 +25,19 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import { useRefetchOnFocus } from "../../lib/useRefetchOnFocus";
-import { formatCurrency } from "../../utils/formatters";
+import {
+  formatOne,
+  formatScoped,
+  formatScopedMulti,
+  signClass,
+  signOf,
+  useCurrencyScope,
+  type ScopedAmount,
+} from "@/lib/currency";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
+import MultiCurrencyNotice from "@/components/MultiCurrencyNotice/MultiCurrencyNotice";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -49,10 +58,12 @@ import {
   periodRange,
 } from "../../lib/dates";
 import type {
+  CurrencyAmounts,
   LinkCycleReport,
   MoneyFlowGraph,
   MoneyFlowLinkSummary,
   MoneyFlowNode,
+  MoneyFlowSuppressedCycle,
   MoneyFlowTimeline,
   MoneyFlowTimelineGroupBy,
   MoneyFlowTimelinePeriod,
@@ -205,6 +216,26 @@ export default function MoneyFlow() {
   const [error, setError] = useState("");
   const [timeline, setTimeline] = useState<MoneyFlowTimeline | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(true);
+  // One selection for the page, taken from the graph's scope. The timeline and
+  // the cycle report are fetched with the same filters over the same window, so
+  // their own currencyScope blocks are the same window's account list restated
+  // — which is why the selection below governs all three. Reading each response's
+  // scope separately would give the page three independent currencies, and a
+  // screen showing two of them at once is the defect this change exists to stop.
+  const { code, codes, setCode, scoped, others } = useCurrencyScope(
+    data?.currencyScope,
+  );
+
+  // The suppressed cycles name their accounts as ids — the same ones the graph's
+  // scope names with their display metadata — so the disclosure resolves them
+  // here rather than each carrying a second copy of every name.
+  const accountName = useCallback(
+    (id: string) =>
+      data?.currencyScope.accounts.find((a) => a.id === id)?.name ??
+      accounts.find((a) => a.id === id)?.name ??
+      id,
+    [data, accounts],
+  );
 
   useEffect(() => {
     const params: Record<string, string> = {};
@@ -394,7 +425,9 @@ export default function MoneyFlow() {
     );
   }, [timeline, dateFrom, dateTo]);
 
-  // Recharts Sankey wants links referencing nodes by array index.
+  // Recharts Sankey wants links referencing nodes by array index, and sizes both
+  // from plain numbers, so the selected currency's share is projected onto the
+  // rows here rather than read by the chart from a map it cannot see.
   const sankeyData = useMemo(() => {
     if (!data) return null;
     const index = new Map(data.nodes.map((n, i) => [n.id, i]));
@@ -402,14 +435,17 @@ export default function MoneyFlow() {
       .map((l) => ({
         source: index.get(l.source),
         target: index.get(l.target),
-        value: l.value,
+        value: scoped(l.value),
       }))
       .filter(
         (l): l is { source: number; target: number; value: number } =>
           l.source !== undefined && l.target !== undefined,
       );
-    return { nodes: data.nodes, links };
-  }, [data]);
+    return {
+      nodes: data.nodes.map((n) => ({ ...n, total: scoped(n.total) })),
+      links,
+    };
+  }, [data, scoped]);
 
   // Distinct base-group colors present among category nodes, for the legend.
   const groupLegend = useMemo(() => {
@@ -454,7 +490,6 @@ export default function MoneyFlow() {
 
   if (!data) return null;
 
-  const net = data.totalIncome - data.totalExpense;
   const hasFlows = data.nodes.length > 0 && data.links.length > 0;
 
   return (
@@ -492,6 +527,23 @@ export default function MoneyFlow() {
             triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
             extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
           />
+          {codes.length > 0 && (
+            <Select value={code} onValueChange={setCode}>
+              <SelectTrigger
+                aria-label="Currency"
+                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-32`}
+              >
+                <SelectValue placeholder="Currency" />
+              </SelectTrigger>
+              <SelectContent>
+                {codes.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={period} onValueChange={applyPeriod}>
             <SelectTrigger
               aria-label="Period"
@@ -554,12 +606,14 @@ export default function MoneyFlow() {
           </div>
         )}
 
+        <MultiCurrencyNotice accounts={others} selected={code} />
+
         <div
           className={`grid grid-cols-1 md:grid-cols-3 ${compactLayout ? "gap-3 mb-4" : "gap-5 mb-6"}`}
         >
           <StatCard
             label="Money In"
-            value={data.totalIncome}
+            value={formatScoped(data.totalIncome, code)}
             icon={<TrendingUp size={22} className="text-chart-3" />}
             iconClass="bg-chart-3/15"
             valueClass="text-chart-3"
@@ -567,7 +621,7 @@ export default function MoneyFlow() {
           />
           <StatCard
             label="Money Out"
-            value={data.totalExpense}
+            value={formatScoped(data.totalExpense, code)}
             icon={<TrendingDown size={22} className="text-destructive" />}
             iconClass="bg-destructive/10"
             valueClass="text-destructive"
@@ -575,10 +629,13 @@ export default function MoneyFlow() {
           />
           <StatCard
             label="Net Flow"
-            value={net}
+            // The server's net. Its sign comes from the sign table rather than
+            // from `>= 0`, so a currency the window never held is not drawn as
+            // a surplus.
+            value={formatScoped(data.totalNet, code)}
             icon={<Waypoints size={22} className="text-primary" />}
             iconClass="bg-primary/10"
-            valueClass={net >= 0 ? "text-chart-3" : "text-destructive"}
+            valueClass={signClass[signOf(data.totalNet, code)]}
             compact={compactLayout}
           />
         </div>
@@ -624,6 +681,8 @@ export default function MoneyFlow() {
                 periods={timeline?.periods ?? []}
                 activeKey={activeTimelineKey}
                 onSelect={selectPeriod}
+                code={code}
+                scoped={scoped}
               />
             )}
           </CardContent>
@@ -663,7 +722,7 @@ export default function MoneyFlow() {
                           borderRadius: "8px",
                           color: "var(--foreground)",
                         }}
-                        formatter={(v) => formatCurrency(Number(v))}
+                        formatter={(v) => formatOne(Number(v), code)}
                       />
                     </Sankey>
                   </ResponsiveContainer>
@@ -709,6 +768,7 @@ export default function MoneyFlow() {
               </p>
               <LinkSummaryPanel
                 summary={data.linkSummary}
+                code={code}
                 onSelect={() =>
                   navigate(
                     `/transactions?linked=true${
@@ -721,7 +781,7 @@ export default function MoneyFlow() {
           </Card>
         </div>
 
-        {cycles && (
+        {(cycles || data.suppressedCycles.length > 0) && (
           <Card size={compactLayout ? "sm" : "default"} className="mt-6">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
@@ -732,7 +792,12 @@ export default function MoneyFlow() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <CircularMoneyPanel report={cycles} />
+              <CircularMoneyPanel
+                report={cycles}
+                suppressed={data.suppressedCycles}
+                nameOf={accountName}
+                code={code}
+              />
             </CardContent>
           </Card>
         )}
@@ -748,10 +813,14 @@ function TimelineStrip({
   periods,
   activeKey,
   onSelect,
+  code,
+  scoped,
 }: {
   periods: MoneyFlowTimelinePeriod[];
   activeKey: string | null;
   onSelect: (period: MoneyFlowTimelinePeriod) => void;
+  code: string;
+  scoped: ScopedAmount;
 }) {
   if (periods.length === 0) {
     return (
@@ -761,8 +830,11 @@ function TimelineStrip({
     );
   }
 
+  // The busiest period in the currency on screen. Taking the maximum over
+  // currencies instead would size a bar by a figure the reader is not looking
+  // at, and a foreign period would flatten the domestic ones.
   const max = periods.reduce(
-    (m, p) => Math.max(m, p.income, p.expense),
+    (m, p) => Math.max(m, scoped(p.income), scoped(p.expense)),
     0,
   );
 
@@ -770,14 +842,16 @@ function TimelineStrip({
     <div className="flex gap-2 overflow-x-auto pb-1">
       {periods.map((p) => {
         const active = p.key === activeKey;
-        const incomePct = max > 0 ? Math.max(2, (p.income / max) * 100) : 0;
-        const expensePct = max > 0 ? Math.max(2, (p.expense / max) * 100) : 0;
+        const income = scoped(p.income);
+        const expense = scoped(p.expense);
+        const incomePct = max > 0 ? Math.max(2, (income / max) * 100) : 0;
+        const expensePct = max > 0 ? Math.max(2, (expense / max) * 100) : 0;
         return (
           <button
             key={p.key}
             type="button"
             onClick={() => onSelect(p)}
-            title={`${p.label}: in ${formatCurrency(p.income)}, out ${formatCurrency(p.expense)}`}
+            title={`${p.label}: in ${formatScoped(p.income, code)}, out ${formatScoped(p.expense, code)}`}
             className={`w-24 shrink-0 rounded-lg border px-2 py-2 text-left transition-colors ${
               active
                 ? "border-primary bg-primary/10"
@@ -798,11 +872,9 @@ function TimelineStrip({
               />
             </div>
             <div
-              className={`mt-1 truncate text-[11px] font-medium ${
-                p.net >= 0 ? "text-chart-3" : "text-destructive"
-              }`}
+              className={`mt-1 truncate text-[11px] font-medium ${signClass[signOf(p.net, code)]}`}
             >
-              {formatCurrency(p.net)}
+              {formatScoped(p.net, code)}
             </div>
           </button>
         );
@@ -820,7 +892,7 @@ function StatCard({
   compact,
 }: {
   label: string;
-  value: number;
+  value: string;
   icon: ReactNode;
   iconClass: string;
   valueClass: string;
@@ -838,19 +910,115 @@ function StatCard({
           {icon}
         </div>
         <div className="text-xs text-muted-foreground mb-1">{label}</div>
-        <div className={`text-2xl font-bold ${valueClass}`}>
-          {formatCurrency(value)}
-        </div>
+        <div className={`text-2xl font-bold ${valueClass}`}>{value}</div>
       </CardContent>
     </Card>
   );
 }
 
+// circulatingText renders the figure circulating a set of cycles, and refuses
+// when there is not one. A cycle's net is a per-currency local minimum, so it is
+// the amount circulating the loop only while the loop holds a single currency;
+// across currencies each key is that currency's own smallest leg and no figure
+// stands for the set. Rendering the selected currency's key unconditioned is the
+// sentence this branch wrote the constraint against, and the MCP honours it on
+// the same data, so the two surfaces must not disagree about it.
+function circulatingText(total: CurrencyAmounts, code: string): string {
+  return Object.keys(total).length === 1
+    ? formatScoped(total, code)
+    : formatScopedMulti(total);
+}
+
+// SuppressedCyclesSection is the reconciliation between the two totals the
+// money-flow screen shows for the same money: the graph, which cannot draw a
+// cycle, and the linked-transfers rollup above it, which counts every link
+// whatever the graph did with it. Without this, the reader is shown two
+// different totals for one sum with nothing to explain the difference.
+//
+// The paragraph states the constraint the field's own shape rests on, because it
+// is the one a reader would otherwise get wrong: the list is non-empty for any
+// netted reciprocal pair, including a pair that netted to nothing, so "is this
+// list empty" is not the test for whether a currency went missing from the
+// graph. The per-currency withheld amounts are.
+function SuppressedCyclesSection({
+  suppressed,
+  nameOf,
+}: {
+  suppressed: MoneyFlowSuppressedCycle[];
+  nameOf: (id: string) => string;
+}) {
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-medium text-foreground">
+        Withheld from the graph
+      </h3>
+      <p className="mb-2 text-xs text-muted-foreground">
+        A graph that stays acyclic has to give something up: a pair flowing both
+        ways is netted into one edge, and a back edge that would close a longer
+        loop is dropped. The transfers above count every link; the
+        account-to-account edges here do not, so the two differ by what is listed
+        below. This list is not empty only when a currency went missing — a pair
+        that netted to nothing is listed too — so whether a currency is missing
+        from the graph is read from the per-currency amounts, never from whether
+        this list has anything in it.
+      </p>
+      <div className="space-y-2">
+        {suppressed.map((c, i) => (
+          <div
+            key={`${c.kind}-${i}`}
+            className="rounded-lg border border-border px-3 py-2"
+          >
+            <div className="text-xs text-muted-foreground">
+              {c.kind === "reciprocal"
+                ? "Two-way pair"
+                : `${c.accounts.length}-account loop`}
+              {c.accounts.length > 0 && (
+                <>
+                  {" — "}
+                  {c.accounts.map(nameOf).join(" → ")} → {nameOf(c.accounts[0])}
+                </>
+              )}
+            </div>
+            {c.legs.map((leg) => (
+              <div
+                key={`${leg.from}-${leg.to}`}
+                className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs"
+              >
+                <span className="text-muted-foreground">
+                  {nameOf(leg.from)} → {nameOf(leg.to)}:{" "}
+                  {formatScopedMulti(leg.gross)} flowed
+                </span>
+                <span className="font-medium text-muted-foreground">
+                  {withheldText(leg.discarded)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// withheldText is one leg's per-currency remainder, or the fact that there is
+// none. The multi-currency refusal is used rather than the selected currency's
+// own figure because the withheld money is precisely the money the selected view
+// is not showing: hiding it behind the selection would answer the question this
+// section exists to answer with the same absence the graph had.
+function withheldText(discarded: CurrencyAmounts): string {
+  if (Object.keys(discarded).length === 0) {
+    return "none of it is in the graph";
+  }
+  return `${formatScopedMulti(discarded)} not in the graph`;
+}
+
 function LinkSummaryPanel({
   summary,
+  code,
   onSelect,
 }: {
   summary: MoneyFlowLinkSummary[];
+  code: string;
   onSelect?: (type: string) => void;
 }) {
   if (summary.length === 0) {
@@ -882,7 +1050,7 @@ function LinkSummaryPanel({
             </div>
           </div>
           <div className="text-sm font-semibold text-foreground whitespace-nowrap">
-            {formatCurrency(s.total)}
+            {formatScoped(s.total, code)}
           </div>
         </button>
       ))}
@@ -891,10 +1059,30 @@ function LinkSummaryPanel({
 }
 
 // CircularMoneyPanel surfaces what the Sankey cannot draw: the account cycles
-// its cycle-breaking nets away or drops, and the account-to-account flows with
-// no counterpart in the opposite direction.
-function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
-  if (report.cycles.length === 0 && report.oneSidedFlows.length === 0) {
+// its cycle-breaking nets away or drops, the account-to-account flows with
+// no counterpart in the opposite direction, and — the half the graph and the
+// linked-transfers rollup otherwise state two totals for without — the money
+// that breaking those cycles withheld from the drawing.
+//
+// `report` is the separate /links/cycles request, and it is optional: the
+// withheld amounts travel in the graph response itself, so a failure to load the
+// per-cycle detail must not take the reconciliation with it. That is the case
+// where a reader most needs to know the graph is not showing everything.
+function CircularMoneyPanel({
+  report,
+  suppressed,
+  nameOf,
+  code,
+}: {
+  report: LinkCycleReport | null | undefined;
+  suppressed: MoneyFlowSuppressedCycle[];
+  nameOf: (id: string) => string;
+  code: string;
+}) {
+  const nothingDrawn =
+    !report ||
+    (report.cycles.length === 0 && report.oneSidedFlows.length === 0);
+  if (nothingDrawn && suppressed.length === 0) {
     return (
       <div className="text-sm text-muted-foreground py-6 text-center">
         No circular or one-way account flows in this range.
@@ -904,16 +1092,26 @@ function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
 
   return (
     <div className="space-y-5">
-      {report.cycles.length > 0 && (
+      {suppressed.length > 0 && (
+        <SuppressedCyclesSection suppressed={suppressed} nameOf={nameOf} />
+      )}
+
+      {report && report.cycles.length > 0 && (
         <div>
           <div className="mb-2 flex items-baseline justify-between gap-3">
             <h3 className="text-sm font-medium text-foreground">
               Cycles between your accounts
             </h3>
             <span className="text-xs text-muted-foreground">
-              {formatCurrency(report.totalCircular)} circulating
+              {circulatingText(report.totalCircular, code)} circulating
             </span>
           </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            A cycle&apos;s net is the money circulating the whole loop only while
+            the loop holds a single currency. Across currencies each key is that
+            currency&apos;s own smallest leg, so there is no single figure
+            circulating these loops and none is given above.
+          </p>
           <div className="space-y-2">
             {report.cycles.map((c, i) => (
               <div
@@ -944,7 +1142,7 @@ function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
                     </span>
                   </div>
                   <div className="text-sm font-semibold text-foreground whitespace-nowrap">
-                    {formatCurrency(c.net)}
+                    {formatScoped(c.net, code)}
                   </div>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -960,7 +1158,7 @@ function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
                   {c.legs.map((leg) => (
                     <span key={`${leg.fromAccountId}-${leg.toAccountId}`}>
                       {leg.fromAccountName} → {leg.toAccountName}:{" "}
-                      {formatCurrency(leg.amount)}
+                      {formatScoped(leg.amount, code)}
                     </span>
                   ))}
                 </div>
@@ -970,7 +1168,7 @@ function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
         </div>
       )}
 
-      {report.oneSidedFlows.length > 0 && (
+      {report && report.oneSidedFlows.length > 0 && (
         <div>
           <h3 className="mb-2 text-sm font-medium text-foreground">
             One-way account flows
@@ -1014,7 +1212,7 @@ function CircularMoneyPanel({ report }: { report: LinkCycleReport }) {
                       .join(", ")}
                   </span>
                   <span className="text-sm font-semibold text-foreground whitespace-nowrap">
-                    {formatCurrency(f.total)}
+                    {formatScoped(f.total, code)}
                   </span>
                 </div>
               </div>

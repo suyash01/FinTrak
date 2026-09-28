@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +13,8 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fintrak/backend/internal/money"
 )
 
 // expectBillingCyclesUpToDate sets up the ensureBillingCycles queries for an
@@ -75,7 +79,7 @@ func TestGetDashboardSummaryErrors(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("totals error", func(t *testing.T) {
+	t.Run("transaction count error", func(t *testing.T) {
 		mock, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mock.Close()
@@ -84,7 +88,30 @@ func TestGetDashboardSummaryErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
 			WithArgs(userID).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\),").
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+			WithArgs(userID).
+			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard/summary", nil))
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("currency scope error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
 			WithArgs(userID).
 			WillReturnError(assert.AnError)
 
@@ -104,12 +131,83 @@ func TestGetDashboardSummaryErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
 			WithArgs(userID).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\),").
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
 			WithArgs(userID).
-			WillReturnRows(pgxmock.NewRows([]string{"count", "income", "expense"}).AddRow(0, 0.0, 0.0))
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
 		mock.ExpectQuery("t.type = 'debit' AND t.user_id").
 			WithArgs(userID).
 			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard/summary", nil))
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("by category row error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		boom := errors.New("connection reset mid-fold")
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+				AddRow(uuid.New(), "Savings", "INR", money.FromFloat(100), money.FromFloat(40)))
+		// A half-read fold would report the row that arrived and drop the one
+		// that did not, so the error has to travel rather than shorten the list.
+		mock.ExpectQuery("t.type = 'debit' AND t.user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}).
+				AddRow("c1", "Food", "#f00", "food", "INR", money.FromFloat(10), 1).
+				AddRow("c2", "Rent", "#00f", "home", "INR", money.FromFloat(90), 1).
+				RowError(1, boom))
+
+		w := httptest.NewRecorder()
+		newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard/summary", nil))
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("monthly trend row error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+				AddRow(uuid.New(), "Savings", "INR", money.FromFloat(100), money.FromFloat(40)))
+		mock.ExpectQuery("t.type = 'debit' AND t.user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
+		mock.ExpectQuery("t.type = 'credit' AND t.user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
+		mock.ExpectQuery("TO_CHAR\\(t.date, 'YYYY-MM'\\)").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}).
+				AddRow("2026-07", "INR", money.FromFloat(100), money.FromFloat(40)).
+				RowError(0, errors.New("connection reset mid-fold")))
 
 		w := httptest.NewRecorder()
 		newDashboardTestRouter(newTestServer(mock)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/dashboard/summary", nil))
@@ -127,18 +225,21 @@ func TestGetDashboardSummaryErrors(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
 			WithArgs(userID).
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\),").
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions").
 			WithArgs(userID).
-			WillReturnRows(pgxmock.NewRows([]string{"count", "income", "expense"}).AddRow(0, 0.0, 0.0))
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
 		mock.ExpectQuery("t.type = 'debit' AND t.user_id").
 			WithArgs(userID).
-			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}))
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
 		mock.ExpectQuery("t.type = 'credit' AND t.user_id").
 			WithArgs(userID).
-			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "total", "count"}))
-		mock.ExpectQuery("SELECT TO_CHAR\\(date, 'YYYY-MM'\\) as month").
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "color", "icon", "currency", "total", "count"}))
+		mock.ExpectQuery("TO_CHAR\\(t.date, 'YYYY-MM'\\)").
 			WithArgs(userID).
-			WillReturnRows(pgxmock.NewRows([]string{"month", "income", "expense"}))
+			WillReturnRows(pgxmock.NewRows([]string{"month", "currency", "income", "expense"}))
 		mock.ExpectQuery("SELECT t.id, t.account_id, t.date, t.description, t.amount, t.type").
 			WithArgs(userID).
 			WillReturnRows(pgxmock.NewRows([]string{
@@ -278,6 +379,17 @@ func TestGetDashboardSummaryBillingCycleErrors(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Body.String(), `"byCategory":[]`)
+		// No cycle means no window, so every amount is an empty map and the
+		// scope is empty rather than null: a client must not have to tell an
+		// absent value from a nil one.
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+		for _, field := range []string{"totalIncome", "totalExpense", "totalNet"} {
+			amounts, isObject := raw[field].(map[string]any)
+			if !isObject || len(amounts) != 0 {
+				t.Errorf("%s = %v, want {}", field, raw[field])
+			}
+		}
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
@@ -293,6 +405,9 @@ func TestGetDashboardSummaryRejectsMalformedFilters(t *testing.T) {
 		{name: "accountId", query: "accountId=not-a-uuid", errorText: "invalid accountId"},
 		{name: "dateFrom", query: "dateFrom=2024-1-5", errorText: "dateFrom must be YYYY-MM-DD"},
 		{name: "dateTo", query: "dateTo=not-a-date", errorText: "dateTo must be YYYY-MM-DD"},
+		// A currency that is not three letters matches nothing, which would
+		// render as a quiet month rather than an error.
+		{name: "currency", query: "currency=US", errorText: "invalid currency"},
 	}
 
 	for _, tt := range tests {

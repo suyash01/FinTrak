@@ -236,19 +236,45 @@ export interface ValidateTransactionsResponse {
   results: ValidateTransactionResult[];
 }
 
+/**
+ * One aggregate's value, keyed by the currency of each account that contributed.
+ * A single-currency scope has exactly one key. More than one means the API
+ * refused to return a total, and a missing key reads as zero — never as an
+ * error, and never as missing data.
+ */
+export type CurrencyAmounts = Record<string, number>;
+
+/** One account inside a response's scope, with what it contributes. */
+export interface ScopedAccount {
+  id: string;
+  name: string;
+  currency: string;
+  income: CurrencyAmounts;
+  expense: CurrencyAmounts;
+}
+
+/**
+ * Every currency a reporting response covers, and the accounts behind each.
+ * `currencies` is never null: a scope covering no accounts carries [].
+ */
+export interface CurrencyScope {
+  currencies: string[];
+  accounts: ScopedAccount[];
+}
+
 export interface CategorySpend {
   categoryId: string;
   categoryName: string;
   categoryColor: string;
   categoryIcon: string;
-  total: number;
+  total: CurrencyAmounts;
   count: number;
 }
 
 export interface MonthlyData {
   month: string;
-  income: number;
-  expense: number;
+  income: CurrencyAmounts;
+  expense: CurrencyAmounts;
 }
 
 export interface CurrentCycleInfo {
@@ -262,19 +288,23 @@ export interface BillingCycleTrendItem {
   label: string;
   startDate: string;
   endDate: string;
-  income: number;
-  expense: number;
+  income: CurrencyAmounts;
+  expense: CurrencyAmounts;
 }
 
 export interface DashboardSummary {
   totalAccounts: number;
   totalTransactions: number;
-  totalIncome: number;
-  totalExpense: number;
+  totalIncome: CurrencyAmounts;
+  totalExpense: CurrencyAmounts;
+  // Computed by the server. Subtracting totalIncome from totalExpense is
+  // undefined across currencies, so there is nothing for a client to derive.
+  totalNet: CurrencyAmounts;
   byCategory: CategorySpend[];
   incomeByCategory: CategorySpend[];
   monthlyTrend: MonthlyData[];
   recentTransactions: Transaction[];
+  currencyScope: CurrencyScope;
   // Present only in billing-cycle view (groupBy=billing_cycle): totals reflect
   // the current statement period and billingCycleTrend replaces monthlyTrend.
   currentCycle?: CurrentCycleInfo;
@@ -293,13 +323,13 @@ export interface MoneyFlowNode {
   kind: MoneyFlowNodeKind;
   color?: string;
   group?: string;
-  total: number;
+  total: CurrencyAmounts;
 }
 
 export interface MoneyFlowEdge {
   source: string;
   target: string;
-  value: number;
+  value: CurrencyAmounts;
 }
 
 // Per-type rollup of the user's transaction links in the same window. Shown
@@ -307,15 +337,54 @@ export interface MoneyFlowEdge {
 export interface MoneyFlowLinkSummary {
   type: LinkType;
   count: number;
-  total: number;
+  total: CurrencyAmounts;
+}
+
+/**
+ * One leg of a cycle the graph could not draw, and what it removed from it.
+ *
+ * `gross` is the leg's full flow before anything was netted away; `discarded` is
+ * the part of it that is in no node total and no edge of the drawing. A currency
+ * present in `gross` but absent from the graph is in `discarded`, per currency —
+ * which is the question a client asks, and the reason the field is per currency
+ * rather than one number.
+ */
+export interface MoneyFlowSuppressedLeg {
+  from: string;
+  to: string;
+  gross: CurrencyAmounts;
+  discarded: CurrencyAmounts;
+}
+
+/**
+ * One circular account-to-account flow the graph cannot draw, with the money it
+ * removed. A Sankey must stay acyclic, so reciprocal pairs are netted and longer
+ * loops are broken by dropping their back edge.
+ *
+ * `accounts` holds the participants in flow order as ids — the same accounts
+ * `currencyScope` names — and each leg runs from `accounts[i]` to
+ * `accounts[(i+1) % length]`.
+ */
+export interface MoneyFlowSuppressedCycle {
+  kind: "reciprocal" | "cycle";
+  accounts: string[];
+  legs: MoneyFlowSuppressedLeg[];
 }
 
 export interface MoneyFlowGraph {
   nodes: MoneyFlowNode[];
   links: MoneyFlowEdge[];
-  totalIncome: number;
-  totalExpense: number;
+  totalIncome: CurrencyAmounts;
+  totalExpense: CurrencyAmounts;
+  // Server-computed for the same reason as DashboardSummary.totalNet.
+  totalNet: CurrencyAmounts;
   linkSummary: MoneyFlowLinkSummary[];
+  // What the cycle-break removed from the drawing. The linkSummary rollup
+  // already counts these same links, so the graph and the rollup state two
+  // different totals for the same money unless this is reported: never null,
+  // and empty when nothing was withheld.
+  suppressedCycles: MoneyFlowSuppressedCycle[];
+  currencyScope: CurrencyScope;
 }
 
 // ---- Money-flow timeline ----
@@ -327,9 +396,9 @@ export interface MoneyFlowTimelinePeriod {
   label: string;
   startDate: string;
   endDate: string;
-  income: number;
-  expense: number;
-  net: number;
+  income: CurrencyAmounts;
+  expense: CurrencyAmounts;
+  net: CurrencyAmounts;
 }
 
 export type MoneyFlowTimelineGroupBy = "month" | "billing_cycle";
@@ -337,6 +406,7 @@ export type MoneyFlowTimelineGroupBy = "month" | "billing_cycle";
 export interface MoneyFlowTimeline {
   groupBy: MoneyFlowTimelineGroupBy;
   periods: MoneyFlowTimelinePeriod[];
+  currencyScope: CurrencyScope;
 }
 
 // ---- Circular money (link cycles) ----
@@ -345,7 +415,7 @@ export interface MoneyFlowTimeline {
 export interface LinkFlowTypeTotal {
   type: LinkType;
   count: number;
-  total: number;
+  total: CurrencyAmounts;
 }
 
 export interface LinkCycleAccount {
@@ -362,7 +432,7 @@ export interface LinkCycleLeg {
   toAccountId: string;
   toAccountName: string;
   toAccountColor?: string;
-  amount: number;
+  amount: CurrencyAmounts;
   count: number;
   types: LinkFlowTypeTotal[];
 }
@@ -370,13 +440,14 @@ export interface LinkCycleLeg {
 // One circular money flow between accounts. `kind` is "reciprocal" for a pair
 // that flows both ways (netted into a single Sankey edge) or "cycle" for a
 // longer loop broken by dropping its back edge. `net` is the smallest leg — the
-// amount that actually circulates the whole loop.
+// amount that actually circulates the whole loop, which is only a circulation
+// figure when the map holds exactly one currency.
 export interface LinkCycle {
   kind: "reciprocal" | "cycle";
   accounts: LinkCycleAccount[];
   legs: LinkCycleLeg[];
-  net: number;
-  gross: number;
+  net: CurrencyAmounts;
+  gross: CurrencyAmounts;
   transactions: number;
 }
 
@@ -388,15 +459,16 @@ export interface LinkOneSidedFlow {
   toAccountId: string;
   toAccountName: string;
   toAccountColor?: string;
-  total: number;
+  total: CurrencyAmounts;
   count: number;
   types: LinkFlowTypeTotal[];
 }
 
 export interface LinkCycleReport {
   cycles: LinkCycle[];
-  totalCircular: number;
+  totalCircular: CurrencyAmounts;
   oneSidedFlows: LinkOneSidedFlow[];
+  currencyScope: CurrencyScope;
 }
 
 // ---- Cash-flow calendar heatmap ----
@@ -405,9 +477,9 @@ export interface LinkCycleReport {
 // the page fills the gaps to render a continuous calendar.
 export interface CashFlowCalendarDay {
   date: string;
-  income: number;
-  expense: number;
-  net: number;
+  income: CurrencyAmounts;
+  expense: CurrencyAmounts;
+  net: CurrencyAmounts;
   count: number;
 }
 
@@ -417,7 +489,7 @@ export interface CashFlowCalendarMarker {
   date: string;
   label: string;
   kind: "balance" | "outstanding";
-  amount: number;
+  amount: CurrencyAmounts;
 }
 
 // A billing-cycle boundary, used to mark statement periods on the heatmap.
@@ -426,18 +498,21 @@ export interface CashFlowCalendarCycle {
   label: string;
   startDate: string;
   endDate: string;
-  outstanding: number;
+  outstanding: CurrencyAmounts;
 }
 
 export interface CashFlowCalendar {
   days: CashFlowCalendarDay[];
   markers: CashFlowCalendarMarker[];
   cycles: CashFlowCalendarCycle[];
-  totalIncome: number;
-  totalExpense: number;
-  net: number;
-  // Largest absolute daily net in the window, for heatmap scaling.
-  maxAbsNet: number;
+  totalIncome: CurrencyAmounts;
+  totalExpense: CurrencyAmounts;
+  net: CurrencyAmounts;
+  // Largest absolute daily net in the window, per currency, for heatmap
+  // scaling. A single scale across currencies would flatten a quiet foreign
+  // account's real deficit, so the page scales by the currency on screen.
+  maxAbsNet: CurrencyAmounts;
+  currencyScope: CurrencyScope;
 }
 
 export interface TransactionsResponse {

@@ -369,6 +369,20 @@ function validate(def: FieldDef, field: string, values: string[]): { code: strin
           return { code: DIAG.unresolved, message: `${field}: a tag name cannot contain a quote` };
         }
         break;
+      case "currency":
+        // Three ASCII letters, folded to upper case by the server. Not an enum:
+        // the domain is the user's own accounts, so a fixed list would refuse a
+        // currency they legitimately hold. The fold happens in the compiler
+        // (backend/internal/query/compile.go, emitCurrency), so this checks the
+        // shape only: the corpus keeps the lower case the user typed, and it is
+        // the bound argument that comes out upper case.
+        if (!/^[A-Za-z]{3}$/.test(v)) {
+          return {
+            code: DIAG.unresolved,
+            message: `${field}: ${JSON.stringify(v)} is not a currency code (three letters, e.g. USD)`,
+          };
+        }
+        break;
     }
   }
   return null;

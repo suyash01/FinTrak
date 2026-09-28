@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCurrency,
+  formatNumber,
   parseDateOnly,
   formatDateOnly,
   formatDate,
@@ -26,6 +27,16 @@ describe("formatCurrency", () => {
 
   it("supports a custom currency", () => {
     expect(formatCurrency(10, "USD")).toContain("$");
+  });
+});
+
+describe("formatNumber", () => {
+  it("groups an amount without naming a currency", () => {
+    // Same grouping and same two decimals as formatCurrency, so the two never
+    // print the same amount two ways.
+    expect(formatNumber(1234.5)).toBe("1,234.50");
+    expect(formatNumber(-99.99)).toBe("-99.99");
+    expect(formatNumber(0)).toBe("0.00");
   });
 });
 

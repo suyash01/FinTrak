@@ -93,6 +93,8 @@ func emit(t Term, sink Sink) *Diagnostic {
 		return emitColumn(t, sink, "t.category_id = $%d", "t.category_id IS NULL", negate)
 	case "acct":
 		return emitColumn(t, sink, "t.account_id = $%d", "", negate)
+	case "ccy":
+		return emitCurrency(t, sink, negate)
 	case "payee":
 		return emitColumn(t, sink, "t.payee_id = $%d", "t.payee_id IS NULL", negate)
 	case "type":
@@ -153,6 +155,78 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 	clauses := make([]string, 0, len(t.Values))
 	for _, v := range t.Values {
 		clauses = append(clauses, sink.Clause("EXISTS (SELECT 1 FROM categories cat WHERE cat.id = t.category_id AND cat.group_id = $%d)", v))
+	}
+	wrapGroup(sink, clauses, negate)
+	return nil
+}
+
+// defaultCurrency is the code an account is read as when accounts.currency is
+// unset. It is the same value as handlers.defaultCurrency, repeated rather than
+// imported because this package is compiled into a separate parser surface and
+// must not depend on the handler package; the two comments are the coupling, and
+// a change to one has to change the other.
+const defaultCurrency = "INR"
+
+// currencyPredicate matches a transaction whose account holds one currency,
+// through a correlated EXISTS so the fragment still names only `transactions
+// t`. A join is not an option and the reason is at the top of this file: the
+// list query and its COUNT(*) share this predicate, so a fragment naming a
+// joined table would make the count fail while the page rendered fine.
+// TestCompileOnlyReferencesTheTransactionsTable in compile_test.go enforces that.
+//
+// It is emitGroup's shape deliberately — one clause per value, OR-ed by
+// wrapGroup — because that is what keeps the placeholder numbering in one
+// place. sink.Clause allocates each $n, so a csv is several placeholders and
+// never a hand-counted one, which is what would break the moment another term
+// preceded this one on the same query.
+//
+// The COALESCE(NULLIF(...)) is load-bearing, and this branch spells it twenty
+// times across two modules. Six of those are named sites - the ones a reader
+// checks by name:
+//
+//  1. here, currencyPredicate
+//  2. handlers/currency.go's scopeSQL projection
+//  3. the same query's GROUP BY, which has to agree with its projection
+//  4. that query's ?currency= predicate, at handlers/currency.go:145 - inside
+//     currencyScope, not in the handler package's currencyPredicate, which is a
+//     different function over the same column with a different table alias
+//  5. handlers' currencyPredicate, in dashboard.go
+//  6. handlers' flowCurrency, in money_flow.go, which money_flow.go, the timeline
+//     and the cash-flow calendar all call
+//
+// The other fourteen are dashboard.go writing it out inline in its own queries -
+// the two top-15 category breakdowns, the monthly trend and the billing-cycle
+// trend - and they have to agree with sites 5 and 6 above. The list says "six"
+// because those are the sites a future edit would be pointed at; the fourteen are
+// counted here so the number is not mistaken for the whole. This comment used to
+// say four, and named a predicate that is at handlers/currency.go:145 instead,
+// which is worth the space: nothing enforces the agreement. There is no test that
+// greps this file, the expression is spelled rather than generated, and a reader
+// who trusts the number is the only thing standing between the sites and a
+// seventh that disagrees. A count that understates itself is the wrong guard for
+// the one thing nothing else checks, so recount before trusting it.
+//
+// accounts.currency is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL and a
+// restored bundle can hold the empty string, which is why the NULLIF is there at
+// all. Comparing the raw column, as this did, makes the ledger disagree with the
+// dashboard about what a currency *is*: an account whose currency is unset is INR
+// to every reporting query and to nothing here, so `?currency=INR` on
+// /transactions would silently omit the transactions the same filter includes on
+// /dashboard/summary. Two surfaces of one product answering the same question
+// differently, with no error, is the exact class of defect this spelling exists
+// to remove.
+const currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), '" + defaultCurrency + "') = $%d)"
+
+// emitCurrency binds a ccy term. Every value is folded to upper case here, at
+// bind time rather than at parse time, so the parser keeps what the user typed
+// (the same split `amt` uses, where convertAmount normalises at compile time)
+// and the TypeScript mirror has nothing to fold. Without the fold, "usd" would
+// bind against 'USD', match nothing, and hand the user an empty ledger with no
+// error to explain it.
+func emitCurrency(t Term, sink Sink, negate bool) *Diagnostic {
+	clauses := make([]string, 0, len(t.Values))
+	for _, v := range t.Values {
+		clauses = append(clauses, sink.Clause(currencyPredicate, strings.ToUpper(v)))
 	}
 	wrapGroup(sink, clauses, negate)
 	return nil
