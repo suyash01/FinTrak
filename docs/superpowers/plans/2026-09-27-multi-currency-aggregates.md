@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-27-multi-currency-aggregates-design.md` — read it before starting; this plan argues from it.
 
+**Writing a brief from this plan:** on PowerShell, do not extract a task with
+`Set-Content` — it writes the console's default encoding and silently replaces
+the UTF-8 em dashes in these comments with hyphens. Use `[System.IO.File]`'s
+encoding-explicit writers (`ReadAllLines` / `WriteAllLines`), so a brief handed
+to a subagent is byte-identical to the task it came from. (A 46-line script that
+did this lived at `scripts/task-brief.ps1` and was removed: nothing in the
+repository referenced it, it was Windows-only, and this note is what it was
+worth.)
+
 ## Global Constraints
 
 - **Money is never `float64`.** Amounts are `money.Amount` (int64 minor units) in the backend and `api.Amount` (decimal text) in `client/api`. `Float64()` is display-only (bar widths, heatmap intensity) and is already documented as such on both types.
