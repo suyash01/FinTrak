@@ -26,7 +26,7 @@
 - **Handlers take dependencies from the explicit `handlers.Server`; there is no package global.** Tests build a `Server` over a `pgxmock` pool via `newMockServer(t)`.
 - **Tests that hit SQL expect exact queries and args against the mock.** Changing a query string or arg order fails the test by design.
 - **Every `gin.SetMode(gin.TestMode)`** in a new test file that builds a router.
-- **Coverage floors are release gates:** backend 85%, `client/api` 85%, TUI 18%, MCP 80%, frontend 85%. New code must carry its share.
+- **Coverage floors are release gates:** backend 85%, `client/api` 85%, TUI 18%, MCP 80%, frontend 76/67/71/78 (statements/branches/functions/lines — the v8 thresholds in `frontend/vitest.config.ts`, which `bun run test:coverage` fails below, and the strictest of them, lines, is what `codecov.yml`'s frontend flag reports at 78%). New code must carry its share.
 - **No new table, so no `BackupBundle` work.** `readonly.SideEffectingGETs` is unchanged — no route, verb or write changes in this plan.
 
 ## Review Focus
