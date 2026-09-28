@@ -477,7 +477,15 @@ func (t *Transactions) cycleSort() {
 	}
 }
 
-// openFilterForm opens the filter editor covering the whole query grammar.
+// openFilterForm opens the filter editor: one control per TransactionFilter field
+// the ledger list can narrow by.
+//
+// It does not cover the query grammar, and the comment used to claim it did. The
+// `q` expression is reachable over HTTP and is not offered here, because the
+// server resolves no names: `q` takes ids, so `cat:Groceries` matches nothing and
+// a user would have to paste a UUID. The named controls below are the answer for
+// this client, which is also what the MCP server's own tool description advises.
+// See #39.
 func (t *Transactions) openFilterForm() {
 	ref := t.ctx.Ref
 	filter := t.filter
@@ -489,6 +497,19 @@ func (t *Transactions) openFilterForm() {
 		SelectField("Payee", filter.PayeeID, append([]Option{{Value: api.NoPayee, Label: "(no payee)"}}, ref.PayeeOptions()...), false),
 		SelectField("Type", filter.Type, []Option{{Value: "debit", Label: "debit"}, {Value: "credit", Label: "credit"}}, false),
 		SelectField("Linked", linkedState(filter.Linked), []Option{{Value: "yes", Label: "linked"}, {Value: "no", Label: "unlinked"}}, false),
+		SelectField("Loan", filter.LoanAccountID, ref.LoanAccountOptions(), false),
+		SelectField("Recurring", filter.Recurring, []Option{{Value: "linked", Label: "linked"}, {Value: "unlinked", Label: "unlinked"}}, false),
+		// Uncategorized overlaps the "Uncategorized" entry in the Category select
+		// above, and deliberately so: the Category sentinel and this flag compile to
+		// the same clause server-side (transaction.go's categoryId "uncategorized"
+		// case and its `uncategorized=true` case are both `t.category_id IS NULL`).
+		// They are kept as separate controls because they are separate parameters
+		// with separate meanings to a caller reading the API, and because the flag
+		// is the one to reach for when the Category picker is not what you want to
+		// touch. Do not "simplify" one into the other — an exported filter and a
+		// shared one are not guaranteed to treat them alike.
+		BoolField("Uncategorized", filter.Uncategorized),
+		BoolField("Exclude attached", filter.ExcludeAttached),
 		{Label: "Date from", Kind: FieldText, Value: filter.DateFrom, Width: 14, Validate: optionalDate},
 		{Label: "Date to", Kind: FieldText, Value: filter.DateTo, Width: 14, Validate: optionalDate},
 		{Label: "Tags", Kind: FieldText, Value: strings.Join(filter.Tags, ","), Width: 30, Help: "comma separated, matches any"},
@@ -498,21 +519,25 @@ func (t *Transactions) openFilterForm() {
 	}
 	t.ctx.Open(NewForm("txn.filter", "Filter transactions", fields, func(f *Form) tea.Cmd {
 		t.filter = api.TransactionFilter{
-			AccountID:  f.Value("Account"),
-			CategoryID: f.Value("Category"),
-			GroupID:    f.Value("Group"),
-			PayeeID:    f.Value("Payee"),
-			Search:     f.Value("Search"),
-			Type:       f.Value("Type"),
-			DateFrom:   f.Value("Date from"),
-			DateTo:     f.Value("Date to"),
-			Amount:     f.Value("Amount"),
-			Tags:       splitList(f.Value("Tags")),
-			Linked:     parseLinked(f.Value("Linked")),
-			SortBy:     filter.SortBy,
-			SortOrder:  filter.SortOrder,
-			Limit:      f.IntValue("Limit"),
-			Page:       f.IntValue("Page"),
+			AccountID:       f.Value("Account"),
+			CategoryID:      f.Value("Category"),
+			GroupID:         f.Value("Group"),
+			PayeeID:         f.Value("Payee"),
+			Search:          f.Value("Search"),
+			Type:            f.Value("Type"),
+			DateFrom:        f.Value("Date from"),
+			DateTo:          f.Value("Date to"),
+			Amount:          f.Value("Amount"),
+			Tags:            splitList(f.Value("Tags")),
+			Linked:          parseLinked(f.Value("Linked")),
+			LoanAccountID:   f.Value("Loan"),
+			Recurring:       f.Value("Recurring"),
+			Uncategorized:   f.BoolValue("Uncategorized"),
+			ExcludeAttached: f.BoolValue("Exclude attached"),
+			SortBy:          filter.SortBy,
+			SortOrder:       filter.SortOrder,
+			Limit:           f.IntValue("Limit"),
+			Page:            f.IntValue("Page"),
 		}
 		f.Close()
 		t.ctx.Notify(LevelInfo, "filters applied")
@@ -754,10 +779,7 @@ func (t *Transactions) openBulkLoanForm() {
 		t.ctx.Notify(LevelError, "no loan/EMI accounts exist")
 		return
 	}
-	options := make([]Option, 0, len(loans))
-	for _, loan := range loans {
-		options = append(options, Option{Value: loan.ID, Label: loan.Name})
-	}
+	options := t.ctx.Ref.LoanAccountOptions()
 	ids := t.selectedIDs()
 	fields := []Field{SelectField("Loan account", "", options, true)}
 	t.ctx.Open(NewForm("txn.bulk", "Attach to loan / EMI", fields, func(f *Form) tea.Cmd {
@@ -857,6 +879,18 @@ func (t *Transactions) headerLine(width int) string {
 	}
 	if t.filter.Linked != nil {
 		bits = append(bits, fmt.Sprintf("linked=%t", *t.filter.Linked))
+	}
+	if t.filter.LoanAccountID != "" {
+		bits = append(bits, "loan="+t.ctx.Ref.AccountName(t.filter.LoanAccountID))
+	}
+	if t.filter.Recurring != "" {
+		bits = append(bits, "recurring="+t.filter.Recurring)
+	}
+	if t.filter.Uncategorized {
+		bits = append(bits, "uncategorized")
+	}
+	if t.filter.ExcludeAttached {
+		bits = append(bits, "not attached")
 	}
 	if t.filter.DateFrom != "" || t.filter.DateTo != "" {
 		bits = append(bits, "dates="+defaultTo(t.filter.DateFrom, "…")+"…"+defaultTo(t.filter.DateTo, "…"))
