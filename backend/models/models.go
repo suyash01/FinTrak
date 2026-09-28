@@ -1314,6 +1314,14 @@ type CashFlowCalendar struct {
 	// It is per currency because a single scale across currencies is meaningless:
 	// it would make a quiet foreign account's real deficit look flat next to a
 	// large domestic one, and the client picks its own currency's denominator.
+	//
+	// A currency with no key here is one whose every day in the window nets
+	// exactly zero, so the denominator a client needs can be absent even while
+	// days[].net carries that currency. That is not an oversight to guard
+	// against - under the same convention that governs every other amount on this
+	// response, an absent key reads as zero, and zero is the right scale for a
+	// currency that never moved. Both consumers already treat it that way; the
+	// contract says it so a third one does not have to discover it.
 	MaxAbsNet CurrencyAmounts `json:"maxAbsNet"`
 	// CurrencyScope names the currencies the window covers and the accounts
 	// behind them, and is where the window totals above come from - the same

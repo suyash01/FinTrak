@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -359,6 +360,50 @@ var scalarAmountFields = map[string]bool{
 	"discarded":     true,
 }
 
+// scopedScalarAmountPaths are the converted amounts that scalarAmountFields
+// cannot name, because the key they arrived as is one the schema never
+// converted: a transaction's own `amount` is legitimately a number, so `amount`
+// cannot go in the map above without the guard flagging every transaction on
+// every response it walks. That left two fields this change converted and
+// nothing watching them - CashFlowCalendar.markers[].amount and
+// LinkCycleLeg.amount - which is exactly the position the key list was added
+// to get out of. The paths are written with [*] for the array index, so the
+// guard names where the field lives rather than what it is called.
+//
+// The rule these follow is the one the map above states: a field this change
+// made per-currency must not be a bare number again. A path that stops matching
+// because the field was renamed or moved is a gap, so a marker path that
+// matches nothing in any response this suite walks is itself worth failing on.
+var scopedScalarAmountPaths = []string{
+	"$.markers[*].amount",
+	"$.legs[*].amount",
+}
+
+// scopedScalarAmountREs compiles the marker paths once, turning [*] into the
+// numeric index a walked path actually carries. Each matches the tail of a path
+// only: a marker names a field wherever it sits, so one entry has to cover
+// $.cycles[0].legs[0].amount as readily as $.legs[0].amount, which a leading-$
+// pattern cannot do. The $ at the end is what keeps it from also matching the
+// keys *inside* the map it guards - $.markers[0].amount.INR is a currency code,
+// not an amount - and without it the guard flags every real response.
+var scopedScalarAmountREs = func() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, 0, len(scopedScalarAmountPaths))
+	for _, p := range scopedScalarAmountPaths {
+		var b strings.Builder
+		// The literal parts are quoted one at a time around the substitution, so
+		// the \d that replaces [*] is a real class rather than an escaped
+		// backslash - QuoteMeta applied to the whole pattern would escape it.
+		for i, part := range strings.Split(strings.TrimPrefix(p, "$."), "[*]") {
+			if i > 0 {
+				b.WriteString(`\[\d+\]`)
+			}
+			b.WriteString(regexp.QuoteMeta(part))
+		}
+		out = append(out, regexp.MustCompile(b.String()+`$`))
+	}
+	return out
+}()
+
 // requireNoScalarAmounts decodes a response and fails on any bare JSON value -
 // a number above all - sitting under one of the keys above, wherever in the
 // document it is. This is the assertion that outlives the rest: it does not know
@@ -369,24 +414,106 @@ var scalarAmountFields = map[string]bool{
 //
 // Values are allowed to be objects, arrays or absent; a key that is missing
 // entirely is not a regression, and neither is a number the schema never
-// converted (a transaction's own `amount`, a `count`).
+// converted (a transaction's own `amount`, a `count`) - except at the marker
+// paths above, which name the converted fields whose key name was already in use.
 func requireNoScalarAmounts(t *testing.T, path string, body []byte) {
 	t.Helper()
-	var doc any
-	require.NoError(t, json.Unmarshal(body, &doc), "%s: %s", path, body)
+	seen := scalarAmountViolations(body)
+	require.Empty(t, seen.violations, "%s still carries a scalar amount: %v", path, seen.violations)
+}
 
-	var violations []string
+// scalarAmountScan is one pass of the shape guard: the bare amounts it found and
+// the marker paths it actually reached. The second half matters as much as the
+// first - a marker path that matches nothing is a guard that stopped guarding,
+// and nothing else in the suite would say so.
+type scalarAmountScan struct {
+	violations []string
+	matched    map[string]bool
+}
+
+// requireScalarGuardReached asserts that the walk reached a marker path, so a
+// path written for a field that has since been renamed or moved fails here
+// rather than passing silently on every response.
+func requireScalarGuardReached(t *testing.T, path, marker string, body []byte) {
+	t.Helper()
+	require.Truef(t, scalarAmountViolations(body).matched[marker],
+		"%s: the shape guard never reached %s, so it is guarding nothing", path, marker)
+}
+
+// TestScalarAmountGuardNamesEveryConvertedField proves the guard fires on the
+// two fields the key list could not name, and on a key-list field, from bodies
+// no handler can produce. The real responses only ever send maps today, so
+// without this the paths would be exercised solely by the responses that happen
+// to reach them - which is how a guard rots without a single failure.
+func TestScalarAmountGuardNamesEveryConvertedField(t *testing.T) {
+	cases := map[string]string{
+		"$.markers[0].amount": `{"markers":[{"date":"2024-06-30","label":"Balance","kind":"balance","amount":300.25}]}`,
+		"$.legs[0].amount":    `{"legs":[{"fromAccountId":"a","toAccountId":"b","amount":500,"count":1}]}`,
+		"$.totalIncome":       `{"totalIncome":1250.5}`,
+		"$.data[0].net":       `{"data":[{"net":1.5}]}`,
+		// A marker matches a field wherever it sits, which is what lets one entry
+		// cover legs[].amount whether the response nests them under cycles[] or not.
+		"$.cycles[0].legs[0].amount": `{"cycles":[{"legs":[{"amount":7}]}]}`,
+	}
+	for want, body := range cases {
+		scan := scalarAmountViolations([]byte(body))
+		require.Lenf(t, scan.violations, 1, "%s: the guard should flag exactly this one field", body)
+		require.Truef(t, strings.HasPrefix(scan.violations[0], want),
+			"%s: the guard flagged %q rather than %s", body, scan.violations[0], want)
+	}
+
+	// A transaction's own amount is the reason `amount` cannot be a key-list entry,
+	// and it has to stay allowed at every path the marker list does not name. The
+	// keys of the match set are the marker paths, not the walked ones.
+	clean := scalarAmountViolations([]byte(`{"data":[{"amount":12.5,"count":3}],"totalIncome":{"INR":1}}`))
+	require.Empty(t, clean.violations)
+	for _, marker := range scopedScalarAmountPaths {
+		require.Falsef(t, clean.matched[marker], "%s must not match a transaction's own amount", marker)
+	}
+
+	// The empty object is the shape, and it counts as reached: a currency that
+	// spent nothing has {} for income, and that is not a regression.
+	empty := scalarAmountViolations([]byte(`{"markers":[{"amount":{}}],"totalIncome":{},"nothing":1}`))
+	require.Empty(t, empty.violations)
+	require.True(t, empty.matched["$.markers[*].amount"])
+}
+
+// scalarAmountViolations walks one body and reports the bare amounts under a
+// guarded key, plus which marker paths it reached.
+func scalarAmountViolations(body []byte) scalarAmountScan {
+	var doc any
+	if json.Unmarshal(body, &doc) != nil {
+		return scalarAmountScan{matched: map[string]bool{}}
+	}
+
+	scan := scalarAmountScan{matched: map[string]bool{}}
+	// guarded reports whether a walked path is one this guard watches, recording
+	// which marker path matched so a marker that has stopped matching anything is
+	// visible rather than merely never firing.
+	guarded := func(at string) bool {
+		if key := at[strings.LastIndexByte(at, '.')+1:]; scalarAmountFields[key] {
+			return true
+		}
+		for i, re := range scopedScalarAmountREs {
+			if re.MatchString(at) {
+				scan.matched[scopedScalarAmountPaths[i]] = true
+				return true
+			}
+		}
+		return false
+	}
+
 	var walk func(node any, at string)
 	walk = func(node any, at string) {
 		switch v := node.(type) {
 		case map[string]any:
 			for key, child := range v {
 				here := at + "." + key
-				if scalarAmountFields[key] {
+				if guarded(here) {
 					switch child.(type) {
 					case map[string]any, []any:
 					default:
-						violations = append(violations, fmt.Sprintf("%s = %#v", here, child))
+						scan.violations = append(scan.violations, fmt.Sprintf("%s = %#v", here, child))
 					}
 				}
 				walk(child, here)
@@ -398,8 +525,8 @@ func requireNoScalarAmounts(t *testing.T, path string, body []byte) {
 		}
 	}
 	walk(doc, "$")
-	sort.Strings(violations)
-	require.Empty(t, violations, "%s still carries a scalar amount: %v", path, violations)
+	sort.Strings(scan.violations)
+	return scan
 }
 
 // insertAccountWithRawCurrency writes an account row whose accounts.currency is
@@ -2684,6 +2811,12 @@ func TestIntegrationCalendarOverlaysIgnoreTheCurrencyFilter(t *testing.T) {
 	for _, marker := range plain.Markers {
 		require.Equal(t, []string{"INR"}, marker.Amount.Currencies())
 	}
+	// The overlay is the only place markers[].amount appears, so the guard is run
+	// here and the marker path is required to be reached: without that, a path
+	// written for a field nobody walks would sit in the list looking effective.
+	requireNoScalarAmounts(t, "/api/v1/dashboard/cash-flow-calendar?accountId="+card.ID.String(), body)
+	requireScalarGuardReached(t, "/api/v1/dashboard/cash-flow-calendar?accountId="+card.ID.String(),
+		"$.markers[*].amount", body)
 
 	// The exception. Everything the currency filter is responsible for is empty,
 	// and the overlay is not: it is still the INR account's own figure.
@@ -2830,6 +2963,9 @@ func TestIntegrationLinkCycleReportsTheValueCurrency(t *testing.T) {
 	}
 	require.Equal(t, []string{"INR", "USD"}, legCurrencies(cycle.Legs))
 	requireNoScalarAmounts(t, "/links/cycles", body)
+	// A leg's amount is the field the key list could not name, so the marker path
+	// for it has to be reached on a real response and not only on a synthetic one.
+	requireScalarGuardReached(t, "/links/cycles", "$.legs[*].amount", body)
 
 	// The Sankey cannot draw a cycle, and one currency cannot cancel another, so
 	// the graph discloses what it removed rather than quietly losing it. The

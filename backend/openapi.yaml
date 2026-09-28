@@ -6545,7 +6545,14 @@ components:
             meaningless: it would make a quiet foreign account's real deficit
             render as a flat cell next to a large domestic one. The client picks
             its own currency's denominator; the server never compares one
-            currency's amount with another's.
+            currency's amount with another's. A currency with no key is one
+            whose every day in the window nets exactly zero - a day is carried by
+            its transactions, and its `net` does carry the currency even at zero,
+            while the scale cannot reach a maximum of nothing. So the denominator
+            a client needs can be absent, and under this schema's own rule (an
+            absent key reads as zero) that is the correct reading rather than a
+            missing field: divide by it and the currency's cells render flat, as
+            they should, rather than dividing by nothing.
         currencyScope:
           $ref: "#/components/schemas/CurrencyScope"
 
