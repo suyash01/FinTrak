@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fintrak/backend/internal/currency"
 	"github.com/fintrak/backend/internal/money"
 )
 
@@ -160,13 +161,6 @@ func emitGroup(t Term, sink Sink, negate bool) *Diagnostic {
 	return nil
 }
 
-// defaultCurrency is the code an account is read as when accounts.currency is
-// unset. It is the same value as handlers.defaultCurrency, repeated rather than
-// imported because this package is compiled into a separate parser surface and
-// must not depend on the handler package; the two comments are the coupling, and
-// a change to one has to change the other.
-const defaultCurrency = "INR"
-
 // currencyPredicate matches a transaction whose account holds one currency,
 // through a correlated EXISTS so the fragment still names only `transactions
 // t`. A join is not an option and the reason is at the top of this file: the
@@ -180,42 +174,22 @@ const defaultCurrency = "INR"
 // never a hand-counted one, which is what would break the moment another term
 // preceded this one on the same query.
 //
-// The COALESCE(NULLIF(...)) is load-bearing, and this branch spells it twenty
-// times across two modules. Six of those are named sites - the ones a reader
-// checks by name:
+// The account-currency expression is internal/currency's, not spelled here.
+// This branch used to carry its own copy, and the reporting queries theirs, and
+// the two drifted: this one compared the raw column while every report read
+// through COALESCE(NULLIF(...), 'INR'), so an account whose currency is unset
+// was INR to /dashboard/summary and invisible to `?currency=INR` on
+// /transactions. That is why it is built from the shared definition now — the
+// ledger cannot disagree with the dashboard about what a currency *is*, because
+// neither of them writes down its own answer. The other callers are
+// handlers/currency.go's scopeSQL, dashboard.go's accountCurrency and
+// money_flow.go's flowCurrency.
 //
-//  1. here, currencyPredicate
-//  2. handlers/currency.go's scopeSQL projection
-//  3. the same query's GROUP BY, which has to agree with its projection
-//  4. that query's ?currency= predicate, at handlers/currency.go:145 - inside
-//     currencyScope, not in the handler package's currencyPredicate, which is a
-//     different function over the same column with a different table alias
-//  5. handlers' currencyPredicate, in dashboard.go
-//  6. handlers' flowCurrency, in money_flow.go, which money_flow.go, the timeline
-//     and the cash-flow calendar all call
-//
-// The other fourteen are dashboard.go writing it out inline in its own queries -
-// the two top-15 category breakdowns, the monthly trend and the billing-cycle
-// trend - and they have to agree with sites 5 and 6 above. The list says "six"
-// because those are the sites a future edit would be pointed at; the fourteen are
-// counted here so the number is not mistaken for the whole. This comment used to
-// say four, and named a predicate that is at handlers/currency.go:145 instead,
-// which is worth the space: nothing enforces the agreement. There is no test that
-// greps this file, the expression is spelled rather than generated, and a reader
-// who trusts the number is the only thing standing between the sites and a
-// seventh that disagrees. A count that understates itself is the wrong guard for
-// the one thing nothing else checks, so recount before trusting it.
-//
-// accounts.currency is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL and a
-// restored bundle can hold the empty string, which is why the NULLIF is there at
-// all. Comparing the raw column, as this did, makes the ledger disagree with the
-// dashboard about what a currency *is*: an account whose currency is unset is INR
-// to every reporting query and to nothing here, so `?currency=INR` on
-// /transactions would silently omit the transactions the same filter includes on
-// /dashboard/summary. Two surfaces of one product answering the same question
-// differently, with no error, is the exact class of defect this spelling exists
-// to remove.
-const currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), '" + defaultCurrency + "') = $%d)"
+// It stays a var rather than a const because the expression is built at
+// package-initialisation time, and $%d is still left for sink.Clause to
+// substitute.
+var currencyPredicate = "EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND " +
+	currency.Column("ac.currency") + " = $%d)"
 
 // emitCurrency binds a ccy term. Every value is folded to upper case here, at
 // bind time rather than at parse time, so the parser keeps what the user typed

@@ -9,6 +9,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	currencysql "github.com/fintrak/backend/internal/currency"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -28,14 +29,18 @@ const (
 	trendCurrencyParam = 5
 )
 
-// currencyPredicate returns the account-currency filter, or "" when no currency
-// was requested. It is the one expression every currency filter in this file
-// shares with currencyScope's projection, GROUP BY and predicate: accounts.currency
-// is nullable and a restored bundle can hold the empty string, so a site that
-// dropped the NULLIF would disagree with the others and report a default-currency
-// account as absent. See the scopeSQL comment for the full argument.
+// accountCurrency is the expression every query in this file reads an account's
+// currency through — the projection, the ROW_NUMBER partition, the GROUP BY and
+// the ?currency= predicate all name it, so they cannot disagree about what an
+// unset currency is. It is spliced into the query literals below rather than
+// written into them; see internal/currency for why the NULLIF is load-bearing.
+var accountCurrency = currencysql.Column("a.currency")
+
+// currencyPredicate returns the account-currency filter for a placeholder. It
+// names the same expression accountCurrency does — through the same shared
+// definition — so it cannot drift from the projections it filters.
 func currencyPredicate(placeholder int) string {
-	return fmt.Sprintf("COALESCE(NULLIF(a.currency, ''), '%s') = $%d", defaultCurrency, placeholder)
+	return currencysql.Predicate("a.currency", placeholder)
 }
 
 // trendCurrencyFilter is currencyPredicate's counterpart for the billing-cycle
@@ -116,10 +121,9 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	// filter that reached only the stat cards would leave the trend and the
 	// category breakdowns describing a wider window than the totals beside them,
 	// which is the silent-wrong-number case this change exists to remove. It
-	// reads the account and carries the same COALESCE(NULLIF(...), 'INR') the
-	// scope query uses in its projection, its GROUP BY and its own predicate -
-	// accounts.currency is nullable and a restored bundle can hold '', so all of
-	// them have to be the same expression (see currency.go).
+	// reads the account and carries accountCurrency, the same expression the
+	// scope query uses in its projection, its GROUP BY and its own predicate,
+	// because all of them have to be the same expression.
 	//
 	// The predicate sits in the WHERE, which for these queries is the same place
 	// as the join's ON clause: every one of them is driven by transactions and
@@ -231,14 +235,14 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	// The outer ORDER BY is display order over rows that are already capped, not
 	// a ranking across currencies: nothing is compared, so nothing is added up.
 	catQuery := `SELECT id, name, color, icon, currency, total, count FROM (
-				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				 SELECT c.id, c.name, c.color, c.icon, ` + accountCurrency + ` AS currency,
 				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
-				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
+				        ROW_NUMBER() OVER (PARTITION BY ` + accountCurrency + ` ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
 				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
+				 GROUP BY c.id, c.name, c.color, c.icon, ` + accountCurrency + `
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ) ranked WHERE rn <= 15
 				 ORDER BY total DESC, name, id`
@@ -289,14 +293,14 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 
 	// By category (income only)
 	incomeCatQuery := `SELECT id, name, color, icon, currency, total, count FROM (
-				 SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+				 SELECT c.id, c.name, c.color, c.icon, ` + accountCurrency + ` AS currency,
 				        COALESCE(SUM(t.amount), 0) as total, COUNT(t.id) as count,
-				        ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(a.currency, ''), 'INR') ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
+				        ROW_NUMBER() OVER (PARTITION BY ` + accountCurrency + ` ORDER BY SUM(t.amount) DESC, c.name, c.id) AS rn
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
 				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
+				 GROUP BY c.id, c.name, c.color, c.icon, ` + accountCurrency + `
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ) ranked WHERE rn <= 15
 				 ORDER BY total DESC, name, id`
@@ -348,13 +352,13 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	// transaction with no account row is left out of both rather than filed
 	// under the default currency in one and dropped from the other.
 	monthlyQuery := `SELECT TO_CHAR(t.date, 'YYYY-MM') as month,
-					 COALESCE(NULLIF(a.currency, ''), 'INR') as currency,
+					 ` + accountCurrency + ` as currency,
 					 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
 					 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
 					 FROM transactions t
 					 JOIN accounts a ON t.account_id = a.id
 					 WHERE t.user_id = $1` + catFilter + `
-					 GROUP BY TO_CHAR(t.date, 'YYYY-MM'), COALESCE(NULLIF(a.currency, ''), 'INR')
+					 GROUP BY TO_CHAR(t.date, 'YYYY-MM'), ` + accountCurrency + `
 					 ORDER BY month`
 
 	monthRows, err := q.Query(ctx, monthlyQuery, args...)
@@ -664,7 +668,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 	// and in no bar at all, which is the disagreement this comment exists to
 	// prevent. Do not "optimise" the join back to the cycle id.
 	trendQuery := `SELECT bc.label, bc.start_date, bc.end_date,
-			 COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+			 ` + accountCurrency + ` AS currency,
 			 COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as income,
 			 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as expense
 			 FROM billing_cycles bc
@@ -673,7 +677,7 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 			   AND t.date >= bc.start_date AND t.date <= bc.end_date
 			 WHERE bc.account_id = $1 AND bc.user_id = $2
 			   AND bc.end_date >= $3 AND bc.end_date <= $4` + trendCurrencyFilter(currency) + `
-			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date, COALESCE(NULLIF(a.currency, ''), 'INR')
+			 GROUP BY bc.id, bc.label, bc.start_date, bc.end_date, ` + accountCurrency + `
 			 ORDER BY bc.start_date ASC`
 	trendArgs := []any{accountID, userID, windowStart, windowEnd}
 	if currency != "" {
@@ -726,13 +730,13 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 	// query needs would be a no-op partition here - a plain LIMIT 15 says the
 	// same thing. accounts is inner-joined for the same reason as there: a
 	// transaction with no account row is not this account's money.
-	catQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+	catQuery := `SELECT c.id, c.name, c.color, c.icon, ` + accountCurrency + ` AS currency,
 				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'debit' AND t.user_id = $1
 				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
+				 GROUP BY c.id, c.name, c.color, c.icon, ` + accountCurrency + `
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`
@@ -777,13 +781,13 @@ func (srv *Server) getDashboardSummaryBillingCycle(c *gin.Context, currency stri
 		summary.ByCategory = append(summary.ByCategory, *totals[id])
 	}
 
-	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+	incomeCatQuery := `SELECT c.id, c.name, c.color, c.icon, ` + accountCurrency + ` AS currency,
 				 COALESCE(SUM(t.amount), 0) as total, COUNT(t.id)
 				 FROM categories c
 				 LEFT JOIN transactions t ON t.category_id = c.id AND t.type = 'credit' AND t.user_id = $1
 				 JOIN accounts a ON a.id = t.account_id AND a.user_id = $1` + catFilter + `
 				 WHERE (c.user_id = $1 OR c.user_id IS NULL)
-				 GROUP BY c.id, c.name, c.color, c.icon, COALESCE(NULLIF(a.currency, ''), 'INR')
+				 GROUP BY c.id, c.name, c.color, c.icon, ` + accountCurrency + `
 				 HAVING COALESCE(SUM(t.amount), 0) > 0
 				 ORDER BY total DESC, c.name, c.id
 				 LIMIT 15`

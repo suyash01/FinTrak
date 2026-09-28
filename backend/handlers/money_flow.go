@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/fintrak/backend/auth"
+	currencysql "github.com/fintrak/backend/internal/currency"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -782,27 +783,23 @@ func dedupeAndSortCycles(cycles []flowCycle) []flowCycle {
 }
 
 // flowCurrency is the one expression this file projects, groups by and filters
-// on to read an account's currency. accounts.currency is nullable and a restored
-// bundle can hold the empty string, so a site that dropped the NULLIF would
-// disagree with the others and drop a default-currency account from an explicit
-// ?currency=INR report while the rest of the same response still called it INR.
-// See the scopeSQL comment in currency.go for the full argument.
+// on to read an account's currency. It is internal/currency's, so it cannot
+// drift from the reports in dashboard.go, the scope query in currency.go or the
+// query compiler's ccy: term; see that package for why the NULLIF is there.
 //
-// It takes the column rather than the alias because the queries do not agree on
-// an alias: the four transaction-driven ones join `accounts a`, while the two
-// link queries reach the currency through `fa`/`ta`. Everything else about the
-// expression - the NULLIF, the default, the parenthesisation - comes from here,
-// so a future edit cannot make one site's spelling differ from another's.
+// It keeps taking a column rather than an alias because the queries do not agree
+// on an alias: the four transaction-driven ones join `accounts a`, while the two
+// link queries reach the currency through `fa`/`ta` and, for a link, through
+// linkCurrencyColumn's CASE rather than a column at all.
 func flowCurrency(column string) string {
-	return fmt.Sprintf("COALESCE(NULLIF(%s, ''), '%s')", column, defaultCurrency)
+	return currencysql.Column(column)
 }
 
 // flowCurrencyPredicate is flowCurrency bound to a placeholder, for the
-// ?currency= filter. The expression is the one above for the reason that comment
-// gives: a predicate that compared the raw column would exclude every account
-// whose currency is merely unset.
+// ?currency= filter. A predicate that compared the raw column would exclude
+// every account whose currency is merely unset.
 func flowCurrencyPredicate(column string, placeholder int) string {
-	return fmt.Sprintf("%s = $%d", flowCurrency(column), placeholder)
+	return currencysql.Predicate(column, placeholder)
 }
 
 // linkCurrencyColumn names the account whose currency a link's value is

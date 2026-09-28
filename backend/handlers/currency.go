@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	currencysql "github.com/fintrak/backend/internal/currency"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -29,31 +30,26 @@ import (
 //
 // The same expression appears three times — the projection, the GROUP BY, and
 // the currency predicate currencyScope splices in — and all three must stay
-// alike. accounts.currency is `VARCHAR(3) DEFAULT 'INR'` with no NOT NULL, so
-// NULL and the empty string are both representable, and a restored bundle can
-// write the empty string through verbatim (backup.go scans a COALESCE defaulting
-// to the empty string and inserts it unchanged). Any one of the three dropping
-// the NULLIF for a bare COALESCE(a.currency, ...) instead would disagree with
-// the other two and drop such an account from an explicit ?currency=INR report
-// while every other part of the same response still called it INR. The 'INR'
-// literal is repeated rather than interpolated from defaultCurrency on purpose:
-// a third %s would make this statement's placeholder count fragile against any
-// future edit, and the value is a fixed column default, not a configurable
-// knob.
-const scopeSQL = `SELECT a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR') AS currency,
+// alike, which is why all three are built from internal/currency rather than
+// written out. That package's comment carries the argument for why the NULLIF
+// is load-bearing at all; the local reason is that this is one statement: the
+// GROUP BY has to agree with the projection beside it, and the predicate
+// currencyScope splices into the WHERE has to agree with both, or a restored
+// bundle's empty-currency account is dropped from an explicit ?currency=INR
+// report while this same response still calls it INR.
+//
+// The projection and the GROUP BY are spliced with `+` rather than left as %s
+// in the Sprintf below, because that Sprintf exists for the two filter
+// fragments and a third kind of verb would make the placeholder count fragile
+// against any future edit.
+var scopeSQL = `SELECT a.id, a.name, ` + currencysql.Column("a.currency") + ` AS currency,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'credit'), 0) AS income,
 	  COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'debit'), 0) AS expense
 	FROM accounts a
 	LEFT JOIN transactions t ON t.account_id = a.id AND t.user_id = $1%s
 	WHERE a.user_id = $1%s
-	GROUP BY a.id, a.name, COALESCE(NULLIF(a.currency, ''), 'INR')
+	GROUP BY a.id, a.name, ` + currencysql.Column("a.currency") + `
 	ORDER BY a.name, a.id`
-
-// defaultCurrency is the code an account is read as when its own is unset, and
-// it must match the literal inside scopeSQL's three COALESCE expressions. See
-// that comment for why all three have to agree, and for why the literal is
-// repeated rather than interpolated from here.
-const defaultCurrency = "INR"
 
 // scopeOptions is the window one aggregate covers. It is the reporting
 // endpoints' query parameters, in the shape the shared query wants.
@@ -121,9 +117,9 @@ func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.
 	)
 	// add appends one already-formatted condition and its bound value. The
 	// caller builds the $n placeholder from param rather than letting add do
-	// it, because the currency predicate has to splice the column default into
-	// the fragment as well and one fmt.Sprintf cannot fill both a %s and a %d
-	// from different sources.
+	// it, because the currency predicate gets its placeholder from
+	// currencysql.Predicate while the date and account fragments get theirs
+	// here — one helper cannot fill a %d it does not have.
 	add := func(conds *[]string, fragment string, value any) {
 		*conds = append(*conds, fragment)
 		args = append(args, value)
@@ -139,10 +135,10 @@ func (s *Server) currencyScope(ctx context.Context, q scopeQueryer, userID uuid.
 		add(&whereConds, fmt.Sprintf(" AND a.id = $%d", param), opts.AccountID)
 	}
 	if opts.Currency != "" {
-		// Compared against the same COALESCE the SELECT projects, so filtering
+		// Compared against the same expression the SELECT projects, so filtering
 		// by INR finds the accounts whose currency is genuinely unset rather
 		// than silently excluding them.
-		add(&whereConds, fmt.Sprintf(" AND COALESCE(NULLIF(a.currency, ''), '%s') = $%d", defaultCurrency, param), opts.Currency)
+		add(&whereConds, " AND "+currencysql.Predicate("a.currency", param), opts.Currency)
 	}
 
 	stmt := fmt.Sprintf(scopeSQL, strings.Join(joinConds, ""), strings.Join(whereConds, ""))
