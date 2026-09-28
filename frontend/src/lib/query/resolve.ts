@@ -79,6 +79,34 @@ export function resolveQuery(
         // when it binds (backend/internal/query/compile.go, emitCurrency).
         terms.push(term);
         continue;
+      default: {
+        // Two guards in one branch, because they fail at different times and
+        // neither covers the other.
+        //
+        // The assignment is the one that fires first. TypeScript narrows def.kind
+        // to `never` here only while every member of FieldKind has a case above,
+        // so adding an eighth kind to fields.ts turns `bun run typecheck` red at
+        // this line rather than shipping a field that resolves to nothing. That is
+        // the guard that would have caught ccy:.
+        //
+        // The diagnostic is the one that covers what the compiler cannot: a kind
+        // reaching here from a path the type system does not see. It is the
+        // difference between a term that vanishes - dropped, unmentioned, so the
+        // SPA sends q= with the filter simply absent and the user reads the
+        // unfiltered result as the answer - and one the banner names. The banner's
+        // own wording ("the results below are wider than you asked for") is exactly
+        // what happened, so reporting is the truthful thing to do; and it keeps the
+        // resolver to the contract its own doc comment states, that an unusable
+        // term is dropped and reported rather than passed on.
+        const unhandled: never = def.kind;
+        diagnostics.push({
+          term: term.raw,
+          code: DIAG.unhandledKind,
+          message: `${term.field}: no resolver for kind ${String(unhandled)}`,
+          position: term.position,
+        });
+        continue;
+      }
     }
   }
 

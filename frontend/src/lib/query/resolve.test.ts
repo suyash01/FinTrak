@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseQuery } from "./parse";
 import { resolveQuery, serializeQuery, type ResolveSource } from "./resolve";
+import { FIELD_TABLE, USER_FIELDS, type FieldDef, type FieldKind } from "./fields";
 
 // Two categories deliberately share the name "Groceries" in different groups,
 // because that is the case the resolver has to handle without either silently
@@ -159,6 +160,109 @@ describe("resolveQuery", () => {
     expect(negated.terms).toHaveLength(1);
     expect(negated.terms[0].negated).toBe(true);
     expect(serializeQuery(negated.terms)).toBe("not ccy:usd");
+  });
+});
+
+// Every user-facing field, a value it resolves cleanly against, and the number of
+// terms it must come back as. `date:last_12_months` is the only field that
+// expands, to two bounds.
+//
+// This table exists because of how the last one of its kinds was found. `ccy:`
+// shipped complete: the parser accepted it, the corpus covered it, the field was
+// in the autocomplete, and the resolver's switch had no case for the currency
+// kind - so the term was never pushed, no diagnostic was produced, and the SPA
+// sent `q=` with the filter absent. A user who typed `ccy:USD` got the whole
+// unfiltered ledger and was told nothing.
+//
+// The three assertions below are all load-bearing, and none substitutes for
+// another:
+//
+//   - `toHaveLength(expected)` is the one that catches the drop. A round-trip
+//     check cannot: a dropped term serialises to "", which re-parses to [], so
+//     vanishing round-trips perfectly. That is why the round-trip test at the
+//     bottom of this file passed while `ccy:` was broken.
+//   - `diagnostics` being empty is a separate assertion about a different
+//     failure: reporting a term and then discarding it anyway would leave a
+//     length-only check at "at least one" passing, while quietly widening the
+//     query. A silently-dropped term produces no diagnostic either, so length
+//     alone cannot see this.
+//   - the count is written out per field rather than derived from the kind, so a
+//     resolver that stopped expanding `date` into two bounds is caught too.
+const FIELD_CASES: ReadonlyArray<readonly [field: string, query: string, terms: number]> = [
+  ["desc", "desc:coffee", 1],
+  ["note", "note:hello", 1],
+  ["cat", "cat:Food/Groceries", 1],
+  ["group", "group:Food", 1],
+  ["acct", "acct:Checking", 1],
+  ["ccy", "ccy:usd", 1],
+  ["payee", 'payee:"Corner Store"', 1],
+  ["tag", "tag:vacation", 1],
+  ["type", "type:debit", 1],
+  ["linked", "linked:true", 1],
+  ["recurring", "recurring:linked", 1],
+  ["amt", "amt>50", 1],
+  ["date", "date:last_12_months", 2],
+];
+
+describe("every field survives resolution", () => {
+  for (const [field, query, expected] of FIELD_CASES) {
+    it(`resolves ${field} to ${expected} term(s), with nothing reported`, () => {
+      const { terms, diagnostics } = run(query);
+      expect(diagnostics).toEqual([]);
+      expect(terms).toHaveLength(expected);
+      // The surviving terms are still about the field that was asked for. A
+      // length-only check would pass if a resolver substituted a different term.
+      expect(terms.every((t) => t.field === field)).toBe(true);
+    });
+  }
+
+  // The guard on the guard. Without this, a field added to the table arrives with
+  // no case here, is not exercised, and the table silently stops covering it -
+  // which is the same "the corpus does not cover the new field" gap that
+  // TestCorpusCoversEveryUserField closes on the Go side, for resolveQuery rather
+  // than for the parser.
+  it("has a case for every user-typed field, so a new one cannot arrive untested", () => {
+    const covered = FIELD_CASES.map(([field]) => field).sort();
+    expect(covered).toEqual([...USER_FIELDS].sort());
+  });
+});
+
+describe("a kind with no case in the resolver", () => {
+  it("reports the term instead of dropping it silently", () => {
+    // The one thing the table above cannot produce: a field whose kind the
+    // resolver's switch does not handle. `quantum` is not in the FieldKind union,
+    // which is why it needs a cast - and that is also the whole point. A real
+    // future field would be added to the union, where the switch's exhaustiveness
+    // check in resolve.ts fails typecheck; this reaches the runtime half of the
+    // same guard, which a cast is the only way to exercise.
+    //
+    // The parser accepts it, deliberately: validate() switches on the kind too and
+    // has nothing kind-specific to check, so an unhandled kind falls out of it as
+    // valid. That is fine - the parser's job is to accept a term, and the
+    // resolver's is to say it cannot act on one.
+    (FIELD_TABLE as Record<string, FieldDef>).quant = {
+      userTyped: true,
+      kind: "quantum" as FieldKind,
+      ops: ["="],
+    };
+    try {
+      const { terms, diagnostics } = run("quant:x");
+      // The term is gone, which is the honest outcome: a term the resolver cannot
+      // act on must not go on the wire. What must not happen is it going without
+      // a word, which is the defect - the banner in QueryDiagnostics.tsx exists to
+      // tell the user the results below are wider than they asked for.
+      expect(terms).toEqual([]);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0].code).toBe("unhandled_kind");
+      // The message names the field and the kind, because the person reading the
+      // banner is not going to know what a "kind" is and the maintainer reading
+      // the bug report will.
+      expect(diagnostics[0].message).toContain("quant");
+      expect(diagnostics[0].message).toContain("quantum");
+      expect(diagnostics[0].term).toBe("quant:x");
+    } finally {
+      delete (FIELD_TABLE as Record<string, FieldDef>).quant;
+    }
   });
 });
 

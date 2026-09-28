@@ -49,6 +49,20 @@ export const DIAG = {
   malformedDate: "malformed_date",
   ambiguous: "ambiguous_value",
   tooLong: "too_long",
+  // Resolver-only, and unlike every code above it, not a thing a user can type
+  // their way into. It is raised when a field reaches resolveQuery with a kind
+  // its switch does not handle, which is a defect in this repository rather than
+  // a bad query - the seven kinds are all handled. It exists so that defect is
+  // visible instead of silent, which is what ccy: was for four commits: the
+  // parser accepted it, the corpus covered it, the resolver had no case for the
+  // currency kind, and the term was dropped with nothing reported. The user got
+  // the unfiltered ledger and no warning.
+  //
+  // It is deliberately NOT mirrored into backend/internal/query/parse.go, and is
+  // not part of the code list in openapi.yaml: the server resolves no names and so
+  // never has to switch on a kind, and documenting a code the API cannot emit
+  // would make the contract a worse description of the contract.
+  unhandledKind: "unhandled_kind",
 } as const;
 
 // Longest first, so ">=" wins over ">".
