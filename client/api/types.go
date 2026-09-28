@@ -817,13 +817,14 @@ type CurrencyScope struct {
 //
 // AsOf and Balances are present only when the request asked for an instant
 // (DashboardFilter.AsOf), and are POINTERS for the same reason the server's
-// are: encoding/json does not omit an empty slice or an empty string, so a
-// value type could not say "asked, and there were none" - a user with no
-// accounts gets an empty Balances, which a bare slice and an absent field are
-// the same thing. A nil pointer is the server saying "you did not ask"; a
-// non-nil pointer to a zero-length slice is "you asked and the answer was
-// nothing". They are response fields, not request ones, which is why they are a
-// *string and a *[] rather than the module's Optional* request types.
+// are, which is the reason omitempty is usually NOT enough: encoding/json DOES
+// omit an empty slice, so a bare []AccountBalance would drop a non-nil empty
+// one just as surely as a nil one. Three states are meaningful here - not
+// asked, asked with accounts, asked with none - and a bare slice can only say
+// two. A nil pointer is the server saying "you did not ask"; a non-nil pointer
+// to a zero-length slice is "you asked and there were no accounts". They are
+// response fields, not request ones, which is why they are a *string and a *[]
+// rather than the module's Optional* request types.
 type DashboardSummary struct {
 	TotalAccounts      int                     `json:"totalAccounts"`
 	TotalTransactions  int                     `json:"totalTransactions"`

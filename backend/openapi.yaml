@@ -1756,13 +1756,19 @@ paths:
             type: string
             format: date
           description: >-
-            Report the ledger's state at the END of this day, and this endpoint
-            honours it exactly as GET /transactions does: the two build their
-            predicate from the same code, so a CSV exported with `asOf` contains
-            exactly the rows the list would have returned for the same filter
-            and the same instant. A caller that exports what it is looking at
-            gets the same answer twice rather than a file that silently runs on
-            past the day being examined.
+            Report the ledger's state at the END of this day. This endpoint
+            honours it as GET /transactions does — the two build their WHERE
+            from the same filter builder, so an as-of export selects the same
+            *transactions* as an as-of list for the same filter and the same
+            instant. The two are not the same set of *rows*, and a caller
+            comparing them has to know why: the list additionally injects
+            synthetic `isSummary: true` rows — the per-cycle "Total outstanding"
+            and month-end "Running balance" rows — whenever a single `accountId`
+            is filtered and the rows are ordered by date, which is the default.
+            The export never produces them, because a CSV holds stored
+            transactions and these are computed. The balances they carry are the
+            as-of figures this parameter exists to produce, so an as-of export
+            is the transaction half of an as-of list and not a substitute for it.
 
             The instant is the END of the day, so a transaction dated the asOf
             day itself is in the file. It is clamped to the earlier of `asOf`
@@ -4093,10 +4099,11 @@ paths:
             Report the ledger's state at the END of this day, whatever the rest
             of the window says: a transaction dated on or before it counts, and
             a transaction dated the asOf day itself counts too, so the value is
-            an instant rather than an exclusive bound. Every section of the
-            response is bounded by the same instant, so the totals, the category
-            breakdowns, the trend and the transaction list can never describe a
-            wider window than the balances beside them.
+            an instant rather than an exclusive bound. In the default month
+            view every section of the response is bounded by the same instant,
+            so the totals, the category breakdowns, the trend and the
+            transaction list can never describe a wider window than the balances
+            beside them.
 
             It is clamped to the EARLIER of `asOf` and `dateTo`, so a request
             whose window already closed before the day asked for is answered
@@ -4113,15 +4120,20 @@ paths:
             answers, which is why an as-of report is reproducible against the
             ledger's dates rather than against a past version of the database.
 
-            Supplying it is what adds `asOf` and `balances` to the response: a
-            request without it gets neither, and the response is unchanged from
-            before these fields existed.
+            In the month view, supplying it is what adds `asOf` and `balances` to
+            the response: a request without it gets neither, and the response is
+            unchanged from before these fields existed.
+
+            **With `groupBy=billing_cycle` the parameter is validated and then
+            ignored.** A malformed or out-of-window value is still a 400, and so
+            is a `dateFrom` after the clamped value, because the check runs before
+            the mode is chosen — but a valid `asOf` narrows nothing there. The
+            window is the statement cycles', the response carries neither `asOf`
+            nor `balances`, and every figure describes the cycles rather than the
+            day asked about. Ask for a past day in the month view.
 
             A value that is not YYYY-MM-DD, or that falls outside the ledger's
-            supported window (`[1900-01-01, today+1y]`), is a 400 — as is a
-            `dateFrom` after the clamped value. It is validated before the
-            billing-cycle branch, so `groupBy=billing_cycle` gets the same 400s
-            rather than silently ignoring it.
+            supported window (`[1900-01-01, today+1y]`), is a 400.
         - in: query
           name: accountId
           schema:

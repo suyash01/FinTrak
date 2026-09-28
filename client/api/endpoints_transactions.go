@@ -59,8 +59,9 @@ type TransactionFilter struct {
 	// clamped value is a 400, as is an asOf that is not YYYY-MM-DD or that falls
 	// outside the ledger's window [1900-01-01, today+1y].
 	//
-	// The export honours it too, because both endpoints build their predicate
-	// from the same code — an as-of CSV is exactly the as-of list.
+	// The export honours it too, because both endpoints build their WHERE from
+	// the same filter builder — though see ExportTransactionsCSV for why an
+	// as-of CSV is not a row-for-row copy of an as-of list.
 	AsOf string
 	// Tags is an ANY-match set (array overlap).
 	Tags []string
@@ -168,11 +169,17 @@ func (c *Client) DeleteTransaction(ctx context.Context, id string) error {
 
 // ExportTransactionsCSV streams the transactions matching f as CSV into w,
 // honouring the same filters as the list but ignoring paging and sort — AsOf
-// included, since both endpoints build their predicate from the same code, so
-// an as-of CSV holds exactly the rows an as-of list returns. The export is
-// always date-descending, and a filter matching more than 100 000 rows is
-// refused with 400 ("narrow the filters") rather than truncated, so a
-// downloaded file is never silently partial.
+// included, since the two build their WHERE from the same filter builder. The
+// same filter is not the same set of rows: the list additionally injects
+// synthetic summary rows (per-cycle "Total outstanding", month-end "Running
+// balance", isSummary set) when a single AccountID is filtered and the sort is
+// by date, which is the default, and the export never emits them because a CSV
+// holds stored transactions only. Those rows carry the balances an as-of
+// question is usually after, so an as-of export is the transaction half of an
+// as-of list, not a substitute for it. The export is always date-descending,
+// and a filter matching more than 100 000 rows is refused with 400 ("narrow the
+// filters") rather than truncated, so a downloaded file is never silently
+// partial.
 func (c *Client) ExportTransactionsCSV(ctx context.Context, f TransactionFilter, w io.Writer) (string, error) {
 	return c.download(ctx, f.apply(get("/transactions/export")), w)
 }
