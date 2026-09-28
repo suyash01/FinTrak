@@ -1778,10 +1778,14 @@ paths:
             afterwards.
 
             A value that is not YYYY-MM-DD, or that falls outside the ledger's
-            supported window, is a 400. Unlike `q`, which this endpoint drops
-            silently, a rejected `asOf` is refused outright — a CSV has nowhere
-            to report an ignored term, so a filter it cannot honour is not
-            attempted.
+            supported window, is a 400. `q` is honoured here as fully as `asOf`
+            is - both build their WHERE from the same filter - and it degrades
+            the same way: an unusable term is dropped, as described above. The
+            only difference is what the caller can learn afterwards, because
+            the list returns `queryDiagnostics` naming every term it ignored
+            and a CSV has nowhere to render them. A rejected `asOf` is refused
+            outright where a dropped term is not, since a filter it cannot
+            honour at all is not attempted, while one it can partly honour is.
         - in: query
           name: type
           schema: { type: string, enum: [debit, credit] }
@@ -4102,8 +4106,18 @@ paths:
             an instant rather than an exclusive bound. In the default month
             view every section of the response is bounded by the same instant,
             so the totals, the category breakdowns, the trend and the
-            transaction list can never describe a wider window than the balances
-            beside them.
+            transaction list all describe the ledger up to exactly that day.
+
+            A `balance` is the one exception to that shared window, and the
+            difference is intended rather than a disagreement: a balance is a
+            CUMULATIVE figure, so it is bounded above by the same instant and
+            below by nothing at all, while the windowed sections above keep
+            their `dateFrom`. `?dateFrom=2026-02-01&asOf=2026-03-31` on a bank
+            holding 1000.00 in January and 100.00 in March therefore answers
+            `totalIncome` of `{INR: 100.00}` beside a `balance` of
+            `{INR: 1100.00}` — the balance is the wider of the two by design,
+            because "what had I on this day" is a cumulative question and a
+            `dateFrom` would answer a different one.
 
             It is clamped to the EARLIER of `asOf` and `dateTo`, so a request
             whose window already closed before the day asked for is answered

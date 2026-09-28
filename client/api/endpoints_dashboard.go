@@ -53,12 +53,19 @@ type DashboardFilter struct {
 	// balances block to put it beside.
 	//
 	// Every section of the response is bounded by the same instant, so the
-	// totals, the breakdowns and the balances can never describe different
-	// windows. The server clamps it to the earlier of AsOf and DateTo and echoes
-	// the RESOLVED day back, so read Summary.AsOf rather than this field to know
-	// what the response is actually reporting. An AsOf that is not YYYY-MM-DD,
-	// that falls outside the ledger's window, or that leaves DateFrom after the
-	// clamped value, is a 400.
+	// totals, the breakdowns and the trend all describe the ledger up to
+	// exactly that day. The per-account balances are the one intended
+	// exception: a balance is cumulative, so it is bounded above by that same
+	// instant and below by nothing, while the windowed sections keep their
+	// DateFrom. With DateFrom set the balances are therefore the WIDER of the
+	// two - a bank holding 1000.00 in January and 100.00 in March, asked with
+	// DateFrom 2026-02-01 and AsOf 2026-03-31, reports totalIncome of 100.00
+	// beside a balance of 1100.00 - which is the point of the block, not a
+	// disagreement between the two. The server clamps it to the earlier of AsOf
+	// and DateTo and echoes the RESOLVED day back, so read Summary.AsOf rather
+	// than this field to know what the response is actually reporting. An AsOf
+	// that is not YYYY-MM-DD, that falls outside the ledger's window, or that
+	// leaves DateFrom after the clamped value, is a 400.
 	//
 	// It filters by transaction date only, so a transaction dated before AsOf
 	// counts even if the statement carrying it was imported later.

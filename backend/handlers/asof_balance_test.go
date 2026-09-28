@@ -179,6 +179,16 @@ func TestAccountBalancesAsOf(t *testing.T) {
 		// built rather than assembled per call, so the two cannot diverge.
 		assert.Contains(t, accountBalancesAsOfSQL, "loan_attachments")
 		assert.Contains(t, accountBalancesAsOfSQL, "t.date <= $2")
+		// Twice, not once. `Contains` above is satisfied by a single branch, and
+		// so is the matcher's `.*t\.date <= \$2`, which spans from the loan
+		// branch's JOIN to the ELSE branch's WHERE — so a bound dropped from
+		// EITHER one leaves both of them passing. This is the assertion that
+		// closes that: the count is what makes "both branches are bounded" a
+		// claim rather than a reading, and either mutation the whole feature
+		// exists to prevent now fails here in the unit tier instead of only
+		// surfacing against a real database.
+		assert.Equal(t, 2, strings.Count(accountBalancesAsOfSQL, "t.date <= $2"),
+			"each branch of the balance CASE needs its own date bound; a dropped one still returns a row per account and reports every loan as zero")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
