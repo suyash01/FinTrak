@@ -291,12 +291,39 @@ describe("CashFlowCalendar", () => {
 
     // A day spent only in dollars has no figure in the currency on screen, so
     // it stays flat rather than being tinted from a currency the user is not
-    // looking at.
+    // looking at — and it says so, rather than announcing a rupee zero.
     const foreign = screen.getByRole("gridcell", {
-      name: /05 Jun 2024: net INR ₹0\.00/,
+      name: /05 Jun 2024: net no INR in this report/,
     });
     expect(foreign.getAttribute("style")).toBe(
       "background-color: var(--muted);",
+    );
+  });
+
+  // The gridcell's accessible name and the panel's Net row are two renderings
+  // of one day, and a screen-reader user only ever hears the first. The label
+  // used to read formatOne over the *projected* number, which is 0 for a currency
+  // the day never touched — so it announced "INR ₹0.00" for a day the panel
+  // 500px below rendered as "no INR in this report", and a sighted reader and a
+  // screen-reader reader were told different facts about the same cell.
+  it("names a foreign day the way the panel names it", async () => {
+    apiMock.getCashFlowCalendar.mockResolvedValue(twoCurrencyCalendar());
+    render(page());
+
+    const cell = await screen.findByRole("gridcell", {
+      name: /05 Jun 2024: net no INR in this report/,
+    });
+    // The wrong version, named so the mutation is a one-line revert.
+    expect(cell).not.toHaveAccessibleName(/INR ₹0\.00/);
+
+    // And the two halves of the screen now agree.
+    fireEvent.click(cell);
+    const panel = (await screen.findByText("05 Jun 2024")).parentElement!;
+    const net = within(within(panel).getByText("Net")).getByText(
+      "no INR in this report",
+    );
+    expect(cell.getAttribute("aria-label")).toContain(
+      net.textContent as string,
     );
   });
 
@@ -309,7 +336,9 @@ describe("CashFlowCalendar", () => {
     // fireEvent rather than userEvent: this is about the panel, and a real click
     // would also open the hover tooltip with a second Net row to disambiguate.
     fireEvent.click(
-      await screen.findByRole("gridcell", { name: /05 Jun 2024: net INR/ }),
+      await screen.findByRole("gridcell", {
+        name: /05 Jun 2024: net no INR in this report/,
+      }),
     );
 
     const net = within(await screen.findByText("Net")).getByText(

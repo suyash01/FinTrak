@@ -20,7 +20,6 @@ import {
 import api from "../../api/client";
 import { useRefetchOnFocus } from "../../lib/useRefetchOnFocus";
 import {
-  formatOne,
   formatScoped,
   signClass,
   signOf,
@@ -222,9 +221,19 @@ function dayBackground(
   return { backgroundColor: `color-mix(in oklch, ${token} ${pct}%, var(--muted))` };
 }
 
+// cellLabel is the gridcell's accessible name, so it must say what the panel
+// 500px below says: the same day, the same figure, the same words. It read
+// formatOne over the *projected* number, which is 0 for a currency the day never
+// touched, so a day with no rupee net announced "INR 0.00" while the panel
+// rendered "no INR in this report" — and the aria-label is the version a
+// screen-reader user gets instead of the version a sighted one reads. Reading the
+// scoped map is what makes the two agree, and a gridcell that names a figure no
+// one can see is worse than one that names its absence.
 function cellLabel(cell: DayCell, code: string): string {
   if (!cell.inRange) return "";
-  const parts = [`${formatDate(cell.date)}: net ${formatOne(cell.net, code)}`];
+  const parts = [
+    `${formatDate(cell.date)}: net ${formatScoped(cell.amounts?.net, code)}`,
+  ];
   if (cell.count > 0) {
     parts.push(`${cell.count} transaction${cell.count === 1 ? "" : "s"}`);
   }
