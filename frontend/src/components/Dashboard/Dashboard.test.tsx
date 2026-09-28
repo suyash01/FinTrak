@@ -508,11 +508,13 @@ describe("Dashboard", () => {
     expect(await screen.findByText(formatOne(5000, "INR"))).toBeInTheDocument();
     expect(screen.queryByText(formatOne(5120, "INR"))).not.toBeInTheDocument();
 
-    // The notice says what is left out, and where it is.
+    // The notice says what is left out, and where it is — naming the currency in
+    // the group label, because the code is otherwise only ever printed inside a
+    // figure, and a group whose figures are both "nothing" names no code at all.
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Dollars: in USD .*120\.00, out USD .*80\.00\. These are not added to the figures above\./,
+        /USD — Dollars: in USD .*120\.00, out USD .*80\.00\. These are not added to the figures above\./,
       ),
     ).toBeInTheDocument();
 
@@ -524,7 +526,7 @@ describe("Dashboard", () => {
     expect(screen.getByText("1 other currency")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Checking: in INR .*5,000\.00, out INR .*2,000\.00\. These are not added/,
+        /INR — Checking: in INR .*5,000\.00, out INR .*2,000\.00\. These are not added/,
       ),
     ).toBeInTheDocument();
   });
@@ -548,16 +550,64 @@ describe("Dashboard", () => {
 
     expect(await screen.findByText("1 other currency")).toBeInTheDocument();
     // The whole sentence a user reads, apart from the count above it, which is a
-    // nested element: the account is named, the side with no money says so, and
-    // the side that has money carries the figure.
+    // nested element: the currency and the account are named, the side with no
+    // money says so, and the side that has money carries the figure. The code is
+    // in the label precisely because this is the case where one half of it is
+    // "nothing" — a quiet account whose currency would otherwise never be named.
     expect(
       screen.getByText(
-        /^in 1 account not shown here — Dollars: in nothing, out USD \$906\.00\. These are not added to the figures above\.$/,
+        /^in 1 account not shown here — USD — Dollars: in nothing, out USD \$906\.00\. These are not added to the figures above\.$/,
       ),
     ).toBeInTheDocument();
     // And the account's spending is not claimed to be absent from the payload.
     expect(screen.queryByText(/no transactions/)).toBeNull();
     expect(screen.queryByText(/Dollars: in USD/)).toBeNull();
+  });
+
+  // The designed quiet account: it is in currencyScope because the plan requires
+  // accounts with no transactions in the window to appear, and it holds no money
+  // at all in this one. The notice must still say which currency it is, or the
+  // user is told about an account they cannot find and given nothing to search
+  // for. Both existing fixtures have money on at least one side, so neither
+  // covers it.
+  it("names the currency of a quiet account, whose figures are both nothing", async () => {
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        totalIncome: { INR: 5000 },
+        totalExpense: { INR: 2000 },
+        totalNet: { INR: 3000 },
+        currencyScope: {
+          currencies: ["INR", "USD"],
+          accounts: [
+            ...oneCurrencyScope().accounts,
+            {
+              id: "a2",
+              name: "Travel card",
+              currency: "USD",
+              income: {},
+              expense: {},
+            },
+          ],
+        },
+      }),
+    );
+    renderLoaded([
+      account(),
+      account({
+        id: "a2",
+        name: "Travel card",
+        currency: "USD",
+        isDefault: false,
+      }),
+    ]);
+
+    expect(await screen.findByText("1 other currency")).toBeInTheDocument();
+    const group = screen.getByText(
+      /^in 1 account not shown here — USD — Travel card: in nothing, out nothing\. These are not added to the figures above\.$/,
+    );
+    expect(group).toBeInTheDocument();
+    // The one thing a reader needs and the old wording left out: the code.
+    expect(group.textContent).toContain("USD");
   });
 
   it("leaves a category with no figure in the selected currency at zero", async () => {

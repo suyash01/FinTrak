@@ -47,15 +47,20 @@ export default function MultiCurrencyNotice({
       shown here —{" "}
       {[...byCurrency.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([, list]) => {
+        .map(([code, list]) => {
           // Only ever a sum within one currency, and rendered through the
           // refusal rather than by hand, so a total that somehow held two
           // currencies would say so instead of being printed as one figure.
           const income = sumPerCurrency(...list.map((a) => a.income));
           const expense = sumPerCurrency(...list.map((a) => a.expense));
-          return `${list.map((a) => a.name).join(", ")}: in ${side(
-            income,
-          )}, out ${side(expense)}`;
+          // The code is in the group label, not only inside the figures. The
+          // designed case is a quiet account — in currencyScope, no transactions
+          // in the window — and for one of those both halves render "nothing",
+          // leaving a group that names an account and no way to know which
+          // denomination to switch to in order to see it.
+          return `${code || "unknown currency"} — ${list
+            .map((a) => a.name)
+            .join(", ")}: in ${side(income)}, out ${side(expense)}`;
         })
         .join("; ")}
       . These are not added to the figures above.
