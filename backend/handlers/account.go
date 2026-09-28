@@ -11,6 +11,7 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/db"
+	currencysql "github.com/fintrak/backend/internal/currency"
 	"github.com/fintrak/backend/internal/money"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/fintrak/backend/models"
@@ -88,7 +89,7 @@ func (srv *Server) CreateAccount(c *gin.Context) {
 	}
 
 	if req.Currency == "" {
-		req.Currency = "INR"
+		req.Currency = currencysql.Default
 	}
 	if req.Color == "" {
 		req.Color = "#06b6d4"

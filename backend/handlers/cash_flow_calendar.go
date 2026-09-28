@@ -146,8 +146,8 @@ func (srv *Server) GetCashFlowCalendar(c *gin.Context) {
 // outstanding are per-currency maps holding this account's single key, so a
 // client never has to learn a second shape for the same field. Reading it in the
 // query already being issued is what keeps the overlays from costing a statement
-// of their own - and it is read through the same COALESCE(NULLIF(...)) every
-// other currency read in this file uses.
+// of their own - and it is read through the same expression every other
+// currency read in this file uses.
 func (srv *Server) attachCashFlowOverlays(c *gin.Context, userID, accountID uuid.UUID, dateFrom, dateTo string, calendar *models.CashFlowCalendar) {
 	var (
 		billingDay *int
