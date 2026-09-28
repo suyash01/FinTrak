@@ -977,6 +977,27 @@ type DashboardSummary struct {
 	// is framed around statement periods for a single billing-day account.
 	CurrentCycle      *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
+	// AsOf is the instant the balances below were computed, echoed so a client
+	// holding a cached response can tell what it is looking at. Present only when
+	// the request asked for one: a caller that did not ask gets no field, so
+	// responses without asOf are unchanged.
+	//
+	// This asOf is a RESPONSE field - the echo of an ?asOf= request. It is not
+	// LoanPayoff.AsOf (the date a loan payoff is quoted for, a time.Time), which
+	// shares the JSON name by coincidence of vocabulary: a summary never carries
+	// a payoff quote, so the two never appear in one payload, and that is
+	// deliberate rather than an accident waiting to be collapsed.
+	AsOf *string `json:"asOf,omitempty"`
+	// Balances is each account's balance at AsOf, including accounts holding
+	// nothing at that date. Present only when the request asked for one.
+	//
+	// It is a POINTER, not a bare slice, and that is load-bearing: encoding/json
+	// does not omit an empty slice, so a plain `[]AccountBalance` with omitempty
+	// would serialise as `"balances": []` on every ordinary summary. A nil
+	// pointer is omitted; a non-nil pointer to an empty slice is not, which is
+	// exactly the distinction "no accounts" and "no account held money" need -
+	// they are different answers and only the second is true of an asOf response.
+	Balances *[]AccountBalance `json:"balances,omitempty"`
 }
 
 // CurrentCycleInfo describes the billing cycle currently in progress for an
@@ -1818,6 +1839,22 @@ type ScopedAccount struct {
 	Currency string          `json:"currency"`
 	Income   CurrencyAmounts `json:"income"`
 	Expense  CurrencyAmounts `json:"expense"`
+}
+
+// AccountBalance is one account's balance as of a date. Balance is a
+// CurrencyAmounts and never a scalar: an account carries a currency, and an
+// as-of response can span several, so a map is the only honest representation.
+// A zero balance adds no key, so len() counts the accounts that actually held
+// money at that date.
+//
+// For a loan account this is outstanding principal, derived from the
+// transactions attached to the loan - the same figure /accounts shows - not a
+// bank-style net over the loan account's own (empty) ledger.
+type AccountBalance struct {
+	ID       uuid.UUID       `json:"id"`
+	Name     string          `json:"name"`
+	Currency string          `json:"currency"`
+	Balance  CurrencyAmounts `json:"balance"`
 }
 
 // CurrencyScope names every currency a response covers and the accounts behind
