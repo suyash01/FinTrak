@@ -86,14 +86,14 @@ func isUUID(value string) bool {
 }
 
 // txnQueryFilter parses the shared transaction-list filter query parameters
-// (account, category/group, payee, tag, free-text, date range, type, amount,
-// linked, loan, recurring) into a txnFilter. The free-text search spans the
-// description, notes, payee name, and tags. It is used by both GetTransactions
-// and ExportTransactions so the list and the export can never disagree about
-// what a filter means. A malformed id (accountId, loanAccountId, payeeId,
-// recurringId), dateFrom/dateTo, or amount writes a 400 and returns ok=false:
-// every one of them is compared against a typed column, so letting it through
-// would answer 500 instead of rejecting the filter.
+// (account, category/group, payee, tag, free-text, date range, asOf, type,
+// amount, linked, loan, recurring) into a txnFilter. The free-text search spans
+// the description, notes, payee name, and tags. It is used by both
+// GetTransactions and ExportTransactions so the list and the export can never
+// disagree about what a filter means. A malformed id (accountId, loanAccountId,
+// payeeId, recurringId), dateFrom/dateTo/asOf, or amount writes a 400 and
+// returns ok=false: every one of them is compared against a typed column, so
+// letting it through would answer 500 instead of rejecting the filter.
 //
 // The id parameters (accountId, loanAccountId, categoryId, groupId, payeeId,
 // tags) each take a comma-separated list and match a transaction when it
@@ -120,6 +120,26 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, [
 	dateTo, ok := parseQueryDate(c, "dateTo", c.Query("dateTo"))
 	if !ok {
 		return nil, nil, nil, false
+	}
+
+	// asOf reports the ledger at the end of a named day, so it is an upper
+	// bound on the window and is resolved against the window just parsed — the
+	// values above, not a second read of the request, so the clamp parseAsOf
+	// applies and the bounds this filter binds cannot disagree.
+	//
+	// The resolved instant becomes dateTo rather than a clause of its own. It
+	// is the same predicate, the same inclusive comparison, and putting it in
+	// the bound the list already emits is what keeps a request carrying both
+	// dateTo and asOf from binding two conflicting `t.date <=` arguments.
+	// parseAsOf has already pulled the instant back to dateTo where the window
+	// ends first, so the bound it installs is the effective upper bound, and
+	// every later reader of the window sees that and not the requested value.
+	asOf, ok := parseAsOf(c, dateFrom, dateTo)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	if asOf != "" {
+		dateTo = asOf
 	}
 
 	f := newTxnFilter(userID)
