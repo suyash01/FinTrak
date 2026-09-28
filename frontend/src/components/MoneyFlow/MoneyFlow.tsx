@@ -955,12 +955,12 @@ function SuppressedCyclesSection({
       <p className="mb-2 text-xs text-muted-foreground">
         A graph that stays acyclic has to give something up: a pair flowing both
         ways is netted into one edge, and a back edge that would close a longer
-        loop is dropped. The transfers above count these links anyway, so the two
-        totals differ by exactly what is listed here. This list is not empty only
-        when a currency went missing — a pair that netted to nothing is listed
-        too — so whether a currency is missing from the graph is read from the
-        per-currency amounts below, never from whether this list has anything in
-        it.
+        loop is dropped. The transfers above count every link; the
+        account-to-account edges here do not, so the two differ by what is listed
+        below. This list is not empty only when a currency went missing — a pair
+        that netted to nothing is listed too — so whether a currency is missing
+        from the graph is read from the per-currency amounts, never from whether
+        this list has anything in it.
       </p>
       <div className="space-y-2">
         {suppressed.map((c, i) => (
@@ -1107,7 +1107,7 @@ function CircularMoneyPanel({
             A cycle&apos;s net is the money circulating the whole loop only while
             the loop holds a single currency. Across currencies each key is that
             currency&apos;s own smallest leg, so there is no single figure
-            circulating and none is given.
+            circulating these loops and none is given above.
           </p>
           <div className="space-y-2">
             {report.cycles.map((c, i) => (
