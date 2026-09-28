@@ -141,18 +141,78 @@ describe("formatScopedMulti", () => {
 });
 
 describe("formatOne", () => {
-  it("falls back to a grouped number when Intl rejects the code", () => {
+  // The two cases a user-typed code can be that are not "a currency Intl knows".
+  // They were conflated here until a dashboard test showed "XYZ XYZ 7.00" on
+  // screen, and the conflation hid the fact that the throw branch below was
+  // never reached by any test in this file.
+  it("does not name a code twice when Intl already prints it", () => {
+    // Intl does not reject an unknown but well-formed code — it renders the code
+    // itself, having neither a symbol nor an error. Prefixing on top of that is
+    // how the code came to appear twice.
+    //
+    // The assertion counts occurrences rather than matching the whole string,
+    // because Intl separates the code from the figure with a NON-BREAKING space
+    // (U+00A0) that reads as an ordinary one in a diff and makes an exact
+    // toBe() assertion a test of an invisible character. Counting the code is
+    // also the more direct statement of the defect: once, not twice.
+    const unknown = formatOne(1234, "XYZ");
+    expect(unknown.match(/XYZ/g)).toHaveLength(1);
+    expect(unknown).toMatch(/1,234\.00/);
+  });
+
+  it("does not double a code Intl upper-cases", () => {
+    // Kept separate from the case above on purpose: two assertions in one `it`
+    // means the first failure aborts the second, and a fix for one is then free
+    // to regress the other unobserved.
+    //
+    // "Xyz" and not "usd": Intl upper-cases a code it renders literally, so
+    // "Xyz" formats as "XYZ 1,234.00" and a case-sensitive "does the format
+    // already name it" test reads that as un-named and prefixes it a second
+    // time. "usd" cannot expose this at all — a code Intl *knows* is rendered as
+    // its symbol, so "usd" formats as "$1,234.00" with the letters gone, and
+    // there is nothing to double. That was the first example tried here, and it
+    // passed against the unfixed code.
+    const mixed = formatOne(1234, "Xyz");
+    expect(mixed.match(/xyz/gi)).toHaveLength(1);
+    expect(mixed).toMatch(/1,234\.00/);
+  });
+
+  it("still prefixes a code Intl resolved to a symbol", () => {
+    // The other side of the same coin, and the one a "just return the format"
+    // fix would break: a known code loses its letters to the symbol, so the
+    // prefix is what names it.
+    expect(formatOne(1234, "usd")).toBe("usd $1,234.00");
+  });
+
+  it("falls back to a grouped number when Intl rejects the code outright", () => {
     // Exported so MultiCurrencyNotice can render an account's contribution
     // through the same safe path, rather than calling formatCurrency directly
     // and throwing on a code the user typed into an account.
-    expect(formatOne(1234, "XYZ")).toContain("1,234");
-    expect(formatOne(1234, "")).toContain("1,234");
+    //
+    // "US" is the example that actually reaches the catch. The test this
+    // replaces used "XYZ" and claimed Intl rejected it; it did not, and because
+    // it only asserted toContain("1,234") it passed either way — so the branch
+    // below was uncovered.
+    expect(formatOne(1234, "US")).toBe("US 1,234.00");
+    expect(formatOne(1234, "12")).toBe("12 1,234.00");
+    // The empty code is a different path — an early return, not the catch — and
+    // names nothing, because there is no code to name.
+    expect(formatOne(1234, "")).toBe("1,234.00");
   });
 
   it("uses the currency's own symbol and code when Intl can resolve it", () => {
     expect(formatOne(1234, "INR")).toBe("INR ₹1,234.00");
     expect(formatOne(1234, "USD")).toContain("1,234.00");
     expect(formatOne(1234, "USD")).not.toContain("₹");
+  });
+
+  it("keeps the prefix for a symbol that only partly spells the code", () => {
+    // JPY formats as "JP¥", which contains "JP" but not "JPY". The figure is
+    // therefore still not named by its own format, and the prefix stays — the
+    // conservative outcome, since "¥" alone is shared with CNY. Pinned because
+    // it is the one case where "does the format contain the code" is a slightly
+    // surprising test, and the natural next "simplification" would break it.
+    expect(formatOne(1234, "JPY")).toBe("JPY JP¥1,234.00");
   });
 });
 

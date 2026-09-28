@@ -6,25 +6,40 @@ import type { CurrencyAmounts, CurrencyScope, ScopedAccount } from "@/types";
  * formatOne renders a single currency's amount, and is the only place in the
  * app that calls formatCurrency with a code it did not choose itself.
  *
- * Intl.NumberFormat throws a RangeError on a code it cannot resolve, and an
- * account's currency is three letters a user typed — so "XYZ" is reachable, and
- * so is the empty string accounts.currency can hold when it is NULL. A display
- * detail must not take the dashboard down, so an unusable code falls back to a
- * plain grouped number prefixed with the raw code, which is still honest.
+ * An account's currency is text a user typed, so three things are reachable, and
+ * all three are handled here rather than thrown at a display detail:
+ *
+ *   - it is empty (accounts.currency is nullable, and a restored backup can
+ *     carry the empty string), which formats as a plain grouped number;
+ *   - it is not a code at all — one or two letters, or a digit — which
+ *     Intl.NumberFormat rejects with a RangeError, caught below;
+ *   - it is a well-formed three-letter code Intl has no data for, which is the
+ *     case this function's own comment used to get wrong.
+ *
+ * That last one does NOT throw. Modern ICU renders an unknown code as the code
+ * itself — `formatCurrency(1, "XYZ")` is "XYZ 1.00" — so prefixing it the way
+ * every other code is prefixed reads "XYZ XYZ 1.00", the code twice. The prefix
+ * exists because a bare symbol is ambiguous (several currencies share the dollar
+ * sign), so it is only added when the format did not already name the currency.
  */
 export function formatOne(amount: number, code: string): string {
   if (!code) {
     return formatNumber(amount);
   }
-  // The code travels with the figure even when a currency picker already names
-  // it: reading a figure in the wrong currency is the whole failure this guards
-  // against, and a symbol alone does not say which one — several currencies
-  // share the dollar sign between them.
   try {
-    return `${code} ${formatCurrency(amount, code)}`;
+    const formatted = formatCurrency(amount, code);
+    // Case-insensitively, because Intl upper-cases a code it renders literally:
+    // an account holding "Xyz" formats as "XYZ 1.00", and a case-sensitive test
+    // reads that as un-named and prefixes it a second time. Note this only
+    // applies to codes Intl has no data for — a code it *does* know is rendered
+    // as its symbol, discarding the letters, so "usd" formats as "$1.00" and is
+    // prefixed like any other symbol-bearing code.
+    return formatted.toUpperCase().includes(code.toUpperCase())
+      ? formatted
+      : `${code} ${formatted}`;
   } catch {
-    // Intl cannot resolve this code, so there is no symbol to print. The code is
-    // still the honest label and a grouped number is still the amount.
+    // Intl rejected the code outright, so there is no symbol to print. The code
+    // is still the honest label and a grouped number is still the amount.
     return `${code} ${formatNumber(amount)}`;
   }
 }
