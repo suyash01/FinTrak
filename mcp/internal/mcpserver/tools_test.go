@@ -674,6 +674,75 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 	}
 }
 
+// TestMoneyFlowStatesItsOwnNetAndTheCycleBreak keeps get_money_flow's two
+// additions checkable, because they are the two claims a model acts on and
+// neither is inferable from the payload.
+//
+// totalNet is the same new field on the same new type as get_dashboard_summary's,
+// which that tool's description already forbids deriving; a tool that returns
+// the field without saying so leaves the model free to subtract two maps, which
+// is the arithmetic the type exists to refuse. suppressedCycles is sharper,
+// because nothing in the wire tells a model the field is there: the cycles it
+// lists are precisely the flows the graph did not draw, so a description that
+// only says "already cycle-free" and "a per-link-type rollup that is not drawn"
+// reads as "nothing was withheld" and never reaches for it. The TUI tells its
+// user the same graph nets pairs in pairs or drops them; a model reading only
+// this description currently has strictly less information than the terminal
+// user.
+//
+// The expectations are the WORDS again, for the reason the rule above gives: a
+// reworded sentence that goes back to promising a total, or to implying the
+// field is empty when nothing went missing, passes a constant-identity check
+// five times over. So the fragments are written out, including the two the
+// constraint depends on — that the field is non-empty for any netted reciprocal
+// pair, and that the per-currency discarded amounts are where a missing currency
+// is read rather than the field's emptiness.
+func TestMoneyFlowStatesItsOwnNetAndTheCycleBreak(t *testing.T) {
+	stub := newStubAPI(t)
+	session := connect(t, stub.client(t))
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var desc string
+	for _, tool := range listed.Tools {
+		if tool.Name == "get_money_flow" {
+			desc = tool.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("get_money_flow is not served")
+	}
+
+	for _, want := range []string{
+		// The server's own difference, and the instruction not to derive it.
+		"totalNet is the server's own per-currency difference",
+		"do not derive it by subtracting totalExpense from totalIncome",
+		// What the field is, named, with the two things that cost the graph.
+		"suppressedCycles",
+		"reciprocal pair netted into a single edge",
+		"back edge that closed a longer loop",
+		"per-currency amount the break removed",
+		// The constraint: emptiness is not the test, the discarded amounts are.
+		"non-empty whenever anything was netted",
+		"read the discarded amounts per currency",
+		"never test suppressedCycles for emptiness",
+		// And it is already counted, so nothing is added to it.
+		"already counts those same links",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("get_money_flow does not tell the model %q", want)
+		}
+	}
+
+	// The claim must not be the opposite one: a field that is empty only when a
+	// currency went missing would be exactly the sentence that sends a model
+	// looking for an emptiness test this branch forbids.
+	if strings.Contains(desc, "empty when no currency") {
+		t.Error("get_money_flow claims suppressedCycles is empty when no currency went missing, which is false")
+	}
+}
+
 // spec is the part of backend/openapi.yaml these tests read.
 type spec struct {
 	Paths map[string]map[string]any `yaml:"paths"`

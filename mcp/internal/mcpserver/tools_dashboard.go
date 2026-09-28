@@ -90,7 +90,15 @@ func dashboardTools() []Tool {
 				"per-link-type rollup that is not drawn. Every node, edge and rollup total carries the flow through it keyed by " +
 				"currency, so a node fed by two currencies has no single total and the API does not invent one. A node's total is " +
 				"the server's own figure — an account node's is the larger of its inflow and outflow — so read it rather than adding " +
-				"up the edges around it. " + perCurrencyAmounts + narrowByCurrencyLinkStages,
+				"up the edges around it. totalNet is the server's own per-currency difference; do not derive it by subtracting " +
+				"totalExpense from totalIncome, for the same reason get_dashboard_summary says it. Keeping the graph acyclic " +
+				"costs it something, and suppressedCycles is the account of what: every reciprocal pair netted into a single edge " +
+				"and every back edge that closed a longer loop, each leg carrying its gross and the per-currency amount the break " +
+				"removed from the drawing. It is non-empty whenever anything was netted at all, so to ask whether a currency is " +
+				"missing from this graph, read the discarded amounts per currency and compare them with the currencies the scope " +
+				"names — never test suppressedCycles for emptiness, which answers only whether a cycle was netted, and a pair " +
+				"netted to nothing is still reported. The linkSummary rollup already counts those same links, so the discarded " +
+				"amounts are reported here rather than added on top of it. " + perCurrencyAmounts + narrowByCurrencyLinkStages,
 			Route:   readonly.Route{Method: http.MethodGet, Path: "/dashboard/money-flow"},
 			install: installMoneyFlow,
 		},
