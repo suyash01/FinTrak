@@ -6010,23 +6010,50 @@ components:
             type: string
         accounts:
           type: array
+          description: >-
+            The accounts behind the currencies above, one entry per account in
+            the window whether or not it moved money. Never null.
           items:
             $ref: "#/components/schemas/ScopedAccount"
 
     ScopedAccount:
       type: object
+      description: >-
+        One account inside a response's scope, with the income and expense it
+        contributes. It is what lets a client say what a currency it is not
+        currently displaying is worth, rather than dropping it silently. An
+        account is listed because it is in the window, not because it has
+        money in it, so the two amounts below are {} far more often than a
+        consumer expects.
       properties:
         id:
           type: string
           format: uuid
+          description: The account's id, the same id its transactions and links carry.
         name:
           type: string
+          description: The account's display name.
         currency:
           type: string
+          description: >-
+            The account's own currency, and the single key its income and expense
+            below are held under. An account holds one currency, so a client that
+            wanted a bare number here has to look at the two maps rather than at
+            this field.
         income:
           $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            What the account received in the window. Always a single-key map
+            under `currency`, and **empty ({}) when the account only spent** -
+            the ordinary case for a card, and the one a consumer most needs told:
+            it is the state that distinguishes "this account earned nothing" from
+            "this account earned nothing in the currency you are looking at".
         expense:
           $ref: "#/components/schemas/CurrencyAmounts"
+          description: >-
+            What the account paid in the window, in the same shape and for the
+            same reason as `income`: one key, or {} when the account only
+            received.
 
     CategorySpend:
       type: object

@@ -1804,6 +1804,14 @@ type CurrencyAmounts map[string]money.Amount
 // income and expense it contributes. It is what lets a client say what a
 // currency it is not currently displaying is worth, rather than dropping it
 // silently.
+//
+// An account is listed because it is in the window, not because it has money in
+// it, and an account holds exactly one currency - so Income and Expense are
+// always single-key maps, under Currency, and are {} when the account did
+// nothing on that side. That empty case is the ordinary one for a card that only
+// spends, and it is the difference between "this account earned nothing" and
+// "this account earned nothing in the currency you happen to be looking at", so
+// it is stated here rather than left to be discovered from a missing key.
 type ScopedAccount struct {
 	ID       uuid.UUID       `json:"id"`
 	Name     string          `json:"name"`
