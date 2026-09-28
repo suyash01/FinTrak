@@ -66,6 +66,13 @@ func trendCurrencyFilter(currency string) string {
 // Every amount is per-currency. With no account filter the window can span an
 // INR account and a USD one, and no single figure can represent that, so the
 // response carries one amount per currency alongside the scope that produced it.
+//
+// An `asOf=YYYY-MM-DD` names an instant — the ledger at the END of that day —
+// rather than a day to exclude, so it becomes the window's upper bound and every
+// transaction-backed section above is narrowed by it together. It also adds
+// `asOf` and `balances`: each account's balance at that instant, including the
+// accounts holding nothing. Both are omitted entirely when no instant was asked
+// for.
 func (srv *Server) GetDashboardSummary(c *gin.Context) {
 	ctx := c
 	userID := auth.GetUserID(c)
@@ -95,6 +102,28 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 
+	// asOf reports the ledger at the END of a named day, so it resolves against
+	// the window just parsed above — the validated values, not a second read of
+	// the request — and the clamp parseAsOf applies lands in dateTo below. It is
+	// resolved here, before the billing-cycle branch, so groupBy=billing_cycle
+	// gets the same 400s for a malformed or out-of-window instant rather than
+	// silently ignoring the parameter.
+	asOf, ok := parseAsOf(c, dateFrom, dateTo)
+	if !ok {
+		return
+	}
+	// The resolved instant BECOMES the window's end rather than a clause of its
+	// own, which is the shape txnQueryFilter already established. It is the same
+	// predicate and the same inclusive comparison, and parseAsOf has already
+	// pulled the instant back to dateTo, so a second `t.date <=` would bind a
+	// duplicate argument for a bound that says nothing the first does not. Every
+	// later reader in this handler — the filter fragment below, the currency
+	// scope, the echoed asOf — then reads one value, and none of them can answer
+	// about a different instant than the one the response reports.
+	if asOf != "" {
+		dateTo = asOf
+	}
+
 	// Billing-cycle view: the whole summary is framed around the statement
 	// periods of a single account that has a billing day set. The currency is
 	// parsed above and passed down rather than read again, so both views filter
@@ -111,6 +140,10 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		incomeByCategory  []models.CategorySpend
 		monthlyTrend      []models.MonthlyData
 		recent            []models.Transaction
+		// balances is the as-of block, and is nil unless asOf was asked for. It
+		// is declared here so the pointer is taken once, beside the summary it
+		// belongs to, rather than inside the query's branch.
+		balances []models.AccountBalance
 	)
 
 	// One filter fragment serves every transaction-backed query below, all of
@@ -435,6 +468,23 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		return
 	}
 
+	// The as-of balances, on the same read-only snapshot as everything above —
+	// a balance computed from a different instant than the trend beside it would
+	// be a response describing two different ledgers.
+	//
+	// Only when an instant was asked for. A summary is the most-polled endpoint
+	// in the app, and this is a correlated subquery per account; running it for
+	// callers who never asked would tax every request for a field they will
+	// never see.
+	if asOf != "" {
+		balances, err = srv.accountBalancesAsOf(ctx, q, userID, asOf)
+		if err != nil {
+			slog.Error("accountBalancesAsOf", slog.String("error", err.Error()))
+			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Empty slices rather than nil, so the body carries [] and a client does not
 	// have to tell an absent list from a null one.
 	if byCategory == nil {
@@ -464,6 +514,20 @@ func (srv *Server) GetDashboardSummary(c *gin.Context) {
 		MonthlyTrend:       monthlyTrend,
 		RecentTransactions: recent,
 		CurrencyScope:      scope.Scope,
+	}
+
+	// Both as-of fields are POINTERS, and nil is what omits them: a response
+	// for a request that never asked for an instant is byte-for-byte what it was
+	// before this feature.
+	//
+	// Taking the address of `balances` here is safe only because
+	// accountBalancesAsOf allocated it. A non-nil pointer to a nil slice is
+	// neither "not asked" nor "no accounts" — it serialises as
+	// `"balances": null`, and a client reading that sees a server that lost the
+	// value rather than a user with no accounts.
+	if asOf != "" {
+		summary.AsOf = &asOf
+		summary.Balances = &balances
 	}
 
 	if err := tx.Commit(ctx); err != nil {
