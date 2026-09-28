@@ -314,7 +314,9 @@ describe("MoneyFlow", () => {
       apiMock.getMoneyFlow.mockResolvedValue(suppressedGraph());
       render(page());
 
-      expect(await screen.findByText("Withheld from the graph")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Withheld from the graph"),
+      ).toBeInTheDocument();
       // Both currencies named with their own withheld amounts, and no sum of
       // them: the graph is short of two different figures, not one.
       expect(
@@ -344,7 +346,9 @@ describe("MoneyFlow", () => {
 
       // No cycle detail, but the reconciliation between the two totals is still
       // on screen — it came from the graph, not from the request that failed.
-      expect(await screen.findByText("Withheld from the graph")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Withheld from the graph"),
+      ).toBeInTheDocument();
       expect(
         screen.getByText(`${formatOne(5000, "INR")} not in the graph`),
       ).toBeInTheDocument();

@@ -973,7 +973,10 @@ function SuppressedCyclesSection({
                 ? "Two-way pair"
                 : `${c.accounts.length}-account loop`}
               {c.accounts.length > 0 && (
-                <> — {c.accounts.map(nameOf).join(" → ")} → {nameOf(c.accounts[0])}</>
+                <>
+                  {" — "}
+                  {c.accounts.map(nameOf).join(" → ")} → {nameOf(c.accounts[0])}
+                </>
               )}
             </div>
             {c.legs.map((leg) => (
@@ -1076,7 +1079,10 @@ function CircularMoneyPanel({
   nameOf: (id: string) => string;
   code: string;
 }) {
-  if ((!report || (report.cycles.length === 0 && report.oneSidedFlows.length === 0)) && suppressed.length === 0) {
+  const nothingDrawn =
+    !report ||
+    (report.cycles.length === 0 && report.oneSidedFlows.length === 0);
+  if (nothingDrawn && suppressed.length === 0) {
     return (
       <div className="text-sm text-muted-foreground py-6 text-center">
         No circular or one-way account flows in this range.
@@ -1087,10 +1093,7 @@ function CircularMoneyPanel({
   return (
     <div className="space-y-5">
       {suppressed.length > 0 && (
-        <SuppressedCyclesSection
-          suppressed={suppressed}
-          nameOf={nameOf}
-        />
+        <SuppressedCyclesSection suppressed={suppressed} nameOf={nameOf} />
       )}
 
       {report && report.cycles.length > 0 && (

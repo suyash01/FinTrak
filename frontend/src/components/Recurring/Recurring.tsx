@@ -157,7 +157,9 @@ export default function Recurring() {
                 Net per month
               </p>
               <p
-                className={`text-xl font-semibold mt-1 ${recurringNetClass(totals.net)}`}
+                className={`text-xl font-semibold mt-1 ${recurringNetClass(
+                  totals.net,
+                )}`}
               >
                 {recurringTotalText(totals.net, totals.unplaced)}
               </p>
