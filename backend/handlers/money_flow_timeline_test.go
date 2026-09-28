@@ -64,6 +64,20 @@ const (
 		`AND t\.user_id = \$2\s+AND t\.date >= bc\.start_date AND t\.date <= bc\.end_date`
 )
 
+// expectTimelineAccountCurrency expects the in-snapshot read of the account's
+// currency, the one figure that keys every period. It is a separate query from
+// the billing-day lookup, and it happens after the read-only transaction has
+// begun, because it has to share that transaction with the currencyScope it must
+// agree with: a currency read on the pool would let a concurrent edit key the
+// periods by a currency the in-snapshot scope does not name. pgxmock matches
+// expectations in order, so placing this call before the scope expectation is
+// what holds the handler to that order.
+func expectTimelineAccountCurrency(mock pgxmock.PgxPoolIface, acctID, userID uuid.UUID, code string) {
+	mock.ExpectQuery("SELECT " + timelineCurrencyRegex + `\s+FROM accounts a`).
+		WithArgs(acctID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"currency"}).AddRow(code))
+}
+
 func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
@@ -289,11 +303,11 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 	start := time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC)
 
-	// The account lookup also reads the account's currency: the branch is
-	// account-scoped, so one cycle - and one period - can only hold that one.
-	mock.ExpectQuery("SELECT a.billing_day, " + timelineCurrencyRegex).
+	// The lookup reads only the billing day, because ensureBillingCycles needs it
+	// and runs before the snapshot. The currency comes with the scope below.
+	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
@@ -301,8 +315,11 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 			AddRow(cycleID, start, end, "Jun 2024", 500.0, 3))
 	// The scope covers the same cycle window the periods are read over, so the
 	// currency named beside the bars is the one the bars are in, and the two come
-	// from one snapshot.
+	// from one snapshot. So does the currency that keys the bars.
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	// The branch is account-scoped, so one cycle - and one period - can only hold
+	// the account's own currency.
+	expectTimelineAccountCurrency(mock, acctID, userID, "INR")
 	mock.ExpectQuery(timelineScopeRegex).
 		WithArgs(userID, start.Format("2006-01-02"), end.Format("2006-01-02"), acctID.String()).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
@@ -365,13 +382,14 @@ func TestGetMoneyFlowTimelineBillingCycleNarrowsToTheCurrencyFilter(t *testing.T
 
 	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID, start, end, "Jun 2024", 3500.0, 3))
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	expectTimelineAccountCurrency(mock, acctID, userID, "INR")
 	mock.ExpectQuery(timelineScopeRegex + `[\s\S]*` + timelineCurrencyRegex + predAt5).
 		WithArgs(userID, windowStart, windowEnd, acctID.String(), "INR").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
@@ -420,13 +438,19 @@ func TestGetMoneyFlowTimelineBillingCycleCurrencyMismatchIsEmpty(t *testing.T) {
 	// the one that filters them out.
 	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "USD"))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
 			AddRow(cycleID, start, end, "Jun 2024", 3500.0, 3))
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	// The account is USD, and it is read from inside the snapshot even though the
+	// periods come back empty: the read happens before the scope, so a response
+	// with no periods still cost it. That is the price of the two agreeing, and
+	// it is worth paying on the empty path too - a read that only happens when
+	// there is something to say is a read that can disagree when there is not.
+	expectTimelineAccountCurrency(mock, acctID, userID, "USD")
 	// The scope's own currency predicate is what makes the account disappear;
 	// without it the response would name a USD account inside a ?currency=INR
 	// report.
@@ -463,9 +487,11 @@ func TestGetMoneyFlowTimelineBillingCycleNoCycles(t *testing.T) {
 	userID := testUserID()
 	acctID := uuid.New()
 
+	// No cycles, so the handler returns before the snapshot opens and the
+	// currency is never read - there is no period to key.
 	mock.ExpectQuery("SELECT a.billing_day").
 		WithArgs(acctID, userID).
-		WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(intPtr(5), "INR"))
+		WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
 	expectBillingCyclesUpToDate(mock, userID, acctID, 5)
 	mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
 		WithArgs(acctID, userID).
@@ -640,7 +666,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 		acctID := uuid.New()
 		mock.ExpectQuery("SELECT a.billing_day").
 			WithArgs(acctID, userID).
-			WillReturnRows(pgxmock.NewRows([]string{"billing_day", "currency"}).AddRow(nil, "INR"))
+			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(nil))
 
 		w := httptest.NewRecorder()
 		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,
@@ -663,6 +689,67 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,
 			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String(), nil))
 		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	// The account's currency is read in the snapshot rather than with the billing
+	// day, which opens a window the first read did not have: the account can be
+	// deleted between them. Answering 404 is the honest response - the periods
+	// and the scope below have nothing left to describe, and inventing a currency
+	// to key them with is the one thing this branch must never do.
+	t.Run("account deleted between the two reads", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		acctID := uuid.New()
+		mock.ExpectQuery("SELECT a.billing_day").
+			WithArgs(acctID, userID).
+			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+		expectBillingCyclesUpToDate(mock, userID, acctID, 5)
+		mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+			WithArgs(acctID, userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
+				AddRow(uuid.New(),
+					time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC),
+					time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC), "Jun 2024", 500.0, 3))
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT " + timelineCurrencyRegex + `\s+FROM accounts a`).
+			WithArgs(acctID, userID).
+			WillReturnError(pgx.ErrNoRows)
+
+		w := httptest.NewRecorder()
+		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,
+			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String(), nil))
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("account currency read fails", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mock.Close()
+
+		acctID := uuid.New()
+		mock.ExpectQuery("SELECT a.billing_day").
+			WithArgs(acctID, userID).
+			WillReturnRows(pgxmock.NewRows([]string{"billing_day"}).AddRow(intPtr(5)))
+		expectBillingCyclesUpToDate(mock, userID, acctID, 5)
+		mock.ExpectQuery("SELECT bc.id, bc.start_date, bc.end_date, bc.label").
+			WithArgs(acctID, userID).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "net_activity", "txn_count"}).
+				AddRow(uuid.New(),
+					time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC),
+					time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC), "Jun 2024", 500.0, 3))
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT " + timelineCurrencyRegex + `\s+FROM accounts a`).
+			WithArgs(acctID, userID).
+			WillReturnError(assert.AnError)
+
+		w := httptest.NewRecorder()
+		newMoneyFlowTimelineTestRouter(newTestServer(mock)).ServeHTTP(w,
+			httptest.NewRequest(http.MethodGet, "/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+acctID.String(), nil))
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

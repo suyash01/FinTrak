@@ -221,19 +221,18 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		return
 	}
 
-	// The account's currency is read once here rather than per period: a cycle
-	// belongs to exactly one account, and the API only lets a transaction be
-	// assigned to a cycle of its own account, so every period of this timeline is
-	// in that one currency. The maps below are per-currency for consistency with
-	// the monthly view, not because this window can span currencies. As there, the
-	// account's currency is the transactions' denomination only because a
-	// transaction carries no currency of its own.
+	// Only the billing day is read here, and it has to be: ensureBillingCycles
+	// below needs it, and that runs before the snapshot this branch's other reads
+	// share. The account's currency is deliberately not read alongside it, because
+	// it keys every period of the response and therefore has to come from the same
+	// snapshot as the scope that names it - see the read inside the transaction
+	// below. This is the branch's own rule (reads whose results must agree share
+	// one transaction), applied everywhere except here until now.
 	var billingDay *int
-	var accountCurrency string
 	err = srv.db.QueryRow(ctx,
-		`SELECT a.billing_day, `+flowCurrency("a.currency")+`
+		`SELECT a.billing_day
 		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
-		accountID, userID).Scan(&billingDay, &accountCurrency)
+		accountID, userID).Scan(&billingDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		validation.RespondError(c, "account not found", http.StatusNotFound)
 		return
@@ -260,6 +259,14 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		return
 	}
 
+	// The cycle list is read on the pool rather than in the snapshot below, and
+	// unlike the dashboard's equivalent this is an ordering constraint rather than
+	// an oversight: the window is derived from these cycles, and the window is an
+	// argument to the scope query that opens the snapshot. The snapshot cannot be
+	// asked anything until the list has come back, so the list cannot be part of
+	// it. What the list contributes to the response is the window's bounds, which
+	// is why the read that decides the *key* of every amount - the account's
+	// currency - is not here.
 	cycles, err := listBillingCycles(ctx, srv.db, userID, accountID)
 	if err != nil {
 		slog.Error("GetMoneyFlowTimeline (list billing cycles)", slog.String("error", err.Error()))
@@ -305,6 +312,39 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		return
 	}
 	defer tx.Rollback(ctx)
+
+	// The account's currency, read here rather than in the lookup above. It keys
+	// every period in the response, so a concurrent edit between the two reads
+	// would key the periods by a currency the scope below - in the same snapshot -
+	// does not name: the response would hold one amount per period in a currency
+	// its own scope never mentions, which is the same defect as a scope read by
+	// date beside periods joined by cycle id, arrived at from the other side.
+	//
+	// The read is once, not per period, for the reason the monthly view's
+	// currency-column comment gives: a cycle belongs to exactly one account and
+	// the API only lets a transaction be assigned to a cycle of its own account,
+	// so this window cannot span currencies. The maps below are per-currency for
+	// consistency with the monthly view, not because the keys vary. And the
+	// account's currency is the transactions' denomination only because a
+	// transaction carries none of its own.
+	var accountCurrency string
+	err = tx.QueryRow(ctx,
+		`SELECT `+flowCurrency("a.currency")+`
+		 FROM accounts a WHERE a.id = $1 AND a.user_id = $2`,
+		accountID, userID).Scan(&accountCurrency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The account existed a moment ago and the snapshot began after that read.
+		// Its row is gone now, so the periods and the scope below have nothing to
+		// describe; 404 is the honest answer rather than a period keyed by a
+		// currency this branch would have to invent.
+		validation.RespondError(c, "account not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("GetMoneyFlowTimeline (account currency)", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	scope, err := srv.currencyScope(ctx, tx, userID, scopeOptions{
 		DateFrom:  windowStart,
