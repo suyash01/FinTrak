@@ -8,9 +8,10 @@ import {
   signOf,
   signClass,
   sumPerCurrency,
+  useAccountCurrency,
   useCurrencyScope,
 } from "./currency";
-import type { CurrencyScope, ScopedAccount } from "@/types";
+import type { Account, CurrencyScope, ScopedAccount } from "@/types";
 
 function scopedAccount(overrides: Partial<ScopedAccount> = {}): ScopedAccount {
   return {
@@ -213,6 +214,72 @@ describe("formatOne", () => {
     // it is the one case where "does the format contain the code" is a slightly
     // surprising test, and the natural next "simplification" would break it.
     expect(formatOne(1234, "JPY")).toBe("JPY JP¥1,234.00");
+  });
+});
+
+describe("useAccountCurrency", () => {
+  const account = (overrides: Partial<Account> = {}): Account =>
+    ({
+      id: "a1",
+      name: "Checking",
+      accountTypeId: "bank",
+      bank: "",
+      currency: "INR",
+      color: "#000",
+      isDefault: true,
+      closed: false,
+      balance: 0,
+      ...overrides,
+    }) as Account;
+
+  const lookup = (accounts: Account[]) =>
+    renderHook(() => useAccountCurrency(accounts)).result.current;
+
+  it("resolves an account id to that account's own currency", () => {
+    const code = lookup([
+      account(),
+      account({ id: "a2", currency: "USD" }),
+      account({ id: "a3", currency: "EUR" }),
+    ]);
+    expect(code("a1")).toBe("INR");
+    expect(code("a2")).toBe("USD");
+    expect(code("a3")).toBe("EUR");
+  });
+
+  // The one that matters. "" reaches formatOne, which renders a plain grouped
+  // number naming no currency. The alternative — a default here — is the defect
+  // this helper exists to end, and it would be invisible: every caller would
+  // render a confident figure in a currency nobody asked for.
+  it("names no currency for an account it does not know", () => {
+    const code = lookup([account()]);
+    expect(code("a-missing")).toBe("");
+    expect(code("")).toBe("");
+    // And the consequence, end to end, so the two halves are pinned together.
+    expect(formatOne(250, code("a-missing"))).not.toContain("₹");
+  });
+
+  // accounts.currency is nullable, so "" is representable for a real account and
+  // must not be confused with "unknown". Both render as an unnamed number, and
+  // the difference does not change the output — which is why this is a comment
+  // worth having rather than a behaviour worth branching on.
+  it("passes an account with no currency through as empty", () => {
+    const code = lookup([account({ currency: "" })]);
+    expect(code("a1")).toBe("");
+  });
+
+  it("sees an account added after the first render", () => {
+    const first = [account()];
+    const { result, rerender } = renderHook(
+      ({ list }: { list: Account[] }) => useAccountCurrency(list),
+      { initialProps: { list: first } },
+    );
+    expect(result.current("a2")).toBe("");
+
+    // Reference data loads after the screen does, so a hook that captured the
+    // map once would keep answering from the empty set and every figure would
+    // silently lose its currency.
+    rerender({ list: [...first, account({ id: "a2", currency: "USD" })] });
+    expect(result.current("a2")).toBe("USD");
   });
 });
 

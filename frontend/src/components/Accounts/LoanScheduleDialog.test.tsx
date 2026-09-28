@@ -9,7 +9,8 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import LoanScheduleDialog from "./LoanScheduleDialog";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import { todayLocalISO } from "../../lib/dates";
 import type {
   Account,
@@ -65,6 +66,13 @@ const account: Account = {
   closed: false,
   balance: 0,
 };
+
+// money is how the dialog now renders a figure on this account: the account's own
+// currency, named alongside its symbol, because the code is one the user typed on
+// the account rather than one the app chose. Naming it here keeps the assertions
+// reading the way they did when the dialog called formatCurrency and got the INR
+// default — which is exactly the coincidence that hid the bug.
+const money = (amount: number) => formatOne(amount, account.currency);
 
 // Transfer targets: this loan, a second open loan, a closed loan and a
 // non-loan account (only the first two are eligible).
@@ -204,6 +212,82 @@ beforeEach(() => {
 });
 
 describe("LoanScheduleDialog", () => {
+  // The defect, in one test. Every figure on this screen belongs to the account
+  // the dialog was opened for, and the dialog used to call formatCurrency without
+  // passing it, so a USD loan's EMI, amortization table, disbursement and
+  // installments were all rendered in rupees. It is the screen where the numbers
+  // are most likely to be acted upon.
+  //
+  // The assertion is on the code, not merely on the absence of "₹": a figure that
+  // merely lost its symbol would pass a narrower test while still being labelled
+  // in the wrong currency.
+  it("renders a non-INR loan's figures in that loan's own currency", async () => {
+    const dollar = { ...account, currency: "USD" };
+    domainMock.useDomainData.mockReturnValue({
+      accounts: [dollar, { ...dollar, id: "loan-2", name: "Home Loan" }],
+    });
+    apiMock.getLoanSchedule.mockResolvedValue(detail());
+    render(<LoanScheduleDialog account={dollar} onClose={vi.fn()} />);
+
+    await screen.findByText("Car Loan — Amortization");
+    const usd = (amount: number) => formatOne(amount, "USD");
+    expect(screen.getByText(usd(78.85))).toBeInTheDocument();
+    expect(screen.getAllByText(usd(88.85)).length).toBeGreaterThanOrEqual(3);
+    // The wrong currency, named explicitly rather than left to a reader.
+    expect(screen.queryByText(formatOne(78.85, "INR"))).not.toBeInTheDocument();
+    expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
+  });
+
+  // The one thing on this screen that is NOT in the account's own currency: a
+  // balance transfer moves a payoff from one loan into another, and
+  // handlers/loan.go's TransferLoanBalance requires only that the target be a
+  // different account with a schedule — it never checks the two agree on a
+  // currency. So a row here can carry a figure that belongs to neither account
+  // unambiguously, and printing this account's code is how that becomes a rupee
+  // symbol on a dollar amount.
+  //
+  // The row names the currency the money moved INTO, which is the same code
+  // either way when the two loans agree.
+  it("names the counterparty's currency on a cross-currency transfer row", async () => {
+    const dollar = { ...account, currency: "USD" };
+    const euroLoan = { ...account, id: "loan-2", name: "Home Loan", currency: "EUR" };
+    domainMock.useDomainData.mockReturnValue({
+      accounts: [dollar, euroLoan, { ...account, id: "loan-3", closed: true }],
+    });
+    apiMock.getLoanSchedule.mockResolvedValue(
+      detail({
+        transfers: [
+          {
+            id: "tr-1",
+            fromLoanAccountId: "loan-1",
+            fromLoanAccountName: "Car Loan",
+            toLoanAccountId: "loan-2",
+            toLoanAccountName: "Home Loan",
+            amount: 500,
+            principal: 480,
+            transferDate: "2024-05-01T00:00:00Z",
+            mode: "recast",
+            accruedInterest: 20,
+            createdAt: "2024-05-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    render(<LoanScheduleDialog account={dollar} onClose={vi.fn()} />);
+
+    await screen.findByText("Car Loan — Amortization");
+    expect(await screen.findByText("Balance transfers")).toBeInTheDocument();
+    // Outgoing from a USD loan into a EUR one: the figure is named in EUR.
+    expect(screen.getByText(formatOne(500, "EUR"))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `${formatOne(480, "EUR")} principal · ${formatOne(20, "EUR")} accrued interest`,
+      ),
+    ).toBeInTheDocument();
+    // And not in the account's own currency, which is the mistake.
+    expect(screen.queryByText(formatOne(500, "USD"))).not.toBeInTheDocument();
+  });
+
   it("renders the amortization table with the principal/interest split", async () => {
     renderDialog();
 
@@ -216,12 +300,12 @@ describe("LoanScheduleDialog", () => {
     expect(screen.getByText("1 of 12 installments paid")).toBeInTheDocument();
 
     // The first installment is split and marked paid, the second is not.
-    expect(screen.getByText(formatCurrency(78.85))).toBeInTheDocument();
+    expect(screen.getByText(money(78.85))).toBeInTheDocument();
     // Interest paid (summary) and the first installment's interest.
-    expect(screen.getAllByText(formatCurrency(10))).toHaveLength(2);
+    expect(screen.getAllByText(money(10))).toHaveLength(2);
     expect(screen.getByText("Paid")).toBeInTheDocument();
     // The EMI shows in the summary and on both installments.
-    expect(screen.getAllByText(formatCurrency(88.85))).toHaveLength(3);
+    expect(screen.getAllByText(money(88.85))).toHaveLength(3);
   });
 
   it("unlinks the payment covering an installment and reloads the schedule", async () => {
@@ -425,10 +509,10 @@ describe("LoanScheduleDialog", () => {
     // payload; the fee itself is never amortized into them. It shows in the
     // summary and in the disbursement breakdown.
     expect(
-      await screen.findByText(formatCurrency(66.19)),
+      await screen.findByText(money(66.19)),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Processing fee")).toHaveLength(2);
-    expect(screen.getAllByText(formatCurrency(50))).toHaveLength(2);
+    expect(screen.getAllByText(money(50))).toHaveLength(2);
     // The cancelled installment is voided by the transfer; the recast one was
     // regenerated by it.
     expect(screen.getByText("Settled")).toBeInTheDocument();
@@ -438,7 +522,7 @@ describe("LoanScheduleDialog", () => {
     // alongside the principal and the interest the payoff carried.
     expect(
       screen.getByText(
-        `${formatCurrency(422)} principal · ${formatCurrency(9.15)} accrued interest`,
+        `${money(422)} principal · ${money(9.15)} accrued interest`,
       ),
     ).toBeInTheDocument();
     // A settled loan cannot be transferred again, and the out-transfer can be
@@ -603,7 +687,7 @@ describe("LoanScheduleDialog", () => {
     // principal, and never arithmetic done here.
     expect(screen.queryByText("Amount to transfer")).not.toBeInTheDocument();
     expect(
-      await screen.findByText(formatCurrency(1982924.71)),
+      await screen.findByText(money(1982924.71)),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox"));
@@ -692,17 +776,17 @@ describe("LoanScheduleDialog", () => {
     // dialog never does money arithmetic of its own.
     expect(screen.getByText("Payoff")).toBeInTheDocument();
     expect(
-      await screen.findByText(formatCurrency(1982924.71)),
+      await screen.findByText(money(1982924.71)),
     ).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(1956632.46))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(26292.25))).toBeInTheDocument();
+    expect(screen.getByText(money(1956632.46))).toBeInTheDocument();
+    expect(screen.getByText(money(26292.25))).toBeInTheDocument();
     // The accrual names the day it runs from and how many days it covers.
     expect(
       screen.getByText(
         new RegExp(`over 75 days from ${formatDate("2024-04-01")}`),
       ),
     ).toHaveTextContent(
-      `${formatCurrency(26292.25)} of interest accrued over 75 days`,
+      `${money(26292.25)} of interest accrued over 75 days`,
     );
   });
 
@@ -724,7 +808,7 @@ describe("LoanScheduleDialog", () => {
       await screen.findByRole("button", { name: /Transfer balance/ }),
     );
     expect(
-      await screen.findByText(formatCurrency(1982924.71)),
+      await screen.findByText(money(1982924.71)),
     ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Transfer date"), {
@@ -739,10 +823,10 @@ describe("LoanScheduleDialog", () => {
     );
     // The displayed amount follows the date, because the payoff is a function
     // of it.
-    expect(await screen.findByText(formatCurrency(930000))).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(900000))).toBeInTheDocument();
+    expect(await screen.findByText(money(930000))).toBeInTheDocument();
+    expect(screen.getByText(money(900000))).toBeInTheDocument();
     expect(
-      screen.queryByText(formatCurrency(1982924.71)),
+      screen.queryByText(money(1982924.71)),
     ).not.toBeInTheDocument();
   });
 
@@ -785,7 +869,7 @@ describe("LoanScheduleDialog", () => {
 
     expect(await screen.findByText("Net released")).toBeInTheDocument();
     // The net and the linked credit are both shown, and they agree.
-    expect(screen.getAllByText(formatCurrency(950))).toHaveLength(2);
+    expect(screen.getAllByText(money(950))).toHaveLength(2);
     expect(screen.getByText("Bank credit")).toBeInTheDocument();
     expect(screen.getByText("Matched")).toBeInTheDocument();
     expect(screen.queryByText(/Off by/)).not.toBeInTheDocument();
@@ -804,7 +888,7 @@ describe("LoanScheduleDialog", () => {
     renderDialog();
 
     expect(await screen.findByText(/Off by/)).toHaveTextContent(
-      `Off by ${formatCurrency(50)}`,
+      `Off by ${money(50)}`,
     );
     expect(screen.queryByText("Matched")).not.toBeInTheDocument();
   });
@@ -949,7 +1033,7 @@ describe("LoanScheduleDialog", () => {
     renderDialog();
 
     expect(await screen.findByText(/No credit of/)).toHaveTextContent(
-      `No credit of ${formatCurrency(950)} between ${formatDate("2023-08-05")} and ` +
+      `No credit of ${money(950)} between ${formatDate("2023-08-05")} and ` +
         `${formatDate("2024-05-16")}. Import the bank statement covering the ` +
         `disbursement, or set this loan's disbursal date.`,
     );
@@ -992,7 +1076,7 @@ describe("LoanScheduleDialog", () => {
     // A takeover shows what the target released and what is left of it once
     // the source's payoff has been paid out.
     expect(screen.getByText("Target net disbursement")).toBeInTheDocument();
-    expect(screen.getByText(formatCurrency(5000 - 1000))).toBeInTheDocument();
+    expect(screen.getByText(money(5000 - 1000))).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Transfer date"), {
       target: { value: "2024-06-15" },
