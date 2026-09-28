@@ -3,7 +3,7 @@ import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
-import { formatCurrency } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { ImportTransaction, Payee } from "../../types";
 import { siblingIndices } from "./importHelpers";
 
@@ -11,6 +11,17 @@ interface ImportPreviewTableProps {
   transactions: ImportTransaction[];
   excluded: Set<number>;
   onExcludedChange: Dispatch<SetStateAction<Set<number>>>;
+  /**
+   * The currency of the account this batch will be imported into.
+   *
+   * Required rather than optional with an INR default, because every row in a
+   * batch goes into ONE account — both call sites (the CSV/PDF wizard and the
+   * Paperless import) commit a single accountId — so one code is correct for the
+   * whole table. Making it required is what forces a new call site to say which
+   * account it is importing into rather than inheriting a default and quietly
+   * labelling every row in the wrong currency.
+   */
+  currency: string;
   payees?: Payee[];
   showPayee?: boolean;
   maxHeight?: number;
@@ -25,6 +36,7 @@ export default function ImportPreviewTable({
   transactions,
   excluded,
   onExcludedChange,
+  currency,
   payees = [],
   showPayee = true,
   maxHeight = 500,
@@ -153,7 +165,7 @@ export default function ImportPreviewTable({
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}
-            {formatCurrency(row.original.amount)}
+            {formatOne(row.original.amount, currency)}
           </span>
         ),
         meta: {

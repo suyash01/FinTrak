@@ -764,6 +764,9 @@ export default function Import() {
             targetAccountName={
               accounts.find((a) => a.id === selectedAccount)?.name || "this account"
             }
+            targetCurrency={
+              accounts.find((a) => a.id === selectedAccount)?.currency || ""
+            }
             dupCount={dupCount}
             existingDupCount={existingDupCount}
             inFileDupCount={inFileDupCount}
@@ -836,6 +839,9 @@ export default function Import() {
             result={validationResult}
             accountName={
               accounts.find((a) => a.id === selectedAccount)?.name || ""
+            }
+            currency={
+              accounts.find((a) => a.id === selectedAccount)?.currency || ""
             }
             onClose={() => setValidationResult(null)}
           />

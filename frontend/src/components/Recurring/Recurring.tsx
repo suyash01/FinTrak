@@ -37,7 +37,8 @@ import {
 import RecurringFormDialog from "./RecurringFormDialog";
 import RecurringDetail from "./RecurringDetail";
 import { useCommandIntent } from "../../lib/useCommandIntent";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne, useAccountCurrency } from "../../lib/currency";
 import {
   foldRecurringMonthly,
   recurringNetClass,
@@ -62,6 +63,12 @@ function cadenceLabel(s: RecurringSeries): string {
 // links.
 export default function Recurring() {
   const { accounts, categories, payees } = useDomainData();
+  // The series amount is denominated in the series' own account's currency, and
+  // the table spans every account, so a row can be in a currency the page is not
+  // currently showing elsewhere. The card's folded total already refuses to add
+  // across currencies (see foldRecurringMonthly); this is the per-row figure
+  // that has to agree with it.
+  const currencyOf = useAccountCurrency(accounts);
   const { compactLayout } = useSettings();
   const [series, setSeries] = useState<RecurringSeries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -263,7 +270,7 @@ export default function Recurring() {
                     <TableCell
                       className={`${cellPad} text-sm text-right text-foreground whitespace-nowrap`}
                     >
-                      {formatCurrency(s.amount)}
+                      {formatOne(s.amount, currencyOf(s.accountId))}
                     </TableCell>
                     <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
                       {cadenceLabel(s)}

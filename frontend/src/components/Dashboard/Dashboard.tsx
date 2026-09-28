@@ -732,6 +732,13 @@ function RecurringSection({
 }) {
   const { compactLayout } = useSettings();
   const { accounts } = useDomainData();
+  // Each row's amount is in ITS series' account's currency, and this list spans
+  // every account, so a row can be in a currency the card's folded headline above
+  // deliberately refuses to total across.
+  const currencyByAccount = useMemo(
+    () => new Map(accounts.map((a) => [a.id, a.currency])),
+    [accounts],
+  );
 
   // Respect the dashboard's account filter so the card stays consistent with
   // the rest of the page.
@@ -835,7 +842,7 @@ function RecurringSection({
                         : "text-chart-3 font-semibold"
                     }
                   >
-                    {formatCurrency(s.amount)}
+                    {formatOne(s.amount, currencyByAccount.get(s.accountId) ?? "")}
                   </span>
                 </span>
               </div>

@@ -1,4 +1,5 @@
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { ParsedDocument, StatementGroup } from "../../lib/bankfiles";
 
 interface BankFileSummaryProps {
@@ -65,7 +66,14 @@ function GroupRow({
   group: StatementGroup;
   fallbackCurrency?: string;
 }) {
-  const code = group.currency || fallbackCurrency || "INR";
+  // No "INR" fallback here, and that is the point. The group's own code, else the
+  // document's, else nothing: a bank file that declares no currency is a file we
+  // genuinely cannot read the currency of, and an unnamed grouped number says
+  // that while a rupee symbol asserts something false. This used to default to
+  // INR, which is how a GBP statement's running balance ended up labelled in
+  // rupees — and it is also a third default for the same defect the rest of this
+  // change removes.
+  const code = group.currency || fallbackCurrency || "";
   const name = group.accountHolder || group.accountNumber || "Unnamed account";
   const detail = `${periodLabel(group)} · ${group.rows.length} transaction${group.rows.length === 1 ? "" : "s"}`;
 
@@ -78,12 +86,12 @@ function GroupRow({
       <span className="text-muted-foreground">{detail}</span>
       {group.balances?.closing !== undefined && (
         <span className="text-muted-foreground">
-          {`closing ${formatCurrency(group.balances.closing, code)}`}
+          {`closing ${formatOne(group.balances.closing, code)}`}
         </span>
       )}
       {group.balances?.opening !== undefined && (
         <span className="text-muted-foreground">
-          {`opening ${formatCurrency(group.balances.opening, code)}`}
+          {`opening ${formatOne(group.balances.opening, code)}`}
         </span>
       )}
     </div>

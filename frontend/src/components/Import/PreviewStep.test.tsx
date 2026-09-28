@@ -38,6 +38,9 @@ function renderStep(overrides: Partial<Parameters<typeof PreviewStep>[0]> = {}) 
     validationErrors: [],
     bankDocument: null,
     targetAccountName: "Savings",
+    // Every row in a batch goes into this one account, so one code labels the
+    // whole preview table.
+    targetCurrency: "INR",
     dupCount: 0,
     existingDupCount: 0,
     inFileDupCount: 0,

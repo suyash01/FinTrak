@@ -1202,6 +1202,9 @@ export default function PaperlessImport() {
                 transactions={preview.transactions}
                 excluded={excluded}
                 onExcludedChange={setExcluded}
+                currency={
+                  accounts.find((a) => a.id === selectedAccount)?.currency || ""
+                }
                 showPayee={false}
                 maxHeight={320}
                 stickyHeader={false}
@@ -1257,6 +1260,9 @@ export default function PaperlessImport() {
           accountName={
             accounts.find((a) => a.id === selectedAccount)?.name ||
             "this account"
+          }
+          currency={
+            accounts.find((a) => a.id === selectedAccount)?.currency || ""
           }
           onClose={() => setValidationResult(null)}
         />

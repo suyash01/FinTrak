@@ -42,6 +42,16 @@ interface PreviewStepProps {
   bankDocument: ParsedDocument | null;
   /** The FinTrak account every row will be imported into. */
   targetAccountName: string;
+  /**
+   * That account's currency, so the preview can label every amount in it.
+   *
+   * Every row here is imported into ONE account — the batch endpoint takes a
+   * single accountId — so a single code is correct for the whole preview, unlike
+   * every other transaction surface in the app. It is empty when no account is
+   * chosen yet, and formatOne renders that as an unnamed number rather than
+   * inventing a currency.
+   */
+  targetCurrency: string;
   dupCount: number;
   existingDupCount: number;
   inFileDupCount: number;
@@ -79,6 +89,7 @@ export default function PreviewStep({
   validationErrors,
   bankDocument,
   targetAccountName,
+  targetCurrency,
   dupCount,
   existingDupCount,
   inFileDupCount,
@@ -301,6 +312,7 @@ export default function PreviewStep({
         payees={payees}
         excluded={excluded}
         onExcludedChange={onExcludedChange}
+        currency={targetCurrency}
       />
 
       <div className="pt-5 mt-6 border-t border-border flex justify-between gap-4">
