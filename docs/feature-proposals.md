@@ -16,7 +16,7 @@ questions, so it can be argued with before any of it becomes a spec.
 > Calendar, names each currency a report is not showing, the accounts behind it and
 > their income and expense, and says the figures are not added to the ones above.
 > The `ccy:` field is in the tree as well (`backend/internal/query/fields.go`, added
-> in `c074cd2`, a commit on this branch's history that is not part of this change),
+> in `c074cd2`, which is part of this change — it is the plan's `ccy:` task),
 > so the "`ccy:` is genuinely cheap" claim below is a record of work done rather
 > than a suggestion. Still **not** done: dated exchange rates, and a `group by
 > currency` option on the dashboard. #1 is below as the reasoning behind the change,
@@ -36,8 +36,10 @@ Section 2 is the most important part for a reviewer: **what any new route or tab
 actually costs in this repository.** Several ideas that look small in the abstract are
 large here, and one idea that looks large is small. Read section 2 before the list.
 
-Suggested review order: **#1** (it is a live bug, not a feature), then **#2**, **#3**
-and **#4**, then **#9**. **#10** is small enough to ship in a single sitting.
+Suggested review order: **#1** (it was a live bug, not a feature — its first part
+shipped with this change, per the banner above, and the reasoning is kept below),
+then **#2**, **#3** and **#4**, then **#9**. **#10** is small enough to ship in a
+single sitting.
 
 ---
 
