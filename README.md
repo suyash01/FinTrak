@@ -285,7 +285,7 @@ Point an MCP client at it, passing the credentials through the environment (`-em
 }
 ```
 
-**Every tool is read-only.** The server can read the ledger (`list_accounts`, `list_categories`, `list_groups`, `list_payees`, `list_tags`, `list_transactions` with the app's full filter grammar, `list_billing_cycles`, `get_loan_schedule`, `list_links`, `list_recurring`, `list_recurring_terms`, `list_recurring_transactions`) and the derived aggregates (`get_dashboard_summary`, `get_money_flow`, `get_money_flow_timeline`, `get_cash_flow_calendar`), the rules (`list_rules`) and the Paperless document list (`list_paperless_documents`) — and it can run the API's own read-only preview twins (`validate_transactions`, `preview_rule`, `get_transfer_suggestions`, `get_cashback_suggestions`, `get_recurring_suggestions`, `forecast_recurring`, `get_loan_payoff`, `get_link_cycles`), which is how a model proposes something the app then validates. It exposes no write operation and can neither edit a ledger record nor delete one, and every request is checked against the tool list by a transport guard, so a call outside it fails locally instead of reaching the ledger. The one qualification is the handful of reads that materialize derived billing cycles, described below.
+**Every tool is read-only.** The server can read the ledger (`list_accounts`, `list_categories`, `list_groups`, `list_payees`, `list_tags`, `list_transactions` with the app's full filter grammar, `list_billing_cycles`, `get_loan_schedule`, `list_links`, `list_recurring`, `list_recurring_terms`, `list_recurring_transactions`) and the derived aggregates (`get_dashboard_summary`, `get_money_flow`, `get_money_flow_timeline`, `get_cash_flow_calendar`), the rules (`list_rules`) and the Paperless document list (`list_paperless_documents`) — and it can run the API's own read-only preview twins (`validate_transactions`, `preview_rule`, `get_transfer_suggestions`, `get_cashback_suggestions`, `get_recurring_suggestions`, `forecast_recurring`, `get_loan_payoff`), which is how a model proposes something the app then validates. It exposes no write operation and can neither edit a ledger record nor delete one, and every request is checked against the tool list by a transport guard, so a call outside it fails locally instead of reaching the ledger. The one qualification is the handful of reads that materialize derived billing cycles, described below.
 
 On the five aggregate tools, **every amount is an object keyed by currency code** (`{"INR": 1250.50}` — the values are JSON numbers, not strings) while an amount belonging to one account — a transaction's own, a loan instalment, a billing cycle's outstanding — stays a plain decimal, because it is already one currency. The tools' `currency` argument narrows an aggregate's figures to one currency — on `get_dashboard_summary`, `get_money_flow_timeline` and `get_cash_flow_calendar` by selecting the accounts holding it, on `get_link_cycles` and on the two link stages inside `get_money_flow` by the currency a link's amount is denominated in — so the amounts it returns carry at most that one key, the one exception being `get_cash_flow_calendar`'s billing-cycle and summary-row overlays, which are the named account's own currency and are not narrowed; the server's own instructions tell the model never to sum the keys and never to pick one silently. A figure negative in one currency and positive in another has no sign, so nothing is coloured by it.
 
@@ -331,7 +331,7 @@ The server signs in lazily with its first tool call and refreshes the session fr
 │       └── readonly     # Transport guard behind the read-only guarantee
 ├── statement_parser     # Standalone Python PDF statement parser (own module)
 ├── tui                  # Go terminal client (Bubble Tea v2), local or over SSH
-├── scripts              # release.sh / release.ps1 guardrails
+├── scripts              # release.sh / release.ps1 guardrails, check-docs.py link checker
 ├── .github/workflows    # CI: tests, coverage upload, validate gate, GHCR publish
 ├── Makefile             # dev / test / vet / build / openapi / release targets
 ├── codecov.yml          # Per-flag coverage targets (backend 85, frontend 78, parser 90, client 85, tui 18, mcp 80)
@@ -341,7 +341,10 @@ The server signs in lazily with its first tool call and refreshes the session fr
 ├── docs                 # Architecture, operations, feature proposals
 │   ├── architecture.md  # Runtime components, trust boundaries, lifecycles
 │   ├── operations.md    # Deployment, configuration, release and rollback
-│   └── feature-proposals.md # Unreviewed feature proposals, for maintainer review
+│   ├── feature-proposals.md # Unreviewed feature proposals, for maintainer review
+│   └── superpowers/     # specs/ and plans/: the design and plan per change
+│       ├── specs/       #   why a change was made (multi-currency, TUI v2, query)
+│       └── plans/       #   how it was carried out, task by task
 ├── LICENSE              # AGPL-3.0
 ├── .env.example         # Template for environment variables
 ├── docker-compose.yml            # Local development orchestration
