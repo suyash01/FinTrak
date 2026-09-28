@@ -658,6 +658,67 @@ func TestCurrencyNetTextOnlySignsWhatHasOneSign(t *testing.T) {
 	}
 }
 
+// TestTheEmptyMapIsOneSentence covers the state the two helpers used to answer
+// differently: "no currency" from currencyNetText, "no transactions" from
+// currencyLine, in the same response, on the same screen. A net row saying one
+// thing and the row above it saying another is a reader being told two facts
+// about one day, and only one of them is a sentence the rest of the client uses.
+//
+// It is compared as an equality against currencyLine rather than against a
+// literal, because the point is that there is one answer, not which words it is:
+// a hardcoded string here would let the two drift apart again the moment either
+// side was reworded.
+func TestTheEmptyMapIsOneSentence(t *testing.T) {
+	for _, selected := range []string{"", "INR"} {
+		for _, amounts := range []api.CurrencyAmounts{nil, {}} {
+			net, line := currencyNetText(selected, amounts), currencyLine(selected, amounts)
+			if net != line {
+				t.Errorf("with %q selected and %v: the net says %q and the figure says %q, about one response",
+					selected, amounts, net, line)
+			}
+		}
+	}
+	if got := currencyNetText("", nil); got != "no transactions" {
+		t.Errorf("net text for an empty map = %q, want %q", got, "no transactions")
+	}
+}
+
+// TestTheTimelineStripIsScaledByAMagnitudeNotASum is the one bar left in the TUI
+// whose denominator was an unconditional sum — a period's income plus its expense
+// — which with nothing selected was two magnitudes that could be two different
+// currencies added together. The frame line discloses "bars scale to the largest
+// of them", and currencyScale's own comment is careful to promise a maximum, so
+// the code and the disclosure were saying two different things about the same
+// bar.
+func TestTheTimelineStripIsScaledByAMagnitudeNotASum(t *testing.T) {
+	periods := []api.MoneyFlowTimelinePeriod{{
+		Key: "2026-01", Label: "Jan 2026", StartDate: "2026-01-01", EndDate: "2026-01-31",
+		Income:  api.CurrencyAmounts{"INR": "1000.00"},
+		Expense: api.CurrencyAmounts{"INR": "1000.00"},
+		Net:     api.CurrencyAmounts{"INR": "0.00"},
+	}}
+
+	// With a currency on screen the two magnitudes are that currency's own, so the
+	// sum is a total inside one currency — and a stacked bar is only legible if
+	// both segments fit inside it, which is what the sum buys.
+	if got := mfBusiest(periods, "INR"); got != 2000 {
+		t.Errorf("busiest with INR selected = %v, want 2000 so both segments fit", got)
+	}
+
+	// With nothing selected the same two figures are 1,000 rupees in and 1,000
+	// dollars out, and a denominator of 2,000 would be a bar scaled by a figure
+	// that never existed.
+	mixed := []api.MoneyFlowTimelinePeriod{{
+		Key: "2026-01", Label: "Jan 2026", StartDate: "2026-01-01", EndDate: "2026-01-31",
+		Income:  api.CurrencyAmounts{"INR": "1000.00"},
+		Expense: api.CurrencyAmounts{"USD": "80.00"},
+		Net:     api.CurrencyAmounts{},
+	}}
+	if got := mfBusiest(mixed, ""); got != 1000 {
+		t.Errorf("busiest with no currency selected = %v, want 1000, never 1,080 rupees and dollars", got)
+	}
+}
+
 // TestCalendarLegendNamesTheScaleItActuallyUses covers the legend's one branch
 // on the selection. With a currency chosen the legend prints that currency's
 // MaxAbsNet; with none, the cells are scaled by the largest single currency and

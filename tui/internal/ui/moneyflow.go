@@ -1051,7 +1051,9 @@ func (m *MoneyFlow) linkPanel(width, height int) string {
 // bar split into income and expense, and the period's own net. The net comes
 // from the API — the client never subtracts money — and the bars are scaled
 // against the busiest period in the strip *in the currency on screen*, so the
-// periods compare at a glance without a foreign account setting the scale.
+// periods compare at a glance without a foreign account setting the scale. With
+// no currency on screen there is none to prefer, and the scale is the largest
+// single magnitude in the strip; see mfBusiest.
 func (m *MoneyFlow) timelineView(width, height int) string {
 	th := m.ctx.Theme
 	periods := m.timeline.Periods
@@ -1068,13 +1070,7 @@ func (m *MoneyFlow) timelineView(width, height int) string {
 		title = th.Header.Render(title)
 	}
 
-	busiest := 0.0
-	for _, period := range periods {
-		total := currencyScale(m.currency, period.Income) + currencyScale(m.currency, period.Expense)
-		if total > busiest {
-			busiest = total
-		}
-	}
+	busiest := mfBusiest(periods, m.currency)
 
 	barWidth := min(max(width/3, 8), 20)
 	full := width >= 66+barWidth
@@ -1084,6 +1080,39 @@ func (m *MoneyFlow) timelineView(width, height int) string {
 		lines = append(lines, m.periodLine(periods[i], i, barWidth, busiest, full))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// mfBusiest is the denominator every period's split bar is drawn against.
+//
+// A stacked bar is legible only if both its segments fit inside it, which makes
+// the natural denominator a period's income plus its expense. With a currency on
+// screen that is a total inside one currency — the one addition the rules allow,
+// and the one models.CurrencyAmounts.Add itself performs.
+//
+// With nothing selected the two magnitudes may be two different currencies, and
+// adding them is the arithmetic this change exists to remove: a bar denominated
+// in 1,080 would be denominated in a figure that never existed. So the
+// unselected strip is scaled by the largest single magnitude in it, which is
+// exactly what the frame line discloses — "bars scale to the largest of them" —
+// and which currencyScale, a maximum rather than a sum, exists to provide. The
+// code and the disclosure had been saying two different things about the same
+// bar; they now say the same one.
+//
+// The fallback only ever makes the denominator smaller, so no segment is drawn
+// wider than the bar, and the expense clamp in mfSplitBar stays as it was.
+func mfBusiest(periods []api.MoneyFlowTimelinePeriod, currency string) float64 {
+	busiest := 0.0
+	for _, period := range periods {
+		in, out := currencyScale(currency, period.Income), currencyScale(currency, period.Expense)
+		scale := in + out
+		if currency == "" {
+			scale = max(in, out)
+		}
+		if scale > busiest {
+			busiest = scale
+		}
+	}
+	return busiest
 }
 
 // periodLine renders one timeline period. A narrow box keeps only the label, the

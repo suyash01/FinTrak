@@ -333,9 +333,20 @@ func currencyAmount(magnitude float64) string {
 //
 // A figure in more than one currency gets no "+": it has no single sign to earn
 // one, and Display names the currencies rather than resolving them. currencyLine
-// is not used because it is the answer for a total, and a net line reads
-// differently: the sign is the payload.
+// is used for one case only — an empty map, where the two have no figure to
+// disagree about and must not answer it in two different sentences. For every
+// other case this is the wrong helper: it is the answer for a total, and a net
+// line reads differently, because the sign is the payload.
 func currencyNetText(selected string, amounts api.CurrencyAmounts) string {
+	if len(amounts) == 0 {
+		// Said once, by currencyLine. An empty map is one fact — nothing in this
+		// currency, and nothing at all when none is selected — and the two
+		// helpers answering it with two different sentences ("no currency" here,
+		// "no transactions" there) reads on one screen as two different answers
+		// to the same day. Delegating rather than repeating the string is what
+		// keeps the two in step.
+		return currencyLine(selected, amounts)
+	}
 	value, ok := currencyValue(selected, amounts)
 	if !ok {
 		return amounts.Display()
