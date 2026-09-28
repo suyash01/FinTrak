@@ -2335,7 +2335,7 @@ In `mcpserver.go`, the sentence that is now false:
 
 becomes:
 
-> Money is returned as decimal major units (for example "1250.50"), keyed by currency code on the aggregate tools, for example `{"INR": "1250.50"}`; the ledger's own per-transaction amounts are plain decimals in their account's currency. A single-currency scope has exactly one key; a scope spanning several currencies has one key per currency and **no total**, because the API will not add across currencies — say which currency you mean, report the others separately, or pass the `currency` argument, where a tool takes one, to narrow the response. Do not add amounts across keys yourself, and do not add them up at all: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) for the server's own per-currency figure when the user wants a total, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
+> Money is returned as decimal major units (for example "1250.50"), keyed by currency code on the aggregate tools, for example `{"INR": 1250.50}` (the values are JSON numbers, not strings); the ledger's own per-transaction amounts are plain decimals in their account's currency. A single-currency scope has exactly one key; a scope spanning several currencies has one key per currency and **no total**, because the API will not add across currencies — say which currency you mean, report the others separately, or pass the `currency` argument, where a tool takes one, to narrow the response. Do not add amounts across keys yourself, and do not add them up at all: ask the aggregate tools (get_dashboard_summary, list_billing_cycles, get_money_flow, get_cash_flow_calendar) for the server's own per-currency figure when the user wants a total, and never invent a number that a tool did not return. Dates are YYYY-MM-DD.
 
 - [ ] **Step 6: Fix the dangling issue references (part of #40)**
 
@@ -2978,7 +2978,7 @@ Expected: PASS. Task 14 has already moved these tests to the map form.
 
 The PR description must carry, verbatim:
 
-> **Breaking change.** The response shape of `/dashboard/summary`, `/dashboard/money-flow`, `/dashboard/money-flow/timeline`, `/dashboard/cash-flow-calendar` and `/links/cycles` changed: every amount is now an object keyed by currency code, for example `"totalIncome": {"INR": "50000.00"}`, instead of a bare number. Each response also carries a `currencyScope` naming the accounts behind each currency.
+> **Breaking change.** The response shape of `/dashboard/summary`, `/dashboard/money-flow`, `/dashboard/money-flow/timeline`, `/dashboard/cash-flow-calendar` and `/links/cycles` changed: every amount is now an object keyed by currency code, for example `"totalIncome": {"INR": 50000.00}` — the values are JSON numbers in decimal major units, not quoted strings — instead of a bare number. Each response also carries a `currencyScope` naming the accounts behind each currency.
 >
 > **If you read a mixed-currency total, the number you had was wrong.** A USD account's dollars were being added to an INR account's rupees. It was silent — no error, just a number that could not be right. Those figures now arrive per currency with nothing summed across them.
 >

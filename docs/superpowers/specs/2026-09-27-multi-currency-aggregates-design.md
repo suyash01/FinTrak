@@ -89,17 +89,24 @@ This is the first read of `accounts.currency` by any aggregate in the codebase.
 A single new type replaces every amount on these five endpoints:
 
 ```jsonc
-"totalIncome":   { "INR": "50000.00" },
-"totalExpense":  { "INR": "30000.50" },
-"totalNet":      { "INR": "19999.50" },
+"totalIncome":   { "INR": 50000.00 },
+"totalExpense":  { "INR": 30000.50 },
+"totalNet":      { "INR": 19999.50 },
 "byCategory":    [{ "categoryName": "Rent", "count": 1,
-                    "total": { "INR": "15000.00" } }],
+                    "total": { "INR": 15000.00 } }],
 "currencyScope": {
   "currencies": ["INR", "USD"],
   "accounts": [{ "id": "…", "name": "…", "currency": "USD",
-                 "income": "120.00", "expense": "80.00" }]
+                 "income": { "USD": 120.00 }, "expense": { "USD": 80.00 } }]
 }
 ```
+
+The values are JSON **numbers** in decimal major units, never quoted strings:
+`money.Amount.MarshalJSON` returns the decimal text bare, and `client/api.Amount`'s
+does the same, so `openapi.yaml` types these as `additionalProperties: {type: number}`.
+`currencyScope.accounts[].income` and `.expense` are `CurrencyAmounts` too, not
+scalars — `models.ScopedAccount` holds them as maps, so a scope spanning
+currencies never has to flatten one.
 
 **Always a map, in every response, with no deprecation window.** A
 single-currency response is the same shape with one key. There is exactly one
