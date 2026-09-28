@@ -20,9 +20,9 @@ func TestParseAsOf(t *testing.T) {
 		want     string
 		wantCode int
 		// wantBody, when set, must appear in the recorded body. A case that
-		// answers 200 leaves it empty so an unexpected error envelope fails
-		// too: the two 200 cases assert on the return value, and any 400 they
-		// somehow produced would have to be invisible in the body.
+		// answers 200 leaves it empty, and the run asserts the body is empty
+		// too: a 400 that somehow accompanied an ok=true result would
+		// otherwise be invisible to a return-value-only assertion.
 		wantBody []string
 	}{
 		{
@@ -37,13 +37,13 @@ func TestParseAsOf(t *testing.T) {
 		},
 		{
 			name:   "clamped by dateTo",
-			query:  "asOf=2026-03-01&dateTo=2026-02-15",
+			query:  "asOf=2026-03-01",
 			dateTo: "2026-02-15",
 			want:   "2026-02-15",
 		},
 		{
 			name:   "a later dateTo does not widen the instant",
-			query:  "asOf=2026-03-01&dateTo=2026-06-30",
+			query:  "asOf=2026-03-01",
 			dateTo: "2026-06-30",
 			want:   "2026-03-01",
 		},
@@ -63,11 +63,36 @@ func TestParseAsOf(t *testing.T) {
 		},
 		{
 			name:     "dateFrom after asOf",
-			query:    "asOf=2026-03-01&dateFrom=2026-04-01",
+			query:    "asOf=2026-03-01",
 			dateFrom: "2026-04-01",
 			want:     "",
 			wantCode: http.StatusBadRequest,
 			wantBody: []string{"dateFrom 2026-04-01 is after asOf 2026-03-01"},
+		},
+		// The comparison is `>` and not `>=`, so an equal dateFrom is a legal
+		// one-day window. This is the only row that pins that boundary: every
+		// other row either leaves dateFrom empty or puts a month between the
+		// two, so flipping `>` to `>=` would pass them all and turn this
+		// request into a 400.
+		{
+			name:     "dateFrom equal to asOf is a one-day window",
+			query:    "asOf=2026-03-01",
+			dateFrom: "2026-03-01",
+			want:     "2026-03-01",
+		},
+		// The clamp runs before the dateFrom check, so this pair is judged
+		// against the pulled-back instant (2026-02-15), not the requested one
+		// (2026-03-01) — which is the whole reason for the ordering. It is
+		// still a 400 either way, so the row earns its place through the
+		// message it pins, not through the status code.
+		{
+			name:     "dateFrom after the clamped asOf names the clamped value",
+			query:    "asOf=2026-03-01",
+			dateTo:   "2026-02-15",
+			dateFrom: "2026-02-20",
+			want:     "",
+			wantCode: http.StatusBadRequest,
+			wantBody: []string{"dateFrom 2026-02-20 is after asOf 2026-02-15"},
 		},
 	}
 
@@ -75,9 +100,12 @@ func TestParseAsOf(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			// The query is the only thing that varies between cases: the window
-			// reaches parseAsOf as arguments, which the caller has already
-			// validated, while `asOf` is read straight off the request.
+			// parseAsOf reads only `asOf` off the request; the window arrives as
+			// arguments, already validated by the caller. So `dateTo=` and
+			// `dateFrom=` are deliberately absent from these query strings even
+			// where a case uses them: repeating the value in both places would
+			// let a rewrite that read the window from the request instead of
+			// from its arguments pass unnoticed.
 			c.Request = httptest.NewRequest(http.MethodGet, "/?"+tc.query, nil)
 
 			got, ok := parseAsOf(c, tc.dateFrom, tc.dateTo)
