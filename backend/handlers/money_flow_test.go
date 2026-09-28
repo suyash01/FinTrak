@@ -858,6 +858,96 @@ func TestKeepTopFlowNodesCapsOnTheFirstCurrencyThatDiffers(t *testing.T) {
 	assert.Empty(t, keepTopFlowNodes(m, 0))
 }
 
+// maxFlowAmounts decides an account node's volume, and it is the one fold in
+// this pair of files whose operands are not both leg amounts: it compares what
+// flowed in against what flowed out, so it has to handle a currency one side
+// never held. It reads the missing side as zero, which is what minCycleAmounts
+// guards for instead - and the two are only equivalent because the operands are
+// non-negative. This pins that, including the case where they would not be.
+func TestMaxFlowAmountsReadsAMissingKeyAsZero(t *testing.T) {
+	// The union rule, at both ends, the way minCycleAmounts is pinned.
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(700)},
+		maxFlowAmounts(models.NewCurrencyAmounts(), models.CurrencyAmounts{"INR": money.FromFloat(700)}))
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(700)},
+		maxFlowAmounts(models.CurrencyAmounts{"INR": money.FromFloat(700)}, models.NewCurrencyAmounts()))
+	// Two currencies are compared one at a time, never against each other: INR 700
+	// wins its own currency from the outgoing side and USD 900 keeps the incoming
+	// one, and neither is weighed against the other.
+	assert.Equal(t, models.CurrencyAmounts{
+		"INR": money.FromFloat(700),
+		"USD": money.FromFloat(900),
+	}, maxFlowAmounts(
+		models.CurrencyAmounts{"INR": money.FromFloat(100), "USD": money.FromFloat(900)},
+		models.CurrencyAmounts{"INR": money.FromFloat(700), "USD": money.FromFloat(40)}))
+	// A currency only one side holds is its own maximum - the node passed money
+	// through in one direction and that is the volume.
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40), "USD": money.FromFloat(10)},
+		maxFlowAmounts(
+			models.CurrencyAmounts{"INR": money.FromFloat(40), "USD": money.FromFloat(10)},
+			models.CurrencyAmounts{"INR": money.FromFloat(40)}))
+	// Two empty operands give an empty object, not a null and not a zero key, and
+	// a nil operand is an empty one: Add may hand a fold a nil map.
+	assert.Equal(t, models.CurrencyAmounts{}, maxFlowAmounts(nil, nil))
+	assert.NotNil(t, maxFlowAmounts(nil, models.CurrencyAmounts{"USD": money.FromFloat(30)}))
+
+	// The equivalence this function's shape depends on, asserted rather than left
+	// in a comment. guardedMax is the form minCycleAmounts takes: it checks for
+	// the key instead of reading it as zero. For non-negative operands the two
+	// cannot differ, because zero is never the larger side - so an absent key can
+	// only lose to a key that is there.
+	guardedMax := func(a, b models.CurrencyAmounts) models.CurrencyAmounts {
+		out := models.NewCurrencyAmounts()
+		for code, amount := range a {
+			if other, ok := b[code]; ok && other > amount {
+				amount = other
+			}
+			out[code] = amount
+		}
+		for code, amount := range b {
+			if _, ok := a[code]; !ok {
+				out[code] = amount
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		in, out models.CurrencyAmounts
+	}{
+		{"one currency each side, unequal",
+			models.CurrencyAmounts{"INR": money.FromFloat(100)},
+			models.CurrencyAmounts{"INR": money.FromFloat(40)}},
+		{"a present zero loses to nothing and keeps its key",
+			models.CurrencyAmounts{"INR": 0},
+			models.CurrencyAmounts{"INR": money.FromFloat(40)}},
+		{"currencies split across the two sides",
+			models.CurrencyAmounts{"INR": money.FromFloat(10), "USD": money.FromFloat(5)},
+			models.CurrencyAmounts{"EUR": money.FromFloat(1), "INR": money.FromFloat(20)}},
+		{"one side empty",
+			models.CurrencyAmounts{"INR": money.FromFloat(10)},
+			models.NewCurrencyAmounts()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, guardedMax(tc.in, tc.out), maxFlowAmounts(tc.in, tc.out),
+				"for non-negative operands the two forms must agree; if this fails, one of them changed")
+		})
+	}
+
+	// The case that is *not* equivalent, pinned so the guard above is known to be
+	// about the operands rather than about the function being total: a signed
+	// quantity against an absent key is lifted to zero here, where the guarded
+	// form would keep it. Both callers fold positive transaction amounts, so this
+	// cannot reach the response - but if a caller ever folds a signed quantity in,
+	// this is the line that has to change, and this is the test that says so.
+	assert.Equal(t, models.CurrencyAmounts{"INR": 0},
+		maxFlowAmounts(models.CurrencyAmounts{"INR": money.FromFloat(-500)},
+			models.NewCurrencyAmounts()))
+	assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(-500)},
+		guardedMax(models.CurrencyAmounts{"INR": money.FromFloat(-500)},
+			models.NewCurrencyAmounts()),
+		"the guarded form keeps it, which is the difference the comment names")
+}
+
 func TestAccountFlowEdgesBreaksCyclesDeterministically(t *testing.T) {
 	a, b, c := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	// Force a < b < c ordering so the expected kept edges are stable.

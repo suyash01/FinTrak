@@ -1116,6 +1116,18 @@ func suppressedFlowCycles(cycles []flowCycle) []models.MoneyFlowSuppressedCycle 
 // it is the larger of each currency's, and no amount is ever compared against an
 // amount of a different currency. A currency absent from both is absent here, so
 // the result is always non-nil and marshals as {} rather than null.
+//
+// The comparison below reads a missing key as zero rather than guarding for it as
+// minCycleAmounts does, and the two forms are equivalent only for non-negative
+// operands: a currency at -500 against an absent key would come back as 0 rather
+// than as -500. That is safe here and not there, and the reason is the caller.
+// Both operands are folds of transaction amounts, which are stored positive with
+// their direction in `type`, and Add skips a zero contribution, so an absent key
+// is a currency with no money in it and every key present is >= 0. Under those
+// operands "larger of the two, absent reading as zero" and "larger of the two
+// where the other exists" cannot differ. TestMaxFlowAmountsReadsAMissingKeyAsZero
+// pins that, so the equivalence is a stated property rather than a coincidence -
+// a caller folding a signed quantity in here would need the guarded form.
 func maxFlowAmounts(flowIn, flowOut models.CurrencyAmounts) models.CurrencyAmounts {
 	out := models.NewCurrencyAmounts()
 	for code, amount := range flowIn {
