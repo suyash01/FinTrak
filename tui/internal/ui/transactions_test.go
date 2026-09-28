@@ -30,10 +30,10 @@ func filterTestCtx() *Ctx {
 		byID[a.ID] = a
 	}
 	return &Ctx{
-		Ref:         &RefData{Accounts: accounts, AccountsByID: byID},
-		Theme:       DefaultTheme(),
-		Notify:      func(Level, string, ...any) {},
-		Open:        func(Modal) {},
+		Ref:    &RefData{Accounts: accounts, AccountsByID: byID},
+		Theme:  DefaultTheme(),
+		Notify: func(Level, string, ...any) {},
+		Open:   func(Modal) {},
 	}
 }
 
@@ -380,5 +380,115 @@ func TestTransactionsFilterSaysNothingWhenTheFilingFiltersAreOff(t *testing.T) {
 		if strings.Contains(line, unwanted) {
 			t.Errorf("the header line %q mentions %q with no such filter set", line, unwanted)
 		}
+	}
+}
+
+// TestTransactionsSaysWhenTheServerDroppedAQueryTerm is the TUI half of a defect
+// the web app already fixed. The server never rejects an unusable `q` term: it
+// drops it and reports it in queryDiagnostics, because refusing a term would
+// fail the whole search over one typo. A dropped term SILENTLY WIDENS the
+// results, so the screen has to say the rows are broader than what was asked.
+//
+// Driven through a stub response rather than by setting the field directly,
+// because the defect is that the response carrying the note was never read — a
+// test that set t.info by hand would pass whether or not the load path stored it.
+func TestTransactionsSaysWhenTheServerDroppedAQueryTerm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[],"total":7,"page":1,"limit":50,"pages":1,
+			"queryDiagnostics":[
+			  {"term":"catgory:food","code":"unknown_field","message":"unknown field catgory","position":0},
+			  {"term":"amt:5.","code":"malformed_amount","message":"amt: 5. is not an amount","position":9}
+			]}`)
+	}))
+	defer srv.Close()
+
+	client, err := api.New(srv.URL + "/api/v1")
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	ctx := &Ctx{Client: client, Ref: &RefData{}, Theme: DefaultTheme(), Notify: func(Level, string, ...any) {}}
+	screen := NewTransactions(ctx)
+
+	run(t, screen, screen.Refresh())
+
+	if len(screen.info.QueryDiagnostics) != 2 {
+		t.Fatalf("the screen stored %d diagnostics, want the 2 the response carried", len(screen.info.QueryDiagnostics))
+	}
+	line := screen.headerLine(200)
+	if !strings.Contains(line, "2 query terms ignored") {
+		t.Errorf("the header line %q does not report that two terms were dropped", line)
+	}
+	// The reason a dropped term matters: the rows are not what was asked for, and
+	// the note has to say so in as many words rather than only counting.
+	if !strings.Contains(line, "wider") {
+		t.Errorf("the header line %q counts the dropped terms without saying the results are wider", line)
+	}
+}
+
+// TestTransactionsSaysNothingWhenNoQueryTermWasDropped is the other direction,
+// and it is the one that matters most: this note must not appear on a list that
+// was filtered correctly, or it is noise on every screen the user ever opens.
+func TestTransactionsSaysNothingWhenNoQueryTermWasDropped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[],"total":0,"page":1,"limit":50,"pages":1}`)
+	}))
+	defer srv.Close()
+
+	client, err := api.New(srv.URL + "/api/v1")
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	ctx := &Ctx{Client: client, Ref: &RefData{}, Theme: DefaultTheme(), Notify: func(Level, string, ...any) {}}
+	screen := NewTransactions(ctx)
+
+	run(t, screen, screen.Refresh())
+
+	if line := screen.headerLine(200); strings.Contains(line, "ignored") {
+		t.Errorf("the header line %q reports a dropped term when the response carried none", line)
+	}
+}
+
+// TestTransactionsKeepsTheQueryNoteWhenTheFilterListIsLong pins the ordering
+// choice in headerLine. The line is truncated at the END to fit the pane, so a
+// warning appended after the filter bits is the first thing to vanish on a
+// narrow terminal — which is exactly when a user most needs to know their filter
+// is not what they typed. The note has to be cut last, not first.
+func TestTransactionsKeepsTheQueryNoteWhenTheFilterListIsLong(t *testing.T) {
+	screen := NewTransactions(filterTestCtx())
+	screen.filter = api.TransactionFilter{
+		Search:     "a fairly long search string that eats the width",
+		AccountID:  "a1",
+		CategoryID: "22222222-2222-4222-8222-222222222222",
+		GroupID:    "33333333-3333-4333-8333-333333333333",
+		PayeeID:    "44444444-4444-4444-8444-444444444444",
+		Type:       "debit",
+		DateFrom:   "2024-01-01",
+		DateTo:     "2024-12-31",
+		Tags:       []string{"vacation", "food", "work"},
+	}
+	screen.info = api.TransactionPage{
+		Total: 1, Page: 1, Pages: 1,
+		QueryDiagnostics: []api.QueryDiagnostic{
+			{Term: "catgory:food", Code: "unknown_field", Message: "unknown field catgory"},
+		},
+	}
+
+	// A width where the note fits in full but the filter bits that follow it
+	// cannot. Below roughly the width of the summary line alone the note is cut
+	// mid-word whatever the ordering, so a narrower pane would test the
+	// truncation rather than the ordering.
+	line := screen.headerLine(120)
+	if !strings.Contains(line, "1 query term ignored — results are wider than asked") {
+		t.Errorf("at width 120 the note was truncated: %q", line)
+	}
+	// And it survived *ahead* of the bits that follow it: search= is the first
+	// filter bit appended, so it is the one the truncation reaches, and it is cut
+	// mid-value while the note is whole. That is the whole claim — placed first,
+	// the note is the last thing to be lost, not the first.
+	const search = "a fairly long search string that eats the width"
+	if strings.Contains(line, search) {
+		t.Errorf("the filter bits were never truncated at width 120, so the note's precedence is untested: %q", line)
 	}
 }

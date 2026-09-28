@@ -859,6 +859,14 @@ func (t *Transactions) View(width, height int) string {
 func (t *Transactions) headerLine(width int) string {
 	th := t.ctx.Theme
 	var bits []string
+	// First, so it survives the truncation below. The line is cut at the END to
+	// fit the pane, so a warning appended after the filter bits is the first thing
+	// to disappear on a narrow terminal — which is precisely the moment a user
+	// most needs to know their filter is not what they typed. See
+	// queryIgnoredNote for why this is a header and not a notification.
+	if note := t.queryIgnoredNote(); note != "" {
+		bits = append(bits, note)
+	}
 	if t.filter.Search != "" {
 		bits = append(bits, "search="+t.filter.Search)
 	}
@@ -908,6 +916,32 @@ func (t *Transactions) headerLine(width int) string {
 		line += "  " + th.Subtle.Render(truncate(strings.Join(bits, " · "), max(10, width-len(summary)-4)))
 	}
 	return line
+}
+
+// queryIgnoredNote reports terms the server dropped from the `q` expression, or
+// "" when it dropped none.
+//
+// The server resolves no names and never rejects an unusable term: it drops it
+// and says so in the response's queryDiagnostics, because a term it refused
+// would fail the whole search over one typo. But a dropped constraint SILENTLY
+// WIDENS the result set, so the rows on screen are broader than the user asked
+// for and the only honest response is to say so. The web app puts this in a
+// persistent banner for exactly that reason; a status-bar toast would be the
+// wrong shape here, because the condition holds for as long as the filter does
+// and a toast scrolls away.
+//
+// Nothing in this client sends `q` today, so the server cannot currently return
+// a non-empty list — the filter form has no query field, and a bare `q` would
+// take ids rather than the names a person types. This reads the field anyway, and
+// the test drives it with a synthetic response, so the day a query field lands
+// this is already wired rather than being the thing that silently widens
+// results. See #39.
+func (t *Transactions) queryIgnoredNote() string {
+	n := len(t.info.QueryDiagnostics)
+	if n == 0 {
+		return ""
+	}
+	return pluralise(n, "query term", "query terms") + " ignored — results are wider than asked"
 }
 
 // detailLine describes the cursor row.
