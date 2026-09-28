@@ -81,6 +81,24 @@ describe("foldRecurringMonthly", () => {
     expect(got.expense).toEqual({ INR: 350 });
   });
 
+  // A zero-cost series is still an active series the user created, so its
+  // currency has been touched. Dropping the key — which is what the server's own
+  // Add does for a zero contribution — would render the figure as "no active
+  // series", a false claim about the forecast rather than a tidier map.
+  it("keeps a zero-amount series in its currency", () => {
+    const got = foldRecurringMonthly(
+      [series({ id: "s1", monthlyAmount: 0 })],
+      [account({ id: "a1" })],
+    );
+    expect(got.expense).toEqual({ INR: 0 });
+    expect(got.net).toEqual({ INR: 0 });
+    // A real zero, with its code beside it, rather than the empty-map sentence.
+    expect(recurringTotalText(got.expense, got.unplaced)).toBe("INR ₹0.00");
+    expect(recurringTotalText({}, got.unplaced)).not.toBe(
+      recurringTotalText(got.expense, got.unplaced),
+    );
+  });
+
   // accounts.currency is nullable with no NOT NULL, so a restored bundle can
   // carry "" — and a deleted account's series names an id no list holds. Both
   // are cases where the easy answer is a default, and a default here would print

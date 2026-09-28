@@ -36,6 +36,12 @@ export interface RecurringMonthlyTotals {
  * INR there states a fact the response does not carry. So the series is counted
  * in `unplaced` and the screen says so, which is a thing the user can act on
  * (fix the account, or the missing accounts list) where a plausible number is not.
+ *
+ * A zero contribution does keep its key, which is the one place this differs from
+ * CurrencyAmounts.Add: a series that costs nothing every month is an active
+ * series the user created, so the currency it is denominated in has been touched
+ * and dropping the key would render the figure as "no active series" — a false
+ * claim about the forecast rather than a tidier map.
  */
 export function foldRecurringMonthly(
   series: RecurringSeries[],
