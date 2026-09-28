@@ -39,6 +39,11 @@ const incoming: Link = {
   toTxn: txn("s1", "Source Txn", "Checking", "debit"),
 };
 
+// Two accounts in two currencies, so a link leg is labelled with its own
+// account's currency rather than the INR default this list used to take.
+const currencyOf = (accountId: string) =>
+  ({ a1: "INR", a2: "USD" })[accountId as "a1" | "a2"] ?? "";
+
 function renderList(
   overrides: Partial<Parameters<typeof LinkedTransactionsList>[0]> = {},
 ) {
@@ -46,6 +51,7 @@ function renderList(
     sourceTxnId: "s1",
     links: [outgoing, incoming],
     loading: false,
+    currencyOf,
     onRequestUnlink: vi.fn(),
     ...overrides,
   };

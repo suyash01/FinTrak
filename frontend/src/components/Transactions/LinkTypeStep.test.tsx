@@ -33,11 +33,19 @@ const target: Transaction = {
   accountName: "Savings",
 };
 
+// Two accounts in two currencies, so the figures are labelled with each
+// transaction's OWN account rather than the INR default this list used to take.
+// A pair in one currency would not tell a correct label from the default it
+// happens to match — which is how the original bug survived a test suite.
+const currencyOf = (accountId: string) =>
+  ({ a1: "INR", a2: "USD" })[accountId as "a1" | "a2"] ?? "";
+
 function renderStep(overrides: Record<string, unknown> = {}) {
   const props = {
     txn,
     target,
     linkType: "transfer" as LinkType,
+    currencyOf,
     onLinkTypeChange: vi.fn(),
     onBack: vi.fn(),
     onConfirm: vi.fn(),

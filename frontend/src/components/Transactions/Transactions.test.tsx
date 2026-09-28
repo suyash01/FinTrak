@@ -9,6 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Transactions from "./Transactions";
+import { formatOne } from "../../lib/currency";
 import type {
   Account,
   Category,
@@ -97,6 +98,22 @@ const accounts: Account[] = [
     balance: 0,
     billingDay: null,
   },
+  {
+    // A second currency, so the amount column has to resolve the row's account
+    // rather than fall back to a default. Every other account here is INR, so
+    // without this the column and the default agree on every row and a correct
+    // label is indistinguishable from the default it happens to match.
+    id: "usd1",
+    name: "Dollars",
+    accountTypeId: "bank",
+    bank: "",
+    currency: "USD",
+    color: "#000000",
+    isDefault: false,
+    closed: false,
+    balance: 0,
+    billingDay: null,
+  },
 ];
 
 const groups = [
@@ -143,6 +160,24 @@ const txns = [
   },
 ] as unknown as Transaction[];
 
+// A transaction in the USD account, so the amount column has a row whose correct
+// currency differs from the one the column used to assume.
+const usdTxn = {
+  id: "t-usd",
+  accountId: "usd1",
+  date: "2024-03-17",
+  description: "Dollar Store",
+  amount: 42,
+  type: "debit" as const,
+  categoryId: null,
+  tags: [],
+  notes: "",
+  payeeId: null,
+  accountName: "Dollars",
+  isSummary: false,
+  isLinked: false,
+} as unknown as Transaction;
+
 function defaultDomain(settings: Record<string, unknown> = {}) {
   return {
     accounts,
@@ -166,6 +201,34 @@ function renderPage(entry = "/transactions") {
 function lastTransactionParams() {
   return apiMock.getTransactions.mock.calls.at(-1)?.[0] as Record<string, unknown>;
 }
+
+// The defect, in one test. The amount column called formatCurrency without the
+// currency, so it took the INR default for every row: a USD transaction in the
+// table wore a rupee symbol. The assertion is on the code as well as the absence
+// of the wrong one, because a fix that merely dropped the symbol would pass a
+// narrower test while still mislabelling the figure.
+describe("the amount column's currency", () => {
+  it("labels each row in its own account's currency", async () => {
+    apiMock.getTransactions.mockResolvedValue({
+      data: [txns[0], usdTxn],
+      total: 2,
+      page: 1,
+      pages: 1,
+    });
+    renderPage();
+
+    const dollarRow = (await screen.findByText("Dollar Store")).closest("tr")!;
+    expect(dollarRow.textContent).toContain(formatOne(42, "USD"));
+
+    const rupeeRow = screen.getByText("Coffee Shop").closest("tr")!;
+    expect(rupeeRow.textContent).toContain(formatOne(250, "INR"));
+
+    // And the wrong currency is named rather than left to a reader: the INR
+    // default on the dollar row.
+    expect(dollarRow.textContent).not.toContain(formatOne(42, "INR"));
+    expect(dollarRow.textContent).not.toContain("₹");
+  });
+});
 
 beforeEach(() => {
   localStorage.clear();

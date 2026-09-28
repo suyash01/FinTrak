@@ -14,13 +14,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { LinkType, Transaction } from "../../types";
 
 interface LinkTypeStepProps {
   txn: Transaction;
   target: Transaction;
   linkType: LinkType;
+  /** Resolves a transaction's account to its currency; see LinkResultsList. */
+  currencyOf: (accountId: string) => string;
   onLinkTypeChange: (type: LinkType) => void;
   onBack: () => void;
   onConfirm: () => void;
@@ -32,6 +35,7 @@ export default function LinkTypeStep({
   txn,
   target,
   linkType,
+  currencyOf,
   onLinkTypeChange,
   onBack,
   onConfirm,
@@ -50,7 +54,7 @@ export default function LinkTypeStep({
           className={t.type === "debit" ? "text-destructive" : "text-chart-3"}
         >
           {t.type === "debit" ? "−" : "+"}
-          {formatCurrency(t.amount)}
+          {formatOne(t.amount, currencyOf(t.accountId))}
         </span>
       </div>
     </div>

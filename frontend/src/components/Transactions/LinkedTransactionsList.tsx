@@ -2,7 +2,8 @@ import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { Link } from "../../types";
 import { linkTypeBadgeClass } from "./linkHelpers";
 
@@ -10,6 +11,8 @@ interface LinkedTransactionsListProps {
   sourceTxnId: string;
   links: Link[];
   loading: boolean;
+  /** Resolves a transaction's account to its currency; see LinkResultsList. */
+  currencyOf: (accountId: string) => string;
   onRequestUnlink: (linkId: string) => void;
 }
 
@@ -18,6 +21,7 @@ export default function LinkedTransactionsList({
   sourceTxnId,
   links,
   loading,
+  currencyOf,
   onRequestUnlink,
 }: LinkedTransactionsListProps) {
   return (
@@ -62,7 +66,10 @@ export default function LinkedTransactionsList({
                       }
                     >
                       {other?.type === "debit" ? "−" : "+"}
-                      {formatCurrency(other?.amount || 0)}
+                      {formatOne(
+                        other?.amount || 0,
+                        currencyOf(other?.accountId ?? ""),
+                      )}
                     </span>
                   </div>
                 </div>

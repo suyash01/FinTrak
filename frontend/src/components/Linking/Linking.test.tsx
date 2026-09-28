@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Linking from "./Linking";
+import { formatOne } from "../../lib/currency";
 import type { Link, LinkType } from "../../types";
 
 if (!Element.prototype.hasPointerCapture) {
@@ -23,6 +24,18 @@ const { apiMock } = vi.hoisted(() => ({
 
 vi.mock("../../api/client", () => ({ default: apiMock }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+
+// The two legs of every fixture link are in different accounts, so this is where
+// the currency difference that matters is set up: a link between accounts in two
+// currencies is legal, and each leg has to be labelled with its OWN account's.
+vi.mock("../../context/DomainDataContext", () => ({
+  useDomainData: () => ({
+    accounts: [
+      { id: "a1", name: "Checking", currency: "INR" },
+      { id: "a2", name: "Dollars", currency: "USD" },
+    ],
+  }),
+}));
 
 function link(id: string, type: LinkType): Link {
   return {
@@ -66,6 +79,23 @@ beforeEach(() => {
 });
 
 describe("Linking", () => {
+  // The defect, in one test. Every leg of every link was rendered with
+  // formatCurrency's INR default, so a transfer of USD 100 between a dollar
+  // account and a rupee one showed a rupee symbol on both sides. A link between
+  // accounts in different currencies is legal — which is why the money-flow
+  // screen reports a link's currency per currency rather than one total — so each
+  // leg has to carry its OWN account's code.
+  it("labels each leg of a cross-currency link in that leg's currency", async () => {
+    render(<Linking />);
+
+    await screen.findByText("transfer source");
+    expect(screen.getAllByText(`−${formatOne(100, "INR")}`).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(`+${formatOne(100, "USD")}`).length).toBeGreaterThan(0);
+    // The wrong currency, named rather than left to a reader: the INR default on
+    // the dollar leg.
+    expect(screen.queryByText(`+${formatOne(100, "INR")}`)).not.toBeInTheDocument();
+  });
+
   it("renders each link type in its own group", async () => {
     render(<Linking />);
 

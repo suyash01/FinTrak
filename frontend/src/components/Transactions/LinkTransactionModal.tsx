@@ -22,11 +22,11 @@ import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
 import { useDomainData } from "../../context/DomainDataContext";
 import {
-  formatCurrency,
   formatDate,
   formatDateOnly,
   parseDateOnly,
 } from "../../utils/formatters";
+import { formatOne, useAccountCurrency } from "../../lib/currency";
 import type { Transaction, Link, LinkType, QueryParams } from "../../types";
 import LinkTypeStep from "./LinkTypeStep";
 import LinkedTransactionsList from "./LinkedTransactionsList";
@@ -48,6 +48,10 @@ export default function LinkTransactionModal({
   const [search, setSearch] = useState("");
   const [accountId, setAccountId] = useState("");
   const { accounts } = useDomainData();
+  // The source and the candidate can be in different accounts and different
+  // currencies — that is what a match is for — so every figure here is labelled
+  // with its own transaction's account currency.
+  const currencyOf = useAccountCurrency(accounts);
   const [results, setResults] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [linkType, setLinkType] = useState<LinkType>("transfer");
@@ -186,6 +190,7 @@ export default function LinkTransactionModal({
         txn={txn}
         target={pendingTarget}
         linkType={linkType}
+        currencyOf={currencyOf}
         onLinkTypeChange={setLinkType}
         onBack={() => setPendingTarget(null)}
         onConfirm={handleConfirmLink}
@@ -228,7 +233,7 @@ export default function LinkTransactionModal({
                     }
                   >
                     {txn.type === "debit" ? "−" : "+"}
-                    {formatCurrency(txn.amount)}
+                    {formatOne(txn.amount, currencyOf(txn.accountId))}
                   </span>
                 </div>
               </div>
@@ -246,6 +251,7 @@ export default function LinkTransactionModal({
             sourceTxnId={txn.id}
             links={existingLinks}
             loading={linksLoading}
+            currencyOf={currencyOf}
             onRequestUnlink={setUnlinkTarget}
           />
 
@@ -294,6 +300,7 @@ export default function LinkTransactionModal({
             loading={loading}
             results={results}
             sourceAccountId={txn.accountId}
+            currencyOf={currencyOf}
             onSelect={handleSelectTarget}
           />
         </DialogContent>

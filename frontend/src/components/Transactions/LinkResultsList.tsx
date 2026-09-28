@@ -2,13 +2,21 @@ import { Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { Transaction } from "../../types";
 
 interface LinkResultsListProps {
   loading: boolean;
   results: Transaction[];
   sourceAccountId: string;
+  /**
+   * Resolves a candidate's account to its currency. A candidate can be in a
+   * different account — and a different currency — from the source it is being
+   * matched against, which is the whole point of the search, so the figure has to
+   * be labelled with the candidate's own.
+   */
+  currencyOf: (accountId: string) => string;
   onSelect: (txn: Transaction) => void;
 }
 
@@ -17,6 +25,7 @@ export default function LinkResultsList({
   loading,
   results,
   sourceAccountId,
+  currencyOf,
   onSelect,
 }: LinkResultsListProps) {
   return (
@@ -63,7 +72,7 @@ export default function LinkResultsList({
                       className={`font-bold ${r.type === "debit" ? "text-destructive" : "text-chart-3"}`}
                     >
                       {r.type === "debit" ? "−" : "+"}
-                      {formatCurrency(r.amount)}
+                      {formatOne(r.amount, currencyOf(r.accountId))}
                     </span>
                     {sameAccount && (
                       <Badge className="h-auto px-1.5 py-0.5 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-semibold rounded">

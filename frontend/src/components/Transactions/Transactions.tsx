@@ -16,6 +16,7 @@ import { toastApiError } from "../../lib/errors";
 import api from "../../api/client";
 import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
+import { useAccountCurrency } from "../../lib/currency";
 import { useQueryLanguage, type ServerDiagnostics } from "@/lib/query/useQueryLanguage";
 import type { QueryDiagnostic } from "@/lib/query/parse";
 import { useOffline } from "../../context/OfflineContext";
@@ -55,6 +56,10 @@ export default function Transactions() {
     setSettings,
     refreshAccounts,
   } = useDomainData();
+  // A transaction carries no currency, so the amount column has to resolve the
+  // row's account to label the figure. The lookup is built once here rather than
+  // per cell.
+  const currencyOf = useAccountCurrency(accounts);
   const [searchParams, setSearchParams] = useSearchParams();
   // The query language. The URL holds what the user TYPED (`?q=`), so a link is
   // shareable and the back button works; the request carries the RESOLVED value
@@ -788,6 +793,7 @@ export default function Transactions() {
     payeeOptions,
     categoryOptionGroups,
     closedById,
+    currencyOf,
     onCategoryChange: handleCategoryChange,
     onPayeeChange: handlePayeeChange,
     onDelete: handleDelete,
@@ -932,6 +938,7 @@ export default function Transactions() {
       {tracingTxn && (
         <TraceChainModal
           txn={tracingTxn}
+          currencyOf={currencyOf}
           onClose={() => setTracingTxn(null)}
         />
       )}

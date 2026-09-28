@@ -4,7 +4,8 @@ import { createColumnHelper, type ColumnDef } from "@/lib/react-table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DataTableColumnHeader } from "@/components/ui/data-table";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { Transaction } from "../../types";
 import EditableSelect, {
   type EditableSelectGroup,
@@ -17,6 +18,15 @@ interface UseTransactionColumnsArgs {
   payeeOptions: SelectOption[];
   categoryOptionGroups: EditableSelectGroup[];
   closedById: Map<string, boolean>;
+  /**
+   * Resolves a transaction's account to that account's currency, so the amount
+   * column can label a figure in the currency it is actually denominated in. A
+   * transaction carries no currency of its own.
+   *
+   * Passed in rather than looked up here because the page already has the
+   * accounts and builds the lookup once — see useAccountCurrency.
+   */
+  currencyOf: (accountId: string) => string;
   onCategoryChange: (
     txnId: string,
     categoryId: string,
@@ -35,6 +45,7 @@ export function useTransactionColumns({
   payeeOptions,
   categoryOptionGroups,
   closedById,
+  currencyOf,
   onCategoryChange,
   onPayeeChange,
   onDelete,
@@ -175,7 +186,7 @@ export function useTransactionColumns({
         cell: ({ row }) =>
           row.original.isSummary ? (
             <span className="text-sm text-right font-bold text-foreground font-mono whitespace-nowrap">
-              {formatCurrency(row.original.amount)}
+              {formatOne(row.original.amount, currencyOf(row.original.accountId))}
             </span>
           ) : (
             <span
@@ -186,7 +197,7 @@ export function useTransactionColumns({
               }`}
             >
               {row.original.type === "debit" ? "−" : "+"}
-              {formatCurrency(row.original.amount)}
+              {formatOne(row.original.amount, currencyOf(row.original.accountId))}
             </span>
           ),
         meta: {
@@ -274,6 +285,10 @@ export function useTransactionColumns({
       onEdit,
       onTrace,
       closedById,
+      // The amount cell reads currencyOf, so leaving it out would keep serving
+      // columns built from a lookup that has since changed — which is how a
+      // reference-data refresh quietly leaves every figure in its old currency.
+      currencyOf,
     ],
   );
 }

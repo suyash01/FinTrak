@@ -63,9 +63,14 @@ beforeEach(() => {
   );
 });
 
+// Two accounts in two currencies, so a hop is labelled with its own account's
+// currency rather than the INR default this chain used to take.
+const currencyOf = (accountId: string) =>
+  ({ a1: "INR", a2: "USD" })[accountId as "a1" | "a2"] ?? "";
+
 describe("TraceChainModal", () => {
   it("traces the link chain hop by hop", async () => {
-    render(<TraceChainModal txn={t1} onClose={vi.fn()} />);
+    render(<TraceChainModal txn={t1} currencyOf={currencyOf} onClose={vi.fn()} />);
 
     expect(await screen.findByText("Hop 1")).toBeInTheDocument();
     expect(screen.getByText("Hop 2")).toBeInTheDocument();
@@ -77,7 +82,7 @@ describe("TraceChainModal", () => {
 
   it("shows an empty state when nothing is linked", async () => {
     apiMock.getLinks.mockResolvedValue([]);
-    render(<TraceChainModal txn={t1} onClose={vi.fn()} />);
+    render(<TraceChainModal txn={t1} currencyOf={currencyOf} onClose={vi.fn()} />);
 
     expect(
       await screen.findByText("This transaction has no links to trace."),
