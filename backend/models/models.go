@@ -977,10 +977,12 @@ type DashboardSummary struct {
 	// is framed around statement periods for a single billing-day account.
 	CurrentCycle      *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
-	// AsOf is the instant the balances below were computed, echoed so a client
-	// holding a cached response can tell what it is looking at. Present only when
-	// the request asked for one: a caller that did not ask gets no field, so
-	// responses without asOf are unchanged.
+	// AsOf is the day the balances below were computed, as a "YYYY-MM-DD" stored
+	// day string, echoed so a client holding a cached response can tell what it is
+	// looking at. It is deliberately NOT a time.Time: that type would put a UTC
+	// midnight on the wire, which a client parsing it as a local day renders as
+	// the day before. Present only when the request asked for one: a caller that
+	// did not ask gets no field, so responses without asOf are unchanged.
 	//
 	// This asOf is a RESPONSE field - the echo of an ?asOf= request. It is not
 	// LoanPayoff.AsOf (the date a loan payoff is quoted for, a time.Time), which
@@ -991,12 +993,19 @@ type DashboardSummary struct {
 	// Balances is each account's balance at AsOf, including accounts holding
 	// nothing at that date. Present only when the request asked for one.
 	//
-	// It is a POINTER, not a bare slice, and that is load-bearing: encoding/json
-	// does not omit an empty slice, so a plain `[]AccountBalance` with omitempty
-	// would serialise as `"balances": []` on every ordinary summary. A nil
-	// pointer is omitted; a non-nil pointer to an empty slice is not, which is
-	// exactly the distinction "no accounts" and "no account held money" need -
-	// they are different answers and only the second is true of an asOf response.
+	// It is a POINTER, not a bare slice, and that is load-bearing for the reason
+	// omitempty is usually NOT enough: encoding/json DOES omit an empty slice, so
+	// a bare `[]AccountBalance` would omit a non-nil empty one just as surely as a
+	// nil one. Three states are meaningful here - not asked, asked with accounts,
+	// asked with none - and a bare slice can only say two. The pointer separates
+	// the first: nil is omitted, and a non-nil pointer to an empty slice is kept
+	// as `"balances": []`, which is the answer to "asked, and there were no
+	// accounts".
+	//
+	// So the slice behind the pointer must be ALLOCATED before its address is
+	// taken. A non-nil pointer to a nil slice is neither of the two states above:
+	// it serialises as `"balances": null`, which is neither "not asked" nor "no
+	// accounts" and reads as a server that lost the value.
 	Balances *[]AccountBalance `json:"balances,omitempty"`
 }
 

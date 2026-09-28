@@ -136,11 +136,14 @@ func TestNewCurrencyAmountsIsNonNil(t *testing.T) {
 	}
 }
 
-// TestDashboardSummaryAsOfJSON pins the wire shape of the as-of response. The
-// pointer requirement lives here: a summary for a caller that did not ask for an
-// asOf must serialise exactly as it did before these fields existed, which a
-// bare []AccountBalance with omitempty cannot do (encoding/json does not omit
-// an empty slice, so it would emit "balances": [] on every ordinary load).
+// TestDashboardSummaryAsOfJSON pins the wire shape of the as-of response.
+//
+// Subtest 1 (absent) is the backward-compatibility guarantee and passes under
+// either shape - encoding/json omits an empty slice, so a bare []AccountBalance
+// would satisfy it too. Subtest 3 (an empty slice is still an answer) is the one
+// that catches the bare-slice regression, because omitempty omits a non-nil
+// empty slice exactly as it omits a nil one, and only the pointer keeps "asked,
+// and there were no accounts" distinguishable from "not asked".
 func TestDashboardSummaryAsOfJSON(t *testing.T) {
 	t.Run("absent when the request did not ask", func(t *testing.T) {
 		body, err := json.Marshal(DashboardSummary{})
@@ -213,9 +216,9 @@ func TestDashboardSummaryAsOfJSON(t *testing.T) {
 		if err := json.Unmarshal(body, &generic); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
-		// "no accounts" and "no account held anything at that date" are different
-		// answers; only the second is true of an asOf response, so the key must
-		// survive an empty slice.
+		// "asked, and there were no accounts" is a real answer and "did not ask" is
+		// not the same one, so an asOf response must keep the key even when the
+		// list behind it is empty.
 		balances, ok := generic["balances"]
 		if !ok {
 			t.Fatalf("an asOf response with no balances lost the key: %s", body)
