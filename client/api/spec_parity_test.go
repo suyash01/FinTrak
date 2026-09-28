@@ -283,11 +283,18 @@ func routeCases() []routeCase {
 			call: func(ctx context.Context, c *Client) error { _, err := c.RenameTag(ctx, "old", "new"); return err }},
 
 		// Transactions.
+		// asOf is in the expected query because the parameter is documented on
+		// the route: TestEveryRouteHitsItsDocumentedPath compares the WHOLE query
+		// set, so a field the client cannot send, or one it sends under a name the
+		// spec does not publish, fails here rather than narrowing the result set
+		// quietly. The export case carries it too, because that is the claim the
+		// two operations share: the export builds its predicate from the same
+		// code, so an as-of list and an as-of CSV are the same rows.
 		{name: "list transactions", method: "GET", path: "/transactions", body: txPageJSON(),
-			query: map[string]string{"search": "coffee", "page": "2", "linked": "false"},
+			query: map[string]string{"search": "coffee", "page": "2", "linked": "false", "asOf": "2026-03-31"},
 			call: func(ctx context.Context, c *Client) error {
 				_, err := c.ListTransactions(ctx, TransactionFilter{
-					Search: "coffee", Page: 2, Linked: new(false),
+					Search: "coffee", Page: 2, Linked: new(false), AsOf: "2026-03-31",
 				})
 				return err
 			}},
@@ -347,9 +354,11 @@ func routeCases() []routeCase {
 				return err
 			}},
 		{name: "transaction csv export", method: "GET", path: "/transactions/export", body: "Date,Description\n",
-			query: map[string]string{"accountId": idAcct},
+			query: map[string]string{"accountId": idAcct, "asOf": "2026-03-31"},
 			call: func(ctx context.Context, c *Client) error {
-				_, err := c.ExportTransactionsCSV(ctx, TransactionFilter{AccountID: idAcct}, io.Discard)
+				_, err := c.ExportTransactionsCSV(ctx, TransactionFilter{
+					AccountID: idAcct, AsOf: "2026-03-31",
+				}, io.Discard)
 				return err
 			}},
 
@@ -463,10 +472,12 @@ func routeCases() []routeCase {
 
 		// Dashboard.
 		{name: "dashboard summary", method: "GET", path: "/dashboard/summary", body: `{}`,
-			query: map[string]string{"accountId": idAcct, "currency": "USD", "groupBy": "billing_cycle", "cycles": "6"},
+			query: map[string]string{"accountId": idAcct, "currency": "USD", "groupBy": "billing_cycle",
+				"cycles": "6", "asOf": "2026-03-31"},
 			call: func(ctx context.Context, c *Client) error {
 				_, err := c.Summary(ctx, DashboardFilter{
-					WindowFilter: WindowFilter{AccountID: idAcct, Currency: "USD"}, GroupBy: "billing_cycle", Cycles: 6,
+					WindowFilter: WindowFilter{AccountID: idAcct, Currency: "USD"},
+					GroupBy:      "billing_cycle", Cycles: 6, AsOf: "2026-03-31",
 				})
 				return err
 			}},

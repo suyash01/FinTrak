@@ -29,9 +29,9 @@ const asOfDay = "2026-03-31"
 // (backend/db/migrations/000001_initial_schema.up.sql), so a balance query with
 // no loan_attachments subquery still returns a row per account, still returns
 // the right columns, and still answers 200 - it just reports every loan as
-// roughly zero, which reads as "you owed nothing" rather than as a bug. Pinning
-// the table name in the matcher is what turns that silent wrong number into a
-// failing test.
+// roughly zero, which under these semantics reads as "nothing was ever paid on
+// it" rather than as a bug. Pinning the table name in the matcher is what turns
+// that silent wrong number into a failing test.
 //
 // The `t.date <= $2` is pinned for the same reason and the opposite case: an
 // unbounded balance query would be right for asOf=today and wrong for every
@@ -151,12 +151,16 @@ func TestAccountBalancesAsOf(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	// Review Focus #1: the loan branch. A loan's balance is outstanding
-	// principal, summed from the transactions ATTACHED to the loan, not from the
-	// loan account's own ledger — which is empty. The value here is a negative,
-	// because a payment on a loan reduces what is owed, and the whole point is
-	// that the SQL named loan_attachments: the matcher required it before this
-	// row could return at all.
+	// Review Focus #1: the loan branch. A loan's balance is the total paid to
+	// date, summed from the transactions ATTACHED to the loan, not from the loan
+	// account's own ledger — which is empty — and it is positive and growing
+	// rather than what the borrower still owes. The value here is a negative
+	// because it is a pgxmock row: the fold passes the column through rather
+	// than choosing a sign, and pinning the sign in a fixture would only state
+	// the test's own arithmetic. What the case is really here for is that the
+	// SQL named loan_attachments: the matcher required it before this row could
+	// return at all. The real sign is pinned end to end, against a real
+	// database, in TestAsOfBalanceEndToEnd.
 	t.Run("a loan balances from its attached payments, not its own ledger", func(t *testing.T) {
 		srv, mock := newBalanceUnitServer(t)
 		loan := uuid.New()
@@ -352,9 +356,11 @@ func TestDashboardAsOf(t *testing.T) {
 		require.Len(t, *summary.Balances, 2)
 		assert.Equal(t, "Everyday", (*summary.Balances)[0].Name)
 		assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(500.00)}, (*summary.Balances)[0].Balance)
-		// The loan is present with a negative balance rather than a zero one —
-		// the review finding is that its absence is invisible, so its presence
-		// is the assertion.
+		// The loan is present with a balance rather than a zero one — the review
+		// finding is that its absence is invisible, so its presence is the
+		// assertion. The figure is the mock row's, not a sign this handler
+		// chose; what the loan branch really returns is pinned against a real
+		// database in TestAsOfBalanceEndToEnd.
 		assert.Equal(t, "Car loan", (*summary.Balances)[1].Name)
 		require.Contains(t, (*summary.Balances)[1].Balance, "INR")
 		assert.Equal(t, money.FromFloat(-12000.00), (*summary.Balances)[1].Balance["INR"])
@@ -561,6 +567,140 @@ func TestDashboardAsOf(t *testing.T) {
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.True(t, strings.Contains(w.Body.String(), "asOf"), "the 400 names the offending parameter")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// TestAsOfBalancesAreNotNarrowedByTheCurrencyOrAccountFilter pins the one thing
+// the `balances` description now says in both directions, because it is the kind
+// of sentence a client acts on and a refactor would break silently.
+//
+// `?currency=` narrows every section that describes TRANSACTIONS — the count, the
+// scope, the breakdowns, the trend, the list — and the balance query is not one
+// of them: it is driven by accounts, not by transactions, and an account holds
+// no currency *money* to narrow. So a USD request is answered with the INR
+// account's balance sitting beside the USD one, and the response's own
+// currencyScope names only USD. Two lists naming different accounts is the
+// point: a client that assumed `balances` was pre-filtered would read the
+// absence of the INR row as "no INR account" and be wrong in the direction that
+// costs money.
+//
+// The mock is the real assertion here. Its balance expectation binds EXACTLY
+// (userID, asOf) — the same two arguments as the unfiltered case above — so a
+// balance query that grew a currency or account predicate would fail on the
+// argument list rather than pass with a quietly narrower answer. `?accountId=`
+// is pinned by the same argument list in the second case: the balance query
+// takes the user id and the instant and nothing else, so it cannot be narrowed
+// by either parameter without that list growing.
+func TestAsOfBalancesAreNotNarrowedByTheCurrencyOrAccountFilter(t *testing.T) {
+	userID := testUserID()
+
+	t.Run("a currency filter still reports every account's balance", func(t *testing.T) {
+		mock, err := newGuardedPool(t)
+		require.NoError(t, err)
+		defer mock.Close()
+		r := newDashboardTestRouter(newTestServer(mock))
+
+		acctINR := uuid.New()
+		acctUSD := uuid.New()
+
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		// Every transaction-backed section is narrowed: the instant is $2 and
+		// the currency is $3, in that order, which is what the handler's own
+		// arg-building produces.
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t[\\s\\S]*t\\.date <= \\$2[\\s\\S]*'INR'\\) = \\$3").
+			WithArgs(userID, asOfDay, "USD").
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t[\\s\\S]*t\\.date <= \\$2[\\s\\S]*'INR'\\) = \\$3").
+			WithArgs(userID, asOfDay, "USD").
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+				AddRow(acctUSD, "Travel card", "USD", money.FromFloat(120), money.FromFloat(80)))
+		expectRestOfSummary(mock, userID, asOfDay, "USD")
+		// The balance query, unchanged: two arguments, no currency.
+		expectBalanceQuery(mock, userID, asOfDay, pgxmock.NewRows(balanceCols).
+			AddRow(acctINR, "Everyday", "INR", money.FromFloat(500.00)).
+			AddRow(acctUSD, "Travel card", "USD", money.FromFloat(40.00)))
+		mock.ExpectCommit()
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+			"/dashboard/summary?asOf="+asOfDay+"&currency=USD", nil))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var summary models.DashboardSummary
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &summary))
+
+		// Both accounts, in both currencies, from a request that asked for one
+		// currency only.
+		require.NotNil(t, summary.Balances)
+		require.Len(t, *summary.Balances, 2)
+		assert.Equal(t, "Everyday", (*summary.Balances)[0].Name)
+		assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(500.00)}, (*summary.Balances)[0].Balance)
+		assert.Equal(t, "Travel card", (*summary.Balances)[1].Name)
+		assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(40.00)}, (*summary.Balances)[1].Balance)
+
+		// And the contrast that makes it an asymmetry rather than a uniform
+		// "everything is unfiltered" claim: the scope DOES name only USD, and
+		// the totals do not carry the INR account at all. So the INR id in
+		// `balances` is absent from `currencyScope.accounts`, which is the
+		// exact contradiction M4's corrected `id` description now warns about.
+		assert.Equal(t, []string{"USD"}, summary.CurrencyScope.Currencies)
+		require.Len(t, summary.CurrencyScope.Accounts, 1)
+		assert.Equal(t, acctUSD, summary.CurrencyScope.Accounts[0].ID)
+		assert.Equal(t, models.CurrencyAmounts{"USD": money.FromFloat(120)}, summary.TotalIncome)
+		assert.NotContains(t, summary.TotalIncome, "INR")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("an accountId filter still reports every account's balance", func(t *testing.T) {
+		mock, err := newGuardedPool(t)
+		require.NoError(t, err)
+		defer mock.Close()
+		r := newDashboardTestRouter(newTestServer(mock))
+
+		acctOne := uuid.New()
+		acctTwo := uuid.New()
+
+		mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM accounts WHERE user_id").
+			WithArgs(userID).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		// The account id is bound as the raw query string, because that is what
+		// c.Query returned and the handler validates it without re-reading it as
+		// a uuid; the expectation has to state that, or it would be asserting a
+		// conversion the handler does not do.
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM transactions t[\\s\\S]*t\\.date <= \\$2[\\s\\S]*t\\.account_id = \\$3").
+			WithArgs(userID, asOfDay, acctOne.String()).
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+		mock.ExpectQuery("FROM accounts a\\s+LEFT JOIN transactions t[\\s\\S]*t\\.date <= \\$2[\\s\\S]*a\\.id = \\$3").
+			WithArgs(userID, asOfDay, acctOne.String()).
+			WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
+				AddRow(acctOne, "Everyday", "INR", money.FromFloat(500), 0))
+		expectRestOfSummary(mock, userID, asOfDay, acctOne.String())
+		// Still two arguments: the account filter did not reach this query.
+		expectBalanceQuery(mock, userID, asOfDay, pgxmock.NewRows(balanceCols).
+			AddRow(acctOne, "Everyday", "INR", money.FromFloat(500.00)).
+			AddRow(acctTwo, "Savings", "INR", money.FromFloat(9000.00)))
+		mock.ExpectCommit()
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+			"/dashboard/summary?asOf="+asOfDay+"&accountId="+acctOne.String(), nil))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var summary models.DashboardSummary
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &summary))
+
+		require.NotNil(t, summary.Balances)
+		require.Len(t, *summary.Balances, 2)
+		assert.Equal(t, acctTwo, (*summary.Balances)[1].ID)
+		// The account that was NOT asked for is still reported, with its own
+		// balance — the strongest form of the claim, because here the filter
+		// names a single account and the answer still names two.
+		assert.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(9000.00)}, (*summary.Balances)[1].Balance)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

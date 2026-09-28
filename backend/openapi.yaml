@@ -1163,6 +1163,34 @@ paths:
             format: date
           description: Filter transactions until this date (YYYY-MM-DD)
         - in: query
+          name: asOf
+          schema:
+            type: string
+            format: date
+          description: >-
+            Report the ledger's state at the END of this day, whatever the rest
+            of the window says: a transaction dated on or before it counts, and
+            a transaction dated the asOf day itself counts too, so the value is
+            an instant rather than an exclusive bound.
+
+            It is clamped to the EARLIER of `asOf` and `dateTo`, so a request
+            whose window already closed before the day asked for is answered
+            for the window's end rather than for the later day; a `dateFrom`
+            after the clamped value is a 400 naming both dates. `dateFrom`
+            equal to it is a legitimate one-day window, not an error.
+
+            It filters by transaction DATE only, never by when the row was
+            entered, so a transaction dated before `asOf` counts even if the
+            statement carrying it was imported afterwards. That is the rule a
+            caller would otherwise have to discover: an as-of report is
+            reproducible, but it is reproducible with respect to the dates on
+            the ledger, and a later import of an older statement legitimately
+            changes what the same request answers.
+
+            A value that is not YYYY-MM-DD, or that falls outside the ledger's
+            supported window (`[1900-01-01, today+1y]`), is a 400 — as is a
+            `dateFrom` after the clamped value.
+        - in: query
           name: type
           schema:
             type: string
@@ -1722,6 +1750,32 @@ paths:
         - in: query
           name: dateTo
           schema: { type: string, format: date }
+        - in: query
+          name: asOf
+          schema:
+            type: string
+            format: date
+          description: >-
+            Report the ledger's state at the END of this day, and this endpoint
+            honours it exactly as GET /transactions does: the two build their
+            predicate from the same code, so a CSV exported with `asOf` contains
+            exactly the rows the list would have returned for the same filter
+            and the same instant. A caller that exports what it is looking at
+            gets the same answer twice rather than a file that silently runs on
+            past the day being examined.
+
+            The instant is the END of the day, so a transaction dated the asOf
+            day itself is in the file. It is clamped to the earlier of `asOf`
+            and `dateTo`, and a `dateFrom` after the clamped value is a 400. It
+            filters by transaction DATE only, so a transaction dated before
+            `asOf` is exported even if the statement carrying it was imported
+            afterwards.
+
+            A value that is not YYYY-MM-DD, or that falls outside the ledger's
+            supported window, is a 400. Unlike `q`, which this endpoint drops
+            silently, a rejected `asOf` is refused outright — a CSV has nowhere
+            to report an ignored term, so a filter it cannot honour is not
+            attempted.
         - in: query
           name: type
           schema: { type: string, enum: [debit, credit] }
@@ -4031,6 +4085,44 @@ paths:
             format: date
           description: Filter to date (YYYY-MM-DD)
         - in: query
+          name: asOf
+          schema:
+            type: string
+            format: date
+          description: >-
+            Report the ledger's state at the END of this day, whatever the rest
+            of the window says: a transaction dated on or before it counts, and
+            a transaction dated the asOf day itself counts too, so the value is
+            an instant rather than an exclusive bound. Every section of the
+            response is bounded by the same instant, so the totals, the category
+            breakdowns, the trend and the transaction list can never describe a
+            wider window than the balances beside them.
+
+            It is clamped to the EARLIER of `asOf` and `dateTo`, so a request
+            whose window already closed before the day asked for is answered
+            for the window's end rather than for the later day; a `dateFrom`
+            after the clamped value is a 400 naming both dates. The response's
+            `asOf` field carries the RESOLVED day, so a client caching a
+            response is told the instant it is actually looking at rather than
+            the one it asked for.
+
+            It filters by transaction DATE only, never by when the row was
+            entered, so a transaction dated before `asOf` counts even if the
+            statement carrying it was imported afterwards. A later import of an
+            older statement therefore legitimately changes what the same request
+            answers, which is why an as-of report is reproducible against the
+            ledger's dates rather than against a past version of the database.
+
+            Supplying it is what adds `asOf` and `balances` to the response: a
+            request without it gets neither, and the response is unchanged from
+            before these fields existed.
+
+            A value that is not YYYY-MM-DD, or that falls outside the ledger's
+            supported window (`[1900-01-01, today+1y]`), is a 400 — as is a
+            `dateFrom` after the clamped value. It is validated before the
+            billing-cycle branch, so `groupBy=billing_cycle` gets the same 400s
+            rather than silently ignoring it.
+        - in: query
           name: accountId
           schema:
             type: string
@@ -6074,7 +6166,14 @@ components:
         id:
           type: string
           format: uuid
-          description: The account's id, the same id `currencyScope.accounts` carries.
+          description: >-
+            The account's id, in the same shape `currencyScope.accounts` carries.
+            It is the same id for the same account, but the two lists are NOT the
+            same list: `balances` is narrowed by neither `currency` nor
+            `accountId` while `currencyScope` is narrowed by both, so an id here
+            can be absent from `currencyScope.accounts` on a filtered request.
+            Join the two on this id, and do not assume one list contains the
+            other.
         name:
           type: string
           description: The account's display name.
@@ -6111,6 +6210,12 @@ components:
             `paidAmount`. It is **not** what the borrower still owes; that is
             `loanPayoff.outstandingPrincipal`, a different number over a
             different question.
+
+            So a loan here reads `{}` when **nothing has ever been paid on it**,
+            not when nothing is left to pay: on the asOf day of a loan taken out
+            the same month, the correct answer is no key at all, and reading that
+            as "settled" or as "fully repaid" is the mistake this wording is
+            chosen to prevent.
           additionalProperties:
             type: number
 
@@ -6255,11 +6360,21 @@ components:
             when present: a user with no accounts gets `[]`.
 
             Present only when the request asked for an instant; a response with
-            no `asOf` has neither field. This is a response field and has no
-            `currency` narrowing of its own - the `currency` parameter narrows
-            the totals and the breakdowns, and every account is still listed
-            here, so a client that wants one currency's balances must select
-            them rather than rely on the list being pre-filtered.
+            no `asOf` has neither field.
+
+            This is a response field and it is narrowed by NEITHER `currency` nor
+            `accountId`, so a filtered request is still answered with every one
+            of the user's accounts: `?currency=USD&asOf=2026-03-31` reports the
+            INR account's balance beside the USD one even though the totals and
+            the breakdowns above it describe USD money only, and
+            `?accountId=<one account>` does not reduce the list to that account
+            either. Both parameters narrow the sections that describe
+            transactions; this one describes an account, and every account has a
+            balance on the day asked about whatever the window was scoped to. A
+            client that wants one currency's or one account's balances must
+            select them from this list rather than rely on it being pre-filtered
+            - and must not read a currency it excluded as absent here, because
+            it is not.
           items:
             $ref: "#/components/schemas/AccountBalance"
 

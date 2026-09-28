@@ -814,6 +814,16 @@ type CurrencyScope struct {
 // accounts in more than one currency and no single number represents that.
 // TotalNet is the server's per-currency difference - do not derive it by
 // subtracting TotalIncome and TotalExpense.
+//
+// AsOf and Balances are present only when the request asked for an instant
+// (DashboardFilter.AsOf), and are POINTERS for the same reason the server's
+// are: encoding/json does not omit an empty slice or an empty string, so a
+// value type could not say "asked, and there were none" - a user with no
+// accounts gets an empty Balances, which a bare slice and an absent field are
+// the same thing. A nil pointer is the server saying "you did not ask"; a
+// non-nil pointer to a zero-length slice is "you asked and the answer was
+// nothing". They are response fields, not request ones, which is why they are a
+// *string and a *[] rather than the module's Optional* request types.
 type DashboardSummary struct {
 	TotalAccounts      int                     `json:"totalAccounts"`
 	TotalTransactions  int                     `json:"totalTransactions"`
@@ -827,6 +837,40 @@ type DashboardSummary struct {
 	CurrencyScope      CurrencyScope           `json:"currencyScope"`
 	CurrentCycle       *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend  []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
+	// AsOf echoes the day the report was computed for, which is the RESOLVED
+	// day: a request whose window closed before the day asked for is answered
+	// for the window's end, and this names that day rather than the requested
+	// one. It is a plain YYYY-MM-DD string rather than a time.Time on purpose -
+	// a timestamp would put a UTC midnight on the wire, which a client parsing
+	// it as a local day renders as the day before.
+	AsOf *string `json:"asOf,omitempty"`
+	// Balances is every one of the user's accounts with its balance on that
+	// day, including the ones holding nothing, so an empty list means "no
+	// accounts" and never "no money". Neither Currency nor AccountID narrows
+	// it, though both narrow CurrencyScope, so a filtered response can name
+	// accounts here that the scope does not.
+	Balances *[]AccountBalance `json:"balances,omitempty"`
+}
+
+// AccountBalance is one account's balance on the instant DashboardSummary.AsOf
+// names. The account is listed because the user has it, not because it held
+// money on that date.
+//
+// For a loan account the figure is the total paid to date - positive, growing
+// with every payment, and derived from the transactions attached to the loan
+// rather than from the loan account's own (empty) ledger. It is NOT what the
+// borrower still owes, so an absent key on a loan means nothing was ever paid
+// on it rather than that there is nothing left to pay.
+type AccountBalance struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Currency string `json:"currency"`
+	// Balance is keyed by Currency and holds at most one key, because an
+	// account carries one currency. It is a map rather than a scalar for the
+	// reason the rest of the response's money is, not because one account can
+	// hold two: an absent key reads as zero, and a zero balance adds no key at
+	// all, so len(Balance) counts the accounts that actually held money.
+	Balance CurrencyAmounts `json:"balance"`
 }
 
 // CurrentCycleInfo describes the billing cycle currently in progress.

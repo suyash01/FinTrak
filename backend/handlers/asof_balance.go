@@ -37,9 +37,10 @@ import (
 // An as-of balance that omits the loan branch is the silent wrong number this
 // whole feature was reworked to remove, and it is silent in the worst way: the
 // statement still returns one row per account, still returns the right columns,
-// and still answers 200. A car loan comes back at roughly zero, which reads as
-// "you owed nothing" rather than as a bug. Nothing downstream can notice. So
-// change one copy and you must change the other, and the tests pin the table
+// and still answers 200. A car loan comes back at roughly zero, which under
+// these semantics reads as "nothing was ever paid on it" — the same figure a
+// brand-new loan carries — rather than as a bug. Nothing downstream can notice.
+// So change one copy and you must change the other, and the tests pin the table
 // name for exactly that reason.
 //
 // The two further differences from GetAccounts are both required by asking for

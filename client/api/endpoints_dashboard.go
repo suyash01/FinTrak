@@ -46,11 +46,37 @@ type DashboardFilter struct {
 	// Cycles is how many billing cycles to include; it is ignored unless
 	// GroupBy is "billing_cycle" and the server defaults to 12, capped at 60.
 	Cycles int
+	// AsOf asks for the ledger's state at the END of the named day and is what
+	// makes the response carry DashboardSummary.AsOf and Balances. It is on this
+	// filter rather than on WindowFilter because it is the only dashboard route
+	// that accepts it: the money flow, timeline and calendar reports have no
+	// balances block to put it beside.
+	//
+	// Every section of the response is bounded by the same instant, so the
+	// totals, the breakdowns and the balances can never describe different
+	// windows. The server clamps it to the earlier of AsOf and DateTo and echoes
+	// the RESOLVED day back, so read Summary.AsOf rather than this field to know
+	// what the response is actually reporting. An AsOf that is not YYYY-MM-DD,
+	// that falls outside the ledger's window, or that leaves DateFrom after the
+	// clamped value, is a 400.
+	//
+	// It filters by transaction date only, so a transaction dated before AsOf
+	// counts even if the statement carrying it was imported later.
+	AsOf string
 }
 
 // Summary returns the dashboard aggregate: account and transaction counts,
 // income/expense totals, per-category spend and income (top 15 each), a trend,
 // and the 10 most recent transactions.
+//
+// Asked for an instant with DashboardFilter.AsOf, it also returns that instant
+// as Summary.AsOf and every one of the user's accounts with its balance then, in
+// Summary.Balances. Both are absent — nil pointers — when no AsOf was sent, so
+// a nil AsOf is the server saying "you did not ask", never "the instant was
+// empty". Balances is not narrowed by WindowFilter.Currency or
+// WindowFilter.AccountID, though CurrencyScope is narrowed by both, so the two
+// lists can name different accounts: filter Balances yourself rather than
+// assuming either list is a subset of the other.
 //
 // With GroupBy "billing_cycle" the whole dashboard is framed around the
 // statement periods of one account, so AccountID is then REQUIRED (the server
@@ -64,7 +90,8 @@ type DashboardFilter struct {
 func (c *Client) Summary(ctx context.Context, f DashboardFilter) (DashboardSummary, error) {
 	r := f.apply(get("/dashboard/summary")).
 		setQuery("groupBy", f.GroupBy).
-		setQueryInt("cycles", f.Cycles)
+		setQueryInt("cycles", f.Cycles).
+		setQuery("asOf", f.AsOf)
 	return do[DashboardSummary](ctx, c, r)
 }
 

@@ -48,6 +48,20 @@ type TransactionFilter struct {
 	Amount   string
 	DateFrom string
 	DateTo   string
+	// AsOf reports the ledger's state at the END of the named day, whatever the
+	// rest of the filter says: a transaction dated on or before it counts, one
+	// dated the day itself included, and it filters by transaction DATE only —
+	// a transaction dated before asOf counts even if the statement carrying it
+	// was imported later.
+	//
+	// It is clamped by the server to the earlier of AsOf and DateTo, so sending
+	// both is legal and the answer is the window's end. A DateFrom after the
+	// clamped value is a 400, as is an asOf that is not YYYY-MM-DD or that falls
+	// outside the ledger's window [1900-01-01, today+1y].
+	//
+	// The export honours it too, because both endpoints build their predicate
+	// from the same code — an as-of CSV is exactly the as-of list.
+	AsOf string
 	// Tags is an ANY-match set (array overlap).
 	Tags []string
 	// Linked is a tri-state filter; nil leaves it unfiltered.
@@ -95,6 +109,7 @@ func (f TransactionFilter) apply(r *request) *request {
 		setQuery("amount", f.Amount).
 		setQuery("dateFrom", f.DateFrom).
 		setQuery("dateTo", f.DateTo).
+		setQuery("asOf", f.AsOf).
 		setQuery("loanAccountId", f.LoanAccountID).
 		setQuery("recurringId", f.RecurringID).
 		setQuery("recurring", f.Recurring)
@@ -152,9 +167,11 @@ func (c *Client) DeleteTransaction(ctx context.Context, id string) error {
 }
 
 // ExportTransactionsCSV streams the transactions matching f as CSV into w,
-// honouring the same filters as the list but ignoring paging and sort. The
-// export is always date-descending, and a filter matching more than 100 000
-// rows is refused with 400 ("narrow the filters") rather than truncated, so a
+// honouring the same filters as the list but ignoring paging and sort — AsOf
+// included, since both endpoints build their predicate from the same code, so
+// an as-of CSV holds exactly the rows an as-of list returns. The export is
+// always date-descending, and a filter matching more than 100 000 rows is
+// refused with 400 ("narrow the filters") rather than truncated, so a
 // downloaded file is never silently partial.
 func (c *Client) ExportTransactionsCSV(ctx context.Context, f TransactionFilter, w io.Writer) (string, error) {
 	return c.download(ctx, f.apply(get("/transactions/export")), w)
