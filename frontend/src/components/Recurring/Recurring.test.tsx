@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Recurring from "./Recurring";
 import type { Account, RecurringSeries } from "../../types";
-import { formatCurrency } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 
 if (!Element.prototype.hasPointerCapture) {
   Element.prototype.hasPointerCapture = () => false;
@@ -128,7 +128,7 @@ describe("Recurring", () => {
     expect(screen.getByText("Monthly income")).toBeInTheDocument();
     // Expense summary equals the rent's normalized monthly amount.
     expect(
-      screen.getAllByText(formatCurrency(50000)).length,
+      screen.getAllByText(formatOne(50000, "INR")).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
@@ -161,7 +161,7 @@ describe("Recurring", () => {
 // place the app did its own arithmetic on money.
 //
 // The test names the wrong answer rather than only the right one: restoring the
-// cross-currency sum makes the card print formatCurrency(51000), and asserting
+// cross-currency sum makes the card print formatOne(51000, "INR"), and asserting
 // that string is absent is the half that fails. Asserting only the refusal would
 // pass just as well against a card that printed the sum and said so afterwards.
 describe("Recurring's monthly forecast across two currencies", () => {
@@ -211,7 +211,7 @@ describe("Recurring's monthly forecast across two currencies", () => {
 
     // The restored sum: the two figures added together and printed as one, which
     // is what the fold used to do.
-    expect(screen.queryByText(formatCurrency(50010))).toBeNull();
+    expect(screen.queryByText(formatOne(50010, "INR"))).toBeNull();
   });
 
   it("takes the net per currency and refuses to sign it", async () => {
@@ -245,6 +245,6 @@ describe("Recurring's monthly forecast across two currencies", () => {
     const figure = screen.getByText((_, el) => el?.tagName === "P" && /not combined/.test(el.textContent ?? ""))!;
     expect(figure.className).toContain("text-muted-foreground");
     // The restored difference, taken across the two sums.
-    expect(screen.queryByText(formatCurrency(-49980))).toBeNull();
+    expect(screen.queryByText(formatOne(-49980, "INR"))).toBeNull();
   });
 });

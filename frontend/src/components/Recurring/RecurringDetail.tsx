@@ -19,7 +19,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne, useAccountCurrency } from "../../lib/currency";
+import { useDomainData } from "../../context/DomainDataContext";
 import { toast } from "sonner";
 
 interface Props {
@@ -57,6 +59,20 @@ export default function RecurringDetail({
   const [terms, setTerms] = useState<RecurringSeriesTerm[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const { accounts } = useDomainData();
+  const currencyOf = useAccountCurrency(accounts);
+  // Two different questions, and the difference matters. The series, its
+  // forecast and its term ranges are all denominated in the SERIES' account's
+  // currency. The suggested and already-linked transactions are real rows in
+  // whichever account they sit in, which is not necessarily the series' account -
+  // a subscription can be attached across accounts - so those resolve their own.
+  const seriesMoney = useCallback(
+    // series is null until the dialog is opened on one, and the panel below is
+    // guarded on that, so an unknown account here just means an unnamed figure.
+    (amount: number) => formatOne(amount, currencyOf(series?.accountId ?? "")),
+    [series?.accountId, currencyOf],
+  );
 
   // The series the currently-displayed payloads belong to. A response for a
   // series the user has already navigated away from must not overwrite them:
@@ -136,7 +152,7 @@ export default function RecurringDetail({
           <SheetTitle>{series?.name ?? "Recurring series"}</SheetTitle>
           <SheetDescription>
             {series
-              ? `${formatCurrency(series.amount)} · ${cadenceLabel(series)}`
+              ? `${seriesMoney(series.amount)} · ${cadenceLabel(series)}`
               : ""}
           </SheetDescription>
         </SheetHeader>
@@ -172,7 +188,7 @@ export default function RecurringDetail({
                         {formatDate(f.date)}
                       </span>
                       <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                        {formatCurrency(f.amount)}
+                        {seriesMoney(f.amount)}
                         {f.matched && (
                           <Badge className="bg-primary/10 text-primary hover:bg-primary/10">
                             Matched
@@ -203,7 +219,7 @@ export default function RecurringDetail({
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {formatDate(s.txn.date)} ·{" "}
-                          {formatCurrency(s.txn.amount)} · score{" "}
+                          {formatOne(s.txn.amount, currencyOf(s.txn.accountId))} · score{" "}
                           {Math.round(s.score)}
                         </p>
                       </div>
@@ -237,7 +253,8 @@ export default function RecurringDetail({
                           {t.description}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {formatDate(t.date)} · {formatCurrency(t.amount)}
+                          {formatDate(t.date)} ·{" "}
+                          {formatOne(t.amount, currencyOf(t.accountId))}
                         </p>
                       </div>
                       <Button
@@ -268,7 +285,7 @@ export default function RecurringDetail({
                     >
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-foreground">
-                          {formatCurrency(t.amount)}
+                          {seriesMoney(t.amount)}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {t.endDate

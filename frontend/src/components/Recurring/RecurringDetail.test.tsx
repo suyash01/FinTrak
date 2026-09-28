@@ -31,8 +31,21 @@ const { apiMock } = vi.hoisted(() => ({
 vi.mock("../../api/client", () => ({ default: apiMock }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
+// The panel resolves each figure's account to a currency. Two accounts in two
+// currencies, so a series in one of them is not labelled in the other's — and an
+// amount that renders as a bare number here means the lookup failed, not that the
+// currency is absent.
+vi.mock("../../context/DomainDataContext", () => ({
+  useDomainData: () => ({
+    accounts: [
+      { id: "a1", name: "Checking", accountTypeId: "bank", currency: "INR" },
+      { id: "a2", name: "Dollars", accountTypeId: "bank", currency: "USD" },
+    ],
+  }),
+}));
+
 const accounts = [
-  { id: "a1", name: "Checking", accountTypeId: "bank" },
+  { id: "a1", name: "Checking", accountTypeId: "bank", currency: "INR" },
 ] as unknown as Account[];
 
 const series = {

@@ -34,6 +34,9 @@ function renderDialog(
   const props = {
     result: RESULT,
     accountName: "Test Account",
+    // Every result was checked against this one account, so one code labels the
+    // whole table.
+    currency: "INR",
     onClose: vi.fn(),
     ...overrides,
   };

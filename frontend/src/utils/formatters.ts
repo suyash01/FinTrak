@@ -1,5 +1,21 @@
 const currencyFormatters = new Map<string, Intl.NumberFormat>();
-export function formatCurrency(amount: number, currency = "INR"): string {
+
+/**
+ * formatCurrency renders an amount in a named currency.
+ *
+ * The currency is REQUIRED and has no default. It used to default to "INR",
+ * which is the root of #49: sixty-odd call sites across five components invoked
+ * this without a currency and silently got rupees, so a USD transaction wore a
+ * rupee symbol. Every one of them has been migrated, and removing the default is
+ * what stops the next one from being written — `tsc` now fails at any call site
+ * that forgets, which is the whole point of the migration being finished rather
+ * than merely started.
+ *
+ * A caller whose code is one the user typed should reach for formatOne in
+ * lib/currency.ts instead: this throws a RangeError on a code Intl cannot
+ * resolve, and an account's `currency` is VARCHAR(3) that nothing validates.
+ */
+export function formatCurrency(amount: number, currency: string): string {
   let nf = currencyFormatters.get(currency);
   if (!nf) {
     nf = new Intl.NumberFormat("en-IN", {

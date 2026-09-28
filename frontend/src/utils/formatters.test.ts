@@ -9,20 +9,23 @@ import {
 } from "./formatters";
 
 describe("formatCurrency", () => {
+  // Every case below names its currency. They used to omit it and rely on the
+  // "INR" default this function no longer has — that default is the root of #49,
+  // and its removal is enforced by the fact that these calls would not compile.
   it("formats positive amounts in INR", () => {
-    expect(formatCurrency(1234.5)).toBe("₹1,234.50");
+    expect(formatCurrency(1234.5, "INR")).toBe("₹1,234.50");
   });
 
   it("formats negative amounts", () => {
-    expect(formatCurrency(-99.99)).toBe("-₹99.99");
+    expect(formatCurrency(-99.99, "INR")).toBe("-₹99.99");
   });
 
   it("formats zero", () => {
-    expect(formatCurrency(0)).toBe("₹0.00");
+    expect(formatCurrency(0, "INR")).toBe("₹0.00");
   });
 
   it("always shows two fraction digits", () => {
-    expect(formatCurrency(5)).toBe("₹5.00");
+    expect(formatCurrency(5, "INR")).toBe("₹5.00");
   });
 
   it("supports a custom currency", () => {

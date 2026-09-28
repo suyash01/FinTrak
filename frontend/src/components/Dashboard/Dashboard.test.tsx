@@ -247,7 +247,7 @@ describe("Dashboard", () => {
     expect(row.textContent).toContain(formatOne(42, "USD"));
     // The wrong-currency form this replaces, asserted so the fix cannot be
     // "unfamiliar" and reverted: a rupee symbol on a dollar transaction.
-    expect(row.textContent).not.toContain(formatCurrency(42));
+    expect(row.textContent).not.toContain(formatCurrency(42, "INR"));
   });
 
   // The lookup can miss: the accounts context holds the user's accounts, and a
@@ -276,7 +276,7 @@ describe("Dashboard", () => {
 
     const row = (await screen.findByText("Unknown Account")).closest("tr")!;
     expect(row.textContent).toContain(formatNumber(7));
-    expect(row.textContent).not.toContain(formatCurrency(7));
+    expect(row.textContent).not.toContain(formatCurrency(7, "INR"));
   });
 
   it("pre-fills the default account and passes it to the API", async () => {
@@ -471,11 +471,12 @@ describe("Dashboard", () => {
       await screen.findByText("Recurring & Subscriptions"),
     ).toBeInTheDocument();
     expect(screen.getByText("Netflix")).toBeInTheDocument();
-    // The upcoming list below the card is one account's own rows, so those still
-    // render a transaction-style amount; the card's three headline figures are
-    // per currency, which is what the other test on this file pins.
+    // The upcoming list below the card is one account's own rows, so those render
+    // a transaction-style amount in the SERIES' account's currency — the card's
+    // three headline figures are per currency, which is what the other test on
+    // this file pins.
     expect(
-      screen.getAllByText(formatCurrency(1599)).length,
+      screen.getAllByText(formatOne(1599, "INR")).length,
     ).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole("link", { name: "Manage" })).toHaveAttribute(
       "href",
@@ -556,7 +557,7 @@ describe("Dashboard", () => {
 
     // The restored sum. Asserting the refusal alone would pass just as well
     // against a card that printed 1,639 and said "not combined" underneath it.
-    expect(screen.queryByText(formatCurrency(1639))).not.toBeInTheDocument();
+    expect(screen.queryByText(formatOne(1639, "INR"))).not.toBeInTheDocument();
   });
 
   it("shows one currency at a time and names the one it is not showing", async () => {

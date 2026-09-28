@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatCurrency } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type {
   ValidateTransactionResult,
   ValidateTransactionsResponse,
@@ -21,6 +21,12 @@ import type {
 interface ValidationDialogProps {
   result: ValidateTransactionsResponse;
   accountName: string;
+  /**
+   * That account's currency. Every result here was checked against the one
+   * account, so one code labels the whole table — and it is required rather than
+   * defaulted, so a new call site has to say which account it checked against.
+   */
+  currency: string;
   onClose: () => void;
 }
 
@@ -28,6 +34,7 @@ interface ValidationDialogProps {
 export default function ValidationDialog({
   result,
   accountName,
+  currency,
   onClose,
 }: ValidationDialogProps) {
   const validationColumns = useMemo<
@@ -88,7 +95,7 @@ export default function ValidationDialog({
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}
-            {formatCurrency(row.original.amount)}
+            {formatOne(row.original.amount, currency)}
           </span>
         ),
         meta: {
