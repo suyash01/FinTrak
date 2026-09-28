@@ -605,6 +605,36 @@ func TestReportingToolsStateThePerCurrencyRule(t *testing.T) {
 			t.Errorf("the server instructions do not say %q", want)
 		}
 	}
+	// The instructions must not enumerate the five reporting tools, and the test
+	// for that is scoped to the paragraph that carries the money rule rather than
+	// to the whole constant. That scoping is not a convenience: the read-only
+	// qualification at the top of the instructions names four of the five for an
+	// unrelated reason — they are the ones that materialize billing-cycle rows on
+	// read — and that list is correct, so a whole-constant check could only fail
+	// by deleting true information. What must not come back is the aggregate
+	// tools named as the aggregate ones, which is what the design gave up in
+	// order to keep one copy of the rule per place a model reads it: the shape
+	// rule is perCurrencyAmounts, appended to each of the five descriptions, and
+	// re-listing them here would put the same rule in a sixth place with nothing
+	// to check it against. Both halves are pinned — the sentence that hands the
+	// question to the tool, and the absence of the names it hands it to.
+	moneyParagraph := ""
+	for _, para := range strings.Split(instructions, "\n\n") {
+		if strings.Contains(para, "Money is decimal major units") {
+			moneyParagraph = para
+		}
+	}
+	if moneyParagraph == "" {
+		t.Fatal("the server instructions have no paragraph opening on the money rule, so the two checks below would pass vacuously")
+	}
+	if want := "is in that tool's own description"; !strings.Contains(moneyParagraph, want) {
+		t.Errorf("the instructions do not hand the aggregate-tool question to each tool's description: no %q in the money paragraph", want)
+	}
+	for _, name := range reporting {
+		if strings.Contains(moneyParagraph, name) {
+			t.Errorf("the instructions' money paragraph names %s; the aggregate tools are enumerated in their own descriptions, not here", name)
+		}
+	}
 	// The instructions must not point at a total the API refuses to produce: a
 	// model that reads "no total" and is then told where to ask for one is sent
 	// to a tool that will hand it back the two keys it was just told not to add.
