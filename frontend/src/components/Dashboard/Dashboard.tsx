@@ -269,6 +269,18 @@ export default function Dashboard() {
     // entries recorded while the dashboard was showing saved data.
   }, [loadSummary, syncedAt]);
 
+  // A transaction carries no currency; its account's is the one the amount is
+  // denominated in. The recent-transactions table is the one place on this page
+  // that renders a bare per-transaction figure, and it used to call
+  // formatCurrency(amount) and take the "INR" default — so a USD transaction wore
+  // a rupee symbol, on a page whose stat cards directly above it were already
+  // per currency. A Map rather than a find() per row, because this is a
+  // definition used inside a cell renderer and there is one cell per row.
+  const currencyByAccount = useMemo(
+    () => new Map(accounts.map((a) => [a.id, a.currency])),
+    [accounts],
+  );
+
   const recentColumns = useMemo<ColumnDef<Transaction, any>[]>(() => {
     const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
     const headBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`;
@@ -335,7 +347,15 @@ export default function Dashboard() {
             }`}
           >
             {row.original.type === "debit" ? "−" : "+"}
-            {formatCurrency(row.original.amount)}
+            {/* formatOne, not formatCurrency: the code here is one the user
+                typed on the account, not one this page chose, and formatOne is
+                the sanctioned caller for that — it cannot throw on a code Intl
+                cannot resolve, and it falls back to a plain number when there
+                is no code at all rather than inventing an INR. */}
+            {formatOne(
+              row.original.amount,
+              currencyByAccount.get(row.original.accountId) ?? "",
+            )}
           </span>
         ),
         meta: {
@@ -344,9 +364,13 @@ export default function Dashboard() {
         },
       }),
     ];
-    // Only the compact layout affects the recent-transactions columns; the
+    // compactLayout is the only thing that changes the columns' shape; the
     // formatters used inside the cells are module-level and stable.
-  }, [compactLayout]);
+    // currencyByAccount is a dependency because the amount cell reads it, and
+    // leaving it out is the same class of bug as leaving a value out of a
+    // PATCH body: the memo would keep serving cells built from a currency map
+    // that has since changed, and the table would quietly show a stale currency.
+  }, [compactLayout, currencyByAccount]);
 
   // A refetch — a filter change, or the offline layer reporting a sync — must
   // not replace the page the user is reading: the spinner and the error screen

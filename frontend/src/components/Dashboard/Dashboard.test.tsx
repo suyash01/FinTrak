@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { formatOne } from "../../lib/currency";
-import { formatCurrency } from "../../utils/formatters";
+import { formatCurrency, formatNumber } from "../../utils/formatters";
 import type {
   Account,
   CurrencyScope,
@@ -207,6 +207,76 @@ describe("Dashboard", () => {
     expect(within(recent).getByText("Checking")).toBeInTheDocument();
     // A single-currency window pays for nothing: the notice renders nothing.
     expect(screen.queryByText(/other currencies?/)).toBeNull();
+  });
+
+  // A transaction carries no currency of its own — its account's is the one it is
+  // denominated in — so the amount cell has to look the account up. It did not:
+  // it called formatCurrency(amount) and took the "INR" default, which rendered a
+  // USD transaction with a rupee symbol. The window-wide figures beside it were
+  // already per currency, so the table contradicted the stat cards directly above
+  // it, and a mixed-currency window is exactly when a reader is least able to
+  // catch a wrong symbol.
+  it("renders a recent transaction in its own account's currency", async () => {
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        recentTransactions: [
+          {
+            id: "t2",
+            accountId: "a2",
+            date: "2024-03-16",
+            description: "Dollar Store",
+            amount: 42,
+            type: "debit",
+            accountName: "Dollars",
+          },
+        ],
+        currencyScope: twoCurrencyScope(),
+      }),
+    );
+    renderLoaded([
+      account({ isDefault: false }),
+      account({ id: "a2", name: "Dollars", currency: "USD", isDefault: false }),
+    ]);
+
+    const row = (await screen.findByText("Dollar Store")).closest("tr")!;
+    // The amount cell renders a sign and the figure as sibling text nodes, so the
+    // assertion is on the row's text rather than on a single element.
+    //
+    // The dollar figure, named — and the same treatment the stat cards above get
+    // through formatOne, so the table and the cards agree.
+    expect(row.textContent).toContain(formatOne(42, "USD"));
+    // The wrong-currency form this replaces, asserted so the fix cannot be
+    // "unfamiliar" and reverted: a rupee symbol on a dollar transaction.
+    expect(row.textContent).not.toContain(formatCurrency(42));
+  });
+
+  // The lookup can miss: the accounts context holds the user's accounts, and a
+  // transaction whose account is not among them — a closed-and-hidden account, or
+  // a reference data set that has not finished loading — must not fall back to
+  // claiming INR. An amount with no currency named is honest; a rupee symbol on an
+  // account of unknown currency is the same defect this test file is fixing, one
+  // step removed.
+  it("names no currency when the row's account is not in scope", async () => {
+    apiMock.getDashboardSummary.mockResolvedValue(
+      summary({
+        recentTransactions: [
+          {
+            id: "t3",
+            accountId: "a9",
+            date: "2024-03-17",
+            description: "Unknown Account",
+            amount: 7,
+            type: "debit",
+            accountName: "Mystery",
+          },
+        ],
+      }),
+    );
+    renderLoaded([account()]);
+
+    const row = (await screen.findByText("Unknown Account")).closest("tr")!;
+    expect(row.textContent).toContain(formatNumber(7));
+    expect(row.textContent).not.toContain(formatCurrency(7));
   });
 
   it("pre-fills the default account and passes it to the API", async () => {
