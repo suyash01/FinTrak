@@ -10,7 +10,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import api from "../../api/client";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import { linkTypeBadgeClass } from "./linkHelpers";
 import type { Link, Transaction } from "../../types";
 
@@ -32,6 +33,8 @@ interface ChainGraph {
 
 interface TraceChainModalProps {
   txn: Transaction;
+  /** Resolves a transaction's account to its currency; see LinkResultsList. */
+  currencyOf: (accountId: string) => string;
   onClose: () => void;
 }
 
@@ -40,6 +43,7 @@ interface TraceChainModalProps {
 // chain: transfer -> transfer, purchase -> refund, and so on.
 export default function TraceChainModal({
   txn,
+  currencyOf,
   onClose,
 }: TraceChainModalProps) {
   const [graph, setGraph] = useState<ChainGraph | null>(null);
@@ -176,7 +180,10 @@ export default function TraceChainModal({
                               }`}
                             >
                               {node.txn.type === "debit" ? "−" : "+"}
-                              {formatCurrency(node.txn.amount)}
+                              {formatOne(
+                                node.txn.amount,
+                                currencyOf(node.txn.accountId),
+                              )}
                             </div>
                           </div>
                           {connecting.length > 0 && (

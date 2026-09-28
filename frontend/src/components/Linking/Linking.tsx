@@ -8,8 +8,10 @@ import {
   AlertCircle,
 } from "lucide-react";
 import api from "../../api/client";
-import { formatCurrency, formatDate } from "../../utils/formatters";
-import type { Link } from "../../types";
+import { formatDate } from "../../utils/formatters";
+import { formatOne, useAccountCurrency } from "../../lib/currency";
+import { useDomainData } from "../../context/DomainDataContext";
+import type { Link, Transaction } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -31,6 +33,21 @@ export default function Linking() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [unlinkId, setUnlinkId] = useState<string | null>(null);
   const [bulkUnlink, setBulkUnlink] = useState(false);
+
+  const { accounts } = useDomainData();
+  const currencyOf = useAccountCurrency(accounts);
+
+  // A link's two legs are two transactions in two accounts, and a link between
+  // accounts in different currencies is legal — which is why the money-flow
+  // screen reports a link's own currency per currency rather than a total. So
+  // each leg is labelled with ITS OWN account's currency. Printing one code for
+  // both would be wrong whenever the two differ, and this list used to print
+  // neither: it took formatCurrency's INR default for every leg of every link.
+  const leg = useCallback(
+    (txn?: Transaction) =>
+      formatOne(txn?.amount ?? 0, currencyOf(txn?.accountId ?? "")),
+    [currencyOf],
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -182,7 +199,7 @@ export default function Linking() {
                           {l.fromTxn?.accountName} ·{" "}
                           {formatDate(l.fromTxn?.date)} ·{" "}
                           <span className="text-destructive font-medium">
-                            −{formatCurrency(l.fromTxn?.amount || 0)}
+                            −{leg(l.fromTxn)}
                           </span>
                         </div>
                       </div>
@@ -197,7 +214,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {l.toTxn?.accountName} · {formatDate(l.toTxn?.date)} ·{" "}
                           <span className="text-chart-3 font-medium">
-                            +{formatCurrency(l.toTxn?.amount || 0)}
+                            +{leg(l.toTxn)}
                           </span>
                         </div>
                       </div>
@@ -249,7 +266,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.fromTxn?.date)} ·{" "}
                           <span className="text-destructive font-medium">
-                            −{formatCurrency(l.fromTxn?.amount || 0)}
+                            −{leg(l.fromTxn)}
                           </span>
                         </div>
                       </div>
@@ -264,7 +281,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
                           <span className="text-chart-3 font-medium">
-                            +{formatCurrency(l.toTxn?.amount || 0)}
+                            +{leg(l.toTxn)}
                           </span>
                         </div>
                       </div>
@@ -316,7 +333,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.fromTxn?.date)} ·{" "}
                           <span className="text-destructive font-medium">
-                            −{formatCurrency(l.fromTxn?.amount || 0)}
+                            −{leg(l.fromTxn)}
                           </span>
                         </div>
                       </div>
@@ -331,7 +348,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
                           <span className="text-chart-3 font-medium">
-                            +{formatCurrency(l.toTxn?.amount || 0)}
+                            +{leg(l.toTxn)}
                           </span>
                         </div>
                       </div>
@@ -383,7 +400,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.fromTxn?.date)} ·{" "}
                           <span className="text-destructive font-medium">
-                            −{formatCurrency(l.fromTxn?.amount || 0)}
+                            −{leg(l.fromTxn)}
                           </span>
                         </div>
                       </div>
@@ -398,7 +415,7 @@ export default function Linking() {
                         <div className="text-xs text-muted-foreground mt-1">
                           {formatDate(l.toTxn?.date)} ·{" "}
                           <span className="text-chart-3 font-medium">
-                            +{formatCurrency(l.toTxn?.amount || 0)}
+                            +{leg(l.toTxn)}
                           </span>
                         </div>
                       </div>

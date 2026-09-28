@@ -27,6 +27,11 @@ const results = [
   },
 ] as Transaction[];
 
+// Two accounts in two currencies, so a candidate is labelled with its own
+// account's currency rather than the INR default this list used to take.
+const currencyOf = (accountId: string) =>
+  ({ a1: "INR", a2: "USD" })[accountId as "a1" | "a2"] ?? "";
+
 function renderList(
   overrides: Partial<Parameters<typeof LinkResultsList>[0]> = {},
 ) {
@@ -34,6 +39,7 @@ function renderList(
     loading: false,
     results,
     sourceAccountId: "a1",
+    currencyOf,
     onSelect: vi.fn(),
     ...overrides,
   };
