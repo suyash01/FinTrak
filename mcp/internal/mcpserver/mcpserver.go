@@ -80,7 +80,13 @@ The suggestion tools (validate_transactions, preview_rule, get_transfer_suggesti
 // currencies and which accounts are in play, which is the honest answer to "what
 // does this figure cover?" — inferring coverage from the filters that were
 // passed is how a mixed result gets read as a single-currency one.
-const perCurrencyAmounts = "Every amount is an object keyed by currency code, for example {\"INR\": \"1250.50\"}. " +
+// The example is JSON, and it is unquoted on purpose: money.Amount marshals as a
+// bare number (client/api.Amount.MarshalJSON emits the decimal text with no
+// quotes, and "" as 0), so the values here are numbers a model can compare and
+// do arithmetic on. Quoting them - which an earlier draft of this constant did -
+// tells a model to treat them as strings, and a model that sums "1250.50" and
+// "80.00" as strings concatenates them.
+const perCurrencyAmounts = "Every amount is an object keyed by currency code, for example {\"INR\": 1250.50}. " +
 	"One key means the figure is exact for the whole scope it covers; several keys mean the scope spans currencies " +
 	"and no total is returned, because the API will not add across currencies. A currency with no money in the " +
 	"scope carries no key: an amount with no keys at all is the third state, and the reading is zero rather than a " +

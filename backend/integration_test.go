@@ -21,6 +21,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2291,6 +2292,104 @@ func TestIntegrationAggregatesRefuseToCombineCurrencies(t *testing.T) {
 	require.Empty(t, cycles.Cycles)
 	require.Equal(t, models.NewCurrencyAmounts(), cycles.TotalCircular)
 	require.Equal(t, []string{"INR", "USD"}, cycles.CurrencyScope.Currencies)
+}
+
+// TestIntegrationCurrencyAmountsReachTheWireAsUnquotedNumbers pins the wire
+// form of a CurrencyAmounts, which every other test in this file decodes into a
+// Go map and therefore cannot see. Decoding accepts a quoted number as readily as
+// an unquoted one, so a response that sent {"INR": "5000.00"} would pass
+// TestIntegrationAggregatesRefuseToCombineCurrencies in full - while a model
+// reading the same bytes, or a client doing arithmetic on them, would be told the
+// values are strings. That is not hypothetical: the MCP tool descriptions and the
+// README both showed the quoted form, and openapi.yaml said `type: number`. Only
+// one of those three was right, and the wire was the arbiter.
+//
+// So this asserts against the bytes. money.Amount.MarshalJSON returns the decimal
+// text with no quotes, so the values are bare JSON numbers in major units, and
+// the empty map is {} - both of which the assertions below check literally, and
+// then a decoder walk that fails on any *string* anywhere in the body which
+// parses as a decimal, so a number sent as text cannot come back through a field
+// this list does not name.
+func TestIntegrationCurrencyAmountsReachTheWireAsUnquotedNumbers(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("wireform@example.com")
+
+	card := a.createAccountIn("Wire Card", "credit_card", "INR", billingDayPtr(15))
+	// One currency that spent and one that only spent, so both the empty-map case
+	// and the two-key case are in the bodies below.
+	other := a.createAccountIn("Quiet Bank", "bank", "USD", nil)
+	a.createTransaction(card.ID, nil, "2024-06-10", "Spend", 250.75, "debit")
+	a.createTransaction(other.ID, nil, "2024-06-11", "Dollar spend", 40, "debit")
+
+	const window = "dateFrom=2024-06-01&dateTo=2024-06-30"
+	for _, path := range []string{
+		"/api/v1/dashboard/summary?" + window + "&accountId=" + card.ID.String(),
+		"/api/v1/dashboard/money-flow?" + window,
+		"/api/v1/dashboard/money-flow/timeline?" + window,
+		"/api/v1/dashboard/cash-flow-calendar?" + window + "&accountId=" + card.ID.String(),
+		"/api/v1/links/cycles?" + window,
+	} {
+		status, body := a.request(http.MethodGet, path, nil)
+		require.Equal(t, http.StatusOK, status, "%s -> %s", path, body)
+
+		// The literal form, unquoted and in major units. 250.75 is the point: a
+		// float64 through the map would come back 250.75 and a minor-unit integer
+		// would come back 25075, and only the first is money in the account's own
+		// currency as a reader would count it.
+		require.Containsf(t, string(body), `"INR":250.75`,
+			"%s: the amount is not an unquoted number in major units", path)
+		require.NotContainsf(t, string(body), `"250.75"`,
+			"%s: a number reached the wire as a string", path)
+
+		// The empty map is {} where there was nothing, which is the other half of
+		// the same claim: this is an object keyed by currency, not a number and not
+		// a null. (The card spent and did not earn, so its income is the empty one.)
+		require.Containsf(t, string(body), `:{}`,
+			"%s: no empty amount object anywhere, so nothing here proves the map shape", path)
+
+		for _, s := range numericStringsIn(t, body) {
+			require.Failf(t, "a number reached the wire as a string",
+				"%s contains the string %q, which parses as a decimal", path, s)
+		}
+	}
+}
+
+// numericStringsIn walks a body with UseNumber and returns every string value
+// that parses as a decimal number. It is deliberately not limited to the amount
+// fields: what the wire form has to guarantee is that these numbers are numbers
+// everywhere, and a field this suite has never heard of is the one that would
+// reintroduce the quoted form.
+func numericStringsIn(t *testing.T, body []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// UseNumber is what separates the two: with it a JSON number decodes to
+	// json.Number, so the string case below can only be reached by a value that
+	// really was quoted in the response.
+	dec.UseNumber()
+	var doc any
+	require.NoError(t, dec.Decode(&doc))
+
+	var found []string
+	var walk func(node any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		case string:
+			if _, err := strconv.ParseFloat(v, 64); err == nil {
+				found = append(found, v)
+			}
+		}
+	}
+	walk(doc)
+	sort.Strings(found)
+	return found
 }
 
 // scopeWant is one account's expected contribution to a currencyScope: what it

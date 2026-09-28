@@ -5985,14 +5985,20 @@ components:
     CurrencyAmounts:
       type: object
       description: >-
-        One aggregate's value, keyed by the currency code (ISO 4217) of each
-        account that contributed to it. One key means the value is exact for the
-        whole scope it covers; more than one means the scope spans currencies and
-        no total exists, so a consumer must either choose a currency or say it
-        cannot add them. An absent key reads as zero. Subtracting two of these is
-        only defined within one currency, so where a difference is meaningful the
-        server computes and sends it (as `DashboardSummary.totalNet`) rather than
-        leaving a client to subtract the two maps.
+        One aggregate's value, keyed by the currency code of each account that
+        contributed to it. The key is whatever the account's own `currency`
+        column holds, upper-cased, defaulting to `INR`; nothing checks that those
+        three characters name a real currency, so a client must not validate the
+        code against a list of ISO 4217 codes and reject a response over it. One
+        key means the value is exact for the whole scope it covers; more than one
+        means the scope spans currencies and no total exists, so a consumer must
+        either choose a currency or say it cannot add them. An absent key reads as
+        zero. Every value is a JSON **number** in decimal major units - the wire
+        form is `{"INR": 5000.00}`, unquoted - never a string. Subtracting two of
+        these is only defined within one currency, so where a difference is
+        meaningful the server computes and sends it (as
+        `DashboardSummary.totalNet`) rather than leaving a client to subtract the
+        two maps.
       additionalProperties:
         type: number
 
