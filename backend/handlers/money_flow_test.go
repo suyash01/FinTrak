@@ -138,7 +138,7 @@ func findFlowEdge(edges []models.MoneyFlowEdge, source, target string) *models.M
 }
 
 func TestGetMoneyFlow(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)
@@ -225,7 +225,7 @@ func TestGetMoneyFlow(t *testing.T) {
 // draws, so every node total and every edge width carried that one wrong number.
 // The response has to refuse the total rather than report it.
 func TestGetMoneyFlowKeepsCurrenciesApartInTheGraph(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestBuildMoneyFlowGraphCarriesACrossCurrencyLinkInTheAmountsCurrency(t *tes
 // statement, it does not execute it. Drop the predicate from any one stage and
 // its expectation stops matching, the handler answers 500, and this fails.
 func TestGetMoneyFlowNarrowsEveryStageToTheCurrencyFilter(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestGetMoneyFlowRejectsMalformedCurrency(t *testing.T) {
 }
 
 func TestGetMoneyFlowWithFilters(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)
@@ -538,7 +538,7 @@ func TestGetMoneyFlowWithFilters(t *testing.T) {
 // unfiltered or the currency-only expectations, and getting it wrong binds a
 // different argument order with no error anywhere, so it is pinned here.
 func TestGetMoneyFlowNarrowsEveryStageWithEveryFilterTogether(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)
@@ -601,7 +601,7 @@ func TestGetMoneyFlowInvalidAccount(t *testing.T) {
 }
 
 func TestGetMoneyFlowQueryError(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)
@@ -621,7 +621,7 @@ func TestGetMoneyFlowQueryError(t *testing.T) {
 // The stage queries run after the scope query, so a failure in one of them is
 // still a 500 rather than a partial graph.
 func TestGetMoneyFlowStageQueryError(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)
@@ -780,7 +780,7 @@ func TestAccountFlowEdgesKeepsReciprocalPairsInDifferentCurrenciesApart(t *testi
 // `cycles` the field is an empty slice, never a null, so a client reading it as
 // "nothing was hidden" is never misled by an absent field.
 func TestGetMoneyFlowReportsNoSuppressedCyclesAsAnEmptyList(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 	srv := newTestServer(mock)

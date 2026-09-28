@@ -79,7 +79,7 @@ func expectTimelineAccountCurrency(mock pgxmock.PgxPoolIface, acctID, userID uui
 }
 
 func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -141,7 +141,7 @@ func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
 // currency is still meaningful, so the net survives - per currency, and with
 // nothing anywhere in the response taken across the two.
 func TestGetMoneyFlowTimelineRefusesACrossCurrencyNet(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -210,7 +210,7 @@ func TestGetMoneyFlowTimelineRefusesACrossCurrencyNet(t *testing.T) {
 // compares arguments with reflect.DeepEqual, so a bare COALESCE(a.currency, ...)
 // in the projection would bind the same "USD" and pass every loose expectation.
 func TestGetMoneyFlowTimelinePinsTheProjectedCurrency(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -255,7 +255,7 @@ func TestGetMoneyFlowTimelinePinsTheProjectedCurrency(t *testing.T) {
 // pgxmock compares the arguments, so pinning the placeholder is the only thing
 // that catches it.
 func TestGetMoneyFlowTimelineMonthlyWithAccountAndCurrency(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -293,7 +293,7 @@ func TestGetMoneyFlowTimelineMonthlyWithAccountAndCurrency(t *testing.T) {
 }
 
 func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -368,7 +368,7 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 // the predicate sits at a fixed fifth placeholder. Nothing but a test would notice
 // if that placeholder and the argument appended after it drifted apart.
 func TestGetMoneyFlowTimelineBillingCycleNarrowsToTheCurrencyFilter(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -423,7 +423,7 @@ func TestGetMoneyFlowTimelineBillingCycleNarrowsToTheCurrencyFilter(t *testing.T
 // answers 200 with an empty list, and the empty currencyScope is what
 // distinguishes it from an account with no statement periods at all.
 func TestGetMoneyFlowTimelineBillingCycleCurrencyMismatchIsEmpty(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -480,7 +480,7 @@ func TestGetMoneyFlowTimelineBillingCycleCurrencyMismatchIsEmpty(t *testing.T) {
 // It is still an object with two empty arrays: a null there would tell a client
 // the currencies are unknown where the truth is that there are none.
 func TestGetMoneyFlowTimelineBillingCycleNoCycles(t *testing.T) {
-	mock, err := pgxmock.NewPool()
+	mock, err := newGuardedPool(t)
 	require.NoError(t, err)
 	defer mock.Close()
 
@@ -523,7 +523,7 @@ func TestTimelineFoldsPropagateARowError(t *testing.T) {
 	cycleEnd := time.Date(2024, 6, 5, 0, 0, 0, 0, time.UTC)
 
 	t.Run("monthly", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -569,7 +569,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("begin error", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -584,7 +584,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("monthly query error", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -604,7 +604,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("currency scope error", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -624,7 +624,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	// so the response is withheld rather than sent from a transaction Postgres
 	// has already discarded.
 	t.Run("commit error", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -659,7 +659,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("billing cycle without billing day", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -676,7 +676,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("account not found", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -698,7 +698,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	// and the scope below have nothing left to describe, and inventing a currency
 	// to key them with is the one thing this branch must never do.
 	t.Run("account deleted between the two reads", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 
@@ -726,7 +726,7 @@ func TestGetMoneyFlowTimelineErrors(t *testing.T) {
 	})
 
 	t.Run("account currency read fails", func(t *testing.T) {
-		mock, err := pgxmock.NewPool()
+		mock, err := newGuardedPool(t)
 		require.NoError(t, err)
 		defer mock.Close()
 

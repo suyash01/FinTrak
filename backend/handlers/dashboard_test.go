@@ -168,11 +168,19 @@ func TestNoAdjacentPlaceholdersRejectsADoubledPlaceholder(t *testing.T) {
 // doubled placeholder is refused at the boundary the wiring is supposed to
 // affect.
 //
-// It also states the guard's reach: the option is applied at exactly two
-// NewPool calls, both in this file, both covering the summary's currency-filter
-// fragment. A handler that grows its own currency fragment gets no protection
-// from this; extending it means adding the option there too, and this test is
-// where that shows up as something to do.
+// It also used to state the guard's reach, which was the problem this file's
+// constructor existed to work around: the option was applied at exactly two
+// NewPool calls, both in this file, both covering only the summary's
+// currency-filter fragment. The other five currency fragments were unguarded, so
+// a handler that grew one got no protection and nothing failed.
+//
+// That is fixed. The guard now reaches every currency fragment — the money-flow
+// link queries, the timeline, link_cycles and scopeSQL's own predicate — because
+// their tests build pools through the shared newGuardedPool in
+// testhelpers_test.go. What remains true, and is the reason the next step is a
+// project-wide wrapper rather than another file, is that the guard is opt-in at
+// the call site: a NEW test file using a bare pgxmock.NewPool() would be
+// unguarded, and only a convention says otherwise.
 func TestGuardedPoolRejectsADoubledPlaceholder(t *testing.T) {
 	const malformed = "SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2 $2"
 	const wellFormed = "SELECT COUNT(*) FROM transactions t WHERE t.user_id = $1 AND COALESCE(NULLIF(a.currency, ''), 'INR') = $2"
@@ -217,9 +225,13 @@ func TestGuardedPoolRejectsADoubledPlaceholder(t *testing.T) {
 // consulted when one is. Routing all three through here means removing the option
 // from any of them is either a compile error or a failure of
 // TestGuardedPoolRejectsADoubledPlaceholder, which goes through this too.
+//
+// It now delegates to newGuardedPool, which is the shared form: the guard covers
+// every currency fragment, so the summary's is no longer a special case with its
+// own constructor.
 func newGuardedDashboardPool(t *testing.T) pgxmock.PgxPoolIface {
 	t.Helper()
-	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherFunc(noAdjacentPlaceholders)))
+	mock, err := newGuardedPool(t)
 	if err != nil {
 		t.Fatal(err)
 	}
