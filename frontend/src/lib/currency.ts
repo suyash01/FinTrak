@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatCurrency, formatNumber } from "@/utils/formatters";
-import type { CurrencyAmounts, CurrencyScope, ScopedAccount } from "@/types";
+import type {
+  Account,
+  CurrencyAmounts,
+  CurrencyScope,
+  ScopedAccount,
+} from "@/types";
 
 /**
  * formatOne renders a single currency's amount, and is the only place in the
@@ -277,4 +282,37 @@ export function useCurrencyScope(
   );
 
   return { code, codes, setCode: setChosen, scoped, others };
+}
+
+/**
+ * useAccountCurrency resolves an account id to that account's own currency, for
+ * the surfaces that render a bare per-transaction figure.
+ *
+ * A transaction carries no currency — its account's is the one the amount is
+ * denominated in — so every list of them has to make this hop before it can
+ * format anything. Doing it per row with `accounts.find(...)` is the obvious
+ * version and is O(n) per cell; this is the same Map the dashboard's recent
+ * table builds, hoisted so every surface does it once.
+ *
+ * It deliberately returns the CODE and not a formatter, so formatOne stays the
+ * one place a user-typed code reaches Intl. A second formatting entry point
+ * would be a second set of rules about unresolvable codes and empty ones, and
+ * the bug this exists to fix began as exactly that kind of drift.
+ *
+ * An unknown id returns "" rather than a default. formatOne renders "" as a
+ * plain grouped number naming no currency, which is the honest answer: an amount
+ * whose currency is not known must not be labelled with one it may not be. The
+ * alternative — falling back to "INR" — is the defect itself.
+ */
+export function useAccountCurrency(
+  accounts: Account[],
+): (accountId: string) => string {
+  const byAccount = useMemo(
+    () => new Map(accounts.map((a) => [a.id, a.currency])),
+    [accounts],
+  );
+  return useCallback(
+    (accountId: string) => byAccount.get(accountId) ?? "",
+    [byAccount],
+  );
 }

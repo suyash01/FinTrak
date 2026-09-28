@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { formatCurrency } from "../../utils/formatters";
+import { formatOne } from "../../lib/currency";
 import type { Account } from "../../types";
 import AccountTypeIcon from "./AccountTypeIcon";
 import { balanceLabel, ordinal } from "./accountHelpers";
@@ -73,7 +73,13 @@ export default function AccountRow({
       </TableCell>
       <TableCell className={`${cellPad} text-right whitespace-nowrap`}>
         <div className="text-sm font-semibold text-foreground font-mono">
-          {formatCurrency(acc.balance, acc.currency)}
+          {/* formatOne, not formatCurrency: acc.currency is three letters a user
+              typed with nothing checking they name a real currency, and Intl
+              throws a RangeError on a code it cannot resolve — which would take
+              the whole accounts table down over a display detail. This site
+              already passed the right currency, so this is about the throw, not
+              the label. */}
+          {formatOne(acc.balance, acc.currency)}
         </div>
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
           {balanceLabel(acc)}

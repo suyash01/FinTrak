@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../../api/client";
-import { formatCurrency, formatDate } from "../../utils/formatters";
+import { formatDate } from "../../utils/formatters";
+import { formatOne, useAccountCurrency } from "../../lib/currency";
 import { todayLocalISO } from "../../lib/dates";
 import { useDomainData } from "../../context/DomainDataContext";
 import { useSettings } from "../../context/SettingsContext";
@@ -152,6 +153,22 @@ export default function LoanScheduleDialog({
 }: LoanScheduleDialogProps) {
   const { compactLayout } = useSettings();
   const { accounts } = useDomainData();
+  const currencyOf = useAccountCurrency(accounts);
+  // Every figure on this screen except the balance-transfer rows belongs to THIS
+  // account, so one formatter carries all of them. It used to be formatCurrency,
+  // which defaults to INR — so a USD loan's amortization table, EMI, disbursement
+  // and every installment were rendered in rupees, on the one screen where the
+  // numbers are most likely to be acted upon.
+  //
+  // formatOne rather than formatCurrency for the usual reason: the code is one the
+  // user typed on the account, and formatOne is the only sanctioned caller in that
+  // position — it cannot throw on a code Intl cannot resolve and falls back to an
+  // unnamed number rather than inventing an INR. A NULL currency therefore reads
+  // as a bare figure, which is honest.
+  const money = useCallback(
+    (amount: number) => formatOne(amount, account.currency),
+    [account.currency],
+  );
   const [detail, setDetail] = useState<LoanScheduleDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -166,6 +183,35 @@ export default function LoanScheduleDialog({
   // transfer reverts a settlement. Both are irreversible.
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [undoTransferId, setUndoTransferId] = useState<string | null>(null);
+
+  // transferMoney formats a balance transfer's figures, which are the one thing
+  // on this screen NOT denominated in the account's own currency: a transfer moves
+  // a payoff from one loan to another, and the backend does not require the two
+  // to share a currency (handlers/loan.go's TransferLoanBalance checks the target
+  // is a different account and has a schedule, and nothing else).
+  //
+  // So the row names the COUNTERPARTY's currency, which is the one the figure
+  // moved into, rather than this account's — and when the two agree it is the
+  // same code either way, so the common case is unchanged. Naming the
+  // counterparty is the honest choice for a cross-currency transfer: the
+  // alternative, printing this account's code, is how a USD amount ends up
+  // wearing a rupee symbol, which is the defect this whole change is about.
+  //
+  // The underlying gap is a missing backend check rather than a display one, and
+  // it is recorded on #49 rather than fixed here: refusing cross-currency
+  // transfers is a product decision, not a formatting one.
+  const transferMoney = useCallback(
+    (
+      amount: number,
+      fromLoanAccountId: string,
+      toLoanAccountId: string,
+    ) =>
+      formatOne(
+        amount,
+        currencyOf(fromLoanAccountId === account.id ? toLoanAccountId : fromLoanAccountId),
+      ),
+    [account.id, currencyOf],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -495,22 +541,22 @@ export default function LoanScheduleDialog({
         ) : (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-              <SummaryStat label="EMI" value={formatCurrency(detail?.emi ?? 0)} />
+              <SummaryStat label="EMI" value={money(detail?.emi ?? 0)} />
               <SummaryStat
                 label="Processing fee"
-                value={formatCurrency(schedule.processingFee)}
+                value={money(schedule.processingFee)}
               />
               <SummaryStat
                 label="Outstanding principal"
-                value={formatCurrency(detail?.outstandingPrincipal ?? 0)}
+                value={money(detail?.outstandingPrincipal ?? 0)}
               />
               <SummaryStat
                 label="Interest paid"
-                value={formatCurrency(detail?.interestPaid ?? 0)}
+                value={money(detail?.interestPaid ?? 0)}
               />
               <SummaryStat
                 label="Total interest"
-                value={formatCurrency(detail?.totalInterest ?? 0)}
+                value={money(detail?.totalInterest ?? 0)}
               />
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -518,12 +564,16 @@ export default function LoanScheduleDialog({
                 {detail?.paidInstallments ?? 0} of {schedule.tenureMonths}{" "}
                 installments paid
               </span>
-              <span>Total payable {formatCurrency(detail?.totalPayable ?? 0)}</span>
+              <span>Total payable {money(detail?.totalPayable ?? 0)}</span>
               {detail?.settledOn ? (
                 <span>
                   Settled by balance transfer on {formatDate(detail.settledOn)}
                   {settledTransfer
-                    ? ` (${formatCurrency(settledTransfer.amount)})`
+                    ? ` (${transferMoney(
+                        settledTransfer.amount,
+                        settledTransfer.fromLoanAccountId,
+                        settledTransfer.toLoanAccountId,
+                      )})`
                     : ""}
                 </span>
               ) : detail?.nextDueDate ? (
@@ -541,19 +591,19 @@ export default function LoanScheduleDialog({
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <SummaryStat
                     label="Sanctioned"
-                    value={formatCurrency(disbursement.sanctioned)}
+                    value={money(disbursement.sanctioned)}
                   />
                   <SummaryStat
                     label="Processing fee"
-                    value={formatCurrency(disbursement.processingFee)}
+                    value={money(disbursement.processingFee)}
                   />
                   <SummaryStat
                     label="Paid out"
-                    value={formatCurrency(disbursement.paidOut)}
+                    value={money(disbursement.paidOut)}
                   />
                   <SummaryStat
                     label="Net released"
-                    value={formatCurrency(disbursement.net)}
+                    value={money(disbursement.net)}
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border px-3 py-2 text-xs">
@@ -561,7 +611,7 @@ export default function LoanScheduleDialog({
                     <>
                       <span className="text-muted-foreground">Bank credit</span>
                       <span className="text-sm font-medium text-foreground">
-                        {formatCurrency(disbursement.creditAmount ?? 0)}
+                        {money(disbursement.creditAmount ?? 0)}
                       </span>
                       {disbursement.verified ? (
                         <Badge variant="secondary" className="text-primary">
@@ -571,7 +621,7 @@ export default function LoanScheduleDialog({
                       ) : (
                         <span className="text-destructive">
                           Off by{" "}
-                          {formatCurrency(Math.abs(disbursement.difference))}
+                          {money(Math.abs(disbursement.difference))}
                         </span>
                       )}
                       <Button
@@ -617,7 +667,7 @@ export default function LoanScheduleDialog({
                               value={t.id}
                               disabled={Boolean(t.loanAccountId)}
                             >
-                              {formatCurrency(t.amount)} · {formatDate(t.date)} ·{" "}
+                              {money(t.amount)} · {formatDate(t.date)} ·{" "}
                               {t.accountName}
                               {t.loanAccountId
                                 ? ` — already linked to ${t.loanAccountName ?? "another loan"}`
@@ -628,7 +678,7 @@ export default function LoanScheduleDialog({
                       </Select>
                       {!loadingCredits && credits.length === 0 && creditRange && (
                         <span className="text-muted-foreground">
-                          No credit of {formatCurrency(disbursement.net)} between{" "}
+                          No credit of {money(disbursement.net)} between{" "}
                           {formatDate(creditRange.dateFrom)} and{" "}
                           {formatDate(creditRange.dateTo)}. Import the bank
                           statement covering the disbursement, or set this
@@ -684,17 +734,17 @@ export default function LoanScheduleDialog({
                         <TableCell
                           className={cn(cellPad, "text-right", struck)}
                         >
-                          {formatCurrency(e.amount)}
+                          {money(e.amount)}
                         </TableCell>
                         <TableCell
                           className={cn(cellPad, "text-right", struck)}
                         >
-                          {formatCurrency(e.principal)}
+                          {money(e.principal)}
                         </TableCell>
                         <TableCell
                           className={cn(cellPad, "text-right", struck)}
                         >
-                          {formatCurrency(e.interest)}
+                          {money(e.interest)}
                         </TableCell>
                         <TableCell
                           className={cn(
@@ -703,7 +753,7 @@ export default function LoanScheduleDialog({
                             dim ? struck : "text-muted-foreground",
                           )}
                         >
-                          {formatCurrency(e.balance)}
+                          {money(e.balance)}
                         </TableCell>
                         <TableCell className={cellPad}>
                           <div className="flex flex-wrap items-center gap-1">
@@ -768,6 +818,14 @@ export default function LoanScheduleDialog({
                     const counterparty = outgoing
                       ? t.toLoanAccountName
                       : t.fromLoanAccountName;
+                    // The currency the figures moved INTO, so the row is labelled
+                    // with the account the money is now in. Identical to this
+                    // account's own code whenever the two loans agree.
+                    const moved = transferMoney(
+                      t.amount,
+                      t.fromLoanAccountId,
+                      t.toLoanAccountId,
+                    );
                     return (
                       <div
                         key={t.id}
@@ -785,12 +843,20 @@ export default function LoanScheduleDialog({
                           </span>
                         </div>
                         <div className="flex shrink-0 items-center gap-3">
-                          <span className="text-sm font-medium">
-                            {formatCurrency(t.amount)}
-                          </span>
+                          <span className="text-sm font-medium">{moved}</span>
                           <span className="text-xs text-muted-foreground">
-                            {formatCurrency(t.principal)} principal ·{" "}
-                            {formatCurrency(t.accruedInterest)} accrued interest
+                            {transferMoney(
+                              t.principal,
+                              t.fromLoanAccountId,
+                              t.toLoanAccountId,
+                            )}{" "}
+                            principal ·{" "}
+                            {transferMoney(
+                              t.accruedInterest,
+                              t.fromLoanAccountId,
+                              t.toLoanAccountId,
+                            )}{" "}
+                            accrued interest
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {formatDate(t.transferDate)}
@@ -918,7 +984,7 @@ export default function LoanScheduleDialog({
             <AlertDialogTitle>Undo this balance transfer?</AlertDialogTitle>
             <AlertDialogDescription>
               {undoTransfer
-                ? `This reverts the ${formatCurrency(undoTransfer.amount)} settlement of ${formatDate(undoTransfer.transferDate)} and restores both loans' schedules to what they were. This action cannot be undone.`
+                ? `This reverts the ${money(undoTransfer.amount)} settlement of ${formatDate(undoTransfer.transferDate)} and restores both loans' schedules to what they were. This action cannot be undone.`
                 : "This reverts the settlement and restores both loans' schedules. This action cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -960,6 +1026,13 @@ function TransferBalanceDialog({
   onTransferred,
 }: TransferBalanceDialogProps) {
   const { accounts } = useDomainData();
+  // The quote is the SOURCE loan's payoff, so it is in the source account's
+  // currency — the same reason the main dialog formats its figures that way, and
+  // the same bug when it did not.
+  const money = useCallback(
+    (amount: number) => formatOne(amount, account.currency),
+    [account.currency],
+  );
   const [form, setForm] = useState<TransferForm>(() => ({
     targetId: "",
     transferDate: todayLocalISO(),
@@ -1170,20 +1243,20 @@ function TransferBalanceDialog({
                 <div className="grid grid-cols-3 gap-3">
                   <SummaryStat
                     label="Principal"
-                    value={formatCurrency(payoff.outstandingPrincipal)}
+                    value={money(payoff.outstandingPrincipal)}
                   />
                   <SummaryStat
                     label="Accrued interest"
-                    value={formatCurrency(payoff.accruedInterest)}
+                    value={money(payoff.accruedInterest)}
                   />
                   <SummaryStat
                     label="Payoff"
-                    value={formatCurrency(payoff.payoff)}
+                    value={money(payoff.payoff)}
                   />
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {formatCurrency(payoff.payoff)} moves: the principal plus{" "}
-                  {formatCurrency(payoff.accruedInterest)} of interest accrued
+                  {money(payoff.payoff)} moves: the principal plus{" "}
+                  {money(payoff.accruedInterest)} of interest accrued
                   over {payoff.days} {payoff.days === 1 ? "day" : "days"} from{" "}
                   {formatDate(payoff.fromDate)} to {formatDate(payoff.asOf)}.
                 </p>
@@ -1227,12 +1300,12 @@ function TransferBalanceDialog({
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <SummaryStat
                     label="Target net disbursement"
-                    value={formatCurrency(targetDetail.disbursement.net)}
+                    value={money(targetDetail.disbursement.net)}
                   />
                   {payoff && (
                     <SummaryStat
                       label="Left after takeover"
-                      value={formatCurrency(
+                      value={money(
                         targetDetail.disbursement.net - payoff.payoff,
                       )}
                     />
