@@ -6061,6 +6061,55 @@ components:
             same reason as `income`: one key, or {} when the account only
             received.
 
+    AccountBalance:
+      type: object
+      description: >-
+        One account's balance as of the date in the response's `asOf` field, as
+        sent on `DashboardSummary.balances`. An account is listed because the
+        user has it, not because it held money on that date, so `balance` is {}
+        far more often than a consumer expects - and that is the distinction the
+        list exists to carry: "no accounts" and "no account held money" are
+        different answers and only an empty list says the first.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The account's id, the same id `currencyScope.accounts` carries.
+        name:
+          type: string
+          description: The account's display name.
+        currency:
+          type: string
+          description: >-
+            The account's own currency, and the single key its balance below is
+            held under. An account holds one currency, so a client that wanted a
+            bare number here has to look at the map rather than at this field.
+        balance:
+          type: object
+          description: >-
+            The account's balance on that date, as an `additionalProperties` map
+            keyed by currency code - `{"INR": 5000.00}` - and **never a single
+            number**. An account carries a currency, so no scalar can represent
+            it, and a response can span several: a client must never add across
+            the keys or present one currency's figure as the whole balance. Each
+            key is the account's own `currency`, so this map holds at most one
+            key per account; it is a map rather than a number for the reason the
+            rest of the response's money is, and not because one account can
+            hold two currencies.
+
+            A **zero balance adds no key**, so an account that held nothing at
+            that date arrives here as `{}` with its `currency` still named. An
+            absent key reads as zero, and a consumer that counts the keys to
+            decide how many accounts held money gets the right answer.
+
+            For a loan account this is **outstanding principal** and reads
+            negative, because a payment on a loan reduces what is owed. It is
+            derived from the transactions attached to the loan rather than from
+            the loan account's own ledger, which is empty - the same figure
+            `/accounts` reports for that account.
+          additionalProperties:
+            type: number
+
     CategorySpend:
       type: object
       properties:
@@ -6168,6 +6217,47 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BillingCycleTrendItem"
+        asOf:
+          type: string
+          format: date
+          description: >-
+            The day `balances` below were computed for, echoed so a client
+            holding a cached response can tell what it is looking at. It is a
+            stored day string rather than a date-time on purpose: a timestamp
+            would put a UTC midnight on the wire, which a client parsing it as a
+            local day renders as the day before.
+
+            The instant is the ledger at the **end** of that day, so a
+            transaction dated the asOf day itself is counted, and it is clamped
+            to the response's own window end - a request whose window closes
+            before the requested day is answered for the window's end, which is
+            the date named here rather than the one originally asked for.
+
+            **Present only when the request asked for one.** A response with no
+            `asOf` carries no `asOf` and no `balances`, so it is unchanged from
+            before these fields existed.
+
+            This is a response field and is unrelated to `LoanPayoff.asOf`, which
+            shares the name by coincidence of vocabulary - a payoff date is a
+            real timestamp and a summary never carries a payoff quote, so the
+            two never appear in one payload.
+        balances:
+          type: array
+          description: >-
+            Every one of the user's accounts with its balance on the date in
+            `asOf`, **including the accounts holding nothing at that date** -
+            an account is listed because it exists, so an empty list means the
+            user has no accounts and never means they had no money. Never null
+            when present: a user with no accounts gets `[]`.
+
+            Present only when the request asked for an instant; a response with
+            no `asOf` has neither field. This is a response field and has no
+            `currency` narrowing of its own - the `currency` parameter narrows
+            the totals and the breakdowns, and every account is still listed
+            here, so a client that wants one currency's balances must select
+            them rather than rely on the list being pre-filtered.
+          items:
+            $ref: "#/components/schemas/AccountBalance"
 
     MoneyFlowNode:
       type: object
