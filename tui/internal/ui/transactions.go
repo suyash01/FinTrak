@@ -489,6 +489,10 @@ func (t *Transactions) cycleSort() {
 func (t *Transactions) openFilterForm() {
 	ref := t.ctx.Ref
 	filter := t.filter
+	// The series picker is the one filter whose options come from optional
+	// reference data, so it can legitimately be empty; RecurringSeriesField says
+	// which of the two reasons applies.
+	series := ref.RecurringSeriesField(filter.RecurringID)
 	fields := []Field{
 		{Label: "Search", Kind: FieldText, Value: filter.Search, Width: 40, Help: "description, notes, payee or tags"},
 		SelectField("Account", filter.AccountID, ref.AccountOptions(), false),
@@ -499,6 +503,7 @@ func (t *Transactions) openFilterForm() {
 		SelectField("Linked", linkedState(filter.Linked), []Option{{Value: "yes", Label: "linked"}, {Value: "no", Label: "unlinked"}}, false),
 		SelectField("Loan", filter.LoanAccountID, ref.LoanAccountOptions(), false),
 		SelectField("Recurring", filter.Recurring, []Option{{Value: "linked", Label: "linked"}, {Value: "unlinked", Label: "unlinked"}}, false),
+		series,
 		// Uncategorized overlaps the "Uncategorized" entry in the Category select
 		// above, and deliberately so: the Category sentinel and this flag compile to
 		// the same clause server-side (transaction.go's categoryId "uncategorized"
@@ -532,6 +537,7 @@ func (t *Transactions) openFilterForm() {
 			Linked:          parseLinked(f.Value("Linked")),
 			LoanAccountID:   f.Value("Loan"),
 			Recurring:       f.Value("Recurring"),
+			RecurringID:     f.Value("Series"),
 			Uncategorized:   f.BoolValue("Uncategorized"),
 			ExcludeAttached: f.BoolValue("Exclude attached"),
 			SortBy:          filter.SortBy,
@@ -893,6 +899,9 @@ func (t *Transactions) headerLine(width int) string {
 	}
 	if t.filter.Recurring != "" {
 		bits = append(bits, "recurring="+t.filter.Recurring)
+	}
+	if t.filter.RecurringID != "" {
+		bits = append(bits, "series="+t.ctx.Ref.RecurringName(t.filter.RecurringID))
 	}
 	if t.filter.Uncategorized {
 		bits = append(bits, "uncategorized")
