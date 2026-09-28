@@ -401,8 +401,9 @@ describe("Dashboard", () => {
       await screen.findByText("Recurring & Subscriptions"),
     ).toBeInTheDocument();
     expect(screen.getByText("Netflix")).toBeInTheDocument();
-    // The recurring card is per-account and still renders a transaction-style
-    // amount; it is not one of the reporting aggregates this change scopes.
+    // The upcoming list below the card is one account's own rows, so those still
+    // render a transaction-style amount; the card's three headline figures are
+    // per currency, which is what the other test on this file pins.
     expect(
       screen.getAllByText(formatCurrency(1599)).length,
     ).toBeGreaterThanOrEqual(1);
@@ -416,6 +417,76 @@ describe("Dashboard", () => {
     renderLoaded([account()]);
     await screen.findByText("Total Income");
     expect(screen.queryByText("Recurring & Subscriptions")).toBeNull();
+  });
+
+  // The dashboard's recurring card forecast over every account the page is
+  // showing, and `monthlyAmount` is a bare number, so a rupee subscription and a
+  // dollar one were added together and the result printed as money. The
+  // dashboard is the surface that already refuses this arithmetic everywhere
+  // else, so the one place that still did it was the contradiction — and the
+  // branch's claim that the SPA no longer adds across currencies was false for
+  // this card and for the Recurring page it duplicates.
+  it("refuses a recurring total that spans two currencies", async () => {
+    // Neither account is the default, so the page shows all of them and the card
+    // is not narrowed to one account's currency.
+    apiMock.getRecurringSeries.mockResolvedValue({
+      data: [
+        {
+          id: "r1",
+          accountId: "a1",
+          name: "Netflix",
+          description: "",
+          amount: 1599,
+          type: "debit",
+          frequency: "monthly",
+          interval: 1,
+          startDate: "2024-01-01",
+          endDate: null,
+          categoryId: null,
+          payeeId: null,
+          active: true,
+          notes: "",
+          accountName: "Checking",
+          monthlyAmount: 1599,
+          attachedCount: 0,
+          nextDueDate: "2099-01-15",
+        },
+        {
+          id: "r2",
+          accountId: "a2",
+          name: "Gym",
+          description: "",
+          amount: 40,
+          type: "debit",
+          frequency: "monthly",
+          interval: 1,
+          startDate: "2024-01-01",
+          endDate: null,
+          categoryId: null,
+          payeeId: null,
+          active: true,
+          notes: "",
+          accountName: "Dollars",
+          monthlyAmount: 40,
+          attachedCount: 0,
+          nextDueDate: "2099-02-15",
+        },
+      ] as RecurringSeries[],
+    });
+    renderLoaded([
+      account({ isDefault: false }),
+      account({ id: "a2", name: "Dollars", currency: "USD", isDefault: false }),
+    ]);
+
+    expect(await screen.findByText("Netflix")).toBeInTheDocument();
+    const card = screen.getByText("Monthly recurring expenses").parentElement!;
+    expect(card.textContent).toContain("not combined");
+    expect(card.textContent).toContain(formatOne(1599, "INR"));
+    expect(card.textContent).toContain(formatOne(40, "USD"));
+
+    // The restored sum. Asserting the refusal alone would pass just as well
+    // against a card that printed 1,639 and said "not combined" underneath it.
+    expect(screen.queryByText(formatCurrency(1639))).not.toBeInTheDocument();
   });
 
   it("shows one currency at a time and names the one it is not showing", async () => {

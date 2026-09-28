@@ -38,6 +38,11 @@ import RecurringFormDialog from "./RecurringFormDialog";
 import RecurringDetail from "./RecurringDetail";
 import { useCommandIntent } from "../../lib/useCommandIntent";
 import { formatCurrency, formatDate } from "../../utils/formatters";
+import {
+  foldRecurringMonthly,
+  recurringNetClass,
+  recurringTotalText,
+} from "../../lib/recurringTotals";
 import { toast } from "sonner";
 
 function cadenceLabel(s: RecurringSeries): string {
@@ -81,16 +86,14 @@ export default function Recurring() {
     void load();
   }, [load]);
 
-  const { monthlyExpense, monthlyIncome } = useMemo(() => {
-    let expense = 0;
-    let income = 0;
-    for (const s of series) {
-      if (!s.active) continue;
-      if (s.type === "credit") income += s.monthlyAmount;
-      else expense += s.monthlyAmount;
-    }
-    return { monthlyExpense: expense, monthlyIncome: income };
-  }, [series]);
+  // A series is denominated by the account it bills against, and the page spans
+  // every account the user has — so the fold is per currency, and the three
+  // figures below render the refusal when it holds more than one rather than a
+  // total of rupees and dollars.
+  const totals = useMemo(
+    () => foldRecurringMonthly(series, accounts),
+    [series, accounts],
+  );
 
   const handleDelete = async (id: string) => {
     try {
@@ -138,7 +141,7 @@ export default function Recurring() {
                 Monthly expenses
               </p>
               <p className="text-xl font-semibold text-foreground mt-1">
-                {formatCurrency(monthlyExpense)}
+                {recurringTotalText(totals.expense, totals.unplaced)}
               </p>
             </Card>
             <Card className="p-4">
@@ -146,18 +149,27 @@ export default function Recurring() {
                 Monthly income
               </p>
               <p className="text-xl font-semibold text-foreground mt-1">
-                {formatCurrency(monthlyIncome)}
+                {recurringTotalText(totals.income, totals.unplaced)}
               </p>
             </Card>
             <Card className="p-4">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
                 Net per month
               </p>
-              <p className="text-xl font-semibold text-foreground mt-1">
-                {formatCurrency(monthlyIncome - monthlyExpense)}
+              <p
+                className={`text-xl font-semibold mt-1 ${recurringNetClass(totals.net)}`}
+              >
+                {recurringTotalText(totals.net, totals.unplaced)}
               </p>
             </Card>
           </div>
+        )}
+        {totals.unplaced.length > 0 && (
+          <p className="-mt-3 mb-6 text-[13px] text-muted-foreground">
+            Not counted:{" "}
+            {totals.unplaced.join(", ")} — the account this series bills against
+            has no readable currency.
+          </p>
         )}
 
         <div className="flex justify-end mb-5">

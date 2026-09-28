@@ -28,6 +28,11 @@ import {
   useCurrencyScope,
   type ScopedAmount,
 } from "@/lib/currency";
+import {
+  foldRecurringMonthly,
+  recurringNetClass,
+  recurringTotalText,
+} from "@/lib/recurringTotals";
 import type { CurrencyAmounts } from "@/types";
 import AccountSelect from "@/components/AccountSelect/AccountSelect";
 import MultiCurrencyNotice from "@/components/MultiCurrencyNotice/MultiCurrencyNotice";
@@ -702,6 +707,7 @@ function RecurringSection({
   accountId: string;
 }) {
   const { compactLayout } = useSettings();
+  const { accounts } = useDomainData();
 
   // Respect the dashboard's account filter so the card stays consistent with
   // the rest of the page.
@@ -711,12 +717,10 @@ function RecurringSection({
   if (relevant.length === 0) return null;
 
   const active = relevant.filter((s) => s.active);
-  const monthlyExpense = active
-    .filter((s) => s.type === "debit")
-    .reduce((sum, s) => sum + s.monthlyAmount, 0);
-  const monthlyIncome = active
-    .filter((s) => s.type === "credit")
-    .reduce((sum, s) => sum + s.monthlyAmount, 0);
+  // Folded per currency, like the figures above them: a forecast that spans a
+  // rupee account and a dollar one has no monthly total, and the net is a
+  // difference inside one currency rather than a subtraction of two sums.
+  const totals = foldRecurringMonthly(active, accounts);
   const upcoming = active
     .filter((s) => s.nextDueDate)
     .sort((a, b) =>
@@ -747,7 +751,7 @@ function RecurringSection({
               Monthly recurring expenses
             </div>
             <div className="text-xl font-bold text-destructive">
-              {formatCurrency(monthlyExpense)}
+              {recurringTotalText(totals.expense, totals.unplaced)}
             </div>
           </div>
           <div>
@@ -755,24 +759,24 @@ function RecurringSection({
               Monthly recurring income
             </div>
             <div className="text-xl font-bold text-chart-3">
-              {formatCurrency(monthlyIncome)}
+              {recurringTotalText(totals.income, totals.unplaced)}
             </div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground mb-1">
               Net per month
             </div>
-            <div
-              className={`text-xl font-bold ${
-                monthlyIncome - monthlyExpense >= 0
-                  ? "text-chart-3"
-                  : "text-destructive"
-              }`}
-            >
-              {formatCurrency(monthlyIncome - monthlyExpense)}
+            <div className={`text-xl font-bold ${recurringNetClass(totals.net)}`}>
+              {recurringTotalText(totals.net, totals.unplaced)}
             </div>
           </div>
         </div>
+        {totals.unplaced.length > 0 && (
+          <p className="mb-3 text-[13px] text-muted-foreground">
+            Not counted: {totals.unplaced.join(", ")} — the account this series
+            bills against has no readable currency.
+          </p>
+        )}
         {upcoming.length > 0 && (
           <div className="space-y-1.5">
             {upcoming.map((s) => (

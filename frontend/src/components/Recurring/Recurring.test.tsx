@@ -44,7 +44,7 @@ vi.mock("../../context/SettingsContext", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const accounts = [
-  { id: "a1", name: "Checking" },
+  { id: "a1", name: "Checking", currency: "INR" },
 ] as unknown as Account[];
 
 const series = [
@@ -151,5 +151,100 @@ describe("Recurring", () => {
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Add Series" }));
     expect(await screen.findByText("Add Recurring Series")).toBeInTheDocument();
+  });
+});
+
+// A series is denominated by the account it bills against, and this page spans
+// every account the user has. So the monthly forecast can hold a rupee rent and
+// a dollar subscription, and their sum is not a number that ever existed — the
+// defect the whole per-currency change exists to remove, still live in the one
+// place the app did its own arithmetic on money.
+//
+// The test names the wrong answer rather than only the right one: restoring the
+// cross-currency sum makes the card print formatCurrency(51000), and asserting
+// that string is absent is the half that fails. Asserting only the refusal would
+// pass just as well against a card that printed the sum and said so afterwards.
+describe("Recurring's monthly forecast across two currencies", () => {
+  const twoCurrencyAccounts = [
+    { id: "a1", name: "Checking", currency: "INR" },
+    { id: "a2", name: "Travel card", currency: "USD" },
+  ] as unknown as Account[];
+
+  const mixed = [
+    {
+      ...series[0],
+      id: "s1",
+      accountId: "a1",
+      accountName: "Checking",
+      type: "debit",
+      monthlyAmount: 50000,
+    },
+    {
+      ...series[0],
+      id: "s3",
+      accountId: "a2",
+      accountName: "Travel card",
+      name: "Streaming",
+      type: "debit",
+      monthlyAmount: 10,
+    },
+  ] as unknown as RecurringSeries[];
+
+  it("refuses the total rather than adding rupees to dollars", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      accounts: twoCurrencyAccounts,
+      categories: [],
+      payees: [],
+    });
+    apiMock.getRecurringSeries.mockResolvedValue({ data: mixed });
+
+    renderPage();
+    await screen.findByText("Streaming");
+
+    const card = screen.getByText("Monthly expenses").closest("div")!;
+    const text = card.textContent ?? "";
+    // The rupee figure and the dollar figure, each with its own code, and the
+    // explicit refusal — never one number standing for the two.
+    expect(text).toContain("INR");
+    expect(text).toContain("USD");
+    expect(text).toContain("not combined");
+
+    // The restored sum: the two figures added together and printed as one, which
+    // is what the fold used to do.
+    expect(screen.queryByText(formatCurrency(50010))).toBeNull();
+  });
+
+  it("takes the net per currency and refuses to sign it", async () => {
+    domainMock.useDomainData.mockReturnValue({
+      accounts: twoCurrencyAccounts,
+      categories: [],
+      payees: [],
+    });
+    apiMock.getRecurringSeries.mockResolvedValue({
+      data: [
+        mixed[0],
+        {
+          ...mixed[1],
+          id: "s4",
+          type: "credit",
+          name: "Payout",
+          monthlyAmount: 20,
+        },
+      ] as unknown as RecurringSeries[],
+    });
+
+    renderPage();
+    await screen.findByText("Payout");
+
+    const card = screen.getByText("Net per month").closest("div")!;
+    // A per-currency difference: USD came out 10 positive, INR 50,000 negative,
+    // and the figure says both rather than one of them.
+    expect(card.textContent).toContain("not combined");
+    // And it is drawn in no sign's colour, because two currencies disagreeing
+    // about which way the month went is exactly the state a sign cannot express.
+    const figure = screen.getByText((_, el) => el?.tagName === "P" && /not combined/.test(el.textContent ?? ""))!;
+    expect(figure.className).toContain("text-muted-foreground");
+    // The restored difference, taken across the two sums.
+    expect(screen.queryByText(formatCurrency(-49980))).toBeNull();
   });
 });

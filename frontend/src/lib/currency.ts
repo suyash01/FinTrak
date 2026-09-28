@@ -116,6 +116,32 @@ export function sumPerCurrency(
 }
 
 /**
+ * subPerCurrency takes one difference per currency, so a net is a subtraction
+ * inside a currency and never across two. A key either operand lacks counts as
+ * zero, so a currency that only ever spends still yields a well-defined negative
+ * net rather than disappearing — the same union the server's own Sub returns, and
+ * the same reason that one is not a subset of the other.
+ *
+ * It exists for the one figure the app computes rather than reads: the recurring
+ * forecast's net per month, which has no server-side counterpart. Every other net
+ * on a reporting screen is the payload's own field, and a caller that reaches
+ * for this where one exists has rebuilt something the server already stated.
+ */
+export function subPerCurrency(
+  minuend: CurrencyAmounts | undefined,
+  subtrahend: CurrencyAmounts | undefined,
+): CurrencyAmounts {
+  const out: CurrencyAmounts = {};
+  for (const code of new Set([
+    ...Object.keys(minuend ?? {}),
+    ...Object.keys(subtrahend ?? {}),
+  ])) {
+    out[code] = (minuend?.[code] ?? 0) - (subtrahend?.[code] ?? 0);
+  }
+  return out;
+}
+
+/**
  * CurrencySign is which way a figure points, as the three answers a report can
  * support.
  *
