@@ -2569,6 +2569,43 @@ func TestIntegrationBillingCycleDateRangesTileTheWindow(t *testing.T) {
 			require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)},
 				trendExpenseFor(t, after)[firstEnd],
 				"a detached transaction is still inside its cycle's date range")
+
+			// And the timeline, which is the second surface that draws this same
+			// window, has to draw the same transactions the summary counted. It
+			// reads its own currencyScope by date, so a period joined by cycle id
+			// would report the detached spend in the scope and in no period - the
+			// one disagreement the summary's own test above cannot see, because
+			// that endpoint's trend was already joined by date range. This is the
+			// only tier that could see it: the handler test's expectation was a
+			// substring both joins satisfy.
+			var timeline models.MoneyFlowTimeline
+			status, body = a.request(http.MethodGet,
+				"/api/v1/dashboard/money-flow/timeline?groupBy=billing_cycle&accountId="+card.ID.String(), nil)
+			require.Equal(t, http.StatusOK, status, "body: %s", body)
+			require.NoError(t, json.Unmarshal(body, &timeline))
+			requireNoScalarAmounts(t, "/api/v1/dashboard/money-flow/timeline?groupBy=billing_cycle", body)
+
+			periodsExpense := models.NewCurrencyAmounts()
+			periodsByEnd := map[string]models.CurrencyAmounts{}
+			for _, period := range timeline.Periods {
+				periodsExpense = sumPerCurrency(periodsExpense, period.Expense)
+				periodsByEnd[period.EndDate] = period.Expense
+			}
+			require.Equal(t, after.TotalExpense, periodsExpense,
+				"the timeline's periods must hold exactly what the summary's totals do")
+			require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, periodsByEnd[firstEnd],
+				"a detached transaction is still inside its cycle's date range here too")
+
+			// The scope the timeline names is the third reading of the same window,
+			// so it too has to agree with both. It is the one the periods are keyed
+			// by, which is what makes a disagreement visible as a currency in the
+			// periods that the scope does not list.
+			require.Equal(t, []string{"INR"}, timeline.CurrencyScope.Currencies)
+			require.Len(t, timeline.CurrencyScope.Accounts, 1)
+			require.Equal(t, card.ID, timeline.CurrencyScope.Accounts[0].ID)
+			require.Equal(t, after.TotalExpense, timeline.CurrencyScope.Accounts[0].Expense,
+				"the scope and the periods are one snapshot over one window")
+			require.Equal(t, timeline.CurrencyScope.Accounts[0].Expense, periodsExpense)
 		})
 	}
 }

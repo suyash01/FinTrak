@@ -333,13 +333,25 @@ func (srv *Server) getMoneyFlowTimelineBillingCycle(c *gin.Context, currency str
 		cycleArgs = append(cycleArgs, currency)
 	}
 
+	// The transactions are joined by the cycle's own date range rather than by
+	// t.billing_cycle_id, which is the dashboard's per-cycle trend join for the
+	// dashboard's reason: the scope above is read by date, so a period joined by
+	// cycle id would describe a different set of transactions than the scope
+	// beside it. A transaction detached from its cycle by hand - PATCH
+	// /transactions/{id} with {"billingCycleId": null}, which
+	// billing_cycle_detached makes permanent - is then in the scope's income and
+	// expense and in no period at all, so one account over one window reports two
+	// figures and nothing in the response reconciles them. Before this branch the
+	// timeline carried no totals to disagree with, which is why only the dashboard
+	// was fixed the first time. Do not "optimise" the join back to the cycle id.
 	rows, err := tx.Query(ctx, `
 		SELECT bc.id, bc.start_date, bc.end_date, bc.label,
 			   COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0),
 			   COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0)
 		FROM billing_cycles bc
-		LEFT JOIN transactions t ON t.billing_cycle_id = bc.id
-		JOIN accounts a ON a.id = bc.account_id
+		JOIN accounts a ON a.id = bc.account_id AND a.user_id = $2
+		LEFT JOIN transactions t ON t.account_id = bc.account_id AND t.user_id = $2
+		   AND t.date >= bc.start_date AND t.date <= bc.end_date
 		WHERE bc.account_id = $1 AND bc.user_id = $2
 		  AND bc.end_date >= $3 AND bc.end_date <= $4`+cycleFilter+`
 		GROUP BY bc.id, bc.start_date, bc.end_date, bc.label

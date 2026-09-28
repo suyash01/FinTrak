@@ -51,6 +51,17 @@ const (
 	// The scope query is the shared currencyScope statement, which puts the
 	// window in the join's ON so a quiet account still names its currency.
 	timelineScopeRegex = `FROM accounts a\s+LEFT JOIN transactions t`
+	// timelineCycleJoin pins the billing-cycle periods query to the date-range
+	// join, because a substring that merely starts at "FROM billing_cycles bc"
+	// is satisfied by both joins and cannot see the difference between them. The
+	// join decides which transactions a period holds, and the scope beside it is
+	// read by date: join by cycle id instead and a detached transaction is in the
+	// scope's totals and in no period, so the response states two figures for one
+	// window with nothing reconciling them. The user_id guard on the transactions
+	// join is pinned with it for the same reason - a date range spanning accounts
+	// would fold another user's money into this account's periods.
+	timelineCycleJoinRegex = `LEFT JOIN transactions t ON t\.account_id = bc\.account_id ` +
+		`AND t\.user_id = \$2\s+AND t\.date >= bc\.start_date AND t\.date <= bc\.end_date`
 )
 
 func TestGetMoneyFlowTimelineMonthly(t *testing.T) {
@@ -301,7 +312,7 @@ func TestGetMoneyFlowTimelineBillingCycles(t *testing.T) {
 	cycleRows := pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}).
 		AddRow(cycleID, start, end, "Jun 2024", money.FromFloat(5000), money.FromFloat(1500)).
 		AddRow(uuid.New(), end.AddDate(0, 0, 1), end.AddDate(0, 1, 0), "Jul 2024", 0, 0)
-	mock.ExpectQuery("FROM billing_cycles bc").
+	mock.ExpectQuery("FROM billing_cycles bc[\\s\\S]*" + timelineCycleJoinRegex).
 		WithArgs(acctID, userID, start.Format("2006-01-02"), end.Format("2006-01-02")).
 		WillReturnRows(cycleRows)
 	mock.ExpectCommit()
@@ -366,7 +377,7 @@ func TestGetMoneyFlowTimelineBillingCycleNarrowsToTheCurrencyFilter(t *testing.T
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}).
 			AddRow(acctID, "Savings", "INR", money.FromFloat(5000), money.FromFloat(1500)))
 	mock.ExpectQuery("FROM billing_cycles bc[\\s\\S]*JOIN accounts a ON a\\.id = bc\\.account_id[\\s\\S]*" +
-		timelineCurrencyRegex + predAt5).
+		timelineCycleJoinRegex + "[\\s\\S]*" + timelineCurrencyRegex + predAt5).
 		WithArgs(acctID, userID, windowStart, windowEnd, "INR").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}).
 			AddRow(cycleID, start, end, "Jun 2024", money.FromFloat(5000), money.FromFloat(1500)))
@@ -422,7 +433,8 @@ func TestGetMoneyFlowTimelineBillingCycleCurrencyMismatchIsEmpty(t *testing.T) {
 	mock.ExpectQuery(timelineScopeRegex + `[\s\S]*` + timelineCurrencyRegex + ` = \$5`).
 		WithArgs(userID, windowStart, windowEnd, acctID.String(), "INR").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "currency", "income", "expense"}))
-	mock.ExpectQuery("FROM billing_cycles bc[\\s\\S]*" + timelineCurrencyRegex + ` = \$5`).
+	mock.ExpectQuery("FROM billing_cycles bc[\\s\\S]*" + timelineCycleJoinRegex +
+		"[\\s\\S]*" + timelineCurrencyRegex + ` = \$5`).
 		WithArgs(acctID, userID, windowStart, windowEnd, "INR").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "start_date", "end_date", "label", "income", "expense"}))
 	mock.ExpectCommit()
