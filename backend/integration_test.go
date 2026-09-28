@@ -3447,22 +3447,28 @@ func plainCalendarCycles(t *testing.T, a *apiClient, window string, accountID uu
 //     A codec that refused that string, or a Scan that mis-parsed it, would
 //     answer 500 - or worse, a zero - and pgxmock would never see either.
 //
-// The loan's attached payments are debits, so the loan branch is debit-positive
-// and its figure is the amount PAID: positive, and growing. The bank is
-// credit-positive, so a credit adds and a debit subtracts; the card the EMIs
-// are made from is debit-positive, so the very same payments read negative
-// there. The sign is the data's, read off the account type, rather than a
-// convention this test chooses - which is why more than one account type is
-// here: a single type would let a sign error hide behind the other branch's
-// arithmetic.
+// The loan's attached payments are debits, and the loan branch is
+// debit-positive, so each contributes +amount and the figure is the total paid
+// to date: positive, and growing. It is NOT the outstanding principal, and this
+// test pins the number the code actually returns rather than the number the
+// prose once claimed.
+//
+// The card the EMIs are made from is ALSO credit-positive (db/seed.go seeds
+// `credit_card` as 'credit', same as `bank`), which is precisely why those same
+// two debits read NEGATIVE there. So the card is a second reading of the ELSE
+// branch over the very same payments, not a sign contrast against the bank -
+// and the consequence is worth stating plainly: the ELSE branch's
+// `WHEN at.positive_txn_type = 'debit'` arm is NOT exercised by this fixture at
+// all, because the only debit-positive seed is `loan` and a loan never reaches
+// the ELSE branch. The card is here so the ELSE branch has two accounts on
+// either side of the asOf date, not to contrast signs.
 func TestAsOfBalanceEndToEnd(t *testing.T) {
 	a := newAPIClient(t)
 	a.register("asof@example.com")
 
-	// A credit-positive account (the seeded `bank` type) and a debit-positive
-	// one. The EMIs are debits made FROM the card and attached to the loan, so
-	// they never enter the bank's arithmetic: the two figures below are read as
-	// their own fixtures rather than summed.
+	// The EMIs are debits made FROM the card and attached to the loan, so they
+	// never enter the bank's arithmetic: the figures below are read as their own
+	// fixtures rather than summed.
 	bank := a.createAccount("Everyday", "bank", nil)
 	card := a.createAccount("EMI card", "credit_card", nil)
 	loan := a.createAccount("Car loan", "loan", nil)
@@ -3471,25 +3477,27 @@ func TestAsOfBalanceEndToEnd(t *testing.T) {
 	a.createTransaction(bank.ID, nil, "2026-01-15", "January salary", 100, "credit")
 	a.createTransaction(bank.ID, nil, "2026-04-20", "April spend", 30, "debit")
 
-	// Two EMI payments, also one on each side, attached to the loan. The
-	// payments are debits, and the loan's balance is debit-positive, so the
-	// figure the loan reports is the amount PAID rather than the amount owed -
-	// which is the sign the branch's own CASE reads off the type, and the reason
-	// a second, differently-signed account type is here to contrast it with.
+	// Two EMI payments, also one on each side, attached to the loan. Each is a
+	// debit, and the loan branch is debit-positive, so the loan's figure is the
+	// total paid to date - 40.00 by the instant, 100.00 by June.
 	feb := a.createTransaction(card.ID, nil, "2026-02-10", "EMI February", 40, "debit")
 	may := a.createTransaction(card.ID, nil, "2026-05-01", "EMI May", 60, "debit")
 	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
 		"transactionIds": []uuid.UUID{feb, may}, "loanAccountId": loan.ID,
 	}, http.StatusOK, nil)
 
-	// The attachments really landed. Without this the loan assertions below
-	// could pass against a loan with nothing attached to it - every one of them
-	// is a comparison, and a comparison of two zeroes is a true statement about
-	// the wrong ledger.
+	// The attachments really landed. This guards ASSERTION 3 specifically: that
+	// one requires every balance to be zero, so a loan with nothing attached
+	// would satisfy it vacuously - the zero would be the absence of the fixture
+	// rather than the arithmetic. Assertion 1 needs no such guard, because a
+	// failed attach yields {} there and the assertion requires {"INR": 4000}.
+	var me models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &me)
+	ctx := context.Background()
 	var attached int
-	require.NoError(t, db.Pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM loan_attachments WHERE loan_account_id = $1 AND user_id = (
-			 SELECT id FROM users WHERE email = 'asof@example.com')`, loan.ID).Scan(&attached))
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM loan_attachments WHERE loan_account_id = $1 AND user_id = $2`,
+		loan.ID, me.ID).Scan(&attached))
 	require.Equal(t, 2, attached, "both EMI payments must be attached to the loan")
 
 	// balances reads one entry out of the summary's as-of block, so an account
@@ -3529,18 +3537,14 @@ func TestAsOfBalanceEndToEnd(t *testing.T) {
 		"by 2026-03-01 the bank has received 100.00 and spent nothing; the April debit is after the instant")
 	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40)}, got[loan.ID],
 		"the loan had been paid 40.00 by 2026-03-01, from its attached payments; the May EMI is after the instant")
-	// The card is debit-positive, so the same two EMI debits read NEGATIVE
-	// there. Asserted because the loan's figure being positive is only
-	// meaningful next to an account of the other sign holding the same payments:
-	// a loan branch that read the payments the card's way round would still
-	// return 40.00's magnitude and would pass a magnitude-only check.
+	// The card is credit-positive too (db/seed.go seeds `credit_card` as
+	// 'credit'), which is why these same two debits read negative there while
+	// the loan's own reading of them is positive. So this is not a sign contrast
+	// between the two accounts - it is the same ELSE-branch arithmetic applied
+	// to a second account, and it is what makes a loan branch that read the
+	// attachments the card's way round fail rather than return 40.00's magnitude.
 	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(-40)}, got[card.ID],
-		"a card is debit-positive, so the one EMI paid by 2026-03-01 is a negative balance")
-	// The two loan figures are not interchangeable, and stating it keeps the
-	// pair honest: a loan branch that fell through to the account's own
-	// transactions would report nothing, and one bounded by nothing would
-	// report 100.00.
-	require.NotEqual(t, got[bank.ID], got[loan.ID])
+		"a card is credit-positive, so the one EMI paid by 2026-03-01 is a negative balance")
 
 	// The same reading a month later, so the instant demonstrably moves every
 	// figure rather than each being a constant of the fixture.

@@ -21,12 +21,18 @@ import (
 //     decision, not an accident — see the comment on accounts in
 //     db/migrations/000001_initial_schema.up.sql. What it holds is
 //     loan_attachments: the EMI payments made against it from other accounts.
-//   - So a loan's balance is the sum over those ATTACHED transactions, and it is
-//     always debit-positive: paying a loan reduces what is owed, so the figure
-//     is outstanding principal and reads negative.
+//   - So a loan's balance is the sum over those ATTACHED transactions, and it
+//     is always debit-positive: an EMI leaves the payer's account as a debit
+//     and contributes +amount here, so the figure is the TOTAL PAID TO DATE —
+//     positive, and growing with every payment. It is the same number
+//     /accounts reports for that account, and the same one the loan schedule
+//     calls PaidAmount. It is NOT what the borrower still owes: that is
+//     LoanScheduleDetail.OutstandingPrincipal, a different figure over a
+//     different question, and this balance must not be read as it.
 //   - Every other account type sums its OWN transactions, signed by the type's
-//     positive_txn_type — a card is debit-positive and so balances negative, a
-//     savings account is credit-positive and so balances positive.
+//     positive_txn_type — a credit-positive account (a bank, a card: both
+//     seeded 'credit') balances negative on a debit, and a debit-positive
+//     account balances positive on one.
 //
 // An as-of balance that omits the loan branch is the silent wrong number this
 // whole feature was reworked to remove, and it is silent in the worst way: the

@@ -6102,11 +6102,15 @@ components:
             absent key reads as zero, and a consumer that counts the keys to
             decide how many accounts held money gets the right answer.
 
-            For a loan account this is **outstanding principal** and reads
-            negative, because a payment on a loan reduces what is owed. It is
-            derived from the transactions attached to the loan rather than from
-            the loan account's own ledger, which is empty - the same figure
-            `/accounts` reports for that account.
+            For a loan account this is the **total paid to date** and reads
+            positive, growing with every payment: an EMI leaves the payer's
+            account as a debit and contributes its full amount. It is derived
+            from the transactions attached to the loan rather than from the loan
+            account's own ledger, which is empty - the same figure `/accounts`
+            reports for that account, and the same one the loan schedule calls
+            `paidAmount`. It is **not** what the borrower still owes; that is
+            `loanPayoff.outstandingPrincipal`, a different number over a
+            different question.
           additionalProperties:
             type: number
 

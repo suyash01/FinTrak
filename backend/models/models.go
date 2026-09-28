@@ -1856,9 +1856,12 @@ type ScopedAccount struct {
 // A zero balance adds no key, so len() counts the accounts that actually held
 // money at that date.
 //
-// For a loan account this is outstanding principal, derived from the
-// transactions attached to the loan - the same figure /accounts shows - not a
-// bank-style net over the loan account's own (empty) ledger.
+// For a loan account this is the TOTAL PAID TO DATE - the sum over the
+// transactions attached to the loan, positive and growing with every payment,
+// and the same figure /accounts reports for that account. It is not a
+// bank-style net over the loan account's own (empty) ledger, and it is NOT what
+// the borrower still owes: LoanScheduleDetail.OutstandingPrincipal answers that
+// question over the loan's schedule, and the two are different numbers.
 type AccountBalance struct {
 	ID       uuid.UUID       `json:"id"`
 	Name     string          `json:"name"`
