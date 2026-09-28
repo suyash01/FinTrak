@@ -129,6 +129,14 @@ type RefData struct {
 	Payees       []api.Payee
 	Tags         []api.TagCount
 
+	// Recurring is OPTIONAL reference data: it backs the transaction filter's
+	// series picker and nothing else, so a failure to fetch it degrades one
+	// dropdown rather than the session. RecurringErr is the reason it is empty,
+	// and it is kept precisely so that "no series exist" and "the series could not
+	// be loaded" are not the same silence - see recurringOptions.
+	Recurring    []api.RecurringSeries
+	RecurringErr error
+
 	AccountsByID    map[string]api.Account
 	AccountTypeByID map[string]api.AccountType
 	GroupsByID      map[string]api.CategoryGroup
@@ -154,6 +162,21 @@ func (r *RefData) AccountName(id string) string {
 	}
 	if id == "" {
 		return "—"
+	}
+	return id
+}
+
+// RecurringName resolves a recurring series id for display, falling back to the
+// id when it is not among the loaded series - which is also what happens when the
+// optional load failed, so the summary names an id rather than a wrong name.
+func (r *RefData) RecurringName(id string) string {
+	if id == "" {
+		return "—"
+	}
+	for _, s := range r.Recurring {
+		if s.ID == id {
+			return s.Name
+		}
 	}
 	return id
 }
@@ -215,6 +238,36 @@ func (r *RefData) LoanAccountOptions() []Option {
 		out = append(out, Option{Value: loan.ID, Label: loan.Name})
 	}
 	return out
+}
+
+// RecurringSeriesField builds the transaction filter's series picker, with the
+// help line that explains an empty one.
+//
+// The help is not decoration. An empty picker is ambiguous on its own: a user
+// with no series and a user whose series failed to load both produce zero
+// options, and telling them the same thing is the silent-wrong-answer shape this
+// codebase keeps guarding against. So a failure is reported where the person
+// editing the filter will read it, rather than left to be inferred from a list
+// that is simply not there.
+//
+// The alternative — letting a series failure fail the whole reference load — is
+// worse: it stops the TUI starting at all, because every screen is created after
+// the reference load. A filter that cannot narrow by series is a smaller loss than
+// a client that will not open.
+func (r *RefData) RecurringSeriesField(current string) Field {
+	field := SelectField("Series", current, nil, false)
+	switch {
+	case r.RecurringErr != nil:
+		field.Help = "could not load your series: " + r.RecurringErr.Error()
+	case len(r.Recurring) == 0:
+		field.Help = "you have no recurring series"
+	default:
+		field.Options = make([]Option, 0, len(r.Recurring))
+		for _, s := range r.Recurring {
+			field.Options = append(field.Options, Option{Value: s.ID, Label: s.Name})
+		}
+	}
+	return field
 }
 
 // AccountOptions returns picker options for every account, with the loan, bank
@@ -318,12 +371,18 @@ func (r *RefData) TagOptions() []Option {
 
 // fetchRefData loads every reference table. The calls are independent, so they
 // run concurrently; the first error is reported and the rest are dropped.
+//
+// Recurring series are loaded here too, but through a second sink: they back one
+// picker, so a failure must not fail the whole load and stop the TUI starting.
+// The reason is kept on the RefData rather than discarded, because a silently
+// empty picker is indistinguishable from a user with no series.
 func fetchRefData(ctx context.Context, c *api.Client) (*RefData, error) {
 	var (
-		wg   sync.WaitGroup
-		ref  = &RefData{}
-		mu   sync.Mutex
-		fail error
+		wg           sync.WaitGroup
+		ref          = &RefData{}
+		mu           sync.Mutex
+		fail         error
+		optionalFail error
 	)
 
 	record := func(err error) {
@@ -337,7 +396,21 @@ func fetchRefData(ctx context.Context, c *api.Client) (*RefData, error) {
 		}
 	}
 
-	wg.Add(7)
+	// recordOptional records a failure that must NOT abort the load. It does not
+	// overwrite an earlier one, for the same reason record keeps the first: the
+	// report names one cause, and the first is the one that happened.
+	recordOptional := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if optionalFail == nil {
+			optionalFail = err
+		}
+	}
+
+	wg.Add(8)
 	go func() { defer wg.Done(); v, err := c.Me(ctx); record(err); ref.Me = v }()
 	go func() { defer wg.Done(); v, err := c.ListAccounts(ctx); record(err); ref.Accounts = v }()
 	go func() { defer wg.Done(); v, err := c.ListAccountTypes(ctx); record(err); ref.AccountTypes = v }()
@@ -345,11 +418,18 @@ func fetchRefData(ctx context.Context, c *api.Client) (*RefData, error) {
 	go func() { defer wg.Done(); v, err := c.ListCategories(ctx); record(err); ref.Categories = v }()
 	go func() { defer wg.Done(); v, err := c.ListPayees(ctx); record(err); ref.Payees = v }()
 	go func() { defer wg.Done(); v, err := c.ListTags(ctx); record(err); ref.Tags = v }()
+	go func() {
+		defer wg.Done()
+		v, err := c.ListRecurring(ctx)
+		recordOptional(err)
+		ref.Recurring = v
+	}()
 	wg.Wait()
 
 	if fail != nil {
 		return nil, fail
 	}
+	ref.RecurringErr = optionalFail
 
 	ref.AccountsByID = make(map[string]api.Account, len(ref.Accounts))
 	for _, a := range ref.Accounts {
