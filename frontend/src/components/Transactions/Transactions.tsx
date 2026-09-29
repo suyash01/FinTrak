@@ -552,11 +552,20 @@ export default function Transactions() {
       if ((txn.categoryId ?? "") === categoryId) return;
       const seq = nextEditSeq(txnId);
       try {
-        // Only the edited field goes out. A whole-row snapshot would carry the
-        // values the row was rendered with, so a second inline edit started
-        // while this one is still in flight would resurrect the other field's
-        // pre-edit value. The endpoint treats an absent key as "leave alone".
-        await api.updateTransaction(txnId, { categoryId: categoryId || null });
+        // Only the edited field goes out, and it goes out against the row the
+        // cell was rendered with. A whole-row body would carry the values the
+        // row was rendered with, so a second inline edit started while this one
+        // is still in flight would resurrect the other field's pre-edit value —
+        // and another writer's concurrent change to a field this row never
+        // displayed would be reverted the same way. `base` is what reduces the
+        // payload to the field the user changed, and it is also what the offline
+        // queue merges the edit against. The endpoint treats an absent key as
+        // "leave alone".
+        await api.updateTransaction(
+          txnId,
+          { categoryId: categoryId || null },
+          { base: txn },
+        );
         // Ignore a response that a newer edit for the same row superseded.
         if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
@@ -604,8 +613,14 @@ export default function Transactions() {
       if ((txn.payeeId ?? "") === payeeId) return;
       const seq = nextEditSeq(txnId);
       try {
-        // Only the edited field goes out — see handleCategoryChange.
-        await api.updateTransaction(txnId, { payeeId: payeeId || null });
+        // The same rule, uniformly rather than per call site: the edited field,
+        // made against the row the cell was rendered with. See
+        // handleCategoryChange for why the base has to be there.
+        await api.updateTransaction(
+          txnId,
+          { payeeId: payeeId || null },
+          { base: txn },
+        );
         if (!isLatestEdit(txnId, seq)) return;
         setData((prev) => ({
           ...prev,

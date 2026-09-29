@@ -358,13 +358,18 @@ describe("Transactions", () => {
 
     fireEvent.change(categorySelect!, { target: { value: "c1" } });
 
-    // Only the edited field is PATCHed. The body used to be a snapshot of the
-    // whole row (category, payee, tags, notes), which overwrote a concurrent
-    // inline edit with the values the row had been rendered with.
+    // Only the edited field is PATCHed, and it is PATCHed against the row the
+    // cell was rendered with. The body used to be a snapshot of the whole row
+    // (category, payee, tags, notes), which overwrote a concurrent inline edit
+    // with the values the row had been rendered with; the base is what lets
+    // updateTransaction reduce the payload to the one field, and what it has to
+    // be made against if the request never reaches the server.
     await waitFor(() =>
-      expect(apiMock.updateTransaction).toHaveBeenCalledWith("t1", {
-        categoryId: "c1",
-      }),
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith(
+        "t1",
+        { categoryId: "c1" },
+        expect.objectContaining({ base: expect.objectContaining({ id: "t1" }) }),
+      ),
     );
   });
 
@@ -379,10 +384,14 @@ describe("Transactions", () => {
 
     fireEvent.change(payeeSelect!, { target: { value: "p1" } });
 
+    // The same rule, uniformly: the field the user changed, made against the row
+    // it was rendered with. See the category edit above.
     await waitFor(() =>
-      expect(apiMock.updateTransaction).toHaveBeenCalledWith("t1", {
-        payeeId: "p1",
-      }),
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith(
+        "t1",
+        { payeeId: "p1" },
+        expect.objectContaining({ base: expect.objectContaining({ id: "t1" }) }),
+      ),
     );
   });
 

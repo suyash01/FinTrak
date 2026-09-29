@@ -189,6 +189,11 @@ export default function EditTransactionModal({
 
       // Only accounts with a billing day carry a billing cycle; for other
       // accounts omit the field so an edit never clears an existing attachment.
+      // With the base below this is redundant — an unchanged field is dropped
+      // from the diff, so the null is never sent either way — and it stays
+      // because the reasoning is still true of the payload itself: an account
+      // move clears the attachment server-side (transaction.go:908) and a null
+      // here would be a detach the user did not ask for.
       if (selectedAccount?.billingDay) {
         payload.billingCycleId = form.billingCycleId || null;
       }
@@ -201,8 +206,22 @@ export default function EditTransactionModal({
           );
         }
       } else {
-        await api.updateTransaction(transaction.id, payload);
+        // `base` is the row the form opened with, and it is what makes this a
+        // patch. The payload above is a whole row read off the form, so every
+        // field the user never touched is the value this client loaded — and
+        // PATCHing them reverts whatever another writer changed in them while
+        // the sheet was open. Reduced against the base, the request carries
+        // what the user changed and only that; the same patch is what the
+        // offline queue records, so the two paths cannot disagree.
+        await api.updateTransaction(transaction.id, payload, {
+          base: transaction,
+        });
       }
+      // `onSaved` runs whatever updateTransaction answered, including the
+      // `{ queued: false }` of a save that changed nothing: that is the row
+      // already saying what the form says, so the edit is made and closing is
+      // the true outcome. Reading it as a failure would show an error for a
+      // request that was never sent.
       onSaved();
     } catch (err) {
       setError(
