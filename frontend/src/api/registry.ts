@@ -10,9 +10,10 @@
 //   putPartial  the account, account-type, category, group, admin-category and
 //               settings PUTs build a dynamic SET (or COALESCE(NULLIF($n, ''), col)),
 //               so an absent key genuinely means "leave it alone".
-//   putWhole    the payee, rule, recurring and loan PUTs write every column on
-//               every call — payee.go:118 is `UPDATE payees SET name = $1,
-//               account_id = $2` and recurring.go:485 is `SET end_date = $1` — so
+//   putWhole    the payee, rule, recurring and loan PUTs write every column their
+//               request can carry, on every call — payee.go:118 is `UPDATE payees
+//               SET name = $1, account_id = $2` and recurring.go:1183 is `SET
+//               start_date = $1, end_date = $2, amount = $3, account_id = $4` — so
 //               a payload that omits a field *clears* it. Their diff has to be
 //               overlaid onto the server's row before it goes out, which is why
 //               their read exists and why `theirs` is handed to `apply`.
@@ -77,7 +78,9 @@ export interface OpSpec {
   /**
    * Send the resolved diff. `theirs` is the row the diff was merged onto, and is
    * the only source an op has for an identifier its endpoint also needs (a term's
-   * series) — and, for a `putWhole` op, the row the diff is overlaid onto.
+   * series). For a `putWhole` op it is also the row the diff is overlaid onto, so
+   * `diff` arrives at such an op already built into the whole row its endpoint
+   * writes — see applyOp.
    */
   apply(rowId: string, diff: FieldPatch, theirs: FieldPatch | null): Promise<void>;
   /**
@@ -347,9 +350,9 @@ export const OPS: Record<WriteOp, OpSpec> = {
     apply: async (rowId, diff, theirs) => {
       // The term endpoint takes a series and a term, and a term carries only its
       // own id, so the series comes off the row the diff was merged onto. There is
-      // no other source for it, and a term the server no longer has has no series
-      // to address — which the flush records as gone rather than writing into a
-      // series it had to guess.
+      // no other source for it, and applyOp has already refused a row the server
+      // does not have — what is left is a row that names no series, which has
+      // nothing to address and is refused rather than guessed at.
       const seriesId = theirs?.seriesId;
       if (typeof seriesId !== "string") {
         throw new Error(
@@ -462,13 +465,50 @@ export function readTheirs(op: WriteOp, rowId: string): Promise<FieldPatch | nul
   return OPS[op].read(rowId);
 }
 
+// mergedRow is the payload a putWhole op is sent: the diff overlaid onto the
+// server's own row, because these endpoints write every column their request can
+// carry whether the body names it or not. Sending the diff alone would therefore
+// write a row the form never showed — the account a payee was attached to, the
+// end date of a term, the rate on a loan — and the write would succeed, so the
+// only evidence of it would be a column the user never opened.
+//
+// The overlay is field by field rather than a spread so an `undefined` can be
+// dropped. `FieldValue` admits one and `theirs` is a patch rather than a parsed
+// row, so a key carrying no value is representable; JSON.stringify would drop it
+// on the way out, leaving a body quietly narrower than the merge that built it.
+// The two inputs cannot produce one today — project() leaves a nullish field off
+// and diffAgainstBase skips an undefined value — so this is the overlay declining
+// to be the thing that introduces one, and it is where the rule is cheapest to
+// keep.
+//
+// `theirs === null` is refused rather than overlaid. A row the server no longer
+// has is a fact about the row, and the flush records it as one (outbox.ts's
+// recordGone) so the user can be told; an overlay of nothing is the bare diff
+// again, which is the wipe this function exists to prevent.
+function mergedRow(
+  op: WriteOp,
+  rowId: string,
+  diff: FieldPatch,
+  theirs: FieldPatch | null,
+): FieldPatch {
+  if (theirs === null) {
+    throw new Error(
+      `cannot send a ${op} edit to ${rowId}: the row is gone, so there is no copy of it to overlay the diff onto, and this endpoint writes every column the body names or not`,
+    );
+  }
+  const row: FieldPatch = {};
+  for (const [field, value] of Object.entries({ ...theirs, ...diff })) {
+    if (value !== undefined) row[field] = value;
+  }
+  return row;
+}
+
 // applyOp is the one seam a resolved diff is sent through, and the declared shape
 // is what it acts on: a putPartial op is refused a clear to "", which its
 // endpoints read as "not provided", and a putWhole op is sent the diff overlaid
-// onto theirs, since its endpoint writes every column. That overlay is not built
-// yet, and the flush refuses the whole-row family before anything reaches here
-// (see outbox.ts's isPutWhole), so no bare diff can reach an endpoint that would
-// clear a column.
+// onto theirs, since its endpoint writes every column. Both are silent failures
+// without this — a request the server accepts and a column it empties — so both
+// are decided here, where `theirs` and the diff are already in hand.
 export async function applyOp(
   op: WriteOp,
   rowId: string,
@@ -489,8 +529,12 @@ export async function applyOp(
     // omitting the key, so there is nothing to send and the edit is refused here
     // instead — a `patch` or `putWhole` op is not touched, because an empty string
     // is a value those endpoints do write.
-    const cleared = Object.keys(diff).find((field) => diff[field] === "");
-    if (cleared !== undefined) {
+    //
+    // All of them, not the first: the entry is one thing the user is asked to
+    // decide as a whole, and a message naming one field would have them fix that
+    // one and be held again for the next.
+    const cleared = Object.keys(diff).filter((field) => diff[field] === "");
+    if (cleared.length > 0) {
       // An ApiError with a 4xx, because that is the branch the flush treats as a
       // definite answer about the entry: it records the message on it, leaves it
       // queued for the user, and carries on with the entries behind it (see
@@ -499,10 +543,13 @@ export async function applyOp(
       // NetworkError, so the refusal would take the whole sync down with it and
       // the user would be told nothing at all.
       throw new ApiError(
-        `${cleared} cannot be cleared to an empty value by ${op}: this endpoint reads "" as "not provided" and leaves the field as it was, so the request would succeed without doing anything. Clear the field by removing it instead.`,
+        `${cleared.join(", ")} cannot be cleared to an empty value by ${op}: this endpoint reads "" as "not provided" and leaves the field as it was, so the request would succeed without doing anything. Clear the field by removing it instead.`,
         422,
       );
     }
+  }
+  if (spec.shape === "putWhole") {
+    return spec.apply(rowId, mergedRow(op, rowId, diff, theirs), theirs);
   }
   return spec.apply(rowId, diff, theirs);
 }

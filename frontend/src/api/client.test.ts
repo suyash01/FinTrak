@@ -9,13 +9,24 @@ import type {
   AccountType,
   Category,
   CategoryGroup,
+  LoanSchedule,
+  LoanScheduleDetail,
+  Payee,
+  RecurringSeries,
+  RecurringSeriesTerm,
+  Rule,
   Transaction,
   UpdateAccountRequest,
   UpdateAccountTypeRequest,
   UpdateCategoryGroupRequest,
   UpdateCategoryRequest,
+  UpdatePayeeRequest,
+  UpdateRecurringSeriesRequest,
+  UpdateRecurringSeriesTermRequest,
+  UpdateRuleRequest,
   UpdateUserSettingsRequest,
   UserSettings,
+  LoanScheduleRequest,
 } from "../types";
 
 const API_BASE = "/api/v1";
@@ -696,6 +707,231 @@ describe("offline behaviour", () => {
     },
   ];
 
+  // The whole-row family's five rows, each as its form opened with. `id`,
+  // `createdAt`, `monthlyAmount` and `attachedCount` are on these rows and on none
+  // of the projections: they are what a queued base must not carry, because a
+  // base holding a field the row cannot be written with reads as a difference the
+  // user made.
+  const payee: Payee = { id: "p1", name: "Cafe", accountId: "a1" };
+  const rule: Rule = {
+    id: "r1",
+    pattern: "coffee",
+    matchType: "contains",
+    categoryId: "c1",
+    priority: 10,
+  };
+  const series: RecurringSeries = {
+    id: "s1",
+    accountId: "a1",
+    name: "Netflix",
+    description: "",
+    amount: 649,
+    type: "debit",
+    frequency: "monthly",
+    interval: 1,
+    startDate: "2026-01-01",
+    endDate: null,
+    categoryId: null,
+    payeeId: null,
+    active: true,
+    notes: "",
+    monthlyAmount: 649,
+    attachedCount: 0,
+  };
+  const term: RecurringSeriesTerm = {
+    id: "term-1",
+    seriesId: "s1",
+    startDate: "2026-01-01",
+    endDate: "2026-06-01",
+    amount: 649,
+    accountId: "a1",
+  };
+  // The terms row alone: the amortization periods are derived server-side from
+  // these, so they are not a form's business and not a queued edit's either.
+  const loan: LoanSchedule = {
+    id: "ls1",
+    loanAccountId: "a1",
+    principal: 100000,
+    processingFee: 1000,
+    disbursalDate: "2026-01-05",
+    annualRateBps: 950,
+    tenureMonths: 24,
+    startDate: "2026-01-10",
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+  const loanDetail: LoanScheduleDetail = {
+    schedule: loan,
+    emi: 4400,
+    totalInterest: 5600,
+    totalPayable: 105600,
+    entries: [],
+    paidInstallments: 0,
+    paidAmount: 0,
+    principalPaid: 0,
+    interestPaid: 0,
+    outstandingPrincipal: 100000,
+    transfers: [],
+    completed: false,
+  };
+
+  // The whole-row family, and it is the same table on the five endpoints whose
+  // handlers write every column their request can carry. Nothing about the *call*
+  // differs from the six above — a base, a diff, a queue on a transport failure —
+  // so this is the same six questions asked twice. What the family needs is that
+  // the diff is what is queued and what goes out, because the whole row is the
+  // flush's to build by overlaying this diff on the row it re-reads (see
+  // registry.ts's mergedRow).
+  const WHOLE_FAMILY: PartialFamily[] = [
+    {
+      op: "payee.put",
+      rowId: "p1",
+      url: "/payees/p1",
+      base: payee,
+      queuedBase: { name: "Cafe", accountId: "a1" },
+      payload: { name: "Beans", accountId: "a1" },
+      revert: { name: "Cafe" },
+      diff: { name: "Beans" },
+      send: (payload, { base, queue }) =>
+        api.updatePayee(
+          "p1",
+          payload as unknown as UpdatePayeeRequest,
+          base === undefined ? { queue } : { base: base as Payee, queue },
+        ),
+    },
+    {
+      op: "rule.put",
+      rowId: "r1",
+      url: "/rules/r1",
+      base: rule,
+      queuedBase: { pattern: "coffee", matchType: "contains", categoryId: "c1", priority: 10 },
+      payload: {
+        pattern: "coffee",
+        matchType: "contains",
+        categoryId: "c1",
+        priority: 20,
+      },
+      revert: { priority: 10 },
+      diff: { priority: 20 },
+      send: (payload, { base, queue }) =>
+        api.updateRule(
+          "r1",
+          payload as unknown as UpdateRuleRequest,
+          base === undefined ? { queue } : { base: base as Rule, queue },
+        ),
+    },
+    {
+      // The series carries four fields the endpoint does not write — amount,
+      // accountId, startDate and endDate are derived from its terms — and two it
+      // does (monthlyAmount, attachedCount). A base carrying any of them would
+      // hold the field as a change the user never made, and a diff built from one
+      // would send it.
+      op: "recurring.put",
+      rowId: "s1",
+      url: "/recurring/s1",
+      base: series,
+      queuedBase: {
+        accountId: "a1",
+        name: "Netflix",
+        description: "",
+        amount: 649,
+        type: "debit",
+        frequency: "monthly",
+        interval: 1,
+        startDate: "2026-01-01",
+        active: true,
+        notes: "",
+      },
+      payload: {
+        accountId: "a1",
+        name: "Prime",
+        description: "",
+        amount: 649,
+        type: "debit",
+        frequency: "monthly",
+        interval: 1,
+        startDate: "2026-01-01",
+        active: true,
+        notes: "",
+      },
+      revert: { name: "Netflix" },
+      diff: { name: "Prime" },
+      send: (payload, { base, queue }) =>
+        api.updateRecurringSeries(
+          "s1",
+          payload as unknown as UpdateRecurringSeriesRequest,
+          base === undefined ? { queue } : { base: base as RecurringSeries, queue },
+        ),
+    },
+    {
+      // The one row addressed by two ids: the term endpoint takes the series and
+      // the term, and the series is not in the body. The ids are closed over
+      // rather than passed, so the table's `send` stays one shape.
+      op: "recurringTerm.put",
+      rowId: "term-1",
+      url: "/recurring/s1/terms/term-1",
+      base: term,
+      queuedBase: {
+        seriesId: "s1",
+        startDate: "2026-01-01",
+        endDate: "2026-06-01",
+        amount: 649,
+        accountId: "a1",
+      },
+      payload: {
+        startDate: "2026-01-01",
+        endDate: "2026-12-01",
+        amount: 649,
+        accountId: "a1",
+      },
+      revert: { endDate: "2026-06-01" },
+      diff: { endDate: "2026-12-01" },
+      send: (payload, { base, queue }) =>
+        api.updateRecurringTerm(
+          "s1",
+          "term-1",
+          payload as unknown as UpdateRecurringSeriesTermRequest,
+          base === undefined ? { queue } : { base: base as RecurringSeriesTerm, queue },
+        ),
+    },
+    {
+      // The loan: the base is the schedule detail the form opened with, and what
+      // is diffed is its *terms* — the periods in the same response are derived
+      // server-side from them, so a queued edit is a change to the terms and
+      // nothing else.
+      op: "loanSchedule.put",
+      rowId: "a1",
+      url: "/accounts/a1/loan-schedule",
+      base: loanDetail,
+      queuedBase: {
+        principal: 100000,
+        processingFee: 1000,
+        disbursalDate: "2026-01-05",
+        annualRateBps: 950,
+        tenureMonths: 24,
+        startDate: "2026-01-10",
+      },
+      payload: {
+        principal: 100000,
+        processingFee: 1000,
+        disbursalDate: "2026-01-05",
+        annualRateBps: 950,
+        tenureMonths: 36,
+        startDate: "2026-01-10",
+      },
+      revert: { tenureMonths: 24 },
+      diff: { tenureMonths: 36 },
+      send: (payload, { base, queue }) =>
+        api.saveLoanSchedule(
+          "a1",
+          payload as unknown as LoanScheduleRequest,
+          base === undefined
+            ? { queue }
+            : { base: base as LoanScheduleDetail, queue },
+        ),
+    },
+  ];
+
   beforeEach(() => {
     localStorage.clear();
     setServedFromCache(false);
@@ -1274,6 +1510,130 @@ describe("offline behaviour", () => {
     // in it. The failure is the honest answer.
     await expect(send(payload, {})).rejects.toThrow(NetworkError);
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  // The whole-row family, and it is the same six questions asked again. The
+  // endpoint writes every column its body names, which is why the answer for this
+  // family is a *diff* rather than a whole row: the whole row is the flush's job to
+  // build, by overlaying this diff onto the row it re-reads (registry.ts's
+  // mergedRow), and a save that sent the form's row instead would wipe whatever
+  // moved while the form was open.
+  it.each(WHOLE_FAMILY)("$op PUTs only the field the user changed", async ({
+    url,
+    diff,
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "x" }));
+
+    await send(payload, { base });
+
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(opts.method).toBe("PUT");
+    expect(JSON.parse(opts.body)).toEqual(diff);
+  });
+
+  it.each(WHOLE_FAMILY)("$op sends the whole payload when no base is supplied", async ({
+    url,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "x" }));
+
+    await send(payload, {});
+
+    // Unchanged from before the offline edit existed: a caller holding no base row
+    // has only its payload, and for this family the payload *is* the whole row —
+    // loan.go:324 and recurring.go:922 cannot write one term of it.
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(JSON.parse(opts.body)).toEqual(payload);
+  });
+
+  it.each(WHOLE_FAMILY)("$op sends no request at all when the form changed nothing", async ({
+    base,
+    payload,
+    revert,
+    send,
+  }) => {
+    const result = await send({ ...payload, ...revert }, { base });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ queued: false });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(WHOLE_FAMILY)("$op queues the diff against the projected base when the server is unreachable", async ({
+    op,
+    rowId,
+    diff,
+    queuedBase,
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await send(payload, { base });
+
+    expect(result).toEqual({ queued: true });
+    const entries = getOutboxSnapshot("u1");
+    expect(entries).toHaveLength(1);
+    // The op is what tells the flush which endpoint to reach and therefore that
+    // the diff has to be overlaid onto the server's row rather than sent alone.
+    expect(entries[0]).toMatchObject({ kind: "edit", op, rowId, patch: diff });
+    const entry = entries[0];
+    if (entry.kind !== "edit") throw new Error(`${op} queued a non-edit`);
+    // The projection, not the row: `id`, `createdAt`, `monthlyAmount` and the rest
+    // are on these rows and on no request, and a base carrying one of them would
+    // hold the field as a change nobody made.
+    expect(entry.base).toEqual(queuedBase);
+  });
+
+  it.each(WHOLE_FAMILY)("$op fails the flush rather than re-queueing the entry it is sending", async ({
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(send(payload, { base, queue: false })).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(WHOLE_FAMILY)("$op cannot queue an edit made with no base", async ({
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // Nothing to be a patch *against*: the flush needs the base to tell the user's
+    // change from someone else's, and an entry without one would merge as though
+    // they had changed every field in it.
+    await expect(send(payload, {})).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  // A clear is a change, and this family is the one where dropping it would be
+  // invisible: a term with no end date is open-ended, so a body that lost the key
+  // would leave the range the user just closed exactly as it was.
+  it("keeps a clear in a whole-row diff, which is a value the endpoint writes", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await api.updateRecurringTerm(
+      "s1",
+      "term-1",
+      { startDate: "2026-01-01", endDate: "", amount: 649, accountId: "a1" },
+      { base: term },
+    );
+
+    const entry = getOutboxSnapshot("u1")[0];
+    if (entry.kind !== "edit") throw new Error("updateRecurringTerm queued a non-edit");
+    // "" and not an absent key: an omitted end_date in a merged whole-row request
+    // is the row the server holds, not the open-ended range the user chose.
+    expect(entry.patch).toEqual({ endDate: "" });
   });
 
   it("keeps a cleared field in a queued diff, and never the token beside it", async () => {

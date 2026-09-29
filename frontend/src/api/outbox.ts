@@ -14,7 +14,10 @@
 // queue and is re-read and re-merged on every later flush, so the user decides
 // against the server's latest state rather than a snapshot that has moved again;
 // what is sent is always the queued patch, never the merge's whole-row output,
-// because sending the latter would revert the fields the user never touched.
+// because sending the latter would revert the fields the user never touched. A
+// putWhole op's request is that patch *overlaid on* the server's row, by the op
+// registry, because its endpoint writes every column — but the values in it are
+// still the patch's and the server's, never the merge's.
 //
 // Queue semantics on flush: a network failure or a server/session problem
 // (401/403/5xx) stops the flush and keeps the queue in order for the next
@@ -30,6 +33,12 @@
 import type { CreateTransactionRequest } from "../types";
 import { mergeFields, type FieldPatch, type FieldValue } from "./merge";
 import { ApiError, NetworkError } from "./errors";
+// The op registry, for the one question this module cannot answer on its own: what
+// an endpoint does with a payload that names some fields and omits others. That is
+// declared per op there (see isPutWhole), and a copy of the answer here would be a
+// second list of ops to keep true. The import is a cycle through client.ts and is
+// safe because both sides only reach the other from inside a function body.
+import { OPS } from "./registry";
 
 const PREFIX = "fintrak_outbox:v1";
 
@@ -639,33 +648,34 @@ interface WritePlan {
 }
 
 // isPutWhole names the ops the registry declares as putWhole: the five whose
-// endpoint writes every column on every call, so a field-level patch is the wrong
-// payload for them — the columns the patch does not name are written too, from
+// endpoint writes every column its body can carry, whether the body names it or
+// not — a payee's name and account, a rule's seventeen, a term's start, end,
+// amount and account, a loan's terms. A field-level patch is therefore the wrong
+// payload for them: the columns the patch does not name are written too, from
 // whatever the server last held, and the rest of the form's row is lost with them.
 //
-// The test is the suffix rather than a list, and that is deliberately too broad:
-// it also catches the six putPartial ops, which the registry declares as leaving
-// an omitted key alone and which would be perfectly happy with a diff. The
-// refusal is over-broad in the safe direction — an over-broad refusal is loud and
-// costs the user one clear message, while a missing one is a silent column wipe —
-// and it narrows to `OPS[op].shape === "putWhole"` when the registry's overlay
-// lands, which is the thing that makes the whole-row payload buildable.
+// The test is the registry's own declaration rather than a list or a suffix here,
+// and that is the whole point of `shape` being data on the op: it is the one place
+// that says what an endpoint does with an omitted key, so a second opinion written
+// beside the merge would be a second thing to get wrong. It was the `.put` suffix
+// once, which also caught the six putPartial ops — endpoints that leave an omitted
+// key alone and are perfectly happy with a diff — so those edits were refused for a
+// reason that was not theirs until the overlay landed.
 function isPutWhole(op: WriteOp): boolean {
-  return op.endsWith(".put");
+  return OPS[op].shape === "putWhole";
 }
 
 // planEdit decides one queued edit against the server's current row.
 async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePlan> {
   if (isPutWhole(entry.op)) {
     // Loud, and on purpose, for the reason isPutWhole gives: this family needs the
-    // merged row rather than the patch, and building that overlay is the op
-    // registry's job. A flush wired with a reader and no overlay would PUT a bare
-    // diff and wipe every column the form opened with, which no test in this file
-    // would catch and no user would see. The throw is the reminder, and it goes
-    // when the overlay lands — narrowed to the ops the registry declares as
-    // putWhole, which is why the six putPartial ops will start flowing again.
+    // merged row rather than the patch, and the overlay that builds it is the op
+    // registry's (applyOp's mergedRow). A flush wired with a reader and reaching
+    // nothing else would PUT a bare diff and wipe every column the form opened
+    // with, which no test in this file would catch and no user would see — so the
+    // throw stands here until the dispatch goes through that seam.
     throw new Error(
-      `flushOutbox cannot send a ${entry.op} entry: a .put op is sent the merged row rather than the patch, and the op registry has not supplied that overlay yet`,
+      `flushOutbox cannot send a ${entry.op} entry: a putWhole op is sent the merged row rather than the patch, and the flush has no way to build that overlay`,
     );
   }
 
@@ -690,9 +700,10 @@ async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePl
       // naming the field, which is what a field-level patch means by leaving a
       // value alone (see merge.ts: absent is not null): carrying the queued value
       // for a field the user chose to leave would re-assert the very value they
-      // declined to write. A `.put` op would have to name it with the server's
-      // value instead — which is why that family refuses to run until the
-      // registry supplies the overlay (see isPutWhole).
+      // declined to write. A putWhole op reads that omission the other way round
+      // and gets it right by itself — its endpoint writes every column, so the
+      // registry overlays this patch onto the server's own row and the field the
+      // user kept is written back as the value they kept (see isPutWhole).
       if (side === "theirs") delete decided[field];
     }
     // Nothing left to write is not a write. Every field answered "theirs" leaves
@@ -717,8 +728,9 @@ async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePl
   // a concurrent change to a field the user never touched — the exact bug this
   // merge exists to prevent. On a clean merge the engine's job is to confirm that
   // nothing conflicts, not to rewrite the payload. The one family for which the
-  // merge's whole-row output *is* the right payload is refused above, until the
-  // op registry builds that overlay.
+  // merge's whole-row output *is* the right payload is refused above, because the
+  // overlay that turns this patch into that row belongs to the op registry
+  // (applyOp's mergedRow) rather than here.
   return { send: entry, conflict: null, gone: 0 };
 }
 

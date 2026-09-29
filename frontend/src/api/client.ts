@@ -86,6 +86,11 @@ import {
   projectAccountType,
   projectCategory,
   projectGroup,
+  projectLoanTerms,
+  projectPayee,
+  projectRecurringSeries,
+  projectRecurringTerm,
+  projectRule,
   projectSettings,
   projectTransaction,
 } from "./projections";
@@ -546,6 +551,21 @@ export interface SettingsWrite<Row, Data> {
   (data: Data, options: EditOptions<Row>): Promise<null | QueuedEdit>;
 }
 
+// TermWrite is EditWrite for the one row this API addresses by two ids: a
+// recurring term is written through its series (`PUT /recurring/{id}/terms/{tid}`)
+// and carries only its own id, so the series rides beside the body in the call
+// rather than inside it — which is also the only way the flush can find it again
+// (see registry.ts's readTerm).
+export interface TermWrite<Row, Data> {
+  (seriesId: string, termId: string, data: Data): Promise<Row>;
+  (
+    seriesId: string,
+    termId: string,
+    data: Data,
+    options: EditOptions<Row>,
+  ): Promise<Row | QueuedEdit>;
+}
+
 const api = {
   // Auth
   register: (data: RegisterRequest): Promise<AuthResponse> =>
@@ -975,14 +995,51 @@ const api = {
   // transfer it precedes cannot disagree.
   getLoanPayoff: (accountId: string, date: string): Promise<LoanPayoff> =>
     request(`/accounts/${accountId}/loan-payoff?date=${date}`),
-  saveLoanSchedule: (
+  // A loan's amortization *terms*, not its schedule. loan.go:324 upserts principal,
+  // processing fee, rate, tenure and both dates from the body, and the periods in
+  // the response are derived from them server-side by loadLoanScheduleDetail — the
+  // schedule looks like a document and is not one, and a queued edit is a change
+  // to the terms and to nothing else. So the base is the schedule detail the form
+  // opened with and the diff is taken over its `schedule`: a loan with no
+  // schedule yet has no terms to be a patch against, so its base is empty and the
+  // payload stands — which is the right answer here, because the endpoint is about
+  // to create exactly those terms.
+  saveLoanSchedule: (async (
     accountId: string,
     data: LoanScheduleRequest,
-  ): Promise<LoanScheduleDetail> =>
-    request(`/accounts/${accountId}/loan-schedule`, {
+    options: EditOptions<LoanScheduleDetail> = {},
+  ) => {
+    const base = options.base ? projectLoanTerms(options.base.schedule ?? {}) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<LoanScheduleDetail>(`/accounts/${accountId}/loan-schedule`, {
       method: "PUT",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        // The row is the account: the schedule is keyed by the account it belongs
+        // to and has no id of its own to name.
+        enqueueEdit(
+          owner,
+          "loanSchedule.put",
+          accountId,
+          edit.base,
+          edit.patch,
+          edit.base,
+        );
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<LoanScheduleDetail, LoanScheduleRequest>,
   deleteLoanSchedule: (accountId: string): Promise<{ deleted: number }> =>
     request(`/accounts/${accountId}/loan-schedule`, { method: "DELETE" }),
   // The bank credit that released this loan. Linking replaces any previous
@@ -1142,8 +1199,36 @@ const api = {
     request("/rules", options),
   createRule: (data: CreateRuleRequest): Promise<Rule> =>
     request("/rules", { method: "POST", body: JSON.stringify(data) }),
-  updateRule: (id: string, data: UpdateRuleRequest): Promise<Rule> =>
-    request(`/rules/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  updateRule: (async (
+    id: string,
+    data: UpdateRuleRequest,
+    options: EditOptions<Rule> = {},
+  ) => {
+    // updateTransaction's rules, one for one, on a whole-row endpoint: rule.go:287
+    // writes all seventeen columns from the body, so the diff is what this call
+    // sends and the flush is what assembles the row the endpoint will overwrite.
+    const base = options.base ? projectRule(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<Rule>(`/rules/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "rule.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<Rule, UpdateRuleRequest>,
   deleteRule: (id: string): Promise<null> =>
     request(`/rules/${id}`, { method: "DELETE" }),
   applyRules: (): Promise<ApplyRulesResult> =>
@@ -1156,8 +1241,42 @@ const api = {
     request("/payees", options),
   createPayee: (data: CreatePayeeRequest): Promise<Payee> =>
     request("/payees", { method: "POST", body: JSON.stringify(data) }),
-  updatePayee: (id: string, data: UpdatePayeeRequest): Promise<Payee> =>
-    request(`/payees/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  updatePayee: (async (
+    id: string,
+    data: UpdatePayeeRequest,
+    options: EditOptions<Payee> = {},
+  ) => {
+    // The smallest of the five and the clearest: payee.go:118 is
+    // `UPDATE payees SET name = $1, account_id = $2`, so a body naming only the
+    // name would detach the payee from the account it was attached to. The diff
+    // is therefore what goes out, and the whole row is the flush's to build.
+    //
+    // `accountId` is the interesting field on this one. It is nullable and the
+    // handler reads a null as the real clear (`$2::uuid IS NULL`), so a form that
+    // sends `accountId: null` for a payee in the global pool means it — and the
+    // user's side is not projected, so the clear survives the diff.
+    const base = options.base ? projectPayee(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<Payee>(`/payees/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "payee.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<Payee, UpdatePayeeRequest>,
   deletePayee: (id: string): Promise<null> =>
     request(`/payees/${id}`, { method: "DELETE" }),
 
@@ -1188,11 +1307,44 @@ const api = {
     data: CreateRecurringSeriesRequest,
   ): Promise<RecurringSeries> =>
     request("/recurring", { method: "POST", body: JSON.stringify(data) }),
-  updateRecurringSeries: (
+  updateRecurringSeries: (async (
     id: string,
     data: UpdateRecurringSeriesRequest,
-  ): Promise<RecurringSeries> =>
-    request(`/recurring/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    options: EditOptions<RecurringSeries> = {},
+  ) => {
+    // recurring.go:922 writes name, description, type, frequency, interval,
+    // category, payee, active and notes from the body, so a bare diff would blank
+    // every one of them the form did not name. The diff is what this call sends
+    // and the whole row is the flush's to build.
+    //
+    // Four of the fourteen projected fields are not among them: deriveRecurringSeries
+    // (recurring.go:318) fills a series' start date, end date, account and amount
+    // in from its terms, and the endpoint changes them by splitting a term
+    // (applyRecurringChange) rather than by writing the series row. They are in the
+    // projection because the merge needs to see a term's new amount as somebody
+    // else's change, not because this endpoint can set them.
+    const base = options.base ? projectRecurringSeries(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<RecurringSeries>(`/recurring/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "recurring.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<RecurringSeries, UpdateRecurringSeriesRequest>,
   deleteRecurringSeries: (id: string): Promise<null> =>
     request(`/recurring/${id}`, { method: "DELETE" }),
   getRecurringForecast: (
@@ -1222,15 +1374,49 @@ const api = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  updateRecurringTerm: (
-    id: string,
+  updateRecurringTerm: (async (
+    seriesId: string,
     termId: string,
     data: UpdateRecurringSeriesTermRequest,
-  ): Promise<RecurringSeriesTerm> =>
-    request(`/recurring/${id}/terms/${termId}`, {
+    options: EditOptions<RecurringSeriesTerm> = {},
+  ) => {
+    // The sharpest of the five. recurring.go:1183 is
+    // `UPDATE recurring_series_terms SET start_date = $1, end_date = $2, amount =
+    // $3, account_id = $4` with no COALESCE and no guard on any of them, so a
+    // merged request that did not name a term's end date would write a NULL there
+    // and make a closed range open-ended. The diff is what this call sends; the
+    // flush overlays it on the row it re-reads (registry.ts's mergedRow), which
+    // is also the only place the series this row belongs to can be found again.
+    //
+    // `endDate: ""` is a value and not an absence — the handler reads it as
+    // "no end date" — so the user's side is taken as given and a form that opens
+    // the range keeps the clear in the diff.
+    const base = options.base ? projectRecurringTerm(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<RecurringSeriesTerm>(`/recurring/${seriesId}/terms/${termId}`, {
       method: "PUT",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        // The row is the term: the series is part of the term's own projection
+        // (registry.ts's readTerm is the only read that can find it again), and it
+        // rides on the entry's base rather than in the path, which the queue has
+        // no field for.
+        enqueueEdit(owner, "recurringTerm.put", termId, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as TermWrite<RecurringSeriesTerm, UpdateRecurringSeriesTermRequest>,
   deleteRecurringTerm: (id: string, termId: string): Promise<null> =>
     request(`/recurring/${id}/terms/${termId}`, { method: "DELETE" }),
   attachRecurring: (

@@ -213,6 +213,30 @@ async function reCreate(
   return spec.reCreate(snapshot, diff, key);
 }
 
+// The whole-row family, and where each of its five endpoints keeps the payload it
+// was given. A term is the only one addressed by two ids, so its body is the
+// third argument rather than the second.
+const WHOLE_ROW_BODY: Record<string, [keyof typeof apiMocks, number]> = {
+  "payee.put": ["updatePayee", 1],
+  "rule.put": ["updateRule", 1],
+  "recurring.put": ["updateRecurringSeries", 1],
+  "recurringTerm.put": ["updateRecurringTerm", 2],
+  "loanSchedule.put": ["saveLoanSchedule", 1],
+};
+
+// sentBody reads back what one of the five whole-row endpoints was last given. The
+// overlay is a change to the *body* and to nothing else — every one of these
+// writes is a single PUT of one object — so the body is the only thing a test
+// about it can look at.
+function sentBody(op: WriteOp): FieldPatch {
+  const at = WHOLE_ROW_BODY[op];
+  if (!at) throw new Error(`${op} is not a whole-row op`);
+  const [method, index] = at;
+  const call = apiMocks[method].mock.calls.at(-1);
+  if (!call) throw new Error(`${op} sent nothing`);
+  return call[index] as FieldPatch;
+}
+
 // Every op whose entry names its rows, and the field of the transaction each one
 // writes — the two things the flush needs to build the request.
 const MULTI_ROW: WriteOp[] = [
@@ -513,6 +537,23 @@ describe("sending a diff", () => {
     expect(apiMocks[method]).not.toHaveBeenCalled();
   });
 
+  // One refusal, every field it is refusing. Naming only the first means a diff
+  // with two empty strings is held once, the user fixes that one, and the same
+  // entry is held again for the other — one field at a time through a queue entry
+  // the user is asked to decide as a whole.
+  it("names every field a putPartial diff cannot clear, not just the first", async () => {
+    const refusal = await applyOp("account.put", "a1", { bank: "", color: "" }, {
+      bank: "HDFC",
+      color: "#fff",
+    }).then(
+      () => null,
+      (err: unknown) => err as ApiError,
+    );
+
+    expect(refusal?.message).toContain("bank, color cannot be cleared to an empty value");
+    expect(apiMocks.updateAccount).not.toHaveBeenCalled();
+  });
+
   // The settings singleton is the sixth. Its endpoint is the odd one of the six —
   // paperless.go:478-508 builds its SET clause by clause behind `if req.X != nil`
   // rather than with COALESCE(NULLIF(...)), so a "" handed to it is a value it
@@ -551,11 +592,108 @@ describe("sending a diff", () => {
     expect(apiMocks.updateUserSettings).toHaveBeenCalledWith({ paperlessTag: "new" });
   });
 
+  // Review Focus #5. payee.go:118 writes every column every time, so a bare diff
+  // nulls account_id.
+  it("sends the merged row for a putWhole op, never the bare diff", async () => {
+    await applyOp("payee.put", "p1", { name: "New" }, { name: "Old", accountId: "a1" });
+    expect(sentBody("payee.put")).toEqual({ name: "New", accountId: "a1" });
+  });
+
+  it("covers the whole-row family, and the table above is its whole content", () => {
+    // Five endpoints and one overlay: a table that quietly left one of them out
+    // would make the family look covered when one column wipe survives it.
+    expect(Object.keys(WHOLE_ROW_BODY).sort()).toEqual([...PUT_WHOLE].sort());
+  });
+
+  // The sharpest of the five, and the reason the family is called whole-row:
+  // recurring.go:1183 writes `SET start_date = $1, end_date = $2, amount = $3,
+  // account_id = $4` with no COALESCE and no guard, so a body naming only the
+  // amount clears the end date of a term the user was closing.
+  it("carries a whole term, so a diff that omits end_date cannot clear it", async () => {
+    await applyOp("recurringTerm.put", "term-1", { amount: 700 }, {
+      seriesId: "s1",
+      startDate: "2026-01-01",
+      endDate: "2026-06-01",
+      amount: 649,
+      accountId: "a1",
+    });
+    expect(sentBody("recurringTerm.put")).toEqual({
+      seriesId: "s1",
+      startDate: "2026-01-01",
+      endDate: "2026-06-01",
+      amount: 700,
+      accountId: "a1",
+    });
+  });
+
+  // The loan is a whole-row upsert of *terms*: loan.go:324 writes principal,
+  // processing fee, rate, tenure and both dates from the body, and the
+  // amortization periods it answers with are derived from them server-side. So
+  // the merge is over the terms row, and a diff naming one of them must still
+  // arrive with the rest.
+  it("sends the loan's terms whole, not the one field the user changed", async () => {
+    await applyOp("loanSchedule.put", "a1", { tenureMonths: 36 }, {
+      principal: 100000,
+      processingFee: 1000,
+      annualRateBps: 950,
+      tenureMonths: 24,
+      startDate: "2026-01-01",
+    });
+    expect(sentBody("loanSchedule.put")).toEqual({
+      principal: 100000,
+      processingFee: 1000,
+      annualRateBps: 950,
+      tenureMonths: 36,
+      startDate: "2026-01-01",
+    });
+  });
+
+  // A clear the user made is a value, and the overlay must not read it as an
+  // absence to be filled in from the server's row. `accountId: null` against a
+  // base that holds one is payee.go:120's `$2::uuid IS NULL` branch — the payee
+  // goes back to the global pool — and an overlay that dropped it would re-attach
+  // the account the user detached.
+  it("keeps a clear the diff made, rather than filling it in from the server's row", async () => {
+    await applyOp("payee.put", "p1", { accountId: null }, {
+      name: "Cafe",
+      accountId: "a1",
+    });
+    expect(sentBody("payee.put")).toEqual({ name: "Cafe", accountId: null });
+  });
+
+  // Review Focus #5. Merging onto a read that lacks a field must not emit
+  // undefined into a NOT NULL column. Neither side of the merge manufactures one
+  // today — project() drops a nullish field and diffAgainstBase skips an
+  // undefined value — so this pins the one thing that could: the overlay itself.
+  // The loan's start_date has no default and no COALESCE (loan.go:332), so a body
+  // that carried the key at all would be a request the server answers with a
+  // schedule it cannot schedule.
+  it("never emits undefined into a merged putWhole row", async () => {
+    await applyOp("loanSchedule.put", "a1", { tenureMonths: 36 }, {
+      principal: 100000,
+      startDate: undefined,
+      tenureMonths: 24,
+    });
+    // toStrictEqual, not toEqual: an explicit `startDate: undefined` is a key, and
+    // toEqual does not see one.
+    expect(sentBody("loanSchedule.put")).toStrictEqual({
+      principal: 100000,
+      tenureMonths: 36,
+    });
+  });
+
+  // A row the server no longer has is a fact about the row, and the flush records
+  // it as one (outbox.ts's recordGone) rather than reaching the wire. An overlay
+  // of nothing is the alternative: the diff alone, which for this family is a wipe
+  // of every column the entry does not name — refused here so it cannot be sent by
+  // a caller that skipped the merge.
+  it.each(PUT_WHOLE)("%s refuses to write onto a row the server no longer has", async (op) => {
+    await expect(applyOp(op, "row-1", { name: "New" }, null)).rejects.toThrow(/gone/i);
+  });
+
   it("reaches each whole-row family through its own endpoint, keyed by the row's own id", async () => {
-    // The payload is the overlay's business, not this task's: a putWhole op must
-    // be sent the merged row, and until that overlay exists the flush refuses
-    // the family outright (see outbox.ts isPutWhole). What belongs here is that
-    // each one is addressed by the identifier it is given.
+    // The payload is the overlay's business; what belongs here is that each one is
+    // addressed by the identifier it is given.
     const theirs: FieldPatch = { name: "Old", accountId: "a1" };
     await applyOp("payee.put", "p1", { name: "New" }, theirs);
     expect(apiMocks.updatePayee.mock.calls[0][0]).toBe("p1");
@@ -568,8 +706,8 @@ describe("sending a diff", () => {
   it("addresses a recurring term by its series, which only theirs can name", async () => {
     // The term endpoint takes a series id and a term id, and a term carries its
     // own id only — so the series comes off the server's row the diff was merged
-    // onto. A term whose row the server no longer has has no series to address,
-    // and must not be written through a guess.
+    // onto. A row that does not name one has nothing to address, and must not be
+    // written through a guess.
     await expect(
       applyOp("recurringTerm.put", "term-1", { amount: 700 }, {
         seriesId: "s1",
@@ -582,8 +720,8 @@ describe("sending a diff", () => {
     ]);
 
     await expect(
-      applyOp("recurringTerm.put", "term-1", { amount: 700 }, null),
-    ).rejects.toThrow(/gone/i);
+      applyOp("recurringTerm.put", "term-1", { amount: 700 }, { amount: 649 }),
+    ).rejects.toThrow(/series/i);
     expect(apiMocks.updateRecurringTerm).toHaveBeenCalledTimes(1);
   });
 

@@ -866,26 +866,37 @@ describe("outbox", () => {
   });
 
   // A field-level patch is the wrong payload for a putWhole op, whose endpoint
-  // writes every column on every call: sending one leaves the columns it does not
-  // name exactly as the server last had them, which is a wipe of the fields the
-  // form opened with and the user was never shown. The right payload is the merged
-  // row, and the overlay that builds it belongs to the op registry — so until that
-  // exists this is loud rather than one enum away from a data wipe.
-  //
-  // The op below is a putPartial one, which the registry declares as leaving an
-  // omitted key alone and which would be perfectly happy with a diff: the test is
-  // the `.put` suffix, so the refusal is deliberately wider than the reason. It is
-  // over-broad in the safe direction, and it narrows to the registry's declared
-  // shape when the overlay lands.
-  it("refuses to send a .put op, whose payload is not built yet", async () => {
-    enqueueEdit(USER, "account.put", "acct-1", { name: "old", color: "#fff" }, { name: "new" }, { name: "old", color: "#fff" });
+  // writes every column its body can name whether the body names it or not. The
+  // right payload is the merged row, and the op registry is what builds it — so
+  // until the flush reaches that overlay the family is refused here rather than
+  // one enum away from a data wipe.
+  it("refuses to send a putWhole op, whose merged row the flush does not build", async () => {
+    enqueueEdit(USER, "payee.put", "p1", { name: "old", accountId: "a1" }, { name: "new" }, { name: "old", accountId: "a1" });
 
     await expect(flushOutbox(USER, async () => {}, {
-      theirs: async () => ({ name: "new", color: "#000" }),
-    })).rejects.toThrow(/account\.put/);
+      theirs: async () => ({ name: "new", accountId: "a1" }),
+    })).rejects.toThrow(/payee\.put/);
 
     // Refusing is not discarding: the entry is still the user's.
     expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  // The other half of the narrowing, and the half with a user in it: the refusal
+  // used to be the `.put` suffix, so it caught the six putPartial ops as well.
+  // Those endpoints leave an omitted key alone, they want a diff and nothing else,
+  // and every offline edit to an account, category, group, account type, admin
+  // category or setting was refused for a reason that was not theirs.
+  it("sends a putPartial op, which the suffix used to refuse as well", async () => {
+    enqueueEdit(USER, "account.put", "acct-1", { name: "old", color: "#fff" }, { name: "new" }, { name: "old", color: "#fff" });
+    const sent: FieldPatch[] = [];
+
+    const outcome = await flushOutbox(USER, async (entry) => {
+      if (entry.kind === "edit") sent.push(entry.patch);
+    }, { theirs: async () => ({ name: "old", color: "#000" }) });
+
+    expect(sent).toEqual([{ name: "new" }]);
+    expect(outcome).toMatchObject({ sent: 1, remaining: 0, failed: 0 });
+    expect(getOutboxSnapshot(USER)).toHaveLength(0);
   });
 
   // The heart of it: one request, three states. The clean row goes out, the
