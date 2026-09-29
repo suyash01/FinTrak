@@ -294,7 +294,7 @@ git commit -m "feat(query): an id: term, so one transaction can be read back"
 
 ---
 
-### Task 3: The queue's storage layer — union, v1 default, byte cap
+### Task 3: The queue's storage layer — union and v1 default
 
 **Files:**
 - Modify: `frontend/src/api/outbox.ts`
@@ -323,8 +323,11 @@ git commit -m "feat(query): an id: term, so one transaction can be read back"
   export function getOutboxSnapshot(userId: string): QueuedWrite[];
   export function removeEntry(userId: string, key: string): boolean;
   export const MAX_ENTRIES: number;      // 100
-  export const MAX_TOTAL_CHARS: number;   // 1_000_000
   ```
+
+  The byte budget is **not** in this task — it lands with `enqueueEdit` in Task 4,
+  because a create is far too small to reach 1MB inside a 100-entry cap and only an
+  edit can fill the queue. A cap added here would ship with no test.
 
 - [ ] **Step 1: Write the failing test for the v1 default**
 
@@ -371,16 +374,12 @@ export type WriteOp =
 
 In `parseEntries`, after `JSON.parse`, map each parsed object through a normalizer that returns `{ ...raw, kind: raw.kind ?? "create" }`. Leave the existing "an unchecked cast of our own persisted queue" comment in place and extend it to say why the default is safe.
 
-- [ ] **Step 5: Add the byte cap beside the entry cap**
-
-Add `MAX_TOTAL_CHARS = 1_000_000` and, in the enqueue path, compute `JSON.stringify(entries).length` before writing; throw the same `queue is full` `Error` the entry cap throws when either cap is reached. The refusal message must name both caps so the user can act on it. Do not change the refusal-not-eviction behaviour.
-
-- [ ] **Step 6: Run it to verify it passes**
+- [ ] **Step 5: Run it to verify it passes**
 
 Run: `bun run test -- src/api/outbox.test.ts`
 Expected: PASS — including all 20 pre-existing create tests, unchanged.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add frontend/src/api/outbox.ts frontend/src/api/outbox.test.ts
@@ -401,6 +400,7 @@ This is where Review Focus #1 is pinned: the base of a second edit to the same r
 - Consumes: `enqueueCreate`'s signature and `OutboxStorageError` from `outbox.ts`; `FieldPatch` from Task 1.
 - Produces:
   ```ts
+  export const MAX_TOTAL_CHARS: number;   // 1_000_000
   export function enqueueEdit(
     userId: string, op: WriteOp, rowId: string,
     base: FieldPatch, patch: FieldPatch, snapshot: FieldPatch,
@@ -412,6 +412,12 @@ This is where Review Focus #1 is pinned: the base of a second edit to the same r
   export function queuedPatchFor(userId: string, op: WriteOp, rowId: string, field: string): FieldValue;
   export function queuedRowProjection(userId: string, op: WriteOp, rowId: string): FieldPatch | null;
   ```
+
+  **The entry key is generated, not derived.** `enqueueEdit` and `enqueueBulk` mint a
+  `crypto.randomUUID()` and return the entry, so a caller or test reads `entry.key`.
+  A key like `` `${op}:${rowId}` `` would be wrong: two edits to the same row before a
+  flush are the whole reason the locally projected base exists, and a deterministic
+  key would collapse them into one and lose the first.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -460,9 +466,11 @@ it("reports the effective queued value for a field, or undefined when untouched"
 Run: `bun run test -- src/api/outbox.test.ts`
 Expected: FAIL — `enqueueEdit` is not exported.
 
-- [ ] **Step 3: Implement `enqueueEdit`**
+- [ ] **Step 3: Implement `enqueueEdit` and the byte cap**
 
 Follow `enqueueCreate`'s shape exactly: read entries, return the existing entry if one with the same `key` is queued, throw the cap error if either cap is reached, build the entry, and `throw new OutboxStorageError()` unless `writeEntries` returned true.
+
+The byte cap lands here rather than in Task 3, because a create is far too small to reach 1MB inside a 100-entry cap and only an edit can fill the queue. Add `MAX_TOTAL_CHARS = 1_000_000`; compute `JSON.stringify(entries).length` before writing and throw the same `queue is full` `Error` the entry cap throws when either cap is reached, with a message naming both. Do not change the refusal-not-eviction behaviour.
 
 Compute the stored `base` as `queuedRowProjection(userId, op, rowId)` when that returns a value, falling back to the caller's `base` when the row has nothing queued for it. The caller's `base` is the row the form opened with; the projection is that row with every queued patch for it applied. This is the whole of Review Focus #1, and the comment must say why reading the server row instead would be wrong.
 
@@ -595,16 +603,33 @@ export async function flushOutbox(
 
 - [ ] **Step 4: Implement the dispatch**
 
-Inside the existing loop, for a `create` keep today's code path byte for byte. For an `edit`: skip when `error` is set and `retryFailed` is off; skip when a `resolution` is set *and* it has been applied; otherwise read theirs, and:
+Inside the existing loop, for a `create` keep today's code path byte for byte. For an `edit`: skip when `error` is set and `retryFailed` is off; otherwise read theirs, and:
 
 | Condition | Action |
 | --- | --- |
 | theirs is `null` | `recordGone`, `outcome.gone += 1`, `continue` |
-| entry has a `resolution` | build the patch from the resolution against theirs, `send`, then remove |
+| entry has a `resolution` | send the decided values against theirs, then remove |
 | `mergeFields(...).conflicts.length > 0` | `recordConflict`, `outcome.conflicted += 1`, `continue` |
-| otherwise | `send` the resolved patch, then remove |
+| otherwise | `send` the entry, then remove |
 
-Every write of `error` / `conflict` / `gone` must go through the same `if (!writeEntries(...)) { unsaved += 1; break; }` guard the existing error path uses. A `bulk` entry runs `mergeFields` per row and treats the entry as conflicted when any row is.
+**What gets sent is `entry.patch` verbatim, not the merge's output.** `mergeFields`
+iterates the union of all three key sets, so its `patch` echoes every field of the
+row — sending that would make a queued edit revert a concurrent change to a field
+the user never touched, which is the exact bug this feature exists to fix. On a
+clean merge the engine's job is to confirm nothing conflicts, not to rewrite the
+payload. The merge output's `patch` is used only to build the `putWhole` overlay,
+whose endpoint writes every column anyway (the spec says a `putPartial` or `patch`
+family sends the diff as-is).
+
+`send` is the single dispatch point and receives the entry narrowed to what may
+actually be applied, so the production path and the tests exercise the same seam: a
+create posts it, an edit PATCHes or PUTs it, and a bulk calls
+`OPS[op].applyMany(entry.rows, entry.value)`.
+
+Every write of `error` / `conflict` / `gone` must go through the same
+`if (!writeEntries(...)) { unsaved += 1; break; }` guard the existing error path
+uses. A `bulk` entry runs `mergeFields` per row and treats the entry as conflicted
+when any row is.
 
 - [ ] **Step 5: Implement the four queue mutators**
 
@@ -679,18 +704,19 @@ Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement the transactions op**
 
-`transaction.patch`: `read` calls `api.getTransactions({ q: \`id:${rowId}\`, limit: 1 })` and returns a projection of `data[0]` or `null`. `apply` calls `api.updateTransaction(rowId, diff, { queue: false })`. `reCreate` calls `api.createTransaction({ ...snapshot, ...diff, clientKey: newClientKey() }, { queue: false })` and returns the new id — the existing idempotency guarantee, reused, so a retry cannot double-post.
+`transaction.patch`: `read` calls `api.getTransactions({ q: \`id:${rowId}\`, limit: 1 })` and returns a projection of `data[0]` or `null`. `apply` calls `api.updateTransaction(rowId, diff, { queue: false })`. `reCreate` calls `api.createTransaction({ ...snapshot, ...diff, clientKey: newClientKey() }, { queue: false })` and returns the new id — the existing idempotency guarantee, reused, so a retry cannot double-post. `newClientKey` is currently private in `client.ts`; export it for this use rather than duplicating the UUID logic, since its fallback for a non-secure context (a LAN address without TLS) is load-bearing.
+
+**`read` must not pass an `accountId`.** The list endpoint injects synthetic summary rows — per-cycle "Total outstanding" and month-end "Running balance" — when a single account is filtered and the sort is by date, and it guards on `accountUUID != nil`, which comes only from an `accountId` parameter, never from `q=`. So the read is safe precisely because it scopes with `q` alone, and stops being safe the moment an `accountId` is added. Say so in a comment, so nobody "optimises" the call by scoping it.
 
 The projection maps a `Transaction` to `{ accountId, date, description, amount, type, categoryId, tags, notes, payeeId, billingCycleId }`, leaving a key off the object when the field is nullish so absent stays distinct from `null`.
 
-- [ ] **Step 4: Implement the seven single-row PUT ops**
+- [ ] **Step 4: Implement the eleven single-row PUT ops**
 
 `account.put`, `accountType.put`, `group.put`, `category.put`, `adminCategory.put`, `settings.put` are `putPartial`: `apply` sends the diff straight through. `payee.put`, `rule.put`, `recurring.put`, `recurringTerm.put`, `loanSchedule.put` are `putWhole`: `apply` overlays the diff onto `theirs` and sends the merged row.
 
 Their `read` is the family collection read plus a find-by-id, returning the same projection shape. `settings.put`'s `read` is the singleton `getUserSettings()`; it must never send `paperlessToken`, because the response carries only `hasToken`.
 
 - [ ] **Step 5: Implement the seven multi-row ops**
-
 `transaction.categorize`, `.payee`, `.billingCycle`, `.tags`, `.loan`, `.recurring`, `.loanDisbursement` each carry `applyMany` and reuse `read`. `transaction.loanDisbursement` writes one row, so it takes a single `transactionId` and calls `api.linkLoanDisbursement`.
 
 - [ ] **Step 6: Run it to verify it passes**
@@ -1148,13 +1174,15 @@ git commit -m "feat(offline): the context counts conflicts and re-creates a gone
   export interface ConflictDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    entry: QueuedWrite | null;
+    entries: QueuedWrite[];
     onResolve: (key: string, resolution: Record<string, "mine" | "theirs">) => void;
     onReCreate: (key: string) => void;
     onDiscard: (key: string) => void;
   }
   export default function ConflictDialog(props: ConflictDialogProps): JSX.Element | null;
   ```
+
+  The dialog takes **every** held entry, not one. Several can be conflicted at once and nothing selects between them, so the dialog renders one section per entry.
 
 - [ ] **Step 1: Write the failing interaction tests**
 
@@ -1200,7 +1228,17 @@ Expected: FAIL — component does not exist.
 
 - [ ] **Step 3: Implement the dialog**
 
-A `Dialog` listing one row per `ConflictUnit`: the field name, your value, theirs, and the base, with a two-button toggle per row plus keep-all-mine / keep-all-theirs in the header. Use `labelFor`-style friendly field names, not raw keys. For a `gone` entry show the row's description and amount with Re-create (primary) and Discard (destructive, behind an `AlertDialog`) — the same shape `OfflineBanner` already uses for discarding rejected entries.
+A `Dialog` listing one section per held entry, and within it one row per
+`ConflictUnit`: the field, your value, theirs, and the base that makes the conflict
+legible. Keep-mine / keep-theirs per field, with keep-all-mine /
+keep-all-theirs in the header. A `gone` entry shows the row's description and amount
+with Re-create (primary) and Discard (destructive, behind an `AlertDialog`) — the
+same shape `OfflineBanner` already uses for discarding rejected entries.
+
+A `FieldConflict.base` is `undefined` for the no-baseline case (the user set a field
+the base never held), so the base cell must render an em-dash rather than the string
+"undefined", and that row is the one case where "keep theirs" discards an edit the
+user made — which is why the engine holds it instead of resolving it.
 
 - [ ] **Step 4: Mount it in `App.tsx`**
 
