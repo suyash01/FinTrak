@@ -707,6 +707,16 @@ picker. No backend, no client, no schema, no parity work.
 
 ### #11 — Offline conflict resolution
 
+> **Implemented** on the `offline-conflict` branch — the design and the plan are
+> `docs/superpowers/specs/2026-09-29-offline-conflict-resolution-design.md` and
+> `docs/superpowers/plans/2026-09-29-offline-conflict-resolution.md`. The three-way
+> merge is client-side and no backend change was needed, so the 409 contract this
+> proposal's Blast radius predicted does not exist. **Two things were left out on
+> purpose**: `POST /tags/rename`, because it selects rows by tag membership and the
+> client cannot enumerate a tag's rows offline, so there is no base to diff against;
+> and **every delete**, because a row that is gone has no three-way merge — there is
+> nothing on the server's side to merge with, and the only answer is keep or discard.
+
 **Category:** extension of the hand-written offline layer
 **Size:** M–L
 

@@ -585,13 +585,13 @@ describe("OfflineProvider", () => {
     apiMock.updateTransaction.mockResolvedValue({ id: "txn-1", queued: false });
     setOnline(false);
 
-    // Mounted with an empty queue and filled afterwards. The store applies the
-    // connectivity flag when a subscriber arrives rather than before the first
-    // render, so a queue already waiting at mount is flushed against the flag
-    // this test has not applied yet, and a mount-time flush is not what the case
-    // is about. A device that was offline when the user answered had its
-    // conflict held by a flush that still had a connection, and nothing else
-    // happens to the entry until they answer.
+    // Mounted with an empty queue and filled afterwards, so nothing is waiting
+    // at mount: a mount-time flush is not what the case is about, and a queue
+    // already held when the provider mounts would be sent off against the
+    // server's row instead of being left for the reconnect. A device that was
+    // offline when the user answered had its conflict held by a flush that
+    // still had a connection, and nothing else happens to the entry until they
+    // answer.
     renderProvider();
 
     // In act() for the reason setOnline is: this is a write the mounted
