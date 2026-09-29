@@ -1063,8 +1063,8 @@ const api = {
   //   there, and an empty string would be sent on as an id and rejected),
   //   "uncategorized" is how a category is cleared, and the payee and cycle
   //   endpoints cannot express a clear at all — which registry.ts refuses rather
-  //   than sends, because their requests are a required uuid behind an EXISTS
-  //   guard and the answer would be 200 with updated: 0.
+  //   than sends, because their requests are a required uuid.UUID the bind itself
+  //   rejects.
   //   No base is no queue. Without one there is nothing to tell the user's change
   //   from somebody else's, so a request that never reached the server is raised
   //   as a failure rather than queued as an entry that would hold every row it
@@ -1122,10 +1122,10 @@ const api = {
     options: BulkOptions = {},
   ) => {
     // The payee, as given. A clear is not this endpoint's to make: its request
-    // takes a required uuid and guards the write with an EXISTS on it, so one
-    // would come back 200 with updated: 0 — a write reported as done that was
-    // never performed. registry.ts refuses a clear when the entry is sent, which
-    // is where the row it would have cleared is known.
+    // takes a required uuid.UUID, so a null, an absent key and an empty string are
+    // all refused by the bind before the UPDATE is reached — a write the server
+    // would answer 400 on. registry.ts refuses a clear when the entry is sent,
+    // which is where the row it would have cleared is known.
     const bases = bulkBases(options.base);
     const value = data.payeeId;
     const rows = bases
@@ -1147,8 +1147,8 @@ const api = {
       },
     );
   }) as BulkWrite<null, BulkUpdatePayeeRequest>,
-  // As the payee, and for the same reason: BulkBillingCycleRequest is a required
-  // BillingCycleID behind the same EXISTS guard, so it cannot detach either.
+  // As the payee, and for the same reason: BulkBillingCycleRequest.BillingCycleID
+  // is a required uuid.UUID too, so it cannot detach either.
   bulkUpdateBillingCycle: (async (
     data: BulkBillingCycleRequest,
     options: BulkOptions = {},

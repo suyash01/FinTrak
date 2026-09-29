@@ -960,10 +960,14 @@ describe("the row-naming writes", () => {
   });
 
   // BulkUpdatePayeeRequest.PayeeID and BulkBillingCycleRequest.BillingCycleID are
-  // required uuids behind an EXISTS guard, so the zero uuid an empty string
-  // unmarshals to matches no row: a 200 carrying updated: 0. There is no way to
+  // `uuid.UUID` with `binding:"required"`, so the bind refuses every spelling of
+  // "no id" before the UPDATE is reached: an empty string because it is not a uuid
+  // (uuid.UUID has no UnmarshalJSON — it reaches encoding/json as a
+  // TextUnmarshaler, and ParseBytes rejects a zero-length one), a null or an
+  // absent key because the field is required, and the literal zero uuid because
+  // validator reads an all-zero [16]byte as the zero value. There is no way to
   // clear either through these endpoints, and a clear reported as applied is a
-  // user's edit lost to a success the server never performed.
+  // user's edit lost to an answer the server never gave.
   it.each<[WriteOp, keyof typeof apiMocks]>([
     ["transaction.payee", "bulkUpdatePayee"],
     ["transaction.billingCycle", "bulkUpdateBillingCycle"],

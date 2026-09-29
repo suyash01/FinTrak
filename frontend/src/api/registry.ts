@@ -171,13 +171,24 @@ function asCategory(value: FieldValue): string {
 }
 
 // requiredId is the value as the id an endpoint that cannot do without one takes,
-// and it refuses a clear rather than sending one. Three of these endpoints bind a
-// required uuid.UUID and then guard the write with an EXISTS on it, so the zero
-// uuid an empty string unmarshals to matches no row and the answer is 200 with
-// updated: 0: a clear the server never performed, reported as one that was.
-// Only BulkLoanRequest reads a null as "detach" (its LoanAccountID is a
-// *uuid.UUID), and it says so at its own call site — a helper that assumed the
-// seven endpoints agreed here was the bug.
+// and it refuses a clear rather than sending one. Two of the three are bound uuid
+// fields the server requires, so *every* spelling of "no id" is refused before the
+// write: `BulkUpdatePayeeRequest.PayeeID` and `BulkBillingCycleRequest.BillingCycleID`
+// are `uuid.UUID` with `binding:"required"`, and an empty string is not a uuid at
+// all (uuid.UUID has no UnmarshalJSON — it reaches encoding/json as an
+// encoding.TextUnmarshaler, and ParseBytes rejects a zero-length one), so the bind
+// answers 400 either way. The third is a different shape: a disbursement's loan
+// rides in the *path* (`loan.go:741`, `uuid.Parse` of `c.Param("id")`), so an
+// empty string is a 400 on the parameter and the zero uuid parses and is refused by
+// loanAccountGuard instead.
+//
+// The `EXISTS` guards are real but they are not what refuses a clear. They stop a
+// *real* id that is not the caller's — another user's payee, a cycle on a closed
+// account — from writing, which is why `updated: 0` is a reachable answer and a
+// genuine one. A clear never reaches them, because it never gets that far. Only
+// BulkLoanRequest reads a null as "detach" (its LoanAccountID is a *uuid.UUID), and
+// it says so at its own call site — a helper that assumed every endpoint wanting
+// an id agreed about this was the bug.
 //
 // An ApiError with a 4xx, for the reason applyOp's putPartial refusal gives one: a
 // queued write that cannot be sent is a definite answer about the entry, so the
@@ -188,7 +199,7 @@ function asCategory(value: FieldValue): string {
 function requiredId(op: WriteOp, value: FieldValue): string {
   if (isCleared(value) || value === "") {
     throw new ApiError(
-      `${op} cannot detach: its endpoint takes a required uuid and has no way to clear one, so a clear is refused here rather than sent as an id that matches no row (the server would answer 200 with updated: 0)`,
+      `${op} cannot detach: its endpoint takes a required uuid and has no way to clear one, so a clear is refused here rather than sent as an id the server will answer 400 on (a required uuid field, or the path parameter on the disbursement link)`,
       422,
     );
   }

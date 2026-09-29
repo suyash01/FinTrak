@@ -348,6 +348,37 @@ describe("ConflictDialog", () => {
     ).toBeInTheDocument();
   });
 
+  // The count and the sections have to agree about what is on screen, and the
+  // entry below is the one input on which they used not to. `hold` now makes it
+  // unconstructible through the queue (outbox.ts), but this dialog must not
+  // depend on a property of its *input* to describe the screen correctly: an
+  // entry carrying both is routed to the gone section, which offers re-create and
+  // discard and renders no per-field rows at all, so a count over every entry
+  // would name a field nobody is shown and put a Save button beside it that
+  // records a resolution for it. Built by hand for that reason — a fixture the
+  // queue cannot produce is a fixture the queue must not be asked to produce.
+  it("does not count the conflict units of an entry it renders as a gone row", () => {
+    renderDialog({
+      entries: [
+        goneEdit({
+          conflict: {
+            units: [
+              { rowId: "txn-1", field: "notes", base: "a", mine: "mine", theirs: "theirs" },
+            ],
+          },
+        }),
+      ],
+    });
+
+    // The gone sentence, because every hold on screen is a gone row.
+    expect(
+      screen.getByText(/no longer exists on the server, so none of this was written\./),
+    ).toBeInTheDocument();
+    // And not the field sentence, nor the Save that would answer it.
+    expect(screen.queryByText(/changed by somebody else/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
+  });
+
   it("forgets a resolved entry's picks if the same key is held again", async () => {
     const user = userEvent.setup();
     const base = props();

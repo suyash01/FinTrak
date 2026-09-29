@@ -185,7 +185,15 @@ export default function ConflictDialog({
   // The two holds answer different questions — a field somebody else moved, and
   // a row that is not there any more — so the description names whichever of
   // them is on screen rather than describing the other.
-  const fields = entries.reduce(
+  //
+  // Filtered off the map's own predicate rather than counted in place, for the
+  // reason the gone count below gives: a count that included a unit inside a gone
+  // section would describe a field the user is never shown, and would put a Save
+  // button beside it that records a resolution for it. The invariant makes that
+  // entry unconstructible today (outbox.ts's hold), which is exactly why the count
+  // must not rest on it.
+  const conflictEntries = entries.filter((entry) => !rendersGoneSection(entry));
+  const fields = conflictEntries.reduce(
     (total, entry) => total + unitsOf(entry).length,
     0,
   );
@@ -193,10 +201,7 @@ export default function ConflictDialog({
   // these entries as a gone section and the description has to be counting the
   // same ones: a count that included an entry nothing renders would describe a
   // row the user cannot see.
-  const goneEntries = entries.filter(
-    (entry): entry is EditEntry | BulkEntry =>
-      entry.gone === true && isRowWrite(entry),
-  );
+  const goneEntries = entries.filter(rendersGoneSection);
   // Rows rather than entries, for the reason the section under it counts them: a
   // bulk write that lost one row of two hundred is one entry and one lost row,
   // and a count of entries would say the opposite of what the user is reading.
@@ -262,8 +267,10 @@ export default function ConflictDialog({
           // no longer has, and a create is a row that does not exist yet, so the
           // two can never meet. The second half is a guard rather than a cast
           // because CreateEntry's `kind` is optional, so the type alone cannot
-          // make the leap (outbox.ts's isRowWrite says the same).
-          entry.gone === true && isRowWrite(entry) ? (
+          // make the leap (outbox.ts's isRowWrite says the same). The predicate
+          // is the one the two counts above are filtered by, so the sections and
+          // the description cannot disagree about what is on screen.
+          rendersGoneSection(entry) ? (
             <GoneSection
               key={entry.key}
               entry={entry}
@@ -309,6 +316,21 @@ function unitsOf(entry: QueuedWrite): ConflictUnit[] {
 
 function isRowWrite(entry: QueuedWrite): entry is EditEntry | BulkEntry {
   return entry.kind !== "create";
+}
+
+// rendersGoneSection is the one question about which of the two sections an entry
+// reaches, and it is a function rather than a condition written in the three
+// places that need it — the two counts and the map — because those three have to
+// agree. A count built from a different condition than the map describes an
+// entry the user is not shown.
+//
+// A type predicate, not a boolean, so the map's gone branch is narrowed by the
+// same call the count is filtered by: `CreateEntry`'s `kind` is optional, so the
+// type alone cannot make the leap the predicate makes.
+function rendersGoneSection(
+  entry: QueuedWrite,
+): entry is EditEntry | BulkEntry {
+  return entry.gone === true && isRowWrite(entry);
 }
 
 // canReCreate is the one question about a gone entry, and it is a function rather

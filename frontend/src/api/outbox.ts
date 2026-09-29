@@ -125,7 +125,8 @@ export interface WriteEnvelope {
   // retry is a fresh plan against the server's row as it stands then — so the
   // same entry can be rejected and then, on the next attempt, held as a conflict
   // or as gone. The records below are the only writers of the held outcomes, and
-  // they all clear `error` for that reason (see hold).
+  // they all clear `error` *and* the other held outcome for that reason (see
+  // hold), so the invariant holds rather than being asserted.
 }
 
 // CreateEntry is a manual transaction recorded with no connection. `kind` is
@@ -593,18 +594,35 @@ type HeldOutcome =
   | { gone: true; conflict?: never };
 
 // hold is the one update every record of a held outcome makes, and it is one
-// function for the envelope's invariant rather than two copies of it. The
-// clearing of `error` is the whole reason it is shared: a held outcome
-// supersedes a rejection, because it is the newer and more specific answer — the
-// server's row as it stands now, and a question only the user can settle — and
-// because leaving the rejection behind is what lets discardFailed, which filters
-// on `error` alone, destroy an edit the user has not been told about yet. That
-// path is reachable, not theoretical: a rejected entry is re-planned on a retry
-// and can come back held. A third record added later belongs here, and gets the
-// clearing without having to know why.
+// function for the envelope's invariant rather than two copies of it. It clears
+// the two fields a hold supersedes, and both for the same reason: a held outcome
+// is the newer and more specific answer — the server's row as it stands now, and
+// a question only the user can settle — so the entry keeps exactly one.
+//
+// `error` is cleared because leaving a rejection behind is what lets
+// discardFailed, which filters on `error` alone, destroy an edit the user has
+// not been told about yet. That path is reachable, not theoretical: a rejected
+// entry is re-planned on a retry and can come back held.
+//
+// The sibling is cleared for the other reader: ConflictDialog routes an entry
+// carrying `gone` to its gone section, which renders no per-field units, while
+// the count of held fields it puts in the description is over every entry. An
+// entry with both would therefore describe a field the user is never shown, and
+// the Save button beside it would record a resolution for it. Nothing else can
+// produce that entry — a plan holds an entry as one or the other, never both —
+// but "never" is a property of the callers, and this is where the envelope's
+// invariant is enforced instead.
+//
+// A third record added later belongs here, and gets the clearing without having
+// to know why.
 function hold(userId: string, key: string, outcome: HeldOutcome): boolean {
   return mutateEntry(userId, key, (entry) => {
-    const { error: _superseded, ...rest } = entry;
+    const {
+      error: _superseded,
+      conflict: _supersededQuestion,
+      gone: _supersededFact,
+      ...rest
+    } = entry;
     return { ...rest, ...outcome };
   });
 }

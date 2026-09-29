@@ -106,6 +106,15 @@ function project(
 // exactly what breaks a whole-row family. They are `as const`, so exporting them
 // does not make one writable, and `project` stays private, so nothing here has
 // become a second way to say what a projection reads.
+//
+// The four day lists are exported for the other guard, and for the same reason:
+// `project` consults `days` only while iterating `fields`, so a day list naming a
+// field its own field list omits is inert — the field is never read, so the rule
+// is never applied to it, and nothing reports that. That is a silent failure in
+// the one direction that matters: a field removed from a field list while left in
+// the day list stops being reconciled, and a `putWhole` family then puts a
+// timestamp on the wire for a handler that parses "2006-01-02" — a rejection the
+// user reads as a save that did not happen.
 
 const TRANSACTION_FIELDS = [
   "accountId",
@@ -131,7 +140,7 @@ const TRANSACTION_FIELDS = [
 // models.Transaction.Date is a time.Time, so the API sends RFC3339; the PATCH
 // takes "2006-01-02" (transaction.go:805). The transaction editor is where the
 // two are compared, so this is the family the rule was written for.
-const TRANSACTION_DAYS = ["date"] as const;
+export const TRANSACTION_DAYS = ["date"] as const;
 
 const ACCOUNT_FIELDS = [
   "name",
@@ -197,7 +206,7 @@ export const SERIES_FIELDS = [
 // series' terms — whose own startDate/endDate the term endpoints take as days
 // (recurring.go:1143). The two families have to agree about the day, or a term
 // edit reads as a change to the series' dates that the user never made.
-const SERIES_DAYS = ["startDate", "endDate"] as const;
+export const SERIES_DAYS = ["startDate", "endDate"] as const;
 
 export const TERM_FIELDS = [
   // The series is part of the term's row rather than of its own address: it is
@@ -209,7 +218,7 @@ export const TERM_FIELDS = [
   "accountId",
 ] as const;
 
-const TERM_DAYS = ["startDate", "endDate"] as const;
+export const TERM_DAYS = ["startDate", "endDate"] as const;
 
 // The loan's *terms*, not its schedule: the amortization periods are derived
 // server-side from these, so a queued edit is a change to the terms and nothing
@@ -227,7 +236,7 @@ export const LOAN_TERMS_FIELDS = [
 // frontend's own type says so (types.ts). The loan schedule dialog slices the
 // row's timestamp to load the form, so this is the transaction's comparison on a
 // family that writes every column it names.
-const LOAN_TERMS_DAYS = ["startDate", "disbursalDate"] as const;
+export const LOAN_TERMS_DAYS = ["startDate", "disbursalDate"] as const;
 
 // hasToken is deliberately absent: the settings response reports whether a token
 // is set and never carries it, so a projection naming a token field would put on

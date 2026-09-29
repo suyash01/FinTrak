@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { diffAgainstBase, type FieldPatch, type FieldValue } from "./merge";
 import {
   findRow,
+  LOAN_TERMS_DAYS,
   LOAN_TERMS_FIELDS,
   PAYEE_FIELDS,
   projectAccount,
@@ -16,8 +17,11 @@ import {
   projectSettings,
   projectTransaction,
   RULE_FIELDS,
+  SERIES_DAYS,
   SERIES_FIELDS,
+  TERM_DAYS,
   TERM_FIELDS,
+  TRANSACTION_DAYS,
 } from "./projections";
 
 // A projector, and a field of that family the server reports as null.
@@ -213,6 +217,10 @@ type WholeRowFamily = {
   name: string;
   handler: string;
   fields: readonly string[];
+  // The family's day list, for the same reason the column list is here: a guard
+  // that reads it can see the projection, and one that does not is checked only
+  // where its own fixture reaches.
+  days?: readonly string[];
   project: (row: object) => FieldPatch;
   expected: string[];
 };
@@ -258,6 +266,7 @@ const WHOLE_ROW_FAMILIES: WholeRowFamily[] = [
     name: "projectRecurringTerm",
     handler: "recurring.go:1183",
     fields: TERM_FIELDS,
+    days: TERM_DAYS,
     project: projectRecurringTerm,
     // `SET start_date = $1, end_date = $2, amount = $3, account_id = $4` — four
     // columns. The fifth key is seriesId, and it is the row's *address* rather
@@ -270,6 +279,7 @@ const WHOLE_ROW_FAMILIES: WholeRowFamily[] = [
     name: "projectLoanTerms",
     handler: "loan.go:324",
     fields: LOAN_TERMS_FIELDS,
+    days: LOAN_TERMS_DAYS,
     project: projectLoanTerms,
     // The six `INSERT` columns, which are the same six as its `DO UPDATE SET`
     // list: principal, processing fee, rate, tenure and both dates. The periods
@@ -289,7 +299,7 @@ const WHOLE_ROW_FAMILIES: WholeRowFamily[] = [
 describe("a whole-row family's projection is the body its endpoint writes", () => {
   it.each(WHOLE_ROW_FAMILIES)(
     "$name is exactly the columns $handler binds",
-    ({ fields, project, expected }) => {
+    ({ fields, days, project, expected }) => {
       // Exact, in both directions. A column the projection drops is one the
       // merged request leaves out and the handler zeroes; a column it adds is one
       // the merge can read and no `SET` writes, so a concurrent change to it would
@@ -299,8 +309,23 @@ describe("a whole-row family's projection is the body its endpoint writes", () =
       // its own that the assertion above cannot see. The row is built from the
       // pinned set, so this cannot pass by accident on a fixture that happens to
       // carry the right keys.
-      const row = Object.fromEntries(expected.map((field) => [field, "x"]));
-      expect(Object.keys(project(row)).sort()).toEqual(expected);
+      //
+      // A field on the family's day list is given a timestamp and everything else
+      // a value no rule could touch, so the fixture's own shape says which rule
+      // was applied. Without that this guard counted keys and nothing else: a row
+      // of "x" is the same before and after asCalendarDay, so a family whose date
+      // reconciliation had stopped working passed here while a `putWhole` handler
+      // rejected the edit — which is the one failure on this page that reaches
+      // the user as a save that silently did not happen.
+      const isDay = (field: string) => (days ?? []).includes(field);
+      const row = Object.fromEntries(
+        expected.map((field) => [field, isDay(field) ? "2026-07-20T00:00:00Z" : "x"]),
+      );
+      const projected = project(row);
+      expect(Object.keys(projected).sort()).toEqual(expected);
+      for (const field of expected) {
+        expect(projected[field]).toBe(isDay(field) ? "2026-07-20" : "x");
+      }
     },
   );
 
@@ -428,6 +453,90 @@ describe("a projection reconciles a date the API timestamps with the day a write
       expect(project(asWritten)).toEqual(expected);
     },
   );
+
+  // Every fixture above is UTC, and a Go server outside UTC is not: it sends the
+  // offset it is at, so `+05:30` here. That is the case a `Date`-based slice
+  // would get wrong, and wrong by a day — "2026-07-20T00:00:00+05:30" is
+  // 2026-07-19T18:30:00Z, so parsing and reformatting *moves the date
+  // backwards*, which is the same failure as `new Date("2026-07-20")` being UTC
+  // midnight and rendering the day before for anyone east of UTC before 05:30.
+  //
+  // What is asserted is the date the string starts with, not the instant: the
+  // instant is exactly what must not survive. One family would have been enough
+  // to pin the rule, and one family would not have been enough to catch a rule
+  // someone fixed on the transaction alone.
+  const IST = "+05:30";
+
+  function withOffset(row: Record<string, FieldValue>): Record<string, FieldValue> {
+    return Object.fromEntries(
+      Object.entries(row).map(([field, value]) =>
+        typeof value === "string" && value.endsWith("Z")
+          ? [field, `${value.slice(0, -1)}${IST}`]
+          : [field, value],
+      ),
+    );
+  }
+
+  it.each(CALENDAR_DAY_FAMILIES)(
+    "%s keeps the date a non-UTC offset carries, not the instant",
+    (_name, project, row, expected) => {
+      expect(project(withOffset(row))).toEqual(expected);
+    },
+  );
+
+  it("reads the day as the leading text, which is what a Date round-trip could not do", () => {
+    // The one assertion that names the instant, so the case above is not passing
+    // for the wrong reason: if the slice parsed and reformatted, this value would
+    // come back as 2026-07-19 — a day the transaction never had.
+    const instant = "2026-07-20T00:00:00+05:30";
+    expect(new Date(instant).toISOString().slice(0, 10)).not.toBe("2026-07-20");
+    expect(projectTransaction({ date: instant })).toEqual({ date: "2026-07-20" });
+    // And the other direction, because an offset can move a day *forwards* too:
+    // an instant late in the evening at -04:00 is already the next day in UTC.
+    expect(projectLoanTerms({ startDate: "2026-07-20T23:30:00-04:00" })).toEqual({
+      startDate: "2026-07-20",
+    });
+  });
+
+  // The guard the two families above are the point of: a day list naming a field
+  // its own field list omits is inert, because `project` iterates `fields` and
+  // consults `days` only for a field it is already reading. Nothing reports that,
+  // and the failure it hides is the branch's most expensive one — three of the
+  // four families are `putWhole`, so an unreconciled date is a timestamp on the
+  // wire for a handler that parses "2006-01-02", and the user's save is rejected
+  // rather than reverted.
+  //
+  // Asserted as behaviour rather than as `days ⊆ fields` on two exported lists,
+  // because behaviour pins both halves at once and cannot be satisfied by a list
+  // pair that is merely consistent: a field the projector does not read yields
+  // nothing at all, and a field it reads without the day rule yields the
+  // timestamp. Only a field that is read *and* sliced satisfies both.
+  const DAY_LIST_FAMILIES: Array<[name: string, days: readonly string[], project: (row: object) => FieldPatch]> = [
+    ["projectTransaction", TRANSACTION_DAYS, projectTransaction],
+    ["projectRecurringSeries", SERIES_DAYS, projectRecurringSeries],
+    ["projectRecurringTerm", TERM_DAYS, projectRecurringTerm],
+    ["projectLoanTerms", LOAN_TERMS_DAYS, projectLoanTerms],
+  ];
+
+  it.each(DAY_LIST_FAMILIES)(
+    "%s reads and slices every day its day list names",
+    (_name, days, project) => {
+      for (const day of days) {
+        expect(project({ [day]: "2026-07-20T00:00:00Z" })).toEqual({ [day]: "2026-07-20" });
+      }
+    },
+  );
+
+  it("keeps a rule's dates off every family's day list, because they are already days", () => {
+    // The list is not "every field whose name looks like a date". A rule's
+    // dateFrom/dateTo are `*string` on the model and rule.go:74 formats them as
+    // "YYYY-MM-DD" on read, so a day rule naming them would match nothing —
+    // harmless while inert, which is precisely why the subset above is the guard
+    // rather than a per-family eyeball.
+    const named = DAY_LIST_FAMILIES.flatMap(([, days]) => [...days]);
+    expect(named).not.toContain("dateFrom");
+    expect(named).not.toContain("dateTo");
+  });
 
   it("reads a rule's dates as they are, because the API already sends them as days", () => {
     // The other half of the rule, and the one that keeps this from being a

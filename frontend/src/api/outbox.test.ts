@@ -14,6 +14,7 @@ import {
   queuedPatchFor,
   queuedRowProjection,
   recordConflict,
+  recordGone,
   removeEntry,
   resolveConflict,
   subscribeOutbox,
@@ -696,6 +697,61 @@ describe("outbox", () => {
     expect(discardFailed(USER)).toBe(0);
     expect(getOutboxSnapshot(USER)).toHaveLength(1);
     expect(discardConflicts(USER)).toBe(1);
+  });
+
+  // The other half of the same invariant, and the one a union type cannot state.
+  // `hold` is shared, so a hold supersedes a rejection for free — but the two
+  // held outcomes are recorded by two different functions, and clearing only
+  // `error` left a held row free to also answer the other question. The reader
+  // that would have been misled is ConflictDialog, which routes on `gone` and so
+  // never renders an entry's conflict units — while its count of held fields was
+  // taken over every entry, so the description would name a field the user is
+  // never shown and the Save button would record a resolution for it. Both
+  // directions, because which one is "the sibling" depends on which record ran
+  // last.
+  it("clears the other held outcome, so an entry never answers two questions", () => {
+    const held = (key: string) => getOutboxSnapshot(USER).find((e) => e.key === key)!;
+    const unit = {
+      units: [{ rowId: "row-1", field: "notes", base: "a", mine: "mine", theirs: "theirs" }],
+    };
+
+    const thenGone = enqueueEdit(USER, "transaction.patch", "r1", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    recordConflict(USER, thenGone.key, unit);
+    recordGone(USER, thenGone.key);
+    expect(held(thenGone.key).gone).toBe(true);
+    expect(held(thenGone.key).conflict).toBeUndefined();
+
+    const thenConflict = enqueueEdit(USER, "transaction.patch", "r2", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    recordGone(USER, thenConflict.key);
+    recordConflict(USER, thenConflict.key, unit);
+    expect(held(thenConflict.key).conflict).toBeDefined();
+    expect(held(thenConflict.key).gone).toBeUndefined();
+  });
+
+  // The invariant as a sweep rather than as a case, because the two assertions
+  // above pin the fields of two entries the test built itself. A TypeScript
+  // union expresses "at most one" for a literal being constructed, not for an
+  // entry read back out of storage — and storage is the one place an entry
+  // outlives the code that wrote it, across a reload, a second tab, or a
+  // downgrade. So every sequence of the three records is run and the queue is
+  // read after each step.
+  it.each([
+    ["gone then conflict", [recordGone, recordConflict]],
+    ["conflict then gone", [recordConflict, recordGone]],
+    ["gone, conflict, gone", [recordGone, recordConflict, recordGone]],
+    ["conflict, gone, conflict", [recordConflict, recordGone, recordConflict]],
+  ] as const)("%s leaves every entry answering at most one question", (_name, records) => {
+    const entry = enqueueEdit(USER, "transaction.patch", "r1", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    const unit = { rowId: "r1", field: "notes", base: "a", mine: "mine", theirs: "theirs" };
+
+    for (const record of records) {
+      if (record === recordGone) recordGone(USER, entry.key);
+      else recordConflict(USER, entry.key, { units: [unit] });
+      for (const held of getOutboxSnapshot(USER)) {
+        const answered = [held.error, held.conflict, held.gone].filter(Boolean);
+        expect(answered.length).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
   // The merge walks the union of all three key sets, so its patch echoes every
