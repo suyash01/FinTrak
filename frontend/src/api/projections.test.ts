@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import type { FieldPatch } from "./merge";
 import {
   findRow,
+  LOAN_TERMS_FIELDS,
+  PAYEE_FIELDS,
   projectAccount,
   projectAccountType,
   projectCategory,
@@ -13,6 +15,9 @@ import {
   projectRule,
   projectSettings,
   projectTransaction,
+  RULE_FIELDS,
+  SERIES_FIELDS,
+  TERM_FIELDS,
 } from "./projections";
 
 // A projector, and a field of that family the server reports as null.
@@ -179,6 +184,166 @@ describe("a row's mergeable projection", () => {
         matchCount: 42,
       }),
     ).toEqual({ pattern: "coffee", minAmount: 100 });
+  });
+});
+
+// The correspondence a whole-row write stands or falls on, and the one link in
+// the chain the other guards do not cover.
+//
+// A `putWhole` op's request is the diff overlaid on this projection
+// (registry.ts's mergedRow), so a column the endpoint writes and the projection
+// omits is absent from the body — and the handler writes its zero value. Adding a
+// column to one of these endpoints would therefore blank it, silently, on every
+// offline edit to that row. Nothing else in the offline layer can see that: the
+// overlay tests pin the merge, and the registry's completeness tables pin the op
+// list, but neither knows what the handler binds.
+//
+// The authority is the Go handler's own `SET` / `INSERT` columns, cited per family
+// below. These arrays are that citation made checkable, and they are the pin a
+// handler change has to meet. Nothing compares a TypeScript interface to a runtime
+// value — an interface is erased — so the only durable form is the key set written
+// down here; it is updated by reading the handler, not by running the test, which
+// is why each one names its line.
+//
+// The assertion is on the field *list*, not on a fixture's output. A list checked
+// through one row is checked only where that row reaches, so a field added to a
+// list the fixture does not carry would pass — which is the addition that breaks
+// the family, since an added field is one the merge would read and no `SET` writes.
+type WholeRowFamily = {
+  name: string;
+  handler: string;
+  fields: readonly string[];
+  project: (row: object) => FieldPatch;
+  expected: string[];
+};
+
+const WHOLE_ROW_FAMILIES: WholeRowFamily[] = [
+  {
+    name: "projectPayee",
+    handler: "payee.go:118",
+    fields: PAYEE_FIELDS,
+    project: projectPayee,
+    // `UPDATE payees SET name = $1, account_id = $2, updated_at = NOW()`. The
+    // timestamp is the server's own and on no request.
+    expected: ["accountId", "name"],
+  },
+  {
+    name: "projectRule",
+    handler: "rule.go:287",
+    fields: RULE_FIELDS,
+    project: projectRule,
+    // Seventeen columns, $1 through $17, and every one of them a column a rule
+    // form can set.
+    expected: [
+      "accountId",
+      "addTags",
+      "categoryId",
+      "dateFrom",
+      "dateTo",
+      "filterCategoryId",
+      "filterPayeeId",
+      "isLinked",
+      "isRecurring",
+      "matchType",
+      "maxAmount",
+      "minAmount",
+      "notes",
+      "pattern",
+      "payeeId",
+      "priority",
+      "txnType",
+    ],
+  },
+  {
+    name: "projectRecurringTerm",
+    handler: "recurring.go:1183",
+    fields: TERM_FIELDS,
+    project: projectRecurringTerm,
+    // `SET start_date = $1, end_date = $2, amount = $3, account_id = $4` — four
+    // columns. The fifth key is seriesId, and it is the row's *address* rather
+    // than a column: the term endpoints are reached through the series and it is
+    // the only read that can find it again, so it has to be in the projection even
+    // though no `SET` writes it. The one entry below that is not a body column.
+    expected: ["accountId", "amount", "endDate", "seriesId", "startDate"],
+  },
+  {
+    name: "projectLoanTerms",
+    handler: "loan.go:324",
+    fields: LOAN_TERMS_FIELDS,
+    project: projectLoanTerms,
+    // The six `INSERT` columns, which are the same six as its `DO UPDATE SET`
+    // list: principal, processing fee, rate, tenure and both dates. The periods
+    // the same response carries are derived from them, which is why they are not
+    // here.
+    expected: [
+      "annualRateBps",
+      "disbursalDate",
+      "principal",
+      "processingFee",
+      "startDate",
+      "tenureMonths",
+    ],
+  },
+];
+
+describe("a whole-row family's projection is the body its endpoint writes", () => {
+  it.each(WHOLE_ROW_FAMILIES)(
+    "$name is exactly the columns $handler binds",
+    ({ fields, project, expected }) => {
+      // Exact, in both directions. A column the projection drops is one the
+      // merged request leaves out and the handler zeroes; a column it adds is one
+      // the merge can read and no `SET` writes, so a concurrent change to it would
+      // be held as a conflict the user never caused and could never be sent.
+      expect([...fields].sort()).toEqual(expected);
+      // And the projector reads the list it is paired with, rather than a list of
+      // its own that the assertion above cannot see. The row is built from the
+      // pinned set, so this cannot pass by accident on a fixture that happens to
+      // carry the right keys.
+      const row = Object.fromEntries(expected.map((field) => [field, "x"]));
+      expect(Object.keys(project(row)).sort()).toEqual(expected);
+    },
+  );
+
+  // The odd one of the five, and it needs containment as well as equality:
+  // recurring.go:922 writes nine of the thirteen projected fields, and the four it
+  // does not are deliberate. deriveRecurringSeries (recurring.go:318) fills a
+  // series' start date, end date, account and amount in from its terms, so the
+  // merge has to be able to see a term's new amount as somebody else's change
+  // even though the series endpoint never writes it. Two properties, two
+  // assertions: every column the handler binds must be present, and the projection
+  // is allowed to carry four more.
+  it("projectRecurringSeries carries all nine columns recurring.go:922 writes, and the four it derives", () => {
+    // The nine the `UPDATE` names, one for one.
+    expect([...SERIES_FIELDS]).toEqual(
+      expect.arrayContaining([
+        "name",
+        "description",
+        "type",
+        "frequency",
+        "interval",
+        "categoryId",
+        "payeeId",
+        "active",
+        "notes",
+      ]),
+    );
+    // And all thirteen, pinned, so a derived field cannot leave the projection
+    // quietly either: a concurrent change to one of them would stop being seen.
+    expect([...SERIES_FIELDS].sort()).toEqual([
+      "accountId",
+      "active",
+      "amount",
+      "categoryId",
+      "description",
+      "endDate",
+      "frequency",
+      "interval",
+      "name",
+      "notes",
+      "payeeId",
+      "startDate",
+      "type",
+    ]);
   });
 });
 

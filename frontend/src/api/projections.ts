@@ -51,6 +51,15 @@ function project(row: object, fields: readonly string[]): FieldPatch {
   return patch;
 }
 
+// Five of the field lists below are exported, and only for the guard that pins
+// them to the columns their whole-row handlers bind (see projections.test.ts).
+// The list is the thing that guard has to read: checked through a fixture's
+// output, it is checked only where that fixture reaches, so a field added to a
+// list the fixture happens not to carry would slip through — and an added field is
+// exactly what breaks a whole-row family. They are `as const`, so exporting them
+// does not make one writable, and `project` stays private, so nothing here has
+// become a second way to say what a projection reads.
+
 const TRANSACTION_FIELDS = [
   "accountId",
   "date",
@@ -89,9 +98,9 @@ const GROUP_FIELDS = ["name", "icon", "color"] as const;
 
 const CATEGORY_FIELDS = ["name", "icon", "color", "groupId"] as const;
 
-const PAYEE_FIELDS = ["name", "accountId"] as const;
+export const PAYEE_FIELDS = ["name", "accountId"] as const;
 
-const RULE_FIELDS = [
+export const RULE_FIELDS = [
   "pattern",
   "matchType",
   "categoryId",
@@ -111,7 +120,7 @@ const RULE_FIELDS = [
   "notes",
 ] as const;
 
-const SERIES_FIELDS = [
+export const SERIES_FIELDS = [
   "accountId",
   "name",
   "description",
@@ -127,7 +136,7 @@ const SERIES_FIELDS = [
   "notes",
 ] as const;
 
-const TERM_FIELDS = [
+export const TERM_FIELDS = [
   // The series is part of the term's row rather than of its own address: it is
   // what the write endpoint needs, and no other read can supply it.
   "seriesId",
@@ -140,7 +149,7 @@ const TERM_FIELDS = [
 // The loan's *terms*, not its schedule: the amortization periods are derived
 // server-side from these, so a queued edit is a change to the terms and nothing
 // else.
-const LOAN_TERMS_FIELDS = [
+export const LOAN_TERMS_FIELDS = [
   "principal",
   "processingFee",
   "disbursalDate",

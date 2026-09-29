@@ -15,7 +15,7 @@ import type {
   UserSettings,
 } from "../types";
 import type { FieldPatch, FieldValue } from "./merge";
-import { enqueueEdit, flushOutbox, getOutboxSnapshot, type WriteOp } from "./outbox";
+import { enqueueEdit, flushOutbox, getOutboxSnapshot, resolveConflict, type QueuedWrite, type WriteOp } from "./outbox";
 import { ApiError } from "./errors";
 import { OPS, applyOp, readTheirs, type ApplyShape } from "./registry";
 
@@ -860,6 +860,54 @@ describe("a queued whole-row edit, flushed", () => {
     expect(apiMocks.updatePayee).not.toHaveBeenCalled();
     const left = getOutboxSnapshot("u1")[0];
     expect(left.conflict?.units[0]).toMatchObject({ rowId: "p1", field: "name" });
+  });
+
+  // The user answered "theirs" on a field, and the answer has to reach the wire as
+  // the server's own value rather than the user's. This path only became reachable
+  // when the family-wide refusal was deleted, and it is a one-line rule in two
+  // places — planEdit drops the field from the decided patch, and the overlay
+  // writes what is underneath it back onto the row — so the outcome is pinned
+  // rather than argued for in a comment. A version that kept the field would
+  // re-assert the very value the user declined to write; a version that dropped
+  // the whole row would have undone the fields they did change, which is why the
+  // patch has two fields here.
+  //
+  // What this pins is the body, not the spelling. For this family, dropping the
+  // field and writing the server's own value into it produce the same merged row,
+  // because the overlay fills it back in either way; what must never reach the
+  // wire is the user's value, and that is what a mutation of the rule breaks.
+  it("writes a field the user kept as the server's value, beside the ones they changed", async () => {
+    const entry = enqueueEdit(
+      "u1",
+      "payee.put",
+      "p1",
+      { name: "Cafe", accountId: "a1" },
+      { name: "Beans", accountId: "a2" },
+      { name: "Cafe", accountId: "a1" },
+    );
+    // Somebody else renamed it while the edit was queued, so the name is held.
+    const server: Record<string, FieldPatch | null> = { p1: { name: "Tea", accountId: "a1" } };
+    const send = async (queued: QueuedWrite): Promise<void> => {
+      if (queued.kind !== "edit") return;
+      await applyOp(queued.op, queued.rowId, queued.patch, server[queued.rowId] ?? null);
+    };
+    const theirs = async (_op: WriteOp, rowId: string) => server[rowId] ?? null;
+
+    const held = await flushOutbox("u1", send, { theirs });
+    expect(held).toMatchObject({ sent: 0, conflicted: 1 });
+    expect(apiMocks.updatePayee).not.toHaveBeenCalled();
+
+    resolveConflict("u1", entry.key, { name: "theirs" });
+
+    const answered = await flushOutbox("u1", send, { theirs });
+    expect(answered).toMatchObject({ sent: 1, conflicted: 0, remaining: 0 });
+    // "Tea" is the server's, not the "Beans" the user typed and declined; "a2" is
+    // the account they did change, and it went out beside it.
+    expect(apiMocks.updatePayee).toHaveBeenCalledWith("p1", {
+      name: "Tea",
+      accountId: "a2",
+    });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 });
 

@@ -1322,7 +1322,7 @@ const api = {
     // every one of them the form did not name. The diff is what this call sends
     // and the whole row is the flush's to build.
     //
-    // Four of the fourteen projected fields are not among them: deriveRecurringSeries
+    // Four of the thirteen projected fields are not among them: deriveRecurringSeries
     // (recurring.go:318) fills a series' start date, end date, account and amount
     // in from its terms, and the endpoint changes them by splitting a term
     // (applyRecurringChange) rather than by writing the series row. They are in the
