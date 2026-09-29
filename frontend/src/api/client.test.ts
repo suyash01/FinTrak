@@ -841,6 +841,45 @@ describe("offline behaviour", () => {
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 
+  it("sends no request when the form's payload is all defaults for a row that has none", async () => {
+    // The shape the app actually sends: the edit modal emits categoryId,
+    // payeeId and billingCycleId from form state, so a row that has never had
+    // any of them comes back as three nulls. Those are not changes — there was
+    // nothing to clear — so the diff is empty and the guard fires here too,
+    // rather than only for a payload that repeats the base's own values.
+    const result = await api.updateTransaction(
+      "t1",
+      { categoryId: null, payeeId: null, billingCycleId: null },
+      { base: txn },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: "t1", queued: false });
+  });
+
+  it("queues a cleared field but not the defaults beside it", async () => {
+    // The other half of the same shape: a real clear still goes out, and the
+    // nulls for fields the row never held stay out of it. Without this the
+    // queued entry would carry a change to fields the user never touched, and
+    // the merge would hold them as conflicts.
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await api.updateTransaction(
+      "t1",
+      { categoryId: null, payeeId: null, billingCycleId: null },
+      { base: { ...txn, categoryId: "c1" } },
+    );
+
+    const entries = getOutboxSnapshot("u1");
+    expect(entries[0]).toMatchObject({
+      rowId: "t1",
+      patch: { categoryId: null },
+    });
+    const entry = entries[0];
+    if (entry.kind !== "edit") throw new Error("updateTransaction queued a non-edit");
+    expect(Object.keys(entry.patch)).toEqual(["categoryId"]);
+  });
+
   it("sends the whole payload when no base is supplied", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
 

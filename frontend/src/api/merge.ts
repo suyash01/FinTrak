@@ -65,10 +65,27 @@ export function valuesEqual(a: FieldValue, b: FieldValue): boolean {
 // actually changed, which is what makes a field-level patch safe to build from
 // one: a field the payload does not carry never appears, so a PATCH cannot
 // revert a column another writer changed while the form was open.
+//
+// A null is a change only where the base carries the key. A form that always
+// emits its optional fields — the transaction editor sends categoryId, payeeId
+// and billingCycleId whether or not the row has one — says "no value" for a
+// field that has never held a value, and there is nothing there to clear. Left
+// in the diff it would be sent as a write of nothing, and queued as a change to
+// a field the user never opened: the base carries no key for it, so the merge
+// counts the user as having moved it, and if another writer attached a category
+// meanwhile the two sides disagree with no shared baseline to say who did. That
+// is a conflict over a field nobody touched, held for the user over an edit they
+// did not make.
+//
+// The base is read by lookup rather than by `in`, because that is how mergeFields
+// reads it too: a key it cannot read a value for is a key the base does not
+// carry. Only null means "no value" — "" and [] against a field the base never
+// held are values the user set, and are still diffed.
 export function diffAgainstBase(base: FieldPatch, mine: FieldPatch): FieldPatch {
   const diff: FieldPatch = {};
   for (const [field, value] of Object.entries(mine)) {
     if (value === undefined || valuesEqual(value, base[field])) continue;
+    if (value === null && base[field] === undefined) continue;
     diff[field] = value;
   }
   return diff;

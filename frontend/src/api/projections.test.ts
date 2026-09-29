@@ -141,6 +141,23 @@ describe("a row's mergeable projection", () => {
     });
   });
 
+  it.each([
+    [
+      "projectAccountType",
+      projectAccountType,
+      { id: "at1", name: "Savings", positiveTxnType: "credit" },
+      { name: "Savings", positiveTxnType: "credit" },
+    ],
+    ["projectGroup", projectGroup, { id: "g1", name: "Food", icon: "utensils", color: "#f00" }, { name: "Food", icon: "utensils", color: "#f00" }],
+    ["projectCategory", projectCategory, { id: "c1", name: "Coffee", icon: "cup", color: "#0f0", groupId: "g1" }, { name: "Coffee", icon: "cup", color: "#0f0", groupId: "g1" }],
+    ["projectPayee", projectPayee, { id: "p1", name: "Cafe", accountId: "a1" }, { name: "Cafe", accountId: "a1" }],
+  ])("%s carries the mergeable fields and nothing else", (_name, project, row, expected) => {
+    // The id is the address of the row, not a field of it: a base carrying it
+    // would compare a row against itself on the one value that can never differ.
+    expect(project(row)).toEqual(expected);
+    expect("id" in project(row)).toBe(false);
+  });
+
   it("projects a recurring series' own fields", () => {
     expect(
       projectRecurringSeries({

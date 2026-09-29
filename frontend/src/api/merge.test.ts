@@ -18,7 +18,7 @@ describe("valuesEqual", () => {
 
 describe("diffAgainstBase", () => {
   it("keeps only the fields whose value differs from the base", () => {
-    const base = { notes: "", tags: ["a"], amount: 250.5 };
+    const base = { notes: "", tags: ["a"], amount: 250.5, categoryId: "c1" };
     const mine = { notes: "coffee", tags: ["a"], amount: 250.5, categoryId: null };
     expect(diffAgainstBase(base, mine)).toEqual({ notes: "coffee", categoryId: null });
   });
@@ -27,6 +27,27 @@ describe("diffAgainstBase", () => {
   });
   it("omits a field whose value is undefined rather than sending it", () => {
     expect(diffAgainstBase({ notes: "a" }, { notes: undefined })).toStrictEqual({});
+  });
+
+  // A form that always emits its optional fields — the transaction editor sends
+  // categoryId, payeeId and billingCycleId whether or not the row has one — says
+  // "no value" for a field that has never held a value, and there is nothing to
+  // clear. Left in the diff it would read as a change the user never made.
+  it("drops a null the base does not carry, because nothing was there to clear", () => {
+    expect(diffAgainstBase({}, { categoryId: null })).toEqual({});
+  });
+  it("keeps a null the base does carry, because that is a clear", () => {
+    expect(diffAgainstBase({ categoryId: "c1" }, { categoryId: null })).toEqual({
+      categoryId: null,
+    });
+  });
+  it("still diffs a real value set against a field the base never held", () => {
+    // Only null means "no value". An empty string and an empty list are values
+    // the user set, and setting one where there was none is a change.
+    expect(diffAgainstBase({}, { notes: "", tags: [] })).toEqual({
+      notes: "",
+      tags: [],
+    });
   });
 });
 

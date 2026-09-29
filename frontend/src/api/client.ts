@@ -608,12 +608,17 @@ const api = {
   // "Running balance") when a single account is filtered and the sort is by date,
   // and it guards on accountUUID, which only an accountId parameter sets — so an
   // accountId here could answer a summary row rather than the row the caller
-  // asked for. It is not cached, which is what makes it the right read for a
-  // base: isQueriedLedgerRead keeps a q= read out of the offline cache, so the row
-  // cannot come back as this browser's own last belief of it.
+  // asked for.
+  //
+  // live, so this read is answered by the server or not at all. It is the base an
+  // edit is diffed against, and the offline cache holds this browser's own last
+  // belief of the row — a base from there would merge an edit against itself and
+  // never see a conflict. (isQueriedLedgerRead separately keeps a q= URL out of
+  // the cache; that is a budget rule, this is the correctness one, and neither is
+  // left to imply the other.)
   getTransaction: (id: string): Promise<Transaction | null> =>
     api
-      .getTransactions({ q: `id:${id}`, limit: 1 })
+      .getTransactions({ q: `id:${id}`, limit: 1 }, { live: true })
       .then((r) => r.data[0] ?? null),
   updateTransaction: (
     id: string,
@@ -643,7 +648,12 @@ const api = {
     // interface carries no implicit index signature, the same seam registry.ts's
     // asRequest crosses in the other direction.
     const mine = data as unknown as FieldPatch;
-    const patch = base ? diffAgainstBase(base, mine) : null;
+    // The base and the patch are one value because a patch is never anything on
+    // its own: it is a diff *against* a base, and an entry without one has
+    // nothing to be merged against. Deriving the second from the first is also
+    // what makes the empty-diff check below and the no-base refusal at the
+    // enqueue the same question.
+    const edit = base ? { base, patch: diffAgainstBase(base, mine) } : null;
     // An empty diff is not a write. The row already says what the form says, so
     // there is nothing to apply — and PATCH /transactions/{id} answers a body
     // with no fields 400 "no fields to update" (transaction.go:919), which would
@@ -652,7 +662,7 @@ const api = {
     // needed. Answering here is what planEdit already does with a decided entry
     // that has nothing left to write: the edit is made, so saying so is true
     // rather than a request that could only fail.
-    if (patch && Object.keys(patch).length === 0) {
+    if (edit && Object.keys(edit.patch).length === 0) {
       return Promise.resolve<UpdateTransactionResult>({ id, queued: false });
     }
     // The queue entry belongs to the session that issued the edit: an entry
@@ -661,7 +671,7 @@ const api = {
     const owner = offlineUserId();
     return request(`/transactions/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(patch ?? data),
+      body: JSON.stringify(edit ? edit.patch : data),
     }).then(
       (): UpdateTransactionResult => ({ id, queued: false }),
       (err: unknown): UpdateTransactionResult => {
@@ -673,11 +683,24 @@ const api = {
         // No base is no queue: a patch with nothing to be a patch *against* would
         // merge as though the user had changed every field in it. Failing is the
         // honest answer — the caller has a base to pass.
-        if (!base || !patch) throw err;
+        if (!edit) throw err;
         // Never answer `queued` unless the entry is really in the queue: a
         // refused write (or a full queue) has to reach the user as a failure, or
         // the UI confirms a save that no flush will ever perform.
-        enqueueEdit(owner, "transaction.patch", id, base, patch, base);
+        //
+        // The base is passed twice on purpose: as the base, which the flush
+        // merges against (enqueueEdit advances it by anything already queued for
+        // this row), and as the snapshot, which is the row the form opened with
+        // and is the only whole row the re-create path can rebuild a transaction
+        // from.
+        enqueueEdit(
+          owner,
+          "transaction.patch",
+          id,
+          edit.base,
+          edit.patch,
+          edit.base,
+        );
         return { id, queued: true };
       },
     );
