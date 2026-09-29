@@ -824,6 +824,23 @@ describe("offline behaviour", () => {
     expect(body).toEqual({ categoryId: null });
   });
 
+  it("sends no request at all when the diff is empty", async () => {
+    // The form's row and the base agree on every field, so there is nothing to
+    // write. The endpoint answers a PATCH carrying no fields 400 "no fields to
+    // update", which would put a server error in front of a user who did not
+    // change anything — so the answer has to come from here, and the assertion
+    // is that no request was made at all.
+    const result = await api.updateTransaction(
+      "t1",
+      { notes: "old", description: "Coffee" },
+      { base: txn },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: "t1", queued: false });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
   it("sends the whole payload when no base is supplied", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
 

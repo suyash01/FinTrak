@@ -29,6 +29,20 @@
 
 import api from "./client";
 import type { FieldPatch, FieldValue } from "./merge";
+import {
+  findRow,
+  projectAccount,
+  projectAccountType,
+  projectCategory,
+  projectGroup,
+  projectLoanTerms,
+  projectPayee,
+  projectRecurringSeries,
+  projectRecurringTerm,
+  projectRule,
+  projectSettings,
+  projectTransaction,
+} from "./projections";
 import type { WriteOp } from "./outbox";
 import type {
   CreateTransactionRequest,
@@ -83,151 +97,11 @@ function asRequest<R>(diff: FieldPatch): R {
   return diff as unknown as R;
 }
 
-// project is a row's mergeable fields, and it leaves a key off when the value is
-// nullish: absent is not null (see merge.ts), and a field the server holds
-// nothing in is a field the row does not carry. The base an entry recorded is the
-// same projection of the same row, so the two describe the row the same way and
-// a field that has never been set compares as untouched on both sides rather
-// than as a value the user changed to nothing.
-function project(row: object, fields: readonly string[]): FieldPatch {
-  const record = row as Record<string, FieldValue>;
-  const patch: FieldPatch = {};
-  for (const field of fields) {
-    const value = record[field];
-    if (value === undefined || value === null) continue;
-    patch[field] = value;
-  }
-  return patch;
-}
-
-// findRow is a family's read: the collection plus a find by id, because these
-// families have no single-row GET to ask. A row the collection does not carry is
-// a row the server no longer has, which is what null has to mean.
-async function findRow<Row extends { id: string }>(
-  read: () => Promise<Row[]>,
-  rowId: string,
-  fields: readonly string[],
-): Promise<FieldPatch | null> {
-  const row = (await read()).find((candidate) => candidate.id === rowId);
-  return row ? project(row, fields) : null;
-}
-
-// The fields each row is merged on: the ones a write edge can set. Ids, joined
-// display names, counts and anything the server derives are not mergeable — there
-// is no queued edit that would change them, and putting one in a base would
-// invent a difference the user never made.
-const TRANSACTION_FIELDS = [
-  "accountId",
-  "date",
-  "description",
-  "amount",
-  "type",
-  "categoryId",
-  // What the row holds, complete. transaction.tags writes the same column as a
-  // delta, which is a different question about it and lives at that op's entry.
-  "tags",
-  "notes",
-  "payeeId",
-  "billingCycleId",
-  // The two attachments the row-naming writes set, and the only evidence on the
-  // row that somebody else moved one: a projection without them reads as "no
-  // attachment", and a merge against that overwrites a concurrent attachment
-  // instead of holding it.
-  "loanAccountId",
-  "recurringSeriesId",
-] as const;
-
-// projectTransaction is a transaction's mergeable projection, and it is exported
-// because an offline edit is diffed against a base the client builds for itself:
-// a base described by any other field list would be missing fields the merge
-// reasons about, and the edit would be read as though the user had never touched
-// them. One projection, so the base and the row the flush later reads are the
-// same shape.
-export function projectTransaction(row: object): FieldPatch {
-  return project(row, TRANSACTION_FIELDS);
-}
-
-const ACCOUNT_FIELDS = [
-  "name",
-  "accountTypeId",
-  "bank",
-  "currency",
-  "color",
-  "isDefault",
-  "closed",
-  "billingDay",
-] as const;
-
-const ACCOUNT_TYPE_FIELDS = ["name", "positiveTxnType"] as const;
-
-const GROUP_FIELDS = ["name", "icon", "color"] as const;
-
-const CATEGORY_FIELDS = ["name", "icon", "color", "groupId"] as const;
-
-const PAYEE_FIELDS = ["name", "accountId"] as const;
-
-const RULE_FIELDS = [
-  "pattern",
-  "matchType",
-  "categoryId",
-  "payeeId",
-  "priority",
-  "accountId",
-  "filterCategoryId",
-  "filterPayeeId",
-  "minAmount",
-  "maxAmount",
-  "txnType",
-  "dateFrom",
-  "dateTo",
-  "isLinked",
-  "isRecurring",
-  "addTags",
-  "notes",
-] as const;
-
-const SERIES_FIELDS = [
-  "accountId",
-  "name",
-  "description",
-  "amount",
-  "type",
-  "frequency",
-  "interval",
-  "startDate",
-  "endDate",
-  "categoryId",
-  "payeeId",
-  "active",
-  "notes",
-] as const;
-
-const TERM_FIELDS = [
-  // The series is part of the term's row rather than of its own address: it is
-  // what the write endpoint needs, and no other read can supply it.
-  "seriesId",
-  "startDate",
-  "endDate",
-  "amount",
-  "accountId",
-] as const;
-
-// The loan's *terms*, not its schedule: the amortization periods are derived
-// server-side from these, so a queued edit is a change to the terms and nothing
-// else.
-const LOAN_TERMS_FIELDS = [
-  "principal",
-  "processingFee",
-  "disbursalDate",
-  "annualRateBps",
-  "tenureMonths",
-  "startDate",
-] as const;
-
-// hasToken is deliberately absent: the settings response reports whether a token
-// is set and never carries it, so a projection naming a token field would put on
-// the wire a value this client has never read from anywhere.
-const SETTINGS_FIELDS = ["paperlessUrl", "paperlessTag", "pageSize"] as const;
+// The projections — a row's mergeable fields — live in their own module rather
+// than here: the client builds the base a user's edit is diffed from with the
+// same ones, and a second copy of a field list is how a field would come to be
+// mergeable on one side and not the other. This file is the ops: the shapes, the
+// reads that reach the server, and the wire calls.
 
 // readTransaction serves the PATCH and all seven row-naming writes: they address
 // the same transaction and differ only in how the write travels.
@@ -256,7 +130,7 @@ const readTerm = async (rowId: string): Promise<FieldPatch | null> => {
   const term = terms
     .flatMap((response) => response.data ?? [])
     .find((candidate) => candidate.id === rowId);
-  return term ? project(term, TERM_FIELDS) : null;
+  return term ? projectRecurringTerm(term) : null;
 };
 
 // REMOVE_TAG marks a tag the entry removes rather than adds. The bulk-tags
@@ -380,7 +254,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "account.put": {
     op: "account.put",
     shape: "putPartial",
-    read: (rowId) => findRow(() => api.getAccounts({ live: true }), rowId, ACCOUNT_FIELDS),
+    read: (rowId) => findRow(() => api.getAccounts({ live: true }), rowId, projectAccount),
     apply: async (rowId, diff) => {
       await api.updateAccount(rowId, asRequest<UpdateAccountRequest>(diff));
     },
@@ -389,7 +263,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
     op: "accountType.put",
     shape: "putPartial",
     read: (rowId) =>
-      findRow(() => api.getAccountTypes({ live: true }), rowId, ACCOUNT_TYPE_FIELDS),
+      findRow(() => api.getAccountTypes({ live: true }), rowId, projectAccountType),
     apply: async (rowId, diff) => {
       await api.updateAccountType(rowId, asRequest<UpdateAccountTypeRequest>(diff));
     },
@@ -397,7 +271,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "group.put": {
     op: "group.put",
     shape: "putPartial",
-    read: (rowId) => findRow(() => api.getGroups({ live: true }), rowId, GROUP_FIELDS),
+    read: (rowId) => findRow(() => api.getGroups({ live: true }), rowId, projectGroup),
     apply: async (rowId, diff) => {
       await api.updateGroup(rowId, asRequest<UpdateCategoryGroupRequest>(diff));
     },
@@ -405,7 +279,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "category.put": {
     op: "category.put",
     shape: "putPartial",
-    read: (rowId) => findRow(() => api.getCategories({ live: true }), rowId, CATEGORY_FIELDS),
+    read: (rowId) => findRow(() => api.getCategories({ live: true }), rowId, projectCategory),
     apply: async (rowId, diff) => {
       await api.updateCategory(rowId, asRequest<UpdateCategoryRequest>(diff));
     },
@@ -419,7 +293,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
       findRow(
         async () => (await api.getAdminCatalog({ live: true })).categories,
         rowId,
-        CATEGORY_FIELDS,
+        projectCategory,
       ),
     apply: async (rowId, diff) => {
       await api.updateGlobalCategory(rowId, asRequest<UpdateCategoryRequest>(diff));
@@ -430,7 +304,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
     shape: "putPartial",
     // There is one settings row per user, so the rowId is ignored rather than
     // read: the endpoint is the row.
-    read: async () => project(await api.getUserSettings({ live: true }), SETTINGS_FIELDS),
+    read: async () => projectSettings(await api.getUserSettings({ live: true })),
     apply: async (_rowId, diff) => {
       await api.updateUserSettings(asRequest<UpdateUserSettingsRequest>(diff));
     },
@@ -439,7 +313,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "payee.put": {
     op: "payee.put",
     shape: "putWhole",
-    read: (rowId) => findRow(() => api.getPayees({ live: true }), rowId, PAYEE_FIELDS),
+    read: (rowId) => findRow(() => api.getPayees({ live: true }), rowId, projectPayee),
     apply: async (rowId, diff) => {
       await api.updatePayee(rowId, asRequest<UpdatePayeeRequest>(diff));
     },
@@ -447,7 +321,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "rule.put": {
     op: "rule.put",
     shape: "putWhole",
-    read: (rowId) => findRow(() => api.getRules({ live: true }), rowId, RULE_FIELDS),
+    read: (rowId) => findRow(() => api.getRules({ live: true }), rowId, projectRule),
     apply: async (rowId, diff) => {
       await api.updateRule(rowId, asRequest<UpdateRuleRequest>(diff));
     },
@@ -459,7 +333,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
       findRow(
         async () => (await api.getRecurringSeries({ live: true })).data,
         rowId,
-        SERIES_FIELDS,
+        projectRecurringSeries,
       ),
     apply: async (rowId, diff) => {
       await api.updateRecurringSeries(rowId, asRequest<UpdateRecurringSeriesRequest>(diff));
@@ -499,7 +373,7 @@ export const OPS: Record<WriteOp, OpSpec> = {
       // terms, so there is nothing that could have been deleted, and answering
       // null would hold the write for the user over a row the endpoint is about
       // to create — an empty row is what it will find.
-      return schedule ? project(schedule, LOAN_TERMS_FIELDS) : {};
+      return schedule ? projectLoanTerms(schedule) : {};
     },
     apply: async (rowId, diff) => {
       await api.saveLoanSchedule(rowId, asRequest<LoanScheduleRequest>(diff));

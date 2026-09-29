@@ -81,7 +81,7 @@ import { ApiError, NetworkError, isNetworkError } from "./errors";
 import { diffAgainstBase, type FieldPatch } from "./merge";
 import { clearCached, isCacheablePath, readCached, writeCached } from "./offlineCache";
 import { enqueueCreate, enqueueEdit } from "./outbox";
-import { projectTransaction } from "./registry";
+import { projectTransaction } from "./projections";
 import { setServedFromCache } from "./offlineStatus";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
@@ -644,6 +644,17 @@ const api = {
     // asRequest crosses in the other direction.
     const mine = data as unknown as FieldPatch;
     const patch = base ? diffAgainstBase(base, mine) : null;
+    // An empty diff is not a write. The row already says what the form says, so
+    // there is nothing to apply — and PATCH /transactions/{id} answers a body
+    // with no fields 400 "no fields to update" (transaction.go:919), which would
+    // put a server error in front of a user who changed nothing, and on the
+    // flush path would mark a queued entry rejected for a write that was never
+    // needed. Answering here is what planEdit already does with a decided entry
+    // that has nothing left to write: the edit is made, so saying so is true
+    // rather than a request that could only fail.
+    if (patch && Object.keys(patch).length === 0) {
+      return Promise.resolve<UpdateTransactionResult>({ id, queued: false });
+    }
     // The queue entry belongs to the session that issued the edit: an entry
     // attributed to whoever is signed in later would be flushed against that
     // account, which the server rejects as not the entry's own.
