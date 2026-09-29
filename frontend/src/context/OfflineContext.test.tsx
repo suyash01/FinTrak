@@ -86,6 +86,7 @@ function Probe() {
     sync,
     discardFailed,
     discardConflicts,
+    discardConflict,
     resolveConflict,
     reCreate,
   } = useOffline();
@@ -110,6 +111,7 @@ function Probe() {
       <button onClick={() => void sync()}>sync</button>
       <button onClick={discardFailed}>discard</button>
       <button onClick={() => discardConflicts?.()}>discard conflicts</button>
+      <button onClick={() => discardConflict?.(held)}>discard conflict</button>
       <button
         onClick={() => resolveConflict?.(held, { description: "mine" })}
       >
@@ -570,5 +572,35 @@ describe("OfflineProvider", () => {
     expect(screen.getByTestId("failed")).toHaveTextContent("1");
     expect(screen.getByTestId("pending")).toHaveTextContent("1");
     expect(toastMock.success).toHaveBeenCalledWith("Discarded 1 offline write");
+  });
+
+  it("discards only the held entry it was given, and leaves the other held", async () => {
+    const user = userEvent.setup();
+    queueEdit();
+    const other = projectTransaction(serverRow());
+    enqueueEdit("u1", "transaction.patch", "txn-2", other, { description: "Tea" }, other);
+    // Both rows moved under the two queued edits, so both entries are held. A
+    // dialog can show several at once and its Discard sits on the one the user
+    // is reading, which is why this is not the queue-wide discard.
+    apiMock.getTransactions.mockResolvedValue({
+      data: [serverRow("Someone else's coffee")],
+    });
+
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("conflicts")).toHaveTextContent("2"),
+    );
+
+    await user.click(screen.getByText("discard conflict"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("conflicts")).toHaveTextContent("1"),
+    );
+    // The other edit is still queued and still held: a per-entry Discard that
+    // took it too is a user's change disappearing without anybody being asked.
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
+    expect(toastMock.success).toHaveBeenCalledWith(
+      "Discarded the offline change",
+    );
   });
 });

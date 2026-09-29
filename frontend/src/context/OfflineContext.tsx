@@ -48,6 +48,13 @@ interface OfflineContextValue {
   sync: (options?: { retryFailed?: boolean }) => Promise<void>;
   discardFailed: () => void;
   discardConflicts: () => void;
+  // discardConflict is the one entry's version of discardConflicts, and it is a
+  // separate method rather than a key on that one because the dialog offers
+  // Discard on the entry the user is looking at: discardConflicts filters on
+  // every held entry, so behind a per-entry button it would destroy edits the
+  // user was never asked about — the silent discard this whole feature exists to
+  // prevent.
+  discardConflict: (key: string) => void;
   resolveConflict: (
     key: string,
     resolution: Record<string, "mine" | "theirs">,
@@ -325,6 +332,33 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     }
   }, [userId]);
 
+  // The one-entry counterpart to discardConflicts, and the one a dialog calls:
+  // its Discard button sits on the entry the user is reading, so discarding
+  // every held entry behind it would take edits they were never shown. It is
+  // removeEntry rather than a narrowed discardConflicts because the two
+  // questions are already answered before it gets here — the queue only shows
+  // held entries, and the caller passes the key of the one it means.
+  const discardConflict = useCallback(
+    (key: string) => {
+      if (!userId) return;
+      // A key that is no longer queued is a discard that already happened, so
+      // it is not a storage failure and nothing is said about it — the same
+      // rule outbox's mutators follow.
+      if (!getOutboxSnapshot(userId).some((entry) => entry.key === key)) return;
+      if (!removeEntry(userId, key)) {
+        // The entry is still queued: saying nothing would leave the user
+        // clicking a button that does not do what it says, over edits of their
+        // own.
+        toast.error(
+          "Could not discard the change: browser storage is unavailable or full. Nothing was lost — it is still queued, so try again.",
+        );
+        return;
+      }
+      toast.success("Discarded the offline change");
+    },
+    [userId],
+  );
+
   const resolveConflict = useCallback(
     (key: string, resolution: Record<string, "mine" | "theirs">) => {
       if (!userId) return;
@@ -441,6 +475,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       sync,
       discardFailed,
       discardConflicts,
+      discardConflict,
       resolveConflict,
       reCreate,
     }),
@@ -454,6 +489,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       sync,
       discardFailed,
       discardConflicts,
+      discardConflict,
       resolveConflict,
       reCreate,
     ],
