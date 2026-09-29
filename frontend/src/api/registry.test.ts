@@ -15,7 +15,7 @@ import type {
   UserSettings,
 } from "../types";
 import type { FieldPatch, FieldValue } from "./merge";
-import type { WriteOp } from "./outbox";
+import { enqueueEdit, flushOutbox, getOutboxSnapshot, type WriteOp } from "./outbox";
 import { ApiError } from "./errors";
 import { OPS, applyOp, readTheirs, type ApplyShape } from "./registry";
 
@@ -783,6 +783,83 @@ describe("sending a diff", () => {
     await expect(
       reCreate("transaction.patch", { accountId: "a1" }, { notes: "x" }, "e-entry-1"),
     ).rejects.toThrow(/no id/i);
+  });
+});
+
+// The whole feature, end to end, in the one place both halves are in hand: a
+// queued edit goes into the outbox, the flush reads the server's row and merges
+// against it, and the diff the merge decided is what applyOp is handed. The wire
+// call is where the difference shows — this is the assertion that a payee's
+// account survives an offline rename, rather than being nulled by a body that
+// named only the name.
+describe("a queued whole-row edit, flushed", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(apiMocks)) fn.mockReset();
+    localStorage.clear();
+  });
+
+  it("puts the server's row and the user's change on the wire together", async () => {
+    enqueueEdit(
+      "u1",
+      "payee.put",
+      "p1",
+      { name: "Cafe", accountId: "a1" },
+      { name: "Beans" },
+      { name: "Cafe", accountId: "a1" },
+    );
+
+    // The two halves of the dispatch, wired the way the offline context wires
+    // them: the reader the flush merges against, and the seam the resolved patch
+    // is sent through. The server still holds "Cafe" — the edit never reached it —
+    // so the merge has the user's change to make and the overlay has a row to make
+    // it on.
+    const server: Record<string, FieldPatch | null> = { p1: { name: "Cafe", accountId: "a1" } };
+    const outcome = await flushOutbox(
+      "u1",
+      async (entry) => {
+        if (entry.kind !== "edit") return;
+        await applyOp(entry.op, entry.rowId, entry.patch, server[entry.rowId] ?? null);
+      },
+      { theirs: async (_op, rowId) => server[rowId] ?? null },
+    );
+
+    expect(outcome).toMatchObject({ sent: 1, remaining: 0, failed: 0, conflicted: 0, gone: 0 });
+    // The user's change over the server's, and the account the payee was attached
+    // to carried through beside it: payee.go:118 writes account_id on every call,
+    // so a body naming only the name would have detached it and reported the save
+    // as done.
+    expect(apiMocks.updatePayee).toHaveBeenCalledWith("p1", {
+      name: "Beans",
+      accountId: "a1",
+    });
+  });
+
+  // A conflict is the merge's, not the overlay's, and the two must not be
+  // confused: a held entry writes nothing at all, so a body that appeared here
+  // would be a second answer to a question the user is being asked.
+  it("writes nothing for a whole-row edit held for the user", async () => {
+    enqueueEdit(
+      "u1",
+      "payee.put",
+      "p1",
+      { name: "Cafe", accountId: "a1" },
+      { name: "Beans" },
+      { name: "Cafe", accountId: "a1" },
+    );
+
+    const outcome = await flushOutbox(
+      "u1",
+      async (entry) => {
+        if (entry.kind !== "edit") return;
+        await applyOp(entry.op, entry.rowId, entry.patch, { name: "Tea", accountId: "a1" });
+      },
+      { theirs: async () => ({ name: "Tea", accountId: "a1" }) },
+    );
+
+    expect(outcome).toMatchObject({ sent: 0, conflicted: 1, remaining: 1 });
+    expect(apiMocks.updatePayee).not.toHaveBeenCalled();
+    const left = getOutboxSnapshot("u1")[0];
+    expect(left.conflict?.units[0]).toMatchObject({ rowId: "p1", field: "name" });
   });
 });
 

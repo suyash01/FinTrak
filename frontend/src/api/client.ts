@@ -518,9 +518,14 @@ export interface QueuedEdit {
 // base, so it names the fields it means to set rather than the whole row: a
 // payload carrying a key the endpoint does not take (an `id`, a computed
 // `balance`) puts that key in the diff too, where the server ignores it and the
-// merge carries a change nobody made. Every field these six request types can
-// carry is a mergeable one, so projecting the user's side would buy nothing and
-// cost the clears — a null it drops is a clear the user made.
+// merge carries a change nobody made. Every field these request types can carry is
+// a mergeable one, so projecting the user's side would buy nothing and cost the
+// clears — a null it drops is a clear the user made.
+//
+// Which is the whole of it for an endpoint that leaves an omitted key alone. For
+// the five that write every column they can, the diff is not enough on its own and
+// the queue is where that is answered: the op registry overlays the patch on the
+// row it re-reads before it sends (registry.ts's mergedRow).
 //
 // `queue: false` is what a caller that is *sending* an already-queued edit
 // passes — the outbox flush, which must not put a second copy of an entry back in
