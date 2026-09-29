@@ -1075,16 +1075,17 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring, ccy), optionally prefixed with `not`, or
+            linked, recurring, ccy, id), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
             not names: `cat` and `payee` take a uuid, or the sentinels
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
-            `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
-            `ccy` is a three-letter currency code, matched against the
+            `id` takes a transaction uuid, and is the only field that selects a
+            single row; `tag` takes a tag name, because tags have no ids; `amt`
+            is in major units ("50", "50.75"); `date` is YYYY-MM-DD or a named
+            period; `ccy` is a three-letter currency code, matched against the
             transaction's *account's* currency and folded to upper case, with an
             unset or empty account currency read as INR — the same reading every
             reporting endpoint gives it. At most 32 terms and 2000 characters.
@@ -1676,16 +1677,17 @@ paths:
             A transaction query expression, evaluated server-side. A space-
             separated, AND-ed list of terms; a term is `field:value`
             (fields: desc, note, cat, group, acct, payee, tag, type, amt, date,
-            linked, recurring, ccy), optionally prefixed with `not`, or
+            linked, recurring, ccy, id), optionally prefixed with `not`, or
             `field<op>value` where op is one of = != > >= < <= ~. A comma-
             separated value matches any of them, and a bare word is a free-text
             search over description, notes, payee name and tags. Values are ids,
             not names: `cat` and `payee` take a uuid, or the sentinels
             "uncategorized" / "none" for an absent value; `group` and `acct` take
             a uuid and have no sentinel, because their columns are not nullable;
-            `tag` takes a tag name, because tags have no ids; `amt` is in major
-            units ("50", "50.75"); `date` is YYYY-MM-DD or a named period;
-            `ccy` is a three-letter currency code, matched against the
+            `id` takes a transaction uuid, and is the only field that selects a
+            single row; `tag` takes a tag name, because tags have no ids; `amt`
+            is in major units ("50", "50.75"); `date` is YYYY-MM-DD or a named
+            period; `ccy` is a three-letter currency code, matched against the
             transaction's *account's* currency and folded to upper case, with an
             unset or empty account currency read as INR — the same reading every
             reporting endpoint gives it. At most 32 terms and 2000 characters.

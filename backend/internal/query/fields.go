@@ -61,6 +61,7 @@ var fieldTable = map[string]fieldDef{
 	"cat":       {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"group":     {userTyped: true, kind: kindUUID, ops: opsEq},
 	"acct":      {userTyped: true, kind: kindUUID, ops: opsEq},
+	"id":        {userTyped: true, kind: kindUUID, ops: opsEq},
 	"ccy":       {userTyped: true, kind: kindCurrency, ops: opsEq},
 	"payee":     {userTyped: true, kind: kindUUID, ops: opsEq, sentinels: nullSentinels},
 	"tag":       {userTyped: true, kind: kindTagList, ops: opsEq},

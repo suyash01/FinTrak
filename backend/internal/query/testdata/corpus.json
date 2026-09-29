@@ -320,6 +320,14 @@
         "clauses": ["NOT (EXISTS (SELECT 1 FROM accounts ac WHERE ac.id = t.account_id AND COALESCE(NULLIF(ac.currency, ''), 'INR') = $2))"],
         "args": ["USD"]
       }
+    },
+    {
+      "name": "id equality",
+      "surface": "id:11111111-1111-4111-8111-111111111111",
+      "canonical": "id:11111111-1111-4111-8111-111111111111",
+      "terms": [{ "field": "id", "op": "=", "values": ["11111111-1111-4111-8111-111111111111"], "negated": false, "position": 0 }],
+      "diagnostics": [],
+      "sql": { "clauses": ["(t.id = $2)"], "args": ["11111111-1111-4111-8111-111111111111"] }
     }
   ]
 }

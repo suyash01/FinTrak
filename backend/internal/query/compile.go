@@ -94,6 +94,8 @@ func emit(t Term, sink Sink) *Diagnostic {
 		return emitColumn(t, sink, "t.category_id = $%d", "t.category_id IS NULL", negate)
 	case "acct":
 		return emitColumn(t, sink, "t.account_id = $%d", "", negate)
+	case "id":
+		return emitColumn(t, sink, "t.id = $%d", "", negate)
 	case "ccy":
 		return emitCurrency(t, sink, negate)
 	case "payee":
