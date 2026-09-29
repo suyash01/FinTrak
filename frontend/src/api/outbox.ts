@@ -6,17 +6,30 @@
 // (a timeout, a killed tab) is applied exactly once when it is finally sent.
 // The same key is reused on every retry, which is what makes the retry safe.
 //
+// An edit or a bulk write is a field-level patch plus the base it was made
+// against, so the flush can tell the user's change from someone else's: it
+// reads the server's current row, merges the two three ways (see merge.ts), and
+// takes one of four routes per entry — apply it, hold a conflict for the user,
+// record that the row is gone, or mark it rejected. A held entry stays in the
+// queue and is re-read and re-merged on every later flush, so the user decides
+// against the server's latest state rather than a snapshot that has moved again;
+// what is sent is always the queued patch, never the merge's whole-row output,
+// because sending the latter would revert the fields the user never touched.
+//
 // Queue semantics on flush: a network failure or a server/session problem
 // (401/403/5xx) stops the flush and keeps the queue in order for the next
 // reconnect, while a rejected payload (4xx) is marked with the server's message
 // and left for the user to retry or discard — one bad entry must not block the
-// entries behind it, and it must not be retried forever either. A queue the
-// browser refuses to rewrite stops the flush too and is reported as `unsaved`:
-// the alternative is claiming progress that is not stored anywhere.
+// entries behind it, and it must not be retried forever either. A held conflict
+// extends that rule to something that is not a failure at all: a question for
+// the user is not a reason to stop, so the entry behind a held one is sent
+// normally. A queue the browser refuses to rewrite stops the flush too and is
+// reported as `unsaved`: the alternative is claiming progress that is not stored
+// anywhere.
 
 import type { CreateTransactionRequest } from "../types";
-import type { FieldPatch, FieldValue } from "./merge";
-import { ApiError } from "./errors";
+import { mergeFields, type FieldPatch, type FieldValue } from "./merge";
+import { ApiError, NetworkError } from "./errors";
 
 const PREFIX = "fintrak_outbox:v1";
 
@@ -157,7 +170,33 @@ export interface FlushOutcome {
   // still carries no message. Non-zero stops the flush and is how the caller
   // learns the queue is stuck instead of assuming it drained.
   unsaved: number;
+  // conflicted counts the *fields* the merge held for the user, which is what
+  // the caller has to put in front of them — a dialog over three fields is three
+  // answers, and one entry can hold more than one.
+  conflicted: number;
+  // gone counts the *rows* the server no longer has, so a bulk write that lost
+  // one row of two hundred says so instead of reporting a batch of two hundred.
+  gone: number;
+  // recreated counts the gone rows the user chose to write again as new rows. No
+  // path in this module produces one yet — a gone row is held for the user, not
+  // re-created behind their back — and the field is here because this object is
+  // the caller's single view of a flush, which a counter that appears only once
+  // something can increment it would change under them.
+  recreated: number;
 }
+
+// TheirsReader reads what the server holds now for one row of a queued write, and
+// answers `null` when the server no longer has the row. It is injected rather
+// than read from a module, so the merge is testable on its own and so that every
+// call site in this file shows where the row comes from: it is the server's, and
+// never the offline read cache — a merge answered from the cache is a merge
+// against the client's own belief, which can only agree with itself.
+//
+// It takes the row rather than the entry so one reader serves a single-row entry
+// and each row of a bulk entry, and it must return the row whole: a field the
+// response omits reads as a field the server cleared, which the merge then holds
+// as a conflict the user never caused.
+export type TheirsReader = (op: WriteOp, rowId: string) => Promise<FieldPatch | null>;
 
 const listeners = new Set<() => void>();
 
@@ -282,6 +321,15 @@ function enforceCapacity(entries: QueuedWrite[], next: QueuedWrite): void {
   }
 }
 
+// enqueueInto is the tail every enqueue ends in, because the two decisions it
+// makes are the same for all three kinds of write and must be the same: a queue
+// at its cap refuses, and a queue the browser will not write throws rather than
+// handing back an entry that exists only in the caller.
+function enqueueInto(userId: string, entries: QueuedWrite[], entry: QueuedWrite): void {
+  enforceCapacity(entries, entry);
+  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+}
+
 export function enqueueCreate(
   userId: string,
   request: CreateTransactionRequest,
@@ -295,8 +343,7 @@ export function enqueueCreate(
   if (existing?.kind === "create") return existing;
 
   const entry: CreateEntry = { key, queuedAt: Date.now(), request };
-  enforceCapacity(entries, entry);
-  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+  enqueueInto(userId, entries, entry);
   return entry;
 }
 
@@ -345,8 +392,7 @@ export function enqueueEdit(
     patch,
     snapshot,
   };
-  enforceCapacity(entries, entry);
-  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+  enqueueInto(userId, entries, entry);
   return entry;
 }
 
@@ -380,8 +426,7 @@ export function enqueueBulk(
     bases,
     ...ids,
   };
-  enforceCapacity(entries, entry);
-  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+  enqueueInto(userId, entries, entry);
   return entry;
 }
 
@@ -484,10 +529,79 @@ export function removeEntry(userId: string, key: string): boolean {
   );
 }
 
+// mutateEntry changes one entry in place and reports whether the change was
+// stored — the only question each mutator below has to answer, and the one the
+// flush turns into `unsaved`. A key that is not in the queue is not a storage
+// failure: the entry the caller meant is already gone, which is the state it
+// asked for.
+function mutateEntry(
+  userId: string,
+  key: string,
+  change: (entry: QueuedWrite) => QueuedWrite,
+): boolean {
+  const entries = readEntries(userId);
+  const index = entries.findIndex((entry) => entry.key === key);
+  if (index < 0) return true;
+  entries[index] = change(entries[index]);
+  return writeEntries(userId, entries);
+}
+
+// isRejection is the one question the flush asks about a failed send: did the
+// server give a definite answer about this entry? A transport failure, a session
+// problem and a server error may all have reached nobody, and those keep the
+// queue in order; anything else is an answer about the entry itself.
+function isRejection(err: unknown): err is ApiError {
+  if (!(err instanceof ApiError)) return false;
+  return err.status !== 401 && err.status !== 403 && err.status < 500;
+}
+
+// markRejected records the server's message on the entry, which is what a 4xx
+// means: the entry stays queued carrying the reason, is not attempted again
+// until the user asks for a retry, and does not block the entries behind it.
+function markRejected(userId: string, key: string, message: string): boolean {
+  return mutateEntry(userId, key, (entry) => ({
+    ...entry,
+    error: message || "Rejected by the server",
+  }));
+}
+
+// recordConflict holds a queued write for the user, and reports whether the hold
+// was stored. The conflict travels with the entry rather than in the page for the
+// reason the queue exists: a question the user has to be told about cannot be
+// something only this tab remembers.
+export function recordConflict(userId: string, key: string, conflict: PendingConflict): boolean {
+  return mutateEntry(userId, key, (entry) => ({ ...entry, conflict }));
+}
+
+// recordGone marks a queued write whose row the server no longer has. It is a
+// fact about the row rather than a rejection to retry — there is nothing to
+// retry against — so it is held for the user like a conflict.
+export function recordGone(userId: string, key: string): boolean {
+  return mutateEntry(userId, key, (entry) => ({ ...entry, gone: true }));
+}
+
+// resolveConflict records the user's per-field answer and drops the question with
+// it: an entry whose fields are all decided is not a held conflict, and a record
+// left on it would let discardConflicts destroy a write the user has resolved but
+// not yet sent. There is no "applied" flag — the decision is the entry, and
+// sending it again is safe because a field-level patch is idempotent.
+export function resolveConflict(
+  userId: string,
+  key: string,
+  resolution: Record<string, "mine" | "theirs">,
+): boolean {
+  return mutateEntry(userId, key, ({ conflict: _held, ...entry }) => ({ ...entry, resolution }));
+}
+
 // discardFailed drops every entry a flush rejected, and returns how many were
 // durably discarded. A queue the browser refuses to rewrite throws rather than
 // reporting a discard that did not happen: the rejected entries would otherwise
 // stay queued forever while the user is told they were dropped.
+//
+// It filters on `error` alone, and must stay that way: an entry held for the user
+// has no rejection behind it, and dropping it here would destroy an edit the user
+// has not been told about yet. discardConflicts is the one that answers "the
+// question is settled".
 export function discardFailed(userId: string): number {
   const entries = readEntries(userId);
   const kept = entries.filter((entry) => !entry.error);
@@ -496,68 +610,247 @@ export function discardFailed(userId: string): number {
   return entries.length - kept.length;
 }
 
-// flushOutbox sends queued creates in the order they were recorded. `send` must
-// throw an error carrying the HTTP `status` for a rejected request and an error
-// without one for a transport failure.
+// discardConflicts drops every entry held for the user — a conflict, or a row the
+// server no longer has — and returns how many were durably discarded. It refuses
+// rather than reporting a discard that did not happen, for discardFailed's reason:
+// these are the user's own edits, kept in the queue precisely because nobody has
+// decided about them yet.
+export function discardConflicts(userId: string): number {
+  const entries = readEntries(userId);
+  const kept = entries.filter((entry) => !entry.conflict && !entry.gone);
+  if (kept.length === entries.length) return 0;
+  if (!writeEntries(userId, kept)) throw new OutboxStorageError();
+  return entries.length - kept.length;
+}
+
+// WritePlan is one queued write decided, before anything is sent or written back:
+// what may go out, and what is held for the user instead. Both are answers about
+// the entry, so an entry is either sent whole, sent in part, or not sent at all —
+// never sent and held at once, which would leave the queue claiming a write that
+// the server has already taken.
+interface WritePlan {
+  // send is the entry as it may go out — narrowed to the rows that merged clean,
+  // or carrying the values the user decided — or null when nothing in it may.
+  send: QueuedWrite | null;
+  // conflict is the units held for the user, or null when there are none.
+  conflict: PendingConflict | null;
+  // gone is how many of the entry's rows the server no longer has.
+  gone: number;
+}
+
+// planEdit decides one queued edit against the server's current row.
+async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePlan> {
+  const server = await theirs(entry.op, entry.rowId);
+  // null is the row, not a field: the server does not have it, so there is
+  // nothing to merge against and nothing to write to.
+  if (server === null) return { send: null, conflict: null, gone: 1 };
+
+  // A decided entry is not merged again. The user answered against a row the
+  // server has since moved past, and re-reading it would hold them a second time
+  // over a change they never saw — the decision stands and goes out as it stands.
+  if (entry.resolution) {
+    const decided: FieldPatch = {};
+    for (const [field, side] of Object.entries(entry.resolution)) {
+      const value = side === "mine" ? entry.patch[field] : server[field];
+      // Omitted rather than set, as everywhere else: absent is not null (see
+      // merge.ts), and a field the answer does not name is a field it says
+      // nothing about.
+      if (value !== undefined) decided[field] = value;
+    }
+    return { send: { ...entry, patch: decided }, conflict: null, gone: 0 };
+  }
+
+  const merged = mergeFields(entry.base, entry.patch, server);
+  if (merged.conflicts.length > 0) {
+    return {
+      send: null,
+      conflict: { units: merged.conflicts.map((unit) => ({ rowId: entry.rowId, ...unit })) },
+      gone: 0,
+    };
+  }
+
+  // entry.patch, not merged.patch. The merge walks the union of all three key
+  // sets, so its patch echoes every field of the row, and sending it would revert
+  // a concurrent change to a field the user never touched — the exact bug this
+  // merge exists to prevent. On a clean merge the engine's job is to confirm that
+  // nothing conflicts, not to rewrite the payload. (The one op family for which
+  // the merge's whole-row output is the right payload writes every column anyway;
+  // that overlay belongs to the op registry that knows the family, not here.)
+  return { send: entry, conflict: null, gone: 0 };
+}
+
+// planBulk decides a queued bulk write: one request over rows that can end in
+// three different states at once. The rows that merged clean are sent — the user
+// asked for all of them, and dropping the rest along with them is the failure
+// this feature exists to prevent — and the rest are recorded.
+async function planBulk(entry: BulkEntry, theirs: TheirsReader): Promise<WritePlan> {
+  const clean: string[] = [];
+  const units: ConflictUnit[] = [];
+  let gone = 0;
+  // Read in the entry's own row order, so the units come out in the order the
+  // user chose the rows and a conflict reads like the list they were shown.
+  for (const rowId of entry.rows) {
+    const server = await theirs(entry.op, rowId);
+    if (server === null) {
+      gone += 1;
+      continue;
+    }
+    if (entry.resolution) {
+      // "theirs" is the server's own value: the user kept it, so that row is no
+      // longer part of the write.
+      if (entry.resolution[entry.field] === "theirs") continue;
+      clean.push(rowId);
+      continue;
+    }
+    const merged = mergeFields(
+      { [entry.field]: entry.bases[rowId] },
+      { [entry.field]: entry.value },
+      server,
+    );
+    if (merged.conflicts.length > 0) {
+      units.push(...merged.conflicts.map((unit) => ({ rowId, ...unit })));
+      continue;
+    }
+    clean.push(rowId);
+  }
+
+  return {
+    // rows, not the entry's own list: what may be applied is what the caller is
+    // handed, the same narrowing an edit's patch gets.
+    send: clean.length > 0 ? { ...entry, rows: clean } : null,
+    conflict: units.length > 0 ? { units } : null,
+    gone,
+  };
+}
+
+// isRowWrite is the one narrowing the flush needs, and it holds for the reason
+// adoptKind does: every entry read from storage has been given a kind, so an
+// entry that is not a create is an edit or a bulk write. CreateEntry declares
+// `kind` optional for a v1 entry, so the type alone cannot make that leap — the
+// two facts together can, and the alternative is a cast at the one place the
+// whole dispatch turns on.
+function isRowWrite(entry: QueuedWrite): entry is EditEntry | BulkEntry {
+  return entry.kind !== "create";
+}
+
+// planWrite merges a queued edit or bulk write against the server's current row.
+// A reader is required rather than optional: without one there is nothing to
+// merge against, and sending the entry as it stands is the exact failure the
+// merge exists to prevent, so an unwired flush is loud instead of reverting
+// somebody else's change to a row the user never saw.
+async function planWrite(
+  entry: EditEntry | BulkEntry,
+  theirs: TheirsReader | undefined,
+): Promise<WritePlan> {
+  if (!theirs) {
+    throw new Error(
+      `flushOutbox cannot merge the ${entry.kind} entry: no theirs reader was supplied`,
+    );
+  }
+  return entry.kind === "edit" ? planEdit(entry, theirs) : planBulk(entry, theirs);
+}
+
+// flushOutbox sends the queue in the order it was recorded, through one seam the
+// caller implements: a create posts it, an edit PATCHes or PUTs it, and a bulk
+// calls applyMany over the rows it is given. `send` must throw an ApiError
+// carrying the HTTP `status` for a rejected request and a NetworkError for a
+// request that never reached the server.
 export async function flushOutbox(
   userId: string,
-  send: (entry: CreateEntry) => Promise<void>,
-  options: { retryFailed?: boolean } = {},
+  send: (entry: QueuedWrite) => Promise<void>,
+  options: { retryFailed?: boolean; theirs?: TheirsReader } = {},
 ): Promise<FlushOutcome> {
   let sent = 0;
   let unsaved = 0;
+  let conflicted = 0;
+  let gone = 0;
   for (const entry of readEntries(userId)) {
-    // Only a create is sendable through this seam: an edit or a bulk write has
-    // to be merged against the server's row first, and posting one to the create
-    // endpoint would be a different request wearing this entry's key. Throwing
-    // rather than skipping is the point — a `continue` here would leave the entry
-    // queued and counted in `remaining`, which reads as progress to a user
-    // waiting for a sync that is never coming, and the only way it can arise is a
-    // path this module has not written yet. So it is loud: the entry is untouched
-    // and the flush stops, which is what a developer needs to see.
-    if (entry.kind !== "create") {
-      throw new Error(`flushOutbox cannot send a ${entry.kind} entry: not implemented yet`);
-    }
     if (entry.error && !options.retryFailed) continue;
 
-    let accepted = false;
+    // What goes out is decided before anything is sent: a create has nothing to
+    // merge, and an edit or a bulk write is read and merged first, which is why
+    // both arrive at the same send — one of them may be nothing but "post this"
+    // and the other a request narrowed to a third of its rows, and the flush
+    // must not grow a second dispatch to tell them apart.
+    let plan: WritePlan;
     try {
-      await send(entry);
-      accepted = true;
+      plan = isRowWrite(entry)
+        ? await planWrite(entry, options.theirs)
+        : { send: entry, conflict: null, gone: 0 };
     } catch (err) {
-      // Anything that is not a definite HTTP rejection (a transport failure, or
-      // an error with no status) stops the flush: the entry may not have reached
-      // the server, so the queue keeps its order and retries on reconnect.
-      if (!(err instanceof ApiError)) break;
-      if (err.status === 401 || err.status === 403 || err.status >= 500) break;
-      const entries = readEntries(userId);
-      const index = entries.findIndex((candidate) => candidate.key === entry.key);
-      if (index >= 0) {
-        entries[index] = {
-          ...entries[index],
-          error: err.message || "Rejected by the server",
-        };
+      // Reading the server's row is part of the flush, not a lookup beside it: a
+      // connection that dies mid-flush leaves the queue exactly where a failed
+      // send would, in order, for the next reconnect. Anything that is not a
+      // transport failure is a broken reader rather than an offline moment, and
+      // is left loud.
+      if (err instanceof NetworkError) break;
+      throw err;
+    }
+
+    if (plan.send) {
+      let accepted = false;
+      try {
+        await send(plan.send);
+        accepted = true;
+      } catch (err) {
+        if (!isRejection(err)) break;
         // An unrecorded rejection would be retried by the next flush (only a
         // marked entry is skipped) instead of ever reaching the user, so a queue
         // that cannot be rewritten stops the flush here.
-        if (!writeEntries(userId, entries)) {
+        if (!markRejected(userId, entry.key, err.message)) {
           unsaved += 1;
           break;
         }
+        continue;
+      }
+      if (!accepted) continue;
+      // Counted where the server accepted the entry: deriving this from the queue
+      // length would subtract entries the user records *during* the flush (each
+      // request can take seconds), reporting no progress and suppressing the
+      // reload that shows the row just written.
+      sent += 1;
+    }
+
+    // A row the server no longer has never stops the flush: there is nothing to
+    // decide about a row that is not there, and stranding the write behind it
+    // would block the ones the user can still make. It is counted either way —
+    // in the outcome, and on the entry itself when nothing in the entry could be
+    // applied at all.
+    if (plan.gone > 0) gone += plan.gone;
+
+    if (plan.conflict) {
+      if (!recordConflict(userId, entry.key, plan.conflict)) {
+        unsaved += 1;
+        break;
+      }
+      conflicted += plan.conflict.units.length;
+      // Held, not failed, and it does not stop the flush: the rows the user has
+      // to answer for are not in what was sent, and the entry stays queued so the
+      // answer can be given — while the entries behind it are writes the user can
+      // still make. The entry keeps every row it was given, so a later flush
+      // re-reads them all and re-sends the rows already applied, which is
+      // harmless: a field-level write of a value the row already holds changes
+      // nothing.
+      continue;
+    }
+
+    if (plan.gone > 0 && plan.send === null) {
+      // Nothing in the entry went out at all, so the entry itself is the record:
+      // dropping it quietly would report a write that cannot be made as one that
+      // drained. An entry that *did* apply is not held on this — its work is
+      // done, and a row that is not there cannot be written to, so it drains and
+      // `gone` is the record of why part of the batch is not there.
+      if (!recordGone(userId, entry.key)) {
+        unsaved += 1;
+        break;
       }
       continue;
     }
 
-    if (!accepted) continue;
-    // Counted where the server accepted the entry: deriving this from the queue
-    // length would subtract entries the user records *during* the flush (each
-    // POST can take seconds), reporting no progress and suppressing the reload
-    // that shows the transaction just written.
-    sent += 1;
     if (!removeEntry(userId, entry.key)) {
-      // The entry the server just accepted is still queued: it would be replayed
-      // on every reconnect and the queue would never shrink, so the flush stops
-      // and reports it (outcome.unsaved) instead of looping or pretending.
+      // The entry is still queued. A sent one would be replayed on every
+      // reconnect and the queue would never shrink, so the flush stops and
+      // reports it (outcome.unsaved) instead of looping or pretending.
       unsaved += 1;
       break;
     }
@@ -569,5 +862,8 @@ export async function flushOutbox(
     remaining: remaining.length,
     failed: remaining.filter((entry) => entry.error).length,
     unsaved,
+    conflicted,
+    gone,
+    recreated: 0,
   };
 }

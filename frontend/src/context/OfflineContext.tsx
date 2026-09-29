@@ -68,6 +68,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
           async (entry) => {
             // queue: false — the flush owns the retry, so a transport failure
             // must propagate instead of re-queueing the entry it just took.
+            //
+            // Only a create reaches this seam: the flush refuses to dispatch an
+            // edit or a bulk write without a reader that can merge it against
+            // the server's current row, and the op registry is what will supply
+            // one and widen this to all three kinds of queued write.
+            if (entry.kind !== "create") {
+              throw new Error(`cannot post a ${entry.kind} entry`);
+            }
             await api.createTransaction(entry.request, {
               idempotencyKey: entry.key,
               queue: false,
