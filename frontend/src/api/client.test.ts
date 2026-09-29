@@ -1,17 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import api, { getStoredUser, storeUser, downloadCSV } from "./client";
 import { NetworkError } from "./errors";
+import type { FieldValue } from "./merge";
 import { readCached } from "./offlineCache";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
-import { getOutboxSnapshot, OutboxStorageError } from "./outbox";
+import {
+  flushOutbox,
+  getOutboxSnapshot,
+  OutboxStorageError,
+  type BulkEntry,
+} from "./outbox";
+import { OPS } from "./registry";
 import type {
   Account,
   AccountType,
+  BulkBillingCycleRequest,
+  BulkCategorizeRequest,
+  BulkLoanRequest,
+  BulkUpdatePayeeRequest,
+  BulkUpdateTagsRequest,
   Category,
   CategoryGroup,
+  LoanDisbursementRequest,
   LoanSchedule,
   LoanScheduleDetail,
   Payee,
+  RecurringAttachRequest,
+  RecurringDetachRequest,
   RecurringSeries,
   RecurringSeriesTerm,
   Rule,
@@ -932,6 +947,236 @@ describe("offline behaviour", () => {
     },
   ];
 
+  // The row-naming writes: the same six questions asked of the eight calls that
+  // name their own rows. One field, one value, N rows — so the base is per row
+  // rather than one row's, and `settled` is the selection in which nothing changes
+  // (this family's `revert`).
+  //
+  // t1 and t2 need the write and t3 already has it, so `rows` is what is left of
+  // the caller's three. A base carrying a null is what a caller holding the
+  // transaction rows has in hand, and `queuedBase` is that base as the queue has
+  // to record it: the nullish entry dropped, because a base that says "no
+  // category" where the server's row says the row carries no such field reads as
+  // somebody having changed it (merge.ts: absent is not null) and would come back
+  // from the merge as a conflict over a write the row never had.
+  interface MultiRowFamily {
+    label: string;
+    op: string;
+    field: string;
+    value: FieldValue;
+    method: string;
+    url: string;
+    rows: string[];
+    base: Record<string, FieldValue>;
+    queuedBase: Record<string, FieldValue>;
+    // The base in which nothing changes, and there is not one for every case: a
+    // write whose value is nullish cannot have one, because a base that says "on
+    // no loan" is an absent key and a value the base is silent about is a change
+    // — the merge says the same (mergeFields), and dropping a row on a base that
+    // merely has nothing to say about it would lose the write the user made.
+    settled?: Record<string, FieldValue>;
+    payload: Record<string, unknown>;
+    body: Record<string, unknown>;
+    send: (call: {
+      payload: Record<string, unknown>;
+      base?: Record<string, FieldValue>;
+      queue?: boolean;
+    }) => Promise<unknown>;
+  }
+
+  const MULTI_ROW: MultiRowFamily[] = [
+    {
+      label: "transaction.categorize",
+      op: "transaction.categorize",
+      field: "categoryId",
+      value: "c1",
+      method: "POST",
+      url: "/transactions/bulk-categorize",
+      rows: ["t1", "t2"],
+      base: { t1: null, t2: "c0", t3: "c1" },
+      queuedBase: { t2: "c0", t3: "c1" },
+      settled: { t1: "c1", t2: "c1", t3: "c1" },
+      payload: { transactionIds: ["t1", "t2", "t3"], categoryId: "c1" },
+      body: { transactionIds: ["t1", "t2"], categoryId: "c1" },
+      send: ({ payload, base, queue }) =>
+        api.bulkCategorize(
+          payload as unknown as BulkCategorizeRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.payee",
+      op: "transaction.payee",
+      field: "payeeId",
+      value: "p1",
+      method: "POST",
+      url: "/transactions/bulk-payee",
+      rows: ["t1", "t2"],
+      base: { t1: "p0", t2: null, t3: "p1" },
+      queuedBase: { t1: "p0", t3: "p1" },
+      settled: { t1: "p1", t2: "p1", t3: "p1" },
+      payload: { transactionIds: ["t1", "t2", "t3"], payeeId: "p1" },
+      body: { transactionIds: ["t1", "t2"], payeeId: "p1" },
+      send: ({ payload, base, queue }) =>
+        api.bulkUpdatePayee(
+          payload as unknown as BulkUpdatePayeeRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.billingCycle",
+      op: "transaction.billingCycle",
+      field: "billingCycleId",
+      value: "bc1",
+      method: "POST",
+      url: "/transactions/bulk-billing-cycle",
+      rows: ["t1", "t2"],
+      base: { t1: "bc0", t2: null, t3: "bc1" },
+      queuedBase: { t1: "bc0", t3: "bc1" },
+      settled: { t1: "bc1", t2: "bc1", t3: "bc1" },
+      payload: { transactionIds: ["t1", "t2", "t3"], billingCycleId: "bc1" },
+      body: { transactionIds: ["t1", "t2"], billingCycleId: "bc1" },
+      send: ({ payload, base, queue }) =>
+        api.bulkUpdateBillingCycle(
+          payload as unknown as BulkBillingCycleRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.loan attach",
+      op: "transaction.loan",
+      field: "loanAccountId",
+      value: "a1",
+      method: "POST",
+      url: "/transactions/bulk-loan",
+      rows: ["t1", "t2"],
+      base: { t1: "a0", t2: null, t3: "a1" },
+      queuedBase: { t1: "a0", t3: "a1" },
+      settled: { t1: "a1", t2: "a1", t3: "a1" },
+      payload: { transactionIds: ["t1", "t2", "t3"], loanAccountId: "a1" },
+      body: { transactionIds: ["t1", "t2"], loanAccountId: "a1" },
+      send: ({ payload, base, queue }) =>
+        api.bulkLoan(
+          payload as unknown as BulkLoanRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.loan detach",
+      op: "transaction.loan",
+      field: "loanAccountId",
+      // null, never "": BulkLoanRequest.loanAccountId is a *uuid.UUID server-side,
+      // so an empty string would be sent on as an id and rejected. It is also the
+      // only value the merge can read as a change away from the loan a row holds.
+      value: null,
+      method: "POST",
+      url: "/transactions/bulk-loan",
+      // Every row, including t3, which is on no loan already: a base that is
+      // silent about a row is not a row that already holds the value.
+      rows: ["t1", "t2", "t3"],
+      base: { t1: "a0", t2: "a0", t3: null },
+      queuedBase: { t1: "a0", t2: "a0" },
+      payload: { transactionIds: ["t1", "t2", "t3"], loanAccountId: null },
+      body: { transactionIds: ["t1", "t2", "t3"], loanAccountId: null },
+      send: ({ payload, base, queue }) =>
+        api.bulkLoan(
+          payload as unknown as BulkLoanRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.recurring attach",
+      op: "transaction.recurring",
+      field: "recurringSeriesId",
+      value: "s1",
+      method: "POST",
+      url: "/recurring/attach",
+      rows: ["t1", "t2"],
+      base: { t1: "s0", t2: null, t3: "s1" },
+      queuedBase: { t1: "s0", t3: "s1" },
+      settled: { t1: "s1", t2: "s1", t3: "s1" },
+      payload: { seriesId: "s1", transactionIds: ["t1", "t2", "t3"] },
+      body: { seriesId: "s1", transactionIds: ["t1", "t2"] },
+      send: ({ payload, base, queue }) =>
+        api.attachRecurring(
+          payload as unknown as RecurringAttachRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.recurring detach",
+      op: "transaction.recurring",
+      field: "recurringSeriesId",
+      value: null,
+      method: "POST",
+      url: "/recurring/detach",
+      rows: ["t1", "t2", "t3"],
+      base: { t1: "s0", t2: "s0", t3: null },
+      queuedBase: { t1: "s0", t2: "s0" },
+      payload: { transactionIds: ["t1", "t2", "t3"] },
+      body: { transactionIds: ["t1", "t2", "t3"] },
+      send: ({ payload, base, queue }) =>
+        api.detachRecurring(
+          payload as unknown as RecurringDetachRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      // The one value in this family that is not the row's content: the endpoint
+      // takes additions and removals, so what is queued is the delta, and a
+      // removal the user made has to be recorded as a removal — the surviving
+      // names would be added back on the flush.
+      label: "transaction.tags",
+      op: "transaction.tags",
+      field: "tags",
+      value: ["-milk"],
+      method: "POST",
+      url: "/transactions/bulk-tags",
+      // Only t1 holds "milk". The other two are not in a removal of it, which a
+      // base that cannot say so would get wrong: the value is a delta, so
+      // comparing it to a row's complete list is comparing two questions.
+      rows: ["t1"],
+      base: { t1: ["milk", "bread"], t2: ["bread"], t3: [] },
+      queuedBase: { t1: ["milk", "bread"], t2: ["bread"], t3: [] },
+      settled: { t1: ["bread"], t2: ["bread"], t3: [] },
+      payload: {
+        transactionIds: ["t1", "t2", "t3"],
+        add: [],
+        remove: ["milk"],
+      },
+      body: { transactionIds: ["t1"], add: [], remove: ["milk"] },
+      send: ({ payload, base, queue }) =>
+        api.bulkUpdateTags(
+          payload as unknown as BulkUpdateTagsRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+    {
+      label: "transaction.loanDisbursement",
+      op: "transaction.loanDisbursement",
+      field: "loanAccountId",
+      value: "a1",
+      method: "PUT",
+      url: "/accounts/a1/loan-disbursement",
+      rows: ["t1"],
+      base: { t1: null },
+      // Nothing at all: the credit is on no loan account, so the base has no key
+      // for it rather than a null.
+      queuedBase: {},
+      settled: { t1: "a1" },
+      payload: { transactionId: "t1" },
+      body: { transactionId: "t1" },
+      // The only one of the eight addressed outside the body: the loan account is
+      // in the path and the transaction is the row the write names.
+      send: ({ payload, base, queue }) =>
+        api.linkLoanDisbursement(
+          "a1",
+          payload as unknown as LoanDisbursementRequest,
+          base === undefined ? { queue } : { base, queue },
+        ),
+    },
+  ];
+
   beforeEach(() => {
     localStorage.clear();
     setServedFromCache(false);
@@ -1689,6 +1934,251 @@ describe("offline behaviour", () => {
     ).rejects.toThrow(NetworkError);
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
     expect(getOutboxSnapshot("u2")).toHaveLength(0);
+  });
+
+  // The row-naming family. Same six questions as the two tables above, and the
+  // same two extra guards below: a write that names rows is not a smaller change
+  // than one that names a row, and the reason a per-row base exists at all is
+  // that a single base for the batch would merge a row nobody changed against a
+  // row that did (outbox.ts's BulkEntry).
+  //
+  // The `queued` helper narrows the union the way outbox.ts does, rather than
+  // asserting with a bang: an entry that is not a bulk write is a bug worth
+  // hearing about, and the fields the assertions below read are on no other kind.
+  function queued(index = 0): BulkEntry {
+    const entry = getOutboxSnapshot("u1")[index];
+    if (entry?.kind !== "bulk") throw new Error("expected a queued bulk write");
+    return entry;
+  }
+
+  // The two detach writes have no base in which nothing changes, so they are not
+  // in the table for that one question — see MULTI_ROW's `settled`.
+  const SETTLEABLE = MULTI_ROW.filter((row) => row.settled);
+
+  it.each(MULTI_ROW)("$label sends only the rows the base says change", async ({
+    method,
+    url,
+    base,
+    body,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({}));
+
+    await send({ payload, base });
+
+    // The caller's own payload, with the rows the base rules out taken out. A row
+    // already holding the value is not part of the write, so putting it on the
+    // wire would ask the server to write what it already holds — and the queue
+    // would then record a row the user never changed, which the merge would hold
+    // as a conflict over their own edit. A base that cannot say (a row it is
+    // silent about, as with a nullish value) leaves the row in, which is why the
+    // two detaches send all three of theirs.
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(opts.method).toBe(method);
+    expect(JSON.parse(opts.body)).toEqual(body);
+  });
+
+  it.each(MULTI_ROW)("$label sends the whole payload when no base is supplied", async ({
+    url,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({}));
+
+    await send({ payload });
+
+    // Unchanged from before the offline write existed: a caller holding no base
+    // rows has only its payload, and the rows it names are the write.
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(JSON.parse(opts.body)).toEqual(payload);
+  });
+
+  it.each(SETTLEABLE)("$label sends no request at all when no row changes", async ({
+    settled,
+    payload,
+    send,
+  }) => {
+    // Every row already says what the user asked for, so there is nothing to
+    // write: no request on the wire, and no entry for the flush to merge.
+    const result = await send({ payload, base: settled });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ queued: false, queuedRows: 0 });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(MULTI_ROW)("$label queues a bulk entry with the per-row base when the server is unreachable", async ({
+    op,
+    field,
+    value,
+    rows,
+    base,
+    queuedBase,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await send({ payload, base });
+
+    expect(result).toEqual({ queued: true, queuedRows: rows.length });
+    // The entry is the merge's whole input: which endpoint to reach, which field
+    // of each row it writes, the one value, the rows that write it, and the base
+    // each of those rows held.
+    const entry = queued();
+    expect(entry).toMatchObject({ op, field, value, rows });
+    expect(entry.bases).toEqual(queuedBase);
+  });
+
+  it.each(MULTI_ROW)("$label fails the flush rather than re-queueing the entry it is sending", async ({
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // queue: false is what a caller *sending* an already-queued write passes: a
+    // second copy of the entry behind the flush's back would replay it twice.
+    await expect(send({ payload, base, queue: false })).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(MULTI_ROW)("$label cannot queue a write made with no base", async ({
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // There is nothing for the merge to tell the user's change from somebody
+    // else's: a per-row base is what makes this write a patch, and an entry
+    // without one would hold every row it names over a change nobody made. The
+    // failure is the honest answer.
+    await expect(send({ payload })).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("refuses to queue a row-naming write under a session that replaced the issuing one", async () => {
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.reject(new TypeError("Failed to fetch"));
+    });
+
+    // Neither queue may take it: u1 is gone from this browser and u2 never
+    // recorded it, and the server would reject an u1 entry flushed under u2.
+    await expect(
+      api.bulkCategorize(
+        { transactionIds: ["t1", "t2"], categoryId: "c1" },
+        { base: { t1: null, t2: "c0" } },
+      ),
+    ).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+    expect(getOutboxSnapshot("u2")).toHaveLength(0);
+  });
+
+  it("refuses to claim a queued bulk write the browser would not let it store", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    // A queue the browser will not write must reach the user as a failure: the
+    // UI would otherwise confirm a write no flush will ever perform.
+    await expect(
+      api.bulkCategorize(
+        { transactionIds: ["t1"], categoryId: "c1" },
+        { base: { t1: null } },
+      ),
+    ).rejects.toThrow(OutboxStorageError);
+    setItem.mockRestore();
+  });
+
+  it("surfaces a rejected row-naming write rather than queueing it", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ errors: [{ message: "category not found" }] }, 400),
+    );
+
+    await expect(
+      api.bulkCategorize(
+        { transactionIds: ["t1"], categoryId: "c1" },
+        { base: { t1: null } },
+      ),
+    ).rejects.toMatchObject({ message: "category not found", status: 400 });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  // The endpoint's own identifier rides beside the value, named after what the
+  // request type calls it, because the value alone says what to write and not
+  // which loan account or series the user picked. A detach records none: there is
+  // no account or series being left, and recording the one the row held would
+  // name a target the write is about to remove.
+  it("records the series an attach names, and none for a detach", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await api.attachRecurring(
+      { seriesId: "s1", transactionIds: ["t1"] },
+      { base: { t1: null } },
+    );
+    await api.detachRecurring(
+      { transactionIds: ["t2"] },
+      { base: { t2: "s0" } },
+    );
+
+    expect(queued(0).seriesId).toBe("s1");
+    expect(queued(1).seriesId).toBeUndefined();
+  });
+
+  it("records the loan an attach names, and none for a detach", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await api.bulkLoan(
+      { transactionIds: ["t1"], loanAccountId: "a1" },
+      { base: { t1: null } },
+    );
+    await api.bulkLoan(
+      { transactionIds: ["t2"], loanAccountId: null },
+      { base: { t2: "a0" } },
+    );
+
+    expect(queued(0).loanAccountId).toBe("a1");
+    expect(queued(1).loanAccountId).toBeUndefined();
+  });
+
+  // The one place both halves of the tag encoding are exercised at once. The
+  // client writes the delta and registry.ts reads it back, and the two agreeing is
+  // the whole of a queued removal: a marker one side changed alone sends the
+  // user's removal back as an addition, and the tag they took off comes back on
+  // its own. The registry's own test cannot catch that — it mocks the client.
+  it("sends a queued tag removal back out as a removal", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await api.bulkUpdateTags(
+      { transactionIds: ["t1"], add: [], remove: ["milk"] },
+      { base: { t1: ["milk", "bread"] } },
+    );
+
+    fetchMock.mockResolvedValue(jsonResponse({ updated: 1 }));
+    await flushOutbox(
+      "u1",
+      async (entry) => {
+        if (entry.kind !== "bulk") return;
+        const spec = OPS[entry.op];
+        if (!spec.applyMany) throw new Error(`${entry.op} declares no applyMany`);
+        await spec.applyMany(entry.rows, entry.value);
+      },
+      { theirs: async () => ({ tags: ["milk", "bread"] }) },
+    );
+
+    const [called, opts] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect(called).toBe(`${API_BASE}/transactions/bulk-tags`);
+    expect(JSON.parse(opts.body as string)).toEqual({
+      transactionIds: ["t1"],
+      add: [],
+      remove: ["milk"],
+    });
   });
 });
 

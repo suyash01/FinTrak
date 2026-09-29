@@ -974,6 +974,22 @@ describe("the row-naming writes", () => {
     });
   });
 
+  // A queued write that cannot be sent is a definite answer about the entry, not
+  // a broken dispatch, and the difference is what the flush does with it: an
+  // ApiError with a 4xx is recorded on the entry and skipped, while anything that
+  // is neither an ApiError nor a NetworkError is rethrown and stops the whole sync
+  // (outbox.ts). So a clear the app could queue — a bulk "remove payee" the
+  // endpoints cannot express — would otherwise be the one write that takes every
+  // other queued write down with it.
+  it("reports an unsendable clear as a rejection the flush can carry past", async () => {
+    for (const op of ["transaction.payee", "transaction.billingCycle", "transaction.loanDisbursement"] as const) {
+      await expect(applyMany(op, ["t1"], null)).rejects.toMatchObject({ status: 422 });
+    }
+    for (const method of ["bulkUpdatePayee", "bulkUpdateBillingCycle", "linkLoanDisbursement"] as const) {
+      expect(apiMocks[method]).not.toHaveBeenCalled();
+    }
+  });
+
   it("adds the tags the entry names", async () => {
     await applyMany("transaction.tags", ["t1", "t2"], ["milk"]);
     expect(apiMocks.bulkUpdateTags).toHaveBeenCalledWith({

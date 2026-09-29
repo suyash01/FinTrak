@@ -78,9 +78,14 @@ import type {
   ValidateTransactionsResponse,
 } from "../types";
 import { ApiError, NetworkError, isNetworkError } from "./errors";
-import { diffAgainstBase, type FieldPatch } from "./merge";
+import {
+  diffAgainstBase,
+  valuesEqual,
+  type FieldPatch,
+  type FieldValue,
+} from "./merge";
 import { clearCached, isCacheablePath, readCached, writeCached } from "./offlineCache";
-import { enqueueCreate, enqueueEdit } from "./outbox";
+import { enqueueBulk, enqueueCreate, enqueueEdit } from "./outbox";
 import {
   projectAccount,
   projectAccountType,
@@ -571,6 +576,79 @@ export interface TermWrite<Row, Data> {
   ): Promise<Row | QueuedEdit>;
 }
 
+// BulkOptions is the offline half of a write that names its rows. `base` is the
+// value the one field this op writes held on each row, keyed by transaction id —
+// per row rather than per batch, because one base for the batch would merge a row
+// nobody changed against a row that did and hold the whole selection for a
+// conflict on a row the user never opened (outbox.ts's BulkEntry).
+//
+// It is what makes the write a patch, per row, and the rows and bases that go out
+// are the ones the queue records, so a write that reached the server and one that
+// did not cannot disagree about what the user changed. `queue: false` is what a
+// caller that is *sending* an already-queued write passes — the outbox flush,
+// which must not put a second copy of an entry back in the queue when the request
+// does not reach the server.
+export interface BulkOptions {
+  base?: Record<string, FieldValue>;
+  queue?: boolean;
+}
+
+// QueuedBulk is what a row-naming write resolves to when it never became a
+// request, and to what it resolves when there was nothing to send. `queued` says
+// which, and `queuedRows` says how many rows are in the entry — how many the flush
+// will send, hold for the user, or report gone. Zero is a real answer and not a
+// missing one: a selection whose every row already holds the value has nothing to
+// write, so there is no entry to wait for.
+export interface QueuedBulk {
+  queued: boolean;
+  queuedRows: number;
+}
+
+// BulkWrite is EditWrite for a call that names its rows in the body, and it makes
+// the same trade: a call with no base has no patch to record, so a request that
+// never reached the server is raised as a failure and the caller gets the
+// endpoint's own answer back. Pass a base and the result may be a QueuedBulk,
+// which the caller has to narrow before it reads the endpoint's answer off it.
+export interface BulkWrite<Row, Data> {
+  (data: Data): Promise<Row>;
+  (data: Data, options: BulkOptions): Promise<Row | QueuedBulk>;
+}
+
+// BulkRowWrite is BulkWrite for the one of the eight that names a row outside the
+// body: a disbursement credit is linked to a loan account, and the loan rides in
+// the path while only the transaction is in the request.
+export interface BulkRowWrite<Row, Data> {
+  (id: string, data: Data): Promise<Row>;
+  (id: string, data: Data, options: BulkOptions): Promise<Row | QueuedBulk>;
+}
+
+// bulkBases is the per-row base the queue records, read the way every projection
+// reads a row: a nullish field is left off rather than stored as null, because
+// absent is not null. A caller building this map from the transaction rows it
+// holds has `categoryId: null` in hand, and a base saying "no category" where the
+// server's row says the row carries no such field reads as somebody having
+// changed it — so every write onto a row that never held the value would come
+// back from the merge as a conflict the user did not cause.
+function bulkBases(base: BulkOptions["base"]): Record<string, FieldValue> | null {
+  if (!base) return null;
+  const bases: Record<string, FieldValue> = {};
+  for (const [rowId, value] of Object.entries(base)) {
+    if (value !== null) bases[rowId] = value;
+  }
+  return bases;
+}
+
+// REMOVE_TAG marks a tag a queued tag write removes rather than adds, and it is
+// the marker registry.ts's applyMany reads back. The endpoint takes two lists and
+// a queued write carries one value for all of its rows, so the direction has to
+// travel inside the value: a removal the user made has to be recorded as a
+// removal, because a list of the surviving names would add them all back when the
+// flush sends it. The two copies must not drift — a marker changed on one side
+// alone sends the removal the other way and the tag comes back on its own — and
+// they are two copies because the module that reads it imports this one and not
+// the reverse.
+const REMOVE_TAG = "-";
+
 const api = {
   // Auth
   register: (data: RegisterRequest): Promise<AuthResponse> =>
@@ -960,21 +1038,142 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkCategorize: (data: BulkCategorizeRequest): Promise<null> =>
-    request("/transactions/bulk-categorize", {
+  // The row-naming writes, from here to bulkUpdateTags and on through the loan
+  // and recurring sections: eight calls that name the rows they write and one
+  // value. They are updateTransaction's rules once per row rather than once per
+  // call, and the four decisions those rules come to are the same for all eight:
+  //
+  //   A row that already holds the value is not part of the write, so a selection
+  //   whose every row already holds it has nothing to send and answers
+  //   `{ queued: false }` without a request — updateTransaction's empty diff,
+  //   once per row instead of once per call. The rows that are left are what goes
+  //   out and what the queue records, so the two cannot disagree. "Already holds
+  //   it" is valuesEqual and nothing more, which is the merge's own test: a base
+  //   that is silent about a row is not a row that already holds the value, so a
+  //   detach covers every row it is given.
+  //   A clear is the caller's own value, because the endpoints do not agree on
+  //   one: a nullish loan or series id is a detach (both requests are *uuid.UUID
+  //   there, and an empty string would be sent on as an id and rejected),
+  //   "uncategorized" is how a category is cleared, and the payee and cycle
+  //   endpoints cannot express a clear at all — which registry.ts refuses rather
+  //   than sends, because their requests are a required uuid behind an EXISTS
+  //   guard and the answer would be 200 with updated: 0.
+  //   No base is no queue. Without one there is nothing to tell the user's change
+  //   from somebody else's, so a request that never reached the server is raised
+  //   as a failure rather than queued as an entry that would hold every row it
+  //   names.
+  //
+  // bulkDeleteTransactions is deliberately not one of them: a delete has nothing
+  // to merge, and a row the server no longer has is not a conflict to resolve.
+  bulkCategorize: (async (
+    data: BulkCategorizeRequest,
+    options: BulkOptions = {},
+  ) => {
+    // The category is the caller's own value, including the endpoint's
+    // "uncategorized" clear — that is how this request type says it, and
+    // registry.ts reads a nullish value as the same clear for a caller that says
+    // it that way instead.
+    const bases = bulkBases(options.base);
+    const value = data.categoryId;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    // The queue entry belongs to the session that issued the write, as it does
+    // for every other queued write here.
+    const owner = offlineUserId();
+    return request("/transactions/bulk-categorize", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
-  bulkUpdatePayee: (data: BulkUpdatePayeeRequest): Promise<null> =>
-    request("/transactions/bulk-payee", {
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      () => null,
+      (err: unknown) => {
+        // Only a request that never reached the server may be replayed later; a
+        // rejected one is the server refusing this payload, and the user has to
+        // see that.
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        // Never answer `queued` unless the entry is really in the queue: a refused
+        // write (or a full queue) has to reach the user as a failure, or the UI
+        // confirms a save that no flush will ever perform. enqueueBulk throws
+        // rather than handing back an entry that is not stored.
+        enqueueBulk(
+          owner,
+          "transaction.categorize",
+          "categoryId",
+          value,
+          rows,
+          bases,
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<null, BulkCategorizeRequest>,
+  bulkUpdatePayee: (async (
+    data: BulkUpdatePayeeRequest,
+    options: BulkOptions = {},
+  ) => {
+    // The payee, as given. A clear is not this endpoint's to make: its request
+    // takes a required uuid and guards the write with an EXISTS on it, so one
+    // would come back 200 with updated: 0 — a write reported as done that was
+    // never performed. registry.ts refuses a clear when the entry is sent, which
+    // is where the row it would have cleared is known.
+    const bases = bulkBases(options.base);
+    const value = data.payeeId;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request("/transactions/bulk-payee", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
-  bulkUpdateBillingCycle: (data: BulkBillingCycleRequest): Promise<null> =>
-    request("/transactions/bulk-billing-cycle", {
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      () => null,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(owner, "transaction.payee", "payeeId", value, rows, bases);
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<null, BulkUpdatePayeeRequest>,
+  // As the payee, and for the same reason: BulkBillingCycleRequest is a required
+  // BillingCycleID behind the same EXISTS guard, so it cannot detach either.
+  bulkUpdateBillingCycle: (async (
+    data: BulkBillingCycleRequest,
+    options: BulkOptions = {},
+  ) => {
+    const bases = bulkBases(options.base);
+    const value = data.billingCycleId;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request("/transactions/bulk-billing-cycle", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      () => null,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(
+          owner,
+          "transaction.billingCycle",
+          "billingCycleId",
+          value,
+          rows,
+          bases,
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<null, BulkBillingCycleRequest>,
   bulkDeleteTransactions: (
     data: BulkDeleteTransactionsRequest,
   ): Promise<null> =>
@@ -982,11 +1181,47 @@ const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  bulkLoan: (data: BulkLoanRequest): Promise<null> =>
-    request("/transactions/bulk-loan", {
+  bulkLoan: (async (
+    data: BulkLoanRequest,
+    options: BulkOptions = {},
+  ) => {
+    // The loan account, or null. BulkLoanRequest.LoanAccountID is a *uuid.UUID
+    // server-side, so a null detaches and an omitted one says the same thing —
+    // and null is what the entry records, because it is the only value the merge
+    // reads as a change away from the loan a row holds. An empty string here
+    // would be sent on as an id and rejected.
+    const bases = bulkBases(options.base);
+    const value = data.loanAccountId ?? null;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request("/transactions/bulk-loan", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      () => null,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(
+          owner,
+          "transaction.loan",
+          "loanAccountId",
+          value,
+          rows,
+          bases,
+          // The account being attached to, named after what the request calls it,
+          // and only when there is one: a detach is leaving a loan, so recording
+          // the account the row held would name a target the write removes.
+          value === null ? undefined : { loanAccountId: value },
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<null, BulkLoanRequest>,
   // Optional amortization schedule of a Loan / EMI account. GET answers with
   // schedule: null when the loan has no schedule yet.
   getLoanSchedule: (
@@ -1049,14 +1284,47 @@ const api = {
     request(`/accounts/${accountId}/loan-schedule`, { method: "DELETE" }),
   // The bank credit that released this loan. Linking replaces any previous
   // credit; both endpoints answer with the refreshed schedule detail.
-  linkLoanDisbursement: (
+  //
+  // A one-row write of the family above — a disbursement is one credit, and the
+  // loan rides as the value because it is not a column on the transaction
+  // (loan.go:740 records it against the loan) and there is no other channel to
+  // send it through. So the queued entry is a bulk entry of one row and the flush
+  // reaches this endpoint through the same applyMany every other row-naming write
+  // uses; the base is still the credit's own `loanAccountId`, because that is the
+  // field the merge reads for the op.
+  linkLoanDisbursement: (async (
     accountId: string,
     data: LoanDisbursementRequest,
-  ): Promise<LoanScheduleDetail> =>
-    request(`/accounts/${accountId}/loan-disbursement`, {
+    options: BulkOptions = {},
+  ) => {
+    const bases = bulkBases(options.base);
+    const value = accountId;
+    const rows = bases
+      ? [data.transactionId].filter((rowId) => !valuesEqual(bases[rowId], value))
+      : [data.transactionId];
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request<LoanScheduleDetail>(`/accounts/${accountId}/loan-disbursement`, {
       method: "PUT",
       body: JSON.stringify(data),
-    }),
+    }).then(
+      (schedule) => schedule,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(
+          owner,
+          "transaction.loanDisbursement",
+          "loanAccountId",
+          value,
+          rows,
+          bases,
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkRowWrite<LoanScheduleDetail, LoanDisbursementRequest>,
   unlinkLoanDisbursement: (accountId: string): Promise<{ deleted: number }> =>
     request(`/accounts/${accountId}/loan-disbursement`, { method: "DELETE" }),
   // Balance transfer: settles `accountId` at its outstanding balance and
@@ -1079,11 +1347,50 @@ const api = {
     request(`/accounts/${accountId}/loan-transfer/${transferId}`, {
       method: "DELETE",
     }),
-  bulkUpdateTags: (data: BulkUpdateTagsRequest): Promise<{ updated: number }> =>
-    request("/transactions/bulk-tags", {
+  // The one row-naming write whose value is not the row's content. The endpoint
+  // takes additions and removals (BulkUpdateTagsRequest), so a complete tag list
+  // is not a value it can be sent and the entry has to carry the delta instead: a
+  // removal the user made, recorded as the names to take off rather than as the
+  // ones that survive, or the flush would add every surviving tag back.
+  bulkUpdateTags: (async (
+    data: BulkUpdateTagsRequest,
+    options: BulkOptions = {},
+  ) => {
+    const bases = bulkBases(options.base);
+    const add = data.add ?? [];
+    const remove = data.remove ?? [];
+    const value = [...add, ...remove.map((tag) => REMOVE_TAG + tag)];
+    // A row is in a tag write when the delta changes it, and asking that is not
+    // the same question as the other seven ask: the value is the delta rather than
+    // the row's list, so comparing the two would say that a row holding no "milk"
+    // is changed by removing one. A row the delta would leave alone is not part of
+    // the write all the same.
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => {
+          const held = bases[rowId];
+          const tags = Array.isArray(held) ? held : [];
+          return (
+            add.some((tag) => !tags.includes(tag)) ||
+            remove.some((tag) => tags.includes(tag))
+          );
+        })
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request<{ updated: number }>("/transactions/bulk-tags", {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      (res) => res,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(owner, "transaction.tags", "tags", value, rows, bases);
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<{ updated: number }, BulkUpdateTagsRequest>,
   // Filter-aware report export: honors the same params as getTransactions.
   exportTransactions: (params: QueryParams = {}): Promise<void> => {
     const qs = buildQuery(params);
@@ -1424,14 +1731,79 @@ const api = {
   }) as TermWrite<RecurringSeriesTerm, UpdateRecurringSeriesTermRequest>,
   deleteRecurringTerm: (id: string, termId: string): Promise<null> =>
     request(`/recurring/${id}/terms/${termId}`, { method: "DELETE" }),
-  attachRecurring: (
+  // A row-naming write (the family's rules are spelled out at bulkCategorize).
+  attachRecurring: (async (
     data: RecurringAttachRequest,
-  ): Promise<{ attached: number }> =>
-    request("/recurring/attach", { method: "POST", body: JSON.stringify(data) }),
-  detachRecurring: (
+    options: BulkOptions = {},
+  ) => {
+    const bases = bulkBases(options.base);
+    const value = data.seriesId;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request<{ attached: number }>("/recurring/attach", {
+      method: "POST",
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      (res) => res,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        enqueueBulk(
+          owner,
+          "transaction.recurring",
+          "recurringSeriesId",
+          value,
+          rows,
+          bases,
+          { seriesId: value },
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<{ attached: number }, RecurringAttachRequest>,
+  // The detach is the call: the request names rows and nothing else, so the value
+  // the entry records is null — the merge's way of reading "this row no longer
+  // carries a series", and the only reading that tells it apart from a row that
+  // never had one. An empty string would be sent on as a series id instead.
+  detachRecurring: (async (
     data: RecurringDetachRequest,
-  ): Promise<{ detached: number }> =>
-    request("/recurring/detach", { method: "POST", body: JSON.stringify(data) }),
+    options: BulkOptions = {},
+  ) => {
+    const bases = bulkBases(options.base);
+    const value: FieldValue = null;
+    const rows = bases
+      ? data.transactionIds.filter((rowId) => !valuesEqual(bases[rowId], value))
+      : data.transactionIds;
+    if (bases && rows.length === 0) return { queued: false, queuedRows: 0 };
+    const owner = offlineUserId();
+    return request<{ detached: number }>("/recurring/detach", {
+      method: "POST",
+      body: JSON.stringify(bases ? { ...data, transactionIds: rows } : data),
+    }).then(
+      (res) => res,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!bases) throw err;
+        // No series id rides beside the value: a detach is leaving one, and
+        // recording the series the rows held would name a target the write
+        // removes.
+        enqueueBulk(
+          owner,
+          "transaction.recurring",
+          "recurringSeriesId",
+          value,
+          rows,
+          bases,
+        );
+        return { queued: true, queuedRows: rows.length };
+      },
+    );
+  }) as BulkWrite<{ detached: number }, RecurringDetachRequest>,
 
   // User-level backup & restore (whole account, not per-account). A restore
   // rewrites the whole ledger inside one transaction, so its budget is the

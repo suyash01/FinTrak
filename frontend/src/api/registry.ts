@@ -141,7 +141,9 @@ const readTerm = async (rowId: string): Promise<FieldPatch | null> => {
 // endpoint takes two lists and applyMany is given one value, so the value is the
 // only place the direction can live: a registry that guessed would send a
 // removal back as an addition and the tag the user took off would come back on
-// its own.
+// its own. client.ts writes the same marker when it builds the delta (its
+// REMOVE_TAG), and the two are pinned against each other from both sides — one
+// of them mocking the other away is the only thing that could keep them honest.
 const REMOVE_TAG = "-";
 
 function asTagList(value: FieldValue): string[] {
@@ -176,10 +178,18 @@ function asCategory(value: FieldValue): string {
 // Only BulkLoanRequest reads a null as "detach" (its LoanAccountID is a
 // *uuid.UUID), and it says so at its own call site — a helper that assumed the
 // seven endpoints agreed here was the bug.
+//
+// An ApiError with a 4xx, for the reason applyOp's putPartial refusal gives one: a
+// queued write that cannot be sent is a definite answer about the entry, so the
+// flush records it, leaves it for the user, and carries on with the entries behind
+// it. A plain Error would be neither recorded nor skipped — the flush rethrows
+// anything that is not an ApiError or a NetworkError — so one clear the app asked
+// for once would stop every sync from then on.
 function requiredId(op: WriteOp, value: FieldValue): string {
   if (isCleared(value) || value === "") {
-    throw new Error(
+    throw new ApiError(
       `${op} cannot detach: its endpoint takes a required uuid and has no way to clear one, so a clear is refused here rather than sent as an id that matches no row (the server would answer 200 with updated: 0)`,
+      422,
     );
   }
   return String(value);
