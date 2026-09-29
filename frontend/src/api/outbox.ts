@@ -123,7 +123,12 @@ export interface BulkEntry extends WriteEnvelope {
   value: FieldValue;
   rows: string[];
   bases: Record<string, FieldValue>;
-  accountId?: string;
+  // The op's non-row identifiers, named after what each endpoint actually takes:
+  // `seriesId` for transaction.recurring (RecurringAttachRequest), and
+  // `loanAccountId` for transaction.loan (BulkLoanRequest, where omitting it
+  // means detach). Detach and disbursement need neither.
+  seriesId?: string;
+  loanAccountId?: string;
 }
 
 export type QueuedWrite = CreateEntry | EditEntry | BulkEntry;
