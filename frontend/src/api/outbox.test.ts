@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { CreateTransactionRequest } from "../types";
 import { ApiError, NetworkError } from "./errors";
+import type { FieldPatch } from "./merge";
 import {
   discardFailed,
+  enqueueBulk,
   enqueueCreate,
+  enqueueEdit,
   flushOutbox,
   getOutboxSnapshot,
   OutboxStorageError,
+  queuedPatchFor,
+  queuedRowProjection,
   removeEntry,
   subscribeOutbox,
   type QueuedWrite,
@@ -313,5 +318,79 @@ describe("outbox", () => {
 
     // Refusing is not discarding: the entry is still the user's.
     expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  // A byte budget beside the entry cap: a bulk entry carries N base values, and
+  // size rather than count is what fills the ~5MB quota. Refuse, never evict.
+  //
+  // An edit stores the long string twice — once as the patch, once as the
+  // snapshot — so each entry below is ~180KB, not the ~90KB the string suggests.
+  // That is a little under a fifth of the budget: five entries fit, the sixth
+  // does not, and the 100-entry cap is nowhere in sight.
+  it("refuses a new entry when the byte cap is reached, keeping every entry queued", () => {
+    const fat: FieldPatch = { notes: "x".repeat(90_000) };
+    // Five ~180KB entries exhaust the 1MB budget; the sixth is refused.
+    for (let i = 0; i < 5; i++) {
+      enqueueEdit(USER, "transaction.patch", `row-${i}`, { notes: "" }, fat, fat);
+    }
+    expect(() =>
+      enqueueEdit(USER, "transaction.patch", "row-5", { notes: "" }, fat, fat),
+    ).toThrow(/queue is full/i);
+    const left = getOutboxSnapshot(USER);
+    expect(left).toHaveLength(5);
+    expect(left[4]).toMatchObject({ kind: "edit" });
+  });
+
+  // Review Focus #1. The base of a second edit to the same row must be the row as
+  // it stands locally (server row + everything already queued for it), or entry 2
+  // sees a phantom conflict on the field entry 1 changed. Two entries and not one
+  // is the other half of it: a key derived from the row would collapse them and
+  // lose the first.
+  it("bases a second edit to the same row on the locally projected row", () => {
+    enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "first" }, { notes: "" });
+    expect(queuedRowProjection(USER, "transaction.patch", "row-1")).toEqual({ notes: "first" });
+
+    enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "second" }, { notes: "" });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    expect(edits).toHaveLength(2);
+    expect(edits[1].base).toEqual({ notes: "first" });
+  });
+
+  it("reports the effective queued value for a field, or undefined when untouched", () => {
+    expect(queuedPatchFor(USER, "transaction.patch", "row-1", "notes")).toBeUndefined();
+    enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "x" }, { notes: "" });
+    expect(queuedPatchFor(USER, "transaction.patch", "row-1", "notes")).toBe("x");
+  });
+
+  // A bulk write records the base of every row it touches rather than one base
+  // for the batch, and it travels with the op's non-row identifier: a tag add
+  // needs nothing else, an attach to a recurring series needs the series, and
+  // the queue is the only place any of that survives a reload.
+  it("records a bulk write with the base of each row and the op's identifier", () => {
+    const entry = enqueueBulk(
+      USER,
+      "transaction.tags",
+      "tags",
+      ["groceries"],
+      ["row-1", "row-2"],
+      { "row-1": ["food"], "row-2": [] },
+    );
+
+    expect(entry.key).toBeTruthy();
+    expect(entry.value).toEqual(["groceries"]);
+    expect(entry.bases).toEqual({ "row-1": ["food"], "row-2": [] });
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+
+    const attached = enqueueBulk(
+      USER,
+      "transaction.recurring",
+      "recurringTransactionId",
+      "txn-1",
+      ["row-3"],
+      { "row-3": null },
+      { seriesId: "series-1" },
+    );
+    expect(attached.seriesId).toBe("series-1");
   });
 });

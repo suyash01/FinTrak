@@ -24,6 +24,14 @@ const PREFIX = "fintrak_outbox:v1";
 // unbounded localStorage payload.
 export const MAX_ENTRIES = 100;
 
+// A byte budget beside the entry count, for the reason the read cache has one:
+// count is not what fills the ~5MB localStorage quota. An edit carries the base
+// and the snapshot of a row, so one large text field is enough to fill a
+// megabyte on its own, where a create is far too small to reach this inside
+// MAX_ENTRIES. The check is on the queue rather than on the kind of entry, so a
+// create respects the budget too, even though nothing about it can reach it.
+export const MAX_TOTAL_CHARS = 1_000_000;
+
 // OutboxStorageError is thrown when the browser refuses to write the queue —
 // a blocked origin, a private window, a full quota. It is an error rather than
 // a silent success because the caller reports a queued transaction to the user:
@@ -243,6 +251,37 @@ export function getOutboxSnapshot(userId: string): QueuedWrite[] {
   return cachedEntries;
 }
 
+// newEntryKey mints the key an edit or a bulk write is stored and removed under.
+// It is generated rather than derived from the row, because two edits to the
+// same row queued before a flush are an ordinary thing to do — that is the whole
+// case the projected base below exists for — and a key like `${op}:${rowId}`
+// would collapse them into one entry and lose the first. The fallback mirrors
+// client.ts's newClientKey: crypto.randomUUID needs a secure context, and a
+// self-hosted instance reached over a LAN address without TLS is not one.
+function newEntryKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `e-${crypto.randomUUID()}`;
+  }
+  return `e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+// enforceCapacity is the queue's refusal, and it refuses rather than evicts: the
+// entries already queued are writes the user recorded, and dropping the oldest
+// to make room destroys them silently — the count stays at the cap either way,
+// so nothing tells the user. The refusal reaches the write as its error, which
+// is what lets them sync first. Both caps raise this one error and it names both
+// numbers, because the remedy is the same either way and a message naming only
+// the cap that was *not* reached would misdescribe what happened.
+function enforceCapacity(entries: QueuedWrite[], next: QueuedWrite): void {
+  // The count is tested first so a full queue does not pay for serializing itself
+  // to learn it is full.
+  if (entries.length >= MAX_ENTRIES || JSON.stringify([...entries, next]).length > MAX_TOTAL_CHARS) {
+    throw new Error(
+      `Offline queue is full (${MAX_ENTRIES} unsent writes, ${MAX_TOTAL_CHARS} characters). Reconnect to sync before recording more.`,
+    );
+  }
+}
+
 export function enqueueCreate(
   userId: string,
   request: CreateTransactionRequest,
@@ -255,20 +294,146 @@ export function enqueueCreate(
   // would send one entry's body under another's identity.
   if (existing?.kind === "create") return existing;
 
-  // A full queue refuses the new entry instead of evicting the oldest: the
-  // entries at the front are transactions the user recorded, and dropping one to
-  // make room for another destroys money data nothing can recover — silently,
-  // since the header count stays at the cap either way. The refusal reaches the
-  // user as this create's error, which is what lets them sync first.
-  if (entries.length >= MAX_ENTRIES) {
-    throw new Error(
-      `Offline queue is full (${MAX_ENTRIES} unsent transactions). Reconnect to sync before recording more.`,
-    );
-  }
-
   const entry: CreateEntry = { key, queuedAt: Date.now(), request };
+  enforceCapacity(entries, entry);
   if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
   return entry;
+}
+
+// enqueueEdit records one field-level patch to one row, against the base it was
+// made from. It follows enqueueCreate's shape for the same reason that function
+// throws rather than returns a phantom success: the queue is the source of truth,
+// so an edit the browser refused to store is an edit the user believes is saved.
+export function enqueueEdit(
+  userId: string,
+  op: WriteOp,
+  rowId: string,
+  base: FieldPatch,
+  patch: FieldPatch,
+  snapshot: FieldPatch,
+): EditEntry {
+  const entries = readEntries(userId);
+  const key = newEntryKey();
+  // Unreachable with a generated key, and kept anyway: every enqueue path reads
+  // the same way, and this is the guard that says a key already in the queue is
+  // never written a second time.
+  const existing = entries.find((entry) => entry.key === key);
+  if (existing?.kind === "edit") return existing;
+
+  // The stored base is the row as it stands *locally* — the server's row with
+  // every patch already queued for it overlaid — whenever anything is queued for
+  // this row, and the caller's base only when nothing is. The caller's base is
+  // the row the form opened with, and once an earlier edit is queued the row the
+  // user is looking at is that base with the earlier patch applied, so the form's
+  // own base is no longer the row this edit is made against.
+  //
+  // Basing this edit on the server's row instead is what makes a second offline
+  // edit look like an argument: the merge compares `theirs` against the base, so
+  // a base that predates entry 1 reads as the user having changed the fields
+  // entry 1 changed — a phantom conflict, on a field they never argued about,
+  // held in front of them to decide. And basing it on the form's original row is
+  // no better: it is the same row the server's response would give, so the same
+  // phantom conflict appears on every field entry 1 touched. Only the projection
+  // says "the user moved this from 'first' to 'second'", which is what happened.
+  const entry: EditEntry = {
+    key,
+    queuedAt: Date.now(),
+    kind: "edit",
+    op,
+    rowId,
+    base: queuedRowProjection(userId, op, rowId) ?? base,
+    patch,
+    snapshot,
+  };
+  enforceCapacity(entries, entry);
+  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+  return entry;
+}
+
+// enqueueBulk records one field set on many rows. It is a single queue entry
+// because the user asked for a single action: the flush sends one request, and
+// splitting it would let half of it land and be reported as progress.
+export function enqueueBulk(
+  userId: string,
+  op: WriteOp,
+  field: string,
+  value: FieldValue,
+  rows: string[],
+  bases: Record<string, FieldValue>,
+  ids?: { seriesId?: string; loanAccountId?: string },
+): BulkEntry {
+  const entries = readEntries(userId);
+  const key = newEntryKey();
+  // As in enqueueEdit: the key is generated, so this can only ever find an entry
+  // this function wrote itself, and the shape is kept identical across the three.
+  const existing = entries.find((entry) => entry.key === key);
+  if (existing?.kind === "bulk") return existing;
+
+  const entry: BulkEntry = {
+    key,
+    queuedAt: Date.now(),
+    kind: "bulk",
+    op,
+    field,
+    value,
+    rows,
+    bases,
+    ...ids,
+  };
+  enforceCapacity(entries, entry);
+  if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
+  return entry;
+}
+
+// queuedPatchFor answers one field's pending value: what the row will hold once
+// the queue drains, which is what a caller must draw in place of the server's
+// value while an entry is still queued. Entries apply in the order they were
+// recorded, so the last one to carry the field wins; a field no queued entry
+// carries is undefined, which reads as untouched rather than cleared (see
+// merge.ts: absent is not null). A bulk write is deliberately not consulted — it
+// is one field on many rows, read through its own entry rather than per row.
+export function queuedPatchFor(
+  userId: string,
+  op: WriteOp,
+  rowId: string,
+  field: string,
+): FieldValue {
+  const entries = readEntries(userId);
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.kind !== "edit" || entry.op !== op || entry.rowId !== rowId) continue;
+    const value = entry.patch[field];
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+// queuedRowProjection is the row as it stands locally: the first queued edit's
+// base with every patch queued since applied in order, or null when nothing is
+// queued for the row at all. It is what enqueueEdit stores as the base of the
+// next edit, and it is the only answer to "what does this row say now" while the
+// queue is not empty — the server's response is a row the user has since moved
+// away from. The overlay is a plain last-write one: merge.ts's valuesEqual is a
+// comparison, not a merge, and there is nothing here to reconcile, because these
+// entries are the user's own, applied in the order they were made.
+export function queuedRowProjection(
+  userId: string,
+  op: WriteOp,
+  rowId: string,
+): FieldPatch | null {
+  const entries = readEntries(userId).filter(
+    (entry): entry is EditEntry =>
+      entry.kind === "edit" && entry.op === op && entry.rowId === rowId,
+  );
+  if (entries.length === 0) return null;
+
+  const row: FieldPatch = { ...entries[0].base };
+  for (const entry of entries) {
+    for (const [field, value] of Object.entries(entry.patch)) {
+      if (value !== undefined) row[field] = value;
+    }
+  }
+  return row;
 }
 
 // removeEntry drops one entry from the queue and reports whether the removal is
