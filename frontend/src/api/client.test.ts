@@ -610,7 +610,9 @@ describe("offline behaviour", () => {
     const queued = getOutboxSnapshot("u1");
     expect(queued).toHaveLength(1);
     // The queued body carries the same key, so the replay is recognised.
-    expect(queued[0].request.clientKey).toBe(queued[0].key);
+    const entry = queued[0];
+    if (entry.kind !== "create") throw new Error("createTransaction queued a non-create");
+    expect(entry.request.clientKey).toBe(entry.key);
   });
 
   it("surfaces a rejected create instead of queueing it", async () => {

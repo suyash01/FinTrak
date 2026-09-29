@@ -1,6 +1,7 @@
-// The outbox: manual transactions recorded while the API was unreachable.
+// The outbox: writes recorded while the API was unreachable — a manual
+// transaction, an edit to a row, or one field set on many rows.
 //
-// Each entry carries a client-generated idempotency key, which the create
+// A create carries a client-generated idempotency key, which the create
 // endpoint uses to recognise a replay — so an entry whose response was lost
 // (a timeout, a killed tab) is applied exactly once when it is finally sent.
 // The same key is reused on every retry, which is what makes the retry safe.
@@ -14,13 +15,14 @@
 // the alternative is claiming progress that is not stored anywhere.
 
 import type { CreateTransactionRequest } from "../types";
+import type { FieldPatch, FieldValue } from "./merge";
 import { ApiError } from "./errors";
 
 const PREFIX = "fintrak_outbox:v1";
 
 // A bounded queue: a phone that has been offline for weeks should not grow an
 // unbounded localStorage payload.
-const MAX_ENTRIES = 100;
+export const MAX_ENTRIES = 100;
 
 // OutboxStorageError is thrown when the browser refuses to write the queue —
 // a blocked origin, a private window, a full quota. It is an error rather than
@@ -36,14 +38,101 @@ export class OutboxStorageError extends Error {
   }
 }
 
-export interface OutboxEntry {
-  // key is the create's idempotency key; it is stable across retries.
+// WriteOp is the API operation an edit or a bulk write applies through. It
+// travels on the entry rather than being inferred from the patch's fields,
+// because the same field name means different things to different endpoints and
+// the flush has to reach exactly one of them.
+export type WriteOp =
+  | "transaction.patch" | "transaction.categorize" | "transaction.payee"
+  | "transaction.billingCycle" | "transaction.tags" | "transaction.loan"
+  | "transaction.recurring" | "transaction.loanDisbursement"
+  | "account.put" | "accountType.put" | "group.put" | "category.put"
+  | "adminCategory.put" | "payee.put" | "rule.put" | "recurring.put"
+  | "recurringTerm.put" | "loanSchedule.put" | "settings.put";
+
+// ConflictUnit is one field the merge could not attribute to a side, kept with
+// the entry rather than in the UI: the queue is the only thing that survives a
+// reload, and the base is what lets a dialog show what the two competing values
+// were each edited away from.
+export interface ConflictUnit {
+  rowId: string;
+  field: string;
+  base: FieldValue;
+  mine: FieldValue;
+  theirs: FieldValue;
+}
+
+export interface PendingConflict {
+  units: ConflictUnit[];
+}
+
+// WriteEnvelope is what every queued write shares. The four optional fields are
+// all recorded *in the queue* rather than in the page, for the same reason the
+// queue exists at all: a thing the user has to be told about cannot be a thing
+// only this tab remembers.
+export interface WriteEnvelope {
+  // key identifies the entry within the whole queue — removeEntry matches on it
+  // alone. For a create it is the endpoint's idempotency key, so a replay of an
+  // entry whose response was lost is applied exactly once.
   key: string;
   queuedAt: number;
-  request: CreateTransactionRequest;
   // error is the server's rejection message from the last flush attempt.
   error?: string;
+  // conflict is set when the merge held the entry for the user instead of
+  // applying it, and resolution is their per-field answer once they have one:
+  // recording it is what stops a decided entry from being held a second time.
+  conflict?: PendingConflict;
+  resolution?: Record<string, "mine" | "theirs">;
+  // gone marks an entry whose row the server no longer has. That is a fact about
+  // the row, not a rejection to retry, so it is held for the user like a
+  // conflict and must not be mistaken for a queue that will drain on its own.
+  gone?: boolean;
 }
+
+// CreateEntry is a manual transaction recorded with no connection. `kind` is
+// optional and defaults to "create" on read (see parseEntries) because a queue
+// written before the union existed carries none, and its shape is already this
+// one — the entry is worth exactly as much as it was before the widening.
+export interface CreateEntry extends WriteEnvelope {
+  kind?: "create";
+  request: CreateTransactionRequest;
+}
+
+// EditEntry is a field-level patch plus the base it was made against, which is
+// what lets the merge tell the user's change from someone else's. `snapshot` is
+// the row the form opened with, kept so a second edit to the same row queued
+// before the first is flushed is based on what the first left rather than on a
+// row the server has not seen yet.
+export interface EditEntry extends WriteEnvelope {
+  kind: "edit";
+  op: WriteOp;
+  rowId: string;
+  base: FieldPatch;
+  patch: FieldPatch;
+  snapshot: FieldPatch;
+}
+
+// BulkEntry is one field set on many rows. The base is recorded per row rather
+// than once for the batch: a single base would merge a row nobody changed
+// against a row that did, and hold the whole batch for a conflict on a row the
+// user never opened.
+export interface BulkEntry extends WriteEnvelope {
+  kind: "bulk";
+  op: WriteOp;
+  field: string;
+  value: FieldValue;
+  rows: string[];
+  bases: Record<string, FieldValue>;
+  accountId?: string;
+}
+
+export type QueuedWrite = CreateEntry | EditEntry | BulkEntry;
+
+// OutboxEntry is the name the queue had when it held nothing but a create, kept
+// so the two consumers that already speak it — the offline banner and the
+// offline context — keep compiling against the union rather than being widened
+// by hand. It is not a narrower type: nothing in the queue is a "just an entry".
+export type OutboxEntry = QueuedWrite;
 
 export interface FlushOutcome {
   sent: number;
@@ -64,7 +153,7 @@ const listeners = new Set<() => void>();
 // referentially stable while the stored text is unchanged, since a fresh array
 // on each call would re-render forever.
 let cachedRaw: string | null = null;
-let cachedEntries: OutboxEntry[] = [];
+let cachedEntries: QueuedWrite[] = [];
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -82,19 +171,35 @@ function readRaw(userId: string): string | null {
   }
 }
 
-function parseEntries(raw: string | null): OutboxEntry[] {
+// adoptKind gives an entry with no `kind` the kind its shape already is. A queue
+// written before the union existed has no `kind`, and nothing else about it
+// differs from a create, so this is a reading rather than a guess: an unsent
+// create is user-recorded money, and the only other reading — an entry this
+// cannot place, dropped — destroys it silently and permanently the first time
+// the returning user flushes. A kind that is there is left alone, so no entry is
+// ever reclassified.
+function adoptKind(raw: Record<string, unknown>): QueuedWrite {
+  return { ...raw, kind: raw.kind ?? "create" } as QueuedWrite;
+}
+
+function parseEntries(raw: string | null): QueuedWrite[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
     // Unchecked cast: this is our own persisted queue, and a shape change can
-    // only cost a queue the user can still see and re-enter.
-    return Array.isArray(parsed) ? (parsed as OutboxEntry[]) : [];
+    // only cost a queue the user can still see and re-enter. It is why every
+    // entry goes through adoptKind rather than a filter that would drop the ones
+    // it cannot place, and why the default is safe to supply: the one shape a
+    // pre-union entry had is a create's.
+    return Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>[]).map(adoptKind)
+      : [];
   } catch {
     return [];
   }
 }
 
-function readEntries(userId: string): OutboxEntry[] {
+function readEntries(userId: string): QueuedWrite[] {
   return parseEntries(readRaw(userId));
 }
 
@@ -102,7 +207,7 @@ function readEntries(userId: string): OutboxEntry[] {
 // stored text is the only copy of the entries, so a `false` here means the queue
 // its caller believes in does not exist — nothing in this module holds one in
 // memory (getOutboxSnapshot re-reads storage on every call).
-function writeEntries(userId: string, entries: OutboxEntry[]): boolean {
+function writeEntries(userId: string, entries: QueuedWrite[]): boolean {
   let persisted = false;
   try {
     localStorage.setItem(storageKey(userId), JSON.stringify(entries));
@@ -124,7 +229,7 @@ export function subscribeOutbox(listener: () => void): () => void {
   };
 }
 
-export function getOutboxSnapshot(userId: string): OutboxEntry[] {
+export function getOutboxSnapshot(userId: string): QueuedWrite[] {
   const raw = readRaw(userId);
   if (raw !== cachedRaw) {
     cachedRaw = raw;
@@ -137,10 +242,13 @@ export function enqueueCreate(
   userId: string,
   request: CreateTransactionRequest,
   key: string,
-): OutboxEntry {
+): CreateEntry {
   const entries = readEntries(userId);
   const existing = entries.find((entry) => entry.key === key);
-  if (existing) return existing;
+  // Narrowed, not cast: a key already in the queue is this create's own earlier
+  // attempt, and answering a *different* queued write with this create's request
+  // would send one entry's body under another's identity.
+  if (existing?.kind === "create") return existing;
 
   // A full queue refuses the new entry instead of evicting the oldest: the
   // entries at the front are transactions the user recorded, and dropping one to
@@ -153,7 +261,7 @@ export function enqueueCreate(
     );
   }
 
-  const entry: OutboxEntry = { key, queuedAt: Date.now(), request };
+  const entry: CreateEntry = { key, queuedAt: Date.now(), request };
   if (!writeEntries(userId, [...entries, entry])) throw new OutboxStorageError();
   return entry;
 }
@@ -184,12 +292,18 @@ export function discardFailed(userId: string): number {
 // without one for a transport failure.
 export async function flushOutbox(
   userId: string,
-  send: (entry: OutboxEntry) => Promise<void>,
+  send: (entry: CreateEntry) => Promise<void>,
   options: { retryFailed?: boolean } = {},
 ): Promise<FlushOutcome> {
   let sent = 0;
   let unsaved = 0;
   for (const entry of readEntries(userId)) {
+    // Only a create is sendable through this seam: an edit or a bulk write has
+    // to be merged against the server's row first, and posting one to the create
+    // endpoint would be a different request wearing this entry's key. Such an
+    // entry stays queued and still counts in `remaining`, so the queue cannot
+    // look drained while one is waiting.
+    if (entry.kind !== "create") continue;
     if (entry.error && !options.retryFailed) continue;
 
     let accepted = false;

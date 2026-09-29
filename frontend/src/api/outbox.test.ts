@@ -35,7 +35,12 @@ describe("outbox", () => {
     const entries = getOutboxSnapshot(USER);
     expect(entries).toHaveLength(1);
     expect(entries[0].key).toBe("key-1");
-    expect(entries[0].request.description).toBe("Coffee");
+    // Narrowed because the queue is a union now. The assertion is unchanged; what
+    // changed is that reading `request` off it is only legal for the arm that
+    // carries one, and this entry was written by enqueueCreate.
+    const entry = entries[0];
+    if (entry.kind !== "create") throw new Error("enqueueCreate queued a non-create");
+    expect(entry.request.description).toBe("Coffee");
     expect(listener).toHaveBeenCalledTimes(1);
     unsubscribe();
   });
@@ -46,7 +51,9 @@ describe("outbox", () => {
 
     const entries = getOutboxSnapshot(USER);
     expect(entries).toHaveLength(1);
-    expect(entries[0].request.description).toBe("Coffee");
+    const entry = entries[0];
+    if (entry.kind !== "create") throw new Error("enqueueCreate queued a non-create");
+    expect(entry.request.description).toBe("Coffee");
   });
 
   it("scopes the queue to its user", () => {
@@ -259,5 +266,26 @@ describe("outbox", () => {
 
     expect(discardFailed(USER)).toBe(1);
     expect(getOutboxSnapshot(USER)).toHaveLength(0);
+  });
+
+  // A v1 blob has no `kind` and is already a create's shape. An unsent create is
+  // user-recorded money, so it is adopted rather than dropped — the alternative is
+  // silent data loss the first time a returning user flushes.
+  it("adopts a v1 entry with no kind as a create instead of dropping it", () => {
+    localStorage.setItem(
+      "fintrak_outbox:v1:user-1",
+      JSON.stringify([{ key: "key-1", queuedAt: 1, request: request("Legacy") }]),
+    );
+    const entries = getOutboxSnapshot(USER);
+    expect(entries).toHaveLength(1);
+    // `kind` is asserted, not defaulted here: a reader that wrote nothing would
+    // satisfy `entries[0].kind ?? "create"`, which is the behaviour this pins.
+    const entry = entries[0];
+    expect(entry.kind).toBe("create");
+    // Narrowed rather than cast, so the request is read the way the flush reads
+    // it — a defaulted kind that narrowed to nothing else would pass the line
+    // above while leaving an entry the flush cannot send.
+    if (entry.kind !== "create") throw new Error("not adopted as a create");
+    expect(entry.request.description).toBe("Legacy");
   });
 });

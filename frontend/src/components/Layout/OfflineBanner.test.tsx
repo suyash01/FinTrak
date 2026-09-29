@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import OfflineBanner from "./OfflineBanner";
-import type { OutboxEntry } from "../../api/outbox";
+import type { CreateEntry } from "../../api/outbox";
 
 const offlineMock = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
@@ -18,7 +18,9 @@ vi.mock("@/context/OfflineContext", () => ({
   }),
 }));
 
-function entry(overrides: Partial<OutboxEntry> = {}): OutboxEntry {
+// A create, which is all this banner has ever had to render: the queue is a
+// union now, and a helper typed to the whole union could not build one.
+function entry(overrides: Partial<CreateEntry> = {}): CreateEntry {
   return {
     key: "key-1",
     queuedAt: 1,
