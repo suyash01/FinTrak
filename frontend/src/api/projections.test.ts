@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { FieldPatch } from "./merge";
+import { diffAgainstBase, type FieldPatch, type FieldValue } from "./merge";
 import {
   findRow,
   LOAN_TERMS_FIELDS,
@@ -344,6 +344,160 @@ describe("a whole-row family's projection is the body its endpoint writes", () =
       "startDate",
       "type",
     ]);
+  });
+});
+
+// A date the API returns and a date every write edge takes are two spellings of
+// one calendar day, and they are not equal as strings.
+//
+// The read side is a `time.Time`, so encoding/json writes RFC3339
+// ("2026-07-20T00:00:00Z" — models.Transaction.Date, models.LoanSchedule's
+// StartDate and DisbursalDate, models.RecurringSeriesTerm's StartDate and
+// EndDate). The write side is a `string` every one of those families parses as
+// "2006-01-02": validation.CheckTransactionDate for a transaction
+// (transaction.go:580, :805) and parseRecurringDate, which calls it, for a
+// series, a term and a loan (recurring.go:89, loan.go:293).
+//
+// So a form holds "2026-07-20" where the row says "2026-07-20T00:00:00Z", and a
+// projection that passes the read side through unchanged makes every save look
+// like a date change: the diff would carry the row's own day back onto the wire
+// and revert whatever another writer moved the date to. The projection is where
+// the two are reconciled, because it is the one place that describes "a row's
+// mergeable representation" — and it is applied to the base and to `theirs`
+// alike, so the two sides of every comparison are like-for-like rather than
+// merely shifted.
+//
+// The authority for the format is CheckTransactionDate's grammar, not the Go
+// type: the pattern to look for is a `time.Time` on the model and a `string` on
+// the request. A date that is a string on both sides (a rule's dateFrom/dateTo,
+// which rule.go:74 formats as "YYYY-MM-DD" on read) is already one spelling and
+// is left alone.
+const CALENDAR_DAY_FAMILIES: Array<[
+  name: string,
+  project: (row: object) => FieldPatch,
+  row: Record<string, FieldValue>,
+  expected: FieldPatch,
+]> = [
+  [
+    "projectTransaction",
+    projectTransaction,
+    { date: "2026-07-20T00:00:00Z", description: "Swiggy" },
+    { date: "2026-07-20", description: "Swiggy" },
+  ],
+  [
+    "projectRecurringSeries",
+    projectRecurringSeries,
+    { name: "Netflix", startDate: "2026-01-01T00:00:00Z", endDate: "2026-06-01T00:00:00Z" },
+    { name: "Netflix", startDate: "2026-01-01", endDate: "2026-06-01" },
+  ],
+  [
+    "projectRecurringTerm",
+    projectRecurringTerm,
+    { seriesId: "s1", startDate: "2026-01-01T00:00:00Z", endDate: "2026-06-01T00:00:00Z" },
+    { seriesId: "s1", startDate: "2026-01-01", endDate: "2026-06-01" },
+  ],
+  [
+    "projectLoanTerms",
+    projectLoanTerms,
+    { principal: 100000, startDate: "2026-02-01T00:00:00Z", disbursalDate: "2026-01-01T00:00:00Z" },
+    { principal: 100000, startDate: "2026-02-01", disbursalDate: "2026-01-01" },
+  ],
+];
+
+describe("a projection reconciles a date the API timestamps with the day a write edge takes", () => {
+  it.each(CALENDAR_DAY_FAMILIES)(
+    "%s reads a date as the calendar day, not the timestamp",
+    (_name, project, row, expected) => {
+      expect(project(row)).toEqual(expected);
+    },
+  );
+
+  it.each(CALENDAR_DAY_FAMILIES)(
+    "%s leaves a value that is already a day alone",
+    (_name, project, row, expected) => {
+      // The write edge's own spelling has to survive the projection unchanged:
+      // normalising is not permission to reshape a value, and a projection that
+      // mangled a day would break the grammar the handler validates against.
+      const asWritten = Object.fromEntries(
+        Object.entries(row).map(([field, value]) =>
+          typeof value === "string" && value.includes("T")
+            ? [field, value.slice(0, 10)]
+            : [field, value],
+        ),
+      );
+      expect(project(asWritten)).toEqual(expected);
+    },
+  );
+
+  it("reads a rule's dates as they are, because the API already sends them as days", () => {
+    // The other half of the rule, and the one that keeps this from being a
+    // blanket slice: rule.go's formatDatePtr writes "YYYY-MM-DD" on read, so a
+    // rule's dateFrom/dateTo are the same spelling on both sides and must come
+    // through as themselves.
+    expect(
+      projectRule({ pattern: "coffee", dateFrom: "2026-01-01", dateTo: "2026-06-01" }),
+    ).toEqual({ pattern: "coffee", dateFrom: "2026-01-01", dateTo: "2026-06-01" });
+  });
+
+  it("leaves a field that is not a date untouched, timestamp or not", () => {
+    // `createdAt` and a joined name are not on any projection, and the guard
+    // against a field that is only *named* like a date is that the family, not
+    // the value's shape, decides: notes is a field the transaction projection
+    // carries and a timestamp in it is a note the user wrote.
+    expect(projectTransaction({ notes: "2026-07-20T00:00:00Z was the due date" })).toEqual({
+      notes: "2026-07-20T00:00:00Z was the due date",
+    });
+  });
+
+  it("leaves a non-string value alone, because only a timestamp is a date here", () => {
+    // A rule's bounds are numbers and a type is a word; the normalisation is
+    // keyed on the field, so a value that cannot be a date is passed through
+    // rather than coerced.
+    expect(projectRule({ pattern: "coffee", priority: 10 })).toEqual({
+      pattern: "coffee",
+      priority: 10,
+    });
+  });
+
+  it("makes an untouched transaction form diff to nothing against its own row", () => {
+    // The consequence, and the reason this is a correctness rule rather than a
+    // tidiness one. This is the payload the transaction editor builds: a whole
+    // row read off a form whose date field is a plain day (formFromTransaction
+    // splits the row's timestamp on "T"). With the two spellings reconciled, a
+    // user who opens the sheet, changes nothing and saves has an empty diff —
+    // which is what lets updateTransaction answer `{ queued: false }` without a
+    // request. Left unreconciled, `date` is in every diff and that answer is
+    // unreachable, so the save the user asked for is a PATCH carrying the day
+    // the row already had.
+    const row = {
+      id: "txn-1",
+      accountId: "acct-1",
+      date: "2026-07-20T00:00:00Z",
+      description: "Swiggy",
+      amount: 450.5,
+      type: "debit",
+      categoryId: null,
+      tags: [],
+      notes: "",
+      payeeId: null,
+    };
+    const form = {
+      date: "2026-07-20",
+      description: "Swiggy",
+      amount: 450.5,
+      type: "debit",
+      accountId: "acct-1",
+      categoryId: null,
+      tags: [],
+      notes: "",
+      payeeId: null,
+    };
+    expect(diffAgainstBase(projectTransaction(row), form)).toEqual({});
+    // And a change to one field is that field alone — the whole point of the
+    // diff, and the reason the date is worth reconciling rather than tolerating.
+    expect(
+      diffAgainstBase(projectTransaction(row), { ...form, notes: "milk" }),
+    ).toEqual({ notes: "milk" });
   });
 });
 

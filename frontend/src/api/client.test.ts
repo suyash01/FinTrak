@@ -1533,6 +1533,60 @@ describe("offline behaviour", () => {
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 
+  it("sends the diff, not the row, for a form whose date is the day its row timestamps", async () => {
+    // The one caller that builds a whole-row payload — the transaction editor —
+    // and the reason the projection reconciles a date. The row is what the API
+    // returns (models.Transaction.Date is a time.Time, so RFC3339) and the form
+    // is what the editor builds from it (formFromTransaction splits on "T", so
+    // a plain day). Compared as strings those are two different values, so the
+    // date would be in every diff: an untouched save would PATCH the day the row
+    // already had, reverting a concurrent date edit, and the empty-diff answer
+    // above would be unreachable from the app's only whole-row caller.
+    const row: Transaction = { ...txn, date: "2026-01-15T00:00:00Z" };
+    // The editor's payload for an edit that changes the notes and nothing else.
+    const form = {
+      categoryId: null,
+      tags: [],
+      notes: "new",
+      payeeId: null,
+      date: "2026-01-15",
+      description: "Coffee",
+      amount: 250.5,
+      type: "debit" as const,
+      accountId: "acct-1",
+    };
+    fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
+
+    await api.updateTransaction("t1", form, { base: row });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ notes: "new" });
+  });
+
+  it("answers an untouched form without a request, the date included", async () => {
+    // The same pair, changed by nothing at all: the diff is empty, so the edit
+    // is made without asking the server. A user who opens the edit sheet, has
+    // second thoughts and saves has done nothing wrong, and the modal reads this
+    // answer as the success it is.
+    const row: Transaction = { ...txn, date: "2026-01-15T00:00:00Z" };
+    const form = {
+      categoryId: null,
+      tags: [],
+      notes: "old",
+      payeeId: null,
+      date: "2026-01-15",
+      description: "Coffee",
+      amount: 250.5,
+      type: "debit" as const,
+      accountId: "acct-1",
+    };
+
+    const result = await api.updateTransaction("t1", form, { base: row });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: "t1", queued: false });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
   it("sends no request when the form's payload is all defaults for a row that has none", async () => {
     // The shape the app actually sends: the edit modal emits categoryId,
     // payeeId and billingCycleId from form state, so a row that has never had
