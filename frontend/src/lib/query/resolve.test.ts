@@ -194,6 +194,7 @@ const FIELD_CASES: ReadonlyArray<readonly [field: string, query: string, terms: 
   ["cat", "cat:Food/Groceries", 1],
   ["group", "group:Food", 1],
   ["acct", "acct:Checking", 1],
+  ["id", "id:11111111-1111-4111-8111-111111111111", 1],
   ["ccy", "ccy:usd", 1],
   ["payee", 'payee:"Corner Store"', 1],
   ["tag", "tag:vacation", 1],

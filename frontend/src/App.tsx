@@ -6,11 +6,12 @@ import ErrorBoundary, {
   PageErrorFallback,
 } from "./components/ErrorBoundary/ErrorBoundary";
 import { DomainDataProvider } from "./context/DomainDataContext";
-import { OfflineProvider } from "./context/OfflineContext";
+import { OfflineProvider, useOffline } from "./context/OfflineContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import OfflineBanner from "./components/Layout/OfflineBanner";
+import ConflictDialog from "./components/Offline/ConflictDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { Spinner } from "@/components/ui/spinner";
 import "./index.css";
@@ -74,10 +75,41 @@ function PageFallback() {
   );
 }
 
+// ConflictDialogHost is where the dialog's props come from. It is a component of
+// its own because OfflineProvider sits *inside* Root, and Root also renders the
+// login screen — useOffline throws outside its provider, so the component that
+// owns the open state cannot be the one that reads the context. The dialog takes
+// its actions as props rather than reading the context, which is what keeps it
+// testable without a provider; this is where the two meet.
+function ConflictDialogHost({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { conflicts, resolveConflict, reCreate, discardConflict } = useOffline();
+  return (
+    <ConflictDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      entries={conflicts}
+      onResolve={resolveConflict}
+      onReCreate={reCreate}
+      onDiscard={discardConflict}
+    />
+  );
+}
+
 function Root() {
   const { isAuthenticated, initializing } = useAuth();
   const location = useLocation();
   const [commandOpen, setCommandOpen] = useState(false);
+  // The conflict dialog's open state lives here rather than on the dialog
+  // because the banner is what will open it, and the banner is a child of this
+  // component: the repo's overlay rule is that the parent owns the state and
+  // passes onOpenChange, and this is that parent.
+  const [conflictOpen, setConflictOpen] = useState(false);
 
   // Wait for the session cookie to be verified before choosing the auth screen,
   // otherwise a locked-down reload would briefly render the login page.
@@ -101,7 +133,7 @@ function Root() {
         <div className="flex h-screen w-screen overflow-hidden">
           <Sidebar onOpenCommandPalette={() => setCommandOpen(true)} />
           <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-            <OfflineBanner />
+            <OfflineBanner onOpenConflicts={() => setConflictOpen(true)} />
             <ErrorBoundary
               key={location.pathname}
               fallback={<PageErrorFallback onRetry={() => window.location.reload()} />}
@@ -130,6 +162,10 @@ function Root() {
           </main>
         </div>
         <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+        <ConflictDialogHost
+          open={conflictOpen}
+          onOpenChange={setConflictOpen}
+        />
       </OfflineProvider>
     </DomainDataProvider>
   );

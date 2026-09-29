@@ -229,14 +229,16 @@ describe("QueryInput grammar sheet", () => {
 
   // The sheet used to promise "an id, or none / uncategorized" for all four uuid
   // fields. Only cat and payee have a nullable column; on acct and group that
-  // spelling reached the database and answered 500.
+  // spelling reached the database and answered 500. `id` is a fifth uuid field
+  // and, being the primary key, is not nullable either, so it is on the no-sentinel
+  // side too.
   it("only offers a sentinel for a field whose column is nullable", async () => {
     const user = userEvent.setup();
     setup();
     await user.click(screen.getByRole("button", { name: /query syntax/i }));
-    // cat and payee take a sentinel; acct and group do not, so each description
-    // appears exactly twice.
+    // cat and payee take a sentinel; acct, group and id do not, so each
+    // description appears exactly as many times as there are fields of its kind.
     expect(await screen.findAllByText("an id, or none / uncategorized")).toHaveLength(2);
-    expect(screen.getAllByText("an id (a uuid)")).toHaveLength(2);
+    expect(screen.getAllByText("an id (a uuid)")).toHaveLength(3);
   });
 });

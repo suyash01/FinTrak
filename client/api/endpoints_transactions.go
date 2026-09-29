@@ -25,16 +25,21 @@ type TransactionFilter struct {
 	// or tags.
 	Search string
 	// Query is the transaction query language, evaluated server-side: a
-	// space-separated, AND-ed list of `field:value` terms (cat, group, acct,
-	// payee, tag, type, amt, date, linked, recurring, desc, note), optionally
-	// prefixed with `not`, or `field<op>value` where op is one of
+	// space-separated, AND-ed list of `field:value` terms (desc, note, cat,
+	// group, acct, payee, tag, type, amt, date, linked, recurring, ccy, id),
+	// optionally prefixed with `not`, or `field<op>value` where op is one of
 	// = != > >= < <= ~. A bare word is the same free-text search Search does. A
 	// comma-separated value matches any of them.
 	//
 	// Values are IDS, NOT NAMES: the server resolves no names, so a caller must
 	// turn "Groceries" into a category id first (cat:none and payee:none are the
 	// sentinels; tag takes a name, because tags have no ids). amt is in major
-	// units, so "50" is fifty dollars.
+	// units, so "50" is fifty dollars. ccy is a three-letter currency code,
+	// matched against the transaction's account's currency and folded to upper
+	// case, with an unset or empty account currency read as INR. id takes a
+	// transaction uuid and is the only field that selects a single row, so it is
+	// how to read one back without narrowing the list by account — narrowing by
+	// account instead is what makes the list carry its synthetic summary rows.
 	//
 	// An unusable term is never an error: it is dropped and reported in the
 	// response's queryDiagnostics, so an over-broad term widens the result set

@@ -707,6 +707,43 @@ picker. No backend, no client, no schema, no parity work.
 
 ### #11 — Offline conflict resolution
 
+> **Implemented for transactions; built but not wired for everything else** on the
+> `offline-conflict` branch — the design and the plan are
+> `docs/superpowers/specs/2026-09-29-offline-conflict-resolution-design.md` and
+> `docs/superpowers/plans/2026-09-29-offline-conflict-resolution.md`. The three-way
+> merge is client-side and no backend change was needed, so the 409 contract this
+> proposal's Blast radius predicted does not exist. **Three things were left out on
+> purpose**: `POST /tags/rename`, because it selects rows by tag membership and the
+> client cannot enumerate a tag's rows offline, so there is no base to diff against;
+> **every delete**, because a row that is gone has no three-way merge — there is
+> nothing on the server's side to merge with, and the only answer is keep or discard;
+> and **every write path but the transaction one**, which is not a design decision but
+> unfinished wiring, quantified below.
+>
+> **What is live, end to end:** an offline edit to a **transaction**. The three
+> production call sites that pass a `base` are all `updateTransaction` —
+> `EditTransactionModal.tsx` and the two inline `EditableSelect` cells in
+> `Transactions.tsx` — so an offline edit there is reduced to a field-level diff,
+> queued, re-read live, merged, held as a conflict the user answers field by field, and
+> sent on the next flush.
+>
+> **What is built, tested and unreachable from the UI:** the other **nineteen** write
+> methods accept a base and refuse to queue without one (`client.ts`'s
+> `if (!edit) throw err`), and none of their call sites supplies one — accounts, account
+> types, categories, groups, admin categories, payees, rules, recurring series,
+> recurring terms, loan schedules, Paperless settings, and all eight row-naming bulk
+> writes. Their `registry.ts` ops, the `putPartial`/`putWhole` overlay and the merge
+> behind them are in place and covered; **an offline write to any of them still fails
+> exactly as it did before this branch.** The queue can hold a row-naming bulk write;
+> nothing puts one there yet. The follow-up is wiring — a call site passing the row it
+> rendered with — not building, which is why none of it was removed.
+>
+> **Also built and unused:** `queuedRowProjection` and `queuedPatchFor` have no
+> production caller, so a queued offline edit is not reflected in the list. The
+> transaction editor's `onSaved` reloads `/transactions`, that path is on the offline
+> cache allowlist, and the reloaded server row overwrites the user's queued edit on
+> screen until the flush lands.
+
 **Category:** extension of the hand-written offline layer
 **Size:** M–L
 

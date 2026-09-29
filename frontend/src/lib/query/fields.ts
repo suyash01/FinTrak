@@ -44,6 +44,7 @@ export const FIELD_TABLE: Record<string, FieldDef> = {
   cat: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   group: { userTyped: true, kind: "uuid", ops: EQ },
   acct: { userTyped: true, kind: "uuid", ops: EQ },
+  id: { userTyped: true, kind: "uuid", ops: EQ },
   ccy: { userTyped: true, kind: "currency", ops: EQ },
   payee: { userTyped: true, kind: "uuid", ops: EQ, sentinels: NULL_SENTINELS },
   tag: { userTyped: true, kind: "tags", ops: EQ },
