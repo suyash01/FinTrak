@@ -800,6 +800,38 @@ describe("outbox", () => {
     expect(sent).toEqual([{ categoryId: "c2" }]);
   });
 
+  // Every field answered "theirs" leaves a decided patch with no fields in it,
+  // and the bulk path already reads an empty batch as "remove without a request".
+  // An edit that dispatched an empty patch would put a request on the wire that
+  // had nothing to do and count the entry as sent for it.
+  it("sends nothing for a decided edit the user left entirely to the server", async () => {
+    const entry = enqueueEdit(
+      USER,
+      "transaction.patch",
+      "r1",
+      { notes: "a", categoryId: "c0" },
+      { notes: "mine", categoryId: "c2" },
+      { notes: "a", categoryId: "c0" },
+    );
+    await flushOutbox(USER, async () => {}, {
+      theirs: async () => ({ notes: "theirs", categoryId: "c0" }),
+    });
+    resolveConflict(USER, entry.key, { notes: "theirs", categoryId: "theirs" });
+
+    const sent: FieldPatch[] = [];
+    const outcome = await flushOutbox(USER, async (e) => {
+      if (e.kind === "edit") sent.push(e.patch);
+    }, { theirs: async () => ({ notes: "theirs", categoryId: "theirs-cat" }) });
+
+    expect(sent).toEqual([]);
+    // The question is answered, so the entry drains rather than being held: there
+    // is nothing left to ask about and nothing left to write.
+    expect(getOutboxSnapshot(USER)).toHaveLength(0);
+    expect(outcome).toEqual({
+      sent: 0, remaining: 0, failed: 0, unsaved: 0, conflicted: 0, gone: 0, recreated: 0,
+    });
+  });
+
   // The reader is written over api.get*, which throws ApiError for a 500. A row
   // the server will not serve is not a row to skip past, and it is not a
   // rejection of the entry either — it stops the flush with the queue in order,

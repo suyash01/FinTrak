@@ -688,6 +688,11 @@ async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePl
       // registry supplies the overlay (see isPutWhole).
       if (side === "theirs") delete decided[field];
     }
+    // Nothing left to write is not a write. Every field answered "theirs" leaves
+    // an empty patch, and the bulk path already reads an empty batch as "remove
+    // without a request" (see planBulk); sending this one would put a request on
+    // the wire with no fields in it and count the entry as sent for it.
+    if (Object.keys(decided).length === 0) return { send: null, conflict: null, gone: 0 };
     return { send: { ...entry, patch: decided }, conflict: null, gone: 0 };
   }
 
