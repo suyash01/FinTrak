@@ -363,7 +363,7 @@ Expected: FAIL — `enqueueEdit` is not exported.
 
 - [ ] **Step 3: Widen the entry types**
 
-Replace `OutboxEntry` with the union above. `WriteOp` is the full list of 20 ops the registry keys on:
+Replace `OutboxEntry` with the union above. `WriteOp` is the full list of 19 ops the registry keys on — eight `transaction.*`
 
 ```ts
 export type WriteOp =
