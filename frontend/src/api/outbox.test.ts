@@ -625,6 +625,43 @@ describe("outbox", () => {
     expect(getOutboxSnapshot(USER)).toHaveLength(0);
   });
 
+  // The way production reaches the state discardFailed's comment claims cannot
+  // happen: an entry the server refused is retried, the retry is re-planned
+  // against the server's row as it stands *then*, and the row has moved. The
+  // entry then carries both, and `discardFailed` filters on `error` alone — so
+  // carrying both would let "discard the rejected writes" destroy an edit
+  // nobody has decided about. A conflict is the newer and more specific answer
+  // (it is about this field, now, and only the user can settle it), so it
+  // replaces the rejection rather than joining it.
+  it("lets a conflict supersede the rejection a retry answered", async () => {
+    const entry = enqueueEdit(USER, "transaction.patch", "row-1", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    const send = vi.fn(async () => {
+      throw new ApiError("notes cannot be blank", 422);
+    });
+    // The first flush merges clean and the server refuses the payload; the
+    // second is a fresh plan against a row that has since been edited by
+    // somebody else. The reader is wired on both, as it is in production.
+    const unchanged: TheirsReader = async () => ({ notes: "a" });
+    const moved: TheirsReader = async () => ({ notes: "theirs" });
+
+    await flushOutbox(USER, send, { theirs: unchanged });
+    expect(getOutboxSnapshot(USER)[0].error).toBe("notes cannot be blank");
+
+    const outcome = await flushOutbox(USER, send, {
+      retryFailed: true,
+      theirs: moved,
+    });
+
+    expect(outcome.conflicted).toBe(1);
+    expect(outcome.failed).toBe(0);
+    const [held] = getOutboxSnapshot(USER);
+    expect(held.conflict).toBeDefined();
+    expect(held.error).toBeUndefined();
+    // And the invariant that comment rests on is now reachable, so it holds.
+    expect(discardFailed(USER)).toBe(0);
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
   // The merge walks the union of all three key sets, so its patch echoes every
   // field of the row. Sending that would revert a third party's change to
   // `amount` over an edit that never touched it — the exact bug this merge

@@ -688,7 +688,20 @@ describe("sending a diff", () => {
   // of every column the entry does not name — refused here so it cannot be sent by
   // a caller that skipped the merge.
   it.each(PUT_WHOLE)("%s refuses to write onto a row the server no longer has", async (op) => {
-    await expect(applyOp(op, "row-1", { name: "New" }, null)).rejects.toThrow(/gone/i);
+    // A 422 and not a plain throw, and this is the second time this class of
+    // refusal has been converted: the flush rethrows anything that is neither an
+    // ApiError nor a NetworkError, so a plain Error here ends the whole sync
+    // rather than this entry. The condition is a race — `send` re-reads `theirs`
+    // after the plan read it, and a row deleted on another device in between
+    // arrives as null here — so recording it and carrying on is strictly better
+    // than aborting every later entry. A retry re-plans it and finds the row
+    // genuinely gone, which is the correct terminal state.
+    //
+    // (At plan time the same absence is not a refusal at all: it is
+    // outbox.ts's recordGone, which holds the entry for the user.)
+    const refusal = applyOp(op, "row-1", { name: "New" }, null);
+    await expect(refusal).rejects.toMatchObject({ status: 422 });
+    await expect(refusal).rejects.toThrow(/gone/i);
   });
 
   it("reaches each whole-row family through its own endpoint, keyed by the row's own id", async () => {
@@ -1127,6 +1140,14 @@ describe("the shape of a refusal", () => {
         "applyOp with an empty string in the diff",
         () => applyOp(op, "row-1", { notes: "" }, THEIRS),
       ],
+      // A row the server no longer has is the fifth thing a queued write can ask
+      // for, and it reaches applyOp as a null `theirs` on every flush: `send`
+      // reads the row again after the plan read it, so a row deleted elsewhere
+      // in between arrives here. For a whole-row family that is the refusal
+      // below, and it is the one most likely to be written as a plain throw,
+      // because at plan time the same absence is not a refusal at all — it is
+      // outbox.ts's recordGone.
+      ["applyOp onto a row that is gone", () => applyOp(op, "row-1", { notes: "milk" }, null)],
     ];
 
     for (const [what, ask] of asked) {

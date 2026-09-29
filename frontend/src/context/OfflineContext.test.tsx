@@ -23,6 +23,8 @@ const apiMock = vi.hoisted(() => ({
   getTransactions: vi.fn(),
   updateTransaction: vi.fn(),
   bulkCategorize: vi.fn(),
+  getAccounts: vi.fn(),
+  updateAccount: vi.fn(),
 }));
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 
@@ -136,6 +138,8 @@ describe("OfflineProvider", () => {
     apiMock.getTransactions.mockReset();
     apiMock.updateTransaction.mockReset();
     apiMock.bulkCategorize.mockReset();
+    apiMock.getAccounts.mockReset();
+    apiMock.updateAccount.mockReset();
     toastMock.success.mockReset();
     toastMock.error.mockReset();
   });
@@ -411,6 +415,57 @@ describe("OfflineProvider", () => {
     expect(toastMock.success).toHaveBeenCalledWith(
       expect.stringContaining("txn-9"),
     );
+  });
+
+  it("refuses to re-create a row that is only conflicted, not gone", async () => {
+    const user = userEvent.setup();
+    queueEdit();
+    // The row is still there — that is what a conflict means: the field moved,
+    // the transaction did not. A create here would insert a second money row and
+    // report the user's conflict resolved, which is the worst answer available.
+    apiMock.getTransactions.mockResolvedValue({
+      data: [serverRow("Someone else's coffee")],
+    });
+
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("conflicts")).toHaveTextContent("1"),
+    );
+
+    await user.click(screen.getByText("re-create"));
+
+    // The dialog is expected to hide the action, and it does — but it is a
+    // public method on a context value, and the precondition belongs to the seam
+    // that owns the effect, not to whichever surface happens to call it.
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    expect(apiMock.createTransaction).not.toHaveBeenCalled();
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
+    expect(screen.getByTestId("conflicts")).toHaveTextContent("1");
+    expect(screen.getByTestId("synced")).toHaveTextContent("no");
+  });
+
+  it("tells the user when a write this seam cannot make stops the sync", async () => {
+    // A bulk entry against an op with no batch endpoint. Nothing here can be
+    // sent, and saying so loudly is right — skipping it would remove the entry
+    // and report a batch that never left the browser — but `sync` is called as
+    // `void sync()` from both the reconnect effect and the banner, so a throw
+    // with no catch is an unhandled rejection and no message at all. The user
+    // would be left watching a pending count that never drops.
+    enqueueBulk("u1", "account.put", "name", "Renamed", ["a1"], { a1: "Old" });
+    apiMock.getAccounts.mockResolvedValue([{ id: "a1", name: "Old" }]);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        expect.stringContaining("no batch endpoint"),
+      ),
+    );
+    // Refused before the wire, so no request emptied the row, and the entry is
+    // still queued for a build that can send it.
+    expect(apiMock.updateAccount).not.toHaveBeenCalled();
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
+    expect(screen.getByTestId("syncing")).toHaveTextContent("false");
   });
 
   it("keeps a gone row queued when the re-create never reached the server", async () => {

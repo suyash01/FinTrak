@@ -36,8 +36,9 @@ interface OfflineContextValue {
   // field the merge could not attribute to a side, or a row the server no longer
   // has. They are entries and not counts because the dialog shows the two
   // competing values and the base they were edited away from, and all three
-  // travel with the entry. They are also disjoint from `pending`'s rejected
-  // entries, which is what lets the banner say which is which.
+  // travel with the entry. They are also disjoint from the rejected entries in
+  // `pending` — a hold clears any rejection it answers, outbox.ts's
+  // recordConflict — which is what lets the banner say which is which.
   conflicts: QueuedWrite[];
   syncing: boolean;
   // syncedAt changes after a flush wrote something, so a page showing ledger
@@ -54,6 +55,20 @@ interface OfflineContextValue {
 }
 
 const OfflineContext = createContext<OfflineContextValue | undefined>(undefined);
+
+// HANDLED_KINDS is a pin with no runtime behaviour, and it is here because the
+// dispatch in `sync` cannot be checked by the compiler on its own: a fourth kind
+// added to the union would simply match no `case` and fall to the `default`,
+// which is a throw at runtime and a comment saying it should not happen. This
+// makes it a build failure instead — add a kind to QueuedWrite and this stops
+// compiling until the dispatch has a branch for it. Unused by design; the repo
+// compiles with noUnusedLocals off.
+const HANDLED_KINDS: Record<NonNullable<QueuedWrite["kind"]>, true> = {
+  edit: true,
+  bulk: true,
+  create: true,
+};
+void HANDLED_KINDS;
 
 // OfflineProvider owns the one thing that must happen without the user asking:
 // sending the outbox when the connection comes back. It is mounted only inside
@@ -96,55 +111,81 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
         const outcome = await flushOutbox(
           userId,
           async (entry) => {
-            // The two row writes are named positively and the create is what is
-            // left, rather than the other way round: `CreateEntry.kind` is
-            // optional for an entry written before the union existed, so testing
-            // `kind === "create"` cannot exclude a create from the branches
-            // after it (outbox.ts's isRowWrite says the same about the flush's
-            // own dispatch).
-            if (entry.kind === "edit") {
-              // applyOp, not OPS[op].apply directly: the shape is what decides
-              // whether a diff goes out as-is or is overlaid onto the server's
-              // own row, and it is the one place that decision is made. `theirs`
-              // is read here rather than carried from the merge because the
-              // flush hands `send` the decided entry alone, and a `putWhole` op
-              // needs the row to overlay onto — a diff on its own would clear
-              // every column the body did not name.
-              await applyOp(
-                entry.op,
-                entry.rowId,
-                entry.patch,
-                await readTheirs(entry.op, entry.rowId),
-              );
-              return;
-            }
-            if (entry.kind === "bulk") {
-              const spec = OPS[entry.op];
-              // Loud rather than skipped. `applyMany` is the whole of a bulk
-              // write, so an op without one is a write this seam cannot make,
-              // and a flush that swallowed it would remove the entry as applied
-              // and report a batch sent that never left the browser. The flush
-              // rethrows anything that is neither a rejection nor an offline
-              // moment, so the sync stops here with the queue intact.
-              if (!spec.applyMany) {
+            // A three-way switch with no fall-through, and the default below it
+            // rather than a create as the leftover case. A fourth kind added to
+            // the union without a branch here would otherwise land in the create
+            // arm with `request` undefined and post a body of nothing — and the
+            // whole point of the loud paths in this function is that an unwired
+            // write fails visibly instead.
+            switch (entry.kind) {
+              case "edit": {
+                // applyOp, not OPS[op].apply directly: the shape is what decides
+                // whether a diff goes out as-is or is overlaid onto the server's
+                // own row, and it is the one place that decision is made.
+                // `theirs` is read here rather than carried from the merge
+                // because the flush hands `send` the decided entry alone, and a
+                // `putWhole` op needs the row to overlay onto — a diff on its own
+                // would clear every column the body did not name.
+                await applyOp(
+                  entry.op,
+                  entry.rowId,
+                  entry.patch,
+                  await readTheirs(entry.op, entry.rowId),
+                );
+                return;
+              }
+              case "bulk": {
+                const spec = OPS[entry.op];
+                // Loud rather than skipped. `applyMany` is the whole of a bulk
+                // write, so an op without one is a write this seam cannot make,
+                // and a flush that swallowed it would remove the entry as
+                // applied and report a batch sent that never left the browser.
+                // The catch below is what turns that loudness into something the
+                // user sees.
+                if (!spec.applyMany) {
+                  throw new Error(
+                    `cannot post a ${entry.op} bulk write: the op has no batch endpoint`,
+                  );
+                }
+                // The rows are the ones the flush narrowed the entry to, so a
+                // batch that partly conflicted sends the rows that did not.
+                await spec.applyMany(entry.rows, entry.value);
+                return;
+              }
+              case "create": {
+                // Nothing to merge: a create is a whole new row, so there is
+                // nothing on the server it could collide with.
+                //
+                // queue: false — the flush owns the retry, so a transport
+                // failure must propagate instead of re-queueing the entry it
+                // just took.
+                await api.createTransaction(entry.request, {
+                  idempotencyKey: entry.key,
+                  queue: false,
+                });
+                return;
+              }
+              // A v1 entry carries no kind and is already a create's shape;
+              // outbox.ts's adoptKind reads it as one before it is ever handed
+              // here, so this arm is the belt to that function's braces rather
+              // than a case production can reach.
+              case undefined: {
+                await api.createTransaction(entry.request, {
+                  idempotencyKey: entry.key,
+                  queue: false,
+                });
+                return;
+              }
+              default: {
+                // Unreachable while HANDLED_KINDS below matches the union, which
+                // is what makes adding a kind a compile error rather than a
+                // runtime surprise. Thrown rather than narrowed to never, so the
+                // entry's kind is in the message.
                 throw new Error(
-                  `cannot post a ${entry.op} bulk write: the op has no batch endpoint`,
+                  `cannot post a queued write of kind ${JSON.stringify((entry as QueuedWrite).kind)}: no branch sends it`,
                 );
               }
-              // The rows are the ones the flush narrowed the entry to, so a
-              // batch that partly conflicted sends the rows that did not.
-              await spec.applyMany(entry.rows, entry.value);
-              return;
             }
-            // Nothing to merge: a create is a whole new row, so there is
-            // nothing on the server it could collide with.
-            //
-            // queue: false — the flush owns the retry, so a transport failure
-            // must propagate instead of re-queueing the entry it just took.
-            await api.createTransaction(entry.request, {
-              idempotencyKey: entry.key,
-              queue: false,
-            });
           },
           // The reader is what makes the merge happen at all. Without it
           // planWrite throws, so an edit would be unsendable rather than
@@ -216,6 +257,17 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
             "Could not update the offline queue: browser storage is unavailable or full. Nothing was lost — reconnect and sync again.",
           );
         }
+      } catch (err) {
+        // The flush rethrows what it cannot classify — a dispatch this seam
+        // cannot make, a reader that is not the registry's — and both callers
+        // write `void sync()`, so without this the queue is intact, nothing is
+        // mis-applied, and the user is told nothing at all. They would be left
+        // watching a pending count that never drops and reading it as "still
+        // syncing", which is the worst available answer: the writes are all still
+        // there, so this is a report, not a loss.
+        toast.error(
+          `The offline sync stopped before the queue could drain: ${(err as Error).message}. Nothing was lost — the remaining writes are still queued.`,
+        );
       } finally {
         syncingRef.current = false;
         setSyncing(false);
@@ -297,6 +349,21 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       if (!entry) return;
       if (entry.kind !== "edit") {
         toast.error("Only a single-row change can be re-created as a new row.");
+        return;
+      }
+      // `gone` and not merely `conflict`, and this guard is the one that matters
+      // most on this function: the server's row has to be *absent* for a create
+      // to be the right answer. A conflicted entry's row is still there — that is
+      // what a conflict means, one field of it moved — so a create would insert a
+      // second money row and then remove the entry and report the conflict
+      // resolved. The dialog is expected to offer Re-create only for a gone row,
+      // and it should, but this is a public method on a context value and the
+      // precondition belongs to the seam that owns the effect, not to whichever
+      // surface happens to call it.
+      if (!entry.gone) {
+        toast.error(
+          "That change cannot be re-created: its row is still on the server, so creating it again would duplicate it. Resolve the conflicting fields instead.",
+        );
         return;
       }
       // Present only on transaction rows, so an op without one is a row this

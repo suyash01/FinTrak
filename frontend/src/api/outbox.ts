@@ -574,8 +574,22 @@ function markRejected(userId: string, key: string, message: string): boolean {
 // was stored. The conflict travels with the entry rather than in the page for the
 // reason the queue exists: a question the user has to be told about cannot be
 // something only this tab remembers.
+//
+// It clears `error`, and that is what makes discardFailed's filter on `error`
+// alone true rather than merely asserted. An entry can reach a conflict already
+// carrying a rejection: the server refused it, the user asked for a retry, and
+// the retry is a fresh plan against the server's row as it stands *then* — which
+// may have moved, and which is the whole reason a second attempt can end in a
+// conflict at all. Left in place, the entry would sit in both the rejected count
+// and the held list, and "discard the writes the server rejected" would destroy
+// an edit nobody has been told about yet. A conflict supersedes the rejection it
+// answers: it is the newer information, it is about specific fields, and only
+// the user can settle it.
 export function recordConflict(userId: string, key: string, conflict: PendingConflict): boolean {
-  return mutateEntry(userId, key, (entry) => ({ ...entry, conflict }));
+  return mutateEntry(userId, key, (entry) => {
+    const { error: _superseded, ...rest } = entry;
+    return { ...rest, conflict };
+  });
 }
 
 // recordGone marks a queued write whose row the server no longer has. It is a
@@ -604,9 +618,10 @@ export function resolveConflict(
 // stay queued forever while the user is told they were dropped.
 //
 // It filters on `error` alone, and must stay that way: an entry held for the user
-// has no rejection behind it, and dropping it here would destroy an edit the user
-// has not been told about yet. discardConflicts is the one that answers "the
-// question is settled".
+// has no rejection behind it — recordConflict clears one when it records a hold,
+// which is what makes that true rather than merely hoped for — and dropping it
+// here would destroy an edit the user has not been told about yet.
+// discardConflicts is the one that answers "the question is settled".
 export function discardFailed(userId: string): number {
   const entries = readEntries(userId);
   const kept = entries.filter((entry) => !entry.error);

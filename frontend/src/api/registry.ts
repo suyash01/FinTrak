@@ -505,6 +505,18 @@ export function readTheirs(op: WriteOp, rowId: string): Promise<FieldPatch | nul
 // has is a fact about the row, and the flush records it as one (outbox.ts's
 // recordGone) so the user can be told; an overlay of nothing is the bare diff
 // again, which is the wipe this function exists to prevent.
+//
+// The refusal is a 422 ApiError rather than a plain throw, and the class is the
+// point rather than the status number. `applyOp` is called from the flush's send
+// with `theirs` read *again* there, after the plan already read it, so this is
+// where a row deleted on another device in between surfaces — a race, not a
+// programming error. flushOutbox rethrows anything that is neither an ApiError
+// nor a NetworkError, so the plain throw this used to be ended the entire sync
+// and left every entry behind this one unsent, with nothing shown for it.
+// Recorded as a rejection instead, the entry carries the message, the flush
+// carries on, and a retry re-plans it and finds the row genuinely gone, which
+// outbox.ts then records as recordGone — the correct terminal state. (At plan
+// time this same absence is not a refusal at all; it never reaches here.)
 function mergedRow(
   op: WriteOp,
   rowId: string,
@@ -512,8 +524,9 @@ function mergedRow(
   theirs: FieldPatch | null,
 ): FieldPatch {
   if (theirs === null) {
-    throw new Error(
-      `cannot send a ${op} edit to ${rowId}: the row is gone, so there is no copy of it to overlay the diff onto, and this endpoint writes every column the body names or not`,
+    throw new ApiError(
+      `${op} cannot write to ${rowId}: the row is gone, so there is no copy of it to overlay the diff onto, and this endpoint writes every column the body names or not. It disappeared between reading it and writing to it — sync again and the app will hold it for you.`,
+      422,
     );
   }
   const row: FieldPatch = {};
