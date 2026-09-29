@@ -37,8 +37,9 @@ interface OfflineContextValue {
   // has. They are entries and not counts because the dialog shows the two
   // competing values and the base they were edited away from, and all three
   // travel with the entry. They are also disjoint from the rejected entries in
-  // `pending` — a hold clears any rejection it answers, outbox.ts's
-  // recordConflict — which is what lets the banner say which is which.
+  // `pending` — recording a hold clears any rejection it answers, outbox.ts's
+  // `hold` — which is what lets the banner say which is which, and what stops
+  // discardFailed from taking a held edit with the rejected ones.
   conflicts: QueuedWrite[];
   syncing: boolean;
   // syncedAt changes after a flush wrote something, so a page showing ledger
@@ -177,10 +178,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
                 return;
               }
               default: {
-                // Unreachable while HANDLED_KINDS below matches the union, which
-                // is what makes adding a kind a compile error rather than a
-                // runtime surprise. Thrown rather than narrowed to never, so the
-                // entry's kind is in the message.
+                // The *runtime* half of the exhaustiveness check, and only that:
+                // an unmatched `case` is not a type error, so this throw is what
+                // catches a kind the switch does not name. The compile-time half
+                // is HANDLED_KINDS above, which stops the build instead — so
+                // neither half replaces the other, and "simplifying" this switch
+                // into a chain of `if`s would silently delete the only one that
+                // runs. Thrown rather than narrowed to `never` so the entry's
+                // kind is in the message.
                 throw new Error(
                   `cannot post a queued write of kind ${JSON.stringify((entry as QueuedWrite).kind)}: no branch sends it`,
                 );

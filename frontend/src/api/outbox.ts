@@ -113,6 +113,19 @@ export interface WriteEnvelope {
   // the row, not a rejection to retry, so it is held for the user like a
   // conflict and must not be mistaken for a queue that will drain on its own.
   gone?: boolean;
+  // INVARIANT: at most one of `error`, `conflict` and `gone` is ever set on an
+  // entry. All three are "why this entry is still queued", and an entry that
+  // answers two of them has two questions outstanding that the user is shown
+  // once and can answer once. It is not only a display rule: `discardFailed`
+  // filters on `error` alone, so a held entry carrying a rejection is destroyed
+  // by the button that answers the *other* question.
+  //
+  // It is reachable rather than hypothetical, because a rejection is not
+  // terminal. The server refuses a payload, the user asks for a retry, and the
+  // retry is a fresh plan against the server's row as it stands then — so the
+  // same entry can be rejected and then, on the next attempt, held as a conflict
+  // or as gone. The records below are the only writers of the held outcomes, and
+  // they all clear `error` for that reason (see hold).
 }
 
 // CreateEntry is a manual transaction recorded with no connection. `kind` is
@@ -570,33 +583,49 @@ function markRejected(userId: string, key: string, message: string): boolean {
   }));
 }
 
+// HeldOutcome is what a hold records: exactly one of the two ways an entry can
+// end up waiting on the user. Exclusive so "at most one" (see WriteEnvelope) is
+// checked here rather than hoped for — a call that set both would produce an
+// entry the user can answer only half of, and neither record below has a reason
+// to want that.
+type HeldOutcome =
+  | { conflict: PendingConflict; gone?: never }
+  | { gone: true; conflict?: never };
+
+// hold is the one update every record of a held outcome makes, and it is one
+// function for the envelope's invariant rather than two copies of it. The
+// clearing of `error` is the whole reason it is shared: a held outcome
+// supersedes a rejection, because it is the newer and more specific answer — the
+// server's row as it stands now, and a question only the user can settle — and
+// because leaving the rejection behind is what lets discardFailed, which filters
+// on `error` alone, destroy an edit the user has not been told about yet. That
+// path is reachable, not theoretical: a rejected entry is re-planned on a retry
+// and can come back held. A third record added later belongs here, and gets the
+// clearing without having to know why.
+function hold(userId: string, key: string, outcome: HeldOutcome): boolean {
+  return mutateEntry(userId, key, (entry) => {
+    const { error: _superseded, ...rest } = entry;
+    return { ...rest, ...outcome };
+  });
+}
+
 // recordConflict holds a queued write for the user, and reports whether the hold
 // was stored. The conflict travels with the entry rather than in the page for the
 // reason the queue exists: a question the user has to be told about cannot be
 // something only this tab remembers.
-//
-// It clears `error`, and that is what makes discardFailed's filter on `error`
-// alone true rather than merely asserted. An entry can reach a conflict already
-// carrying a rejection: the server refused it, the user asked for a retry, and
-// the retry is a fresh plan against the server's row as it stands *then* — which
-// may have moved, and which is the whole reason a second attempt can end in a
-// conflict at all. Left in place, the entry would sit in both the rejected count
-// and the held list, and "discard the writes the server rejected" would destroy
-// an edit nobody has been told about yet. A conflict supersedes the rejection it
-// answers: it is the newer information, it is about specific fields, and only
-// the user can settle it.
 export function recordConflict(userId: string, key: string, conflict: PendingConflict): boolean {
-  return mutateEntry(userId, key, (entry) => {
-    const { error: _superseded, ...rest } = entry;
-    return { ...rest, conflict };
-  });
+  return hold(userId, key, { conflict });
 }
 
 // recordGone marks a queued write whose row the server no longer has. It is a
 // fact about the row rather than a rejection to retry — there is nothing to
-// retry against — so it is held for the user like a conflict.
+// retry against — so it is held for the user like a conflict, and by the same
+// rule: an entry that was rejected and is retried into a row that has since been
+// deleted must not keep the rejection, or `discardFailed` would take the user's
+// edit to it along with the answer the server gave for a payload that no longer
+// describes anything.
 export function recordGone(userId: string, key: string): boolean {
-  return mutateEntry(userId, key, (entry) => ({ ...entry, gone: true }));
+  return hold(userId, key, { gone: true });
 }
 
 // resolveConflict records the user's per-field answer and drops the question with
@@ -618,7 +647,7 @@ export function resolveConflict(
 // stay queued forever while the user is told they were dropped.
 //
 // It filters on `error` alone, and must stay that way: an entry held for the user
-// has no rejection behind it — recordConflict clears one when it records a hold,
+// has no rejection behind it — `hold` clears one whenever it records a hold,
 // which is what makes that true rather than merely hoped for — and dropping it
 // here would destroy an edit the user has not been told about yet.
 // discardConflicts is the one that answers "the question is settled".

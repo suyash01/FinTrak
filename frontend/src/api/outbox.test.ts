@@ -662,6 +662,42 @@ describe("outbox", () => {
     expect(getOutboxSnapshot(USER)).toHaveLength(1);
   });
 
+  // The same trace with a different ending, and the reason the rule is stated as
+  // "a held outcome supersedes a rejection" rather than as a fact about
+  // conflicts: the retry's plan finds the row is not there at all, so the entry
+  // is held as gone — and `recordGone` used to leave the rejection behind, which
+  // put a row the user must decide about into the rejected count and let
+  // discardFailed destroy it. One trace, two endings, one rule; the fix belongs
+  // to the rule and not to either function.
+  it("lets a gone row supersede the rejection a retry answered", async () => {
+    enqueueEdit(USER, "transaction.patch", "row-1", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    const send = vi.fn(async () => {
+      throw new ApiError("notes cannot be blank", 422);
+    });
+    const present: TheirsReader = async () => ({ notes: "a" });
+    const deleted: TheirsReader = async () => null;
+
+    await flushOutbox(USER, send, { theirs: present });
+    expect(getOutboxSnapshot(USER)[0].error).toBe("notes cannot be blank");
+
+    const outcome = await flushOutbox(USER, send, {
+      retryFailed: true,
+      theirs: deleted,
+    });
+
+    expect(outcome.gone).toBe(1);
+    expect(outcome.failed).toBe(0);
+    const [held] = getOutboxSnapshot(USER);
+    expect(held.gone).toBe(true);
+    expect(held.conflict).toBeUndefined();
+    expect(held.error).toBeUndefined();
+    // The user's edit to a row somebody else deleted is the one thing the
+    // conflict-aware discard is for, and the rejection-aware one must not reach.
+    expect(discardFailed(USER)).toBe(0);
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+    expect(discardConflicts(USER)).toBe(1);
+  });
+
   // The merge walks the union of all three key sets, so its patch echoes every
   // field of the row. Sending that would revert a third party's change to
   // `amount` over an edit that never touched it — the exact bug this merge
