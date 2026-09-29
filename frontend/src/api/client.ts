@@ -166,7 +166,13 @@ function writeOffline(
 // newClientKey identifies one create attempt. It survives the 401 refresh
 // replay and every outbox retry, which is what lets the server recognise a
 // repeat instead of inserting a second row.
-function newClientKey(): string {
+//
+// Exported because the op registry re-creates a row the server no longer has, and
+// the key is the whole of what makes that safe: the registry asks for a key here
+// rather than minting its own, so a second copy of this fallback (a LAN address
+// without TLS is not a secure context) is never a queue that cannot recognise
+// its own replay.
+export function newClientKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
@@ -202,6 +208,11 @@ interface RequestOptions {
   // timeout overrides REQUEST_TIMEOUT for long-running calls (e.g. a full
   // backup restore of a large history).
   timeout?: number;
+  // live answers from the server or not at all. A read the offline merge takes
+  // as "theirs" is one whose answer decides what gets written, and the cache
+  // holds this browser's own last belief of that row — a merge answered from it
+  // can only agree with itself, and would overwrite whatever changed since.
+  live?: boolean;
 }
 
 function buildQuery(params: QueryParams): string {
@@ -367,7 +378,11 @@ async function request<T>(
   } catch (err) {
     // A read that never reached the server is answered from the offline cache,
     // so the shell shows the state the user last saw instead of an error page.
-    if (method === "GET" && isNetworkError(err)) {
+    // A live read is the exception: it exists precisely because its answer must
+    // be the server's, so a transport failure propagates and the caller decides
+    // (outbox's flush stops and keeps the queue rather than merging against a
+    // stale row).
+    if (method === "GET" && isNetworkError(err) && !options.live) {
       const cached = readOffline<T>(owner, url);
       if (cached !== null) return cached;
     }
@@ -469,7 +484,8 @@ const api = {
   me: (): Promise<User> => request("/auth/me"),
 
   // Accounts
-  getAccounts: (): Promise<Account[]> => request("/accounts"),
+  getAccounts: (options: RequestOptions = {}): Promise<Account[]> =>
+    request("/accounts", options),
   createAccount: (data: CreateAccountRequest): Promise<Account> =>
     request("/accounts", { method: "POST", body: JSON.stringify(data) }),
   updateAccount: (id: string, data: UpdateAccountRequest): Promise<Account> =>
@@ -480,7 +496,8 @@ const api = {
     request(`/accounts/${accountId}/billing-cycles`),
 
   // Account Types
-  getAccountTypes: (): Promise<AccountType[]> => request("/account-types"),
+  getAccountTypes: (options: RequestOptions = {}): Promise<AccountType[]> =>
+    request("/account-types", options),
   createAccountType: (data: CreateAccountTypeRequest): Promise<AccountType> =>
     request("/account-types", { method: "POST", body: JSON.stringify(data) }),
   updateAccountType: (
@@ -495,14 +512,16 @@ const api = {
     request(`/account-types/${id}`, { method: "DELETE" }),
 
   // Categories & groups
-  getCategories: (): Promise<Category[]> => request("/categories"),
+  getCategories: (options: RequestOptions = {}): Promise<Category[]> =>
+    request("/categories", options),
   createCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/categories", { method: "POST", body: JSON.stringify(data) }),
   updateCategory: (id: string, data: UpdateCategoryRequest): Promise<Category> =>
     request(`/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteCategory: (id: string): Promise<DeleteCategoryResult> =>
     request(`/categories/${id}`, { method: "DELETE" }),
-  getGroups: (): Promise<CategoryGroup[]> => request("/groups"),
+  getGroups: (options: RequestOptions = {}): Promise<CategoryGroup[]> =>
+    request("/groups", options),
   createGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/groups", { method: "POST", body: JSON.stringify(data) }),
   updateGroup: (
@@ -514,7 +533,8 @@ const api = {
     request(`/groups/${id}`, { method: "DELETE" }),
 
   // Admin: global groups & categories shared by every user
-  getAdminCatalog: (): Promise<AdminCatalog> => request("/admin/catalog"),
+  getAdminCatalog: (options: RequestOptions = {}): Promise<AdminCatalog> =>
+    request("/admin/catalog", options),
   createGlobalGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/admin/groups", { method: "POST", body: JSON.stringify(data) }),
   createGlobalCategory: (data: CreateCategoryRequest): Promise<Category> =>
@@ -569,6 +589,12 @@ const api = {
   updateTransaction: (
     id: string,
     data: UpdateTransactionRequest,
+    // `queue: false` is what a caller that is *sending* an already-queued edit
+    // passes — the outbox flush, which must not put a second copy of an entry
+    // back in the queue when the request does not reach the server. Nothing
+    // queues from this call yet, so the option is inert until the offline edit
+    // does, and a caller that passes nothing behaves exactly as it always has.
+    options: { queue?: boolean } = {},
   ): Promise<Transaction> =>
     request(`/transactions/${id}`, {
       method: "PATCH",
@@ -619,8 +645,11 @@ const api = {
     }),
   // Optional amortization schedule of a Loan / EMI account. GET answers with
   // schedule: null when the loan has no schedule yet.
-  getLoanSchedule: (accountId: string): Promise<LoanScheduleDetail> =>
-    request(`/accounts/${accountId}/loan-schedule`),
+  getLoanSchedule: (
+    accountId: string,
+    options: RequestOptions = {},
+  ): Promise<LoanScheduleDetail> =>
+    request(`/accounts/${accountId}/loan-schedule`, options),
   // What settling this loan on `date` ("YYYY-MM-DD") costs: its outstanding
   // principal plus the interest accrued since its last EMI payment. The
   // transfer endpoint runs the identical computation, so a preview and the
@@ -702,7 +731,8 @@ const api = {
 
   // Generic per-user settings (the same /paperless/settings endpoint also
   // carries the transactions page-size preference).
-  getUserSettings: (): Promise<UserSettings> => request("/paperless/settings"),
+  getUserSettings: (options: RequestOptions = {}): Promise<UserSettings> =>
+    request("/paperless/settings", options),
   updateUserSettings: (data: UpdateUserSettingsRequest): Promise<null> =>
     request("/paperless/settings", {
       method: "PUT",
@@ -757,7 +787,8 @@ const api = {
   },
 
   // Rules
-  getRules: (): Promise<Rule[]> => request("/rules"),
+  getRules: (options: RequestOptions = {}): Promise<Rule[]> =>
+    request("/rules", options),
   createRule: (data: CreateRuleRequest): Promise<Rule> =>
     request("/rules", { method: "POST", body: JSON.stringify(data) }),
   updateRule: (id: string, data: UpdateRuleRequest): Promise<Rule> =>
@@ -770,7 +801,8 @@ const api = {
     request("/rules/preview", { method: "POST", body: JSON.stringify(data) }),
 
   // Payees
-  getPayees: (): Promise<Payee[]> => request("/payees"),
+  getPayees: (options: RequestOptions = {}): Promise<Payee[]> =>
+    request("/payees", options),
   createPayee: (data: CreatePayeeRequest): Promise<Payee> =>
     request("/payees", { method: "POST", body: JSON.stringify(data) }),
   updatePayee: (id: string, data: UpdatePayeeRequest): Promise<Payee> =>
@@ -799,8 +831,8 @@ const api = {
     }),
 
   // Recurring series & subscriptions (forecast + manual linking only)
-  getRecurringSeries: (): Promise<{ data: RecurringSeries[] }> =>
-    request("/recurring"),
+  getRecurringSeries: (options: RequestOptions = {}): Promise<{ data: RecurringSeries[] }> =>
+    request("/recurring", options),
   createRecurringSeries: (
     data: CreateRecurringSeriesRequest,
   ): Promise<RecurringSeries> =>
@@ -828,8 +860,9 @@ const api = {
     request(`/recurring/${id}/transactions`),
   getRecurringTerms: (
     id: string,
+    options: RequestOptions = {},
   ): Promise<{ data: RecurringSeriesTerm[] }> =>
-    request(`/recurring/${id}/terms`),
+    request(`/recurring/${id}/terms`, options),
   createRecurringTerm: (
     id: string,
     data: CreateRecurringSeriesTermRequest,

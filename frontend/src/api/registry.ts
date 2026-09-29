@@ -1,0 +1,523 @@
+// The op registry: what each queued write reads, and how it sends.
+//
+// A queued edit is a field-level patch, and the flush has to turn it into a
+// request for one of nineteen endpoints. Those endpoints do not agree on what a
+// payload that names some fields and omits others means, so each op declares
+// which one it is rather than the registry inferring it from the call below:
+//
+//   patch       PATCH /transactions/{id} builds its SET clause from the fields
+//               present in the body, so an absent field is a field untouched.
+//   putPartial  the account, account-type, category, group, admin-category and
+//               settings PUTs build a dynamic SET (or COALESCE(NULLIF($n, ''), col)),
+//               so an absent key genuinely means "leave it alone".
+//   putWhole    the payee, rule, recurring and loan PUTs write every column on
+//               every call — payee.go:118 is `UPDATE payees SET name = $1,
+//               account_id = $2` and recurring.go:485 is `SET end_date = $1` — so
+//               a payload that omits a field *clears* it. Their diff has to be
+//               overlaid onto the server's row before it goes out, which is why
+//               their read exists and why `theirs` is handed to `apply`.
+//
+// Getting that wrong is silent: the request succeeds and a column the user never
+// opened is emptied. `shape` is therefore data on the op, and the only place it
+// is written down.
+//
+// The read side has one rule for the same reason: the server's current row, or
+// null when the server no longer has it. Every read here is issued `live`, so
+// the offline read cache cannot answer it — a merge answered from this browser's
+// own last belief of the row can only agree with itself, and would overwrite
+// whatever changed since (see outbox.ts's TheirsReader).
+
+import api, { newClientKey } from "./client";
+import type { FieldPatch, FieldValue } from "./merge";
+import type { WriteOp } from "./outbox";
+import type {
+  CreateTransactionRequest,
+  LoanScheduleRequest,
+  UpdateAccountRequest,
+  UpdateAccountTypeRequest,
+  UpdateCategoryGroupRequest,
+  UpdateCategoryRequest,
+  UpdatePayeeRequest,
+  UpdateRecurringSeriesRequest,
+  UpdateRecurringSeriesTermRequest,
+  UpdateRuleRequest,
+  UpdateTransactionRequest,
+  UpdateUserSettingsRequest,
+} from "../types";
+
+// ApplyShape is what an op's endpoint does with a payload that names some fields
+// and omits others.
+export type ApplyShape = "patch" | "putPartial" | "putWhole";
+
+export interface OpSpec {
+  op: WriteOp;
+  shape: ApplyShape;
+  /**
+   * The mergeable projection of a row, or null when it is gone. Live, never
+   * cached. `rowId` is the identifier this op addresses: a row's own id for
+   * almost every op, the account for a loan schedule, the user for the settings
+   * singleton, and a transaction for all seven row-naming writes.
+   */
+  read(rowId: string): Promise<FieldPatch | null>;
+  /**
+   * Send the resolved diff. `theirs` is the row the diff was merged onto, and is
+   * the only source an op has for an identifier its endpoint also needs (a term's
+   * series) — and, for a `putWhole` op, the row the diff is overlaid onto.
+   */
+  apply(rowId: string, diff: FieldPatch, theirs: FieldPatch | null): Promise<void>;
+  /** Present only for transaction rows, which can be re-created. */
+  reCreate?(snapshot: FieldPatch, diff: FieldPatch): Promise<string>;
+  /** Present on ops that write one field across named rows. */
+  applyMany?(rows: string[], value: FieldValue): Promise<void>;
+}
+
+// asRequest is the seam between the merge and each family's request type. A
+// FieldPatch says "these fields changed" and nothing about which endpoint they
+// are for; the op above is the declaration that pairs the two, so the cast is
+// made once here rather than at every wire call.
+function asRequest<R>(diff: FieldPatch): R {
+  return diff as unknown as R;
+}
+
+// project is a row's mergeable fields, and it leaves a key off when the value is
+// nullish: absent is not null (see merge.ts), and a field the server holds
+// nothing in is a field the row does not carry. The base an entry recorded is the
+// same projection of the same row, so the two describe the row the same way and
+// a field that has never been set compares as untouched on both sides rather
+// than as a value the user changed to nothing.
+function project(row: object, fields: readonly string[]): FieldPatch {
+  const record = row as Record<string, FieldValue>;
+  const patch: FieldPatch = {};
+  for (const field of fields) {
+    const value = record[field];
+    if (value === undefined || value === null) continue;
+    patch[field] = value;
+  }
+  return patch;
+}
+
+// findRow is a family's read: the collection plus a find by id, because these
+// families have no single-row GET to ask. A row the collection does not carry is
+// a row the server no longer has, which is what null has to mean.
+async function findRow<Row extends { id: string }>(
+  read: () => Promise<Row[]>,
+  rowId: string,
+  fields: readonly string[],
+): Promise<FieldPatch | null> {
+  const row = (await read()).find((candidate) => candidate.id === rowId);
+  return row ? project(row, fields) : null;
+}
+
+// The fields each row is merged on: the ones a write edge can set. Ids, joined
+// display names, counts and anything the server derives are not mergeable — there
+// is no queued edit that would change them, and putting one in a base would
+// invent a difference the user never made.
+const TRANSACTION_FIELDS = [
+  "accountId",
+  "date",
+  "description",
+  "amount",
+  "type",
+  "categoryId",
+  "tags",
+  "notes",
+  "payeeId",
+  "billingCycleId",
+  // The two attachments the row-naming writes set, and the only evidence on the
+  // row that somebody else moved one: a projection without them reads as "no
+  // attachment", and a merge against that overwrites a concurrent attachment
+  // instead of holding it.
+  "loanAccountId",
+  "recurringSeriesId",
+] as const;
+
+const ACCOUNT_FIELDS = [
+  "name",
+  "accountTypeId",
+  "bank",
+  "currency",
+  "color",
+  "isDefault",
+  "closed",
+  "billingDay",
+] as const;
+
+const ACCOUNT_TYPE_FIELDS = ["name", "positiveTxnType"] as const;
+
+const GROUP_FIELDS = ["name", "icon", "color"] as const;
+
+const CATEGORY_FIELDS = ["name", "icon", "color", "groupId"] as const;
+
+const PAYEE_FIELDS = ["name", "accountId"] as const;
+
+const RULE_FIELDS = [
+  "pattern",
+  "matchType",
+  "categoryId",
+  "payeeId",
+  "priority",
+  "accountId",
+  "filterCategoryId",
+  "filterPayeeId",
+  "minAmount",
+  "maxAmount",
+  "txnType",
+  "dateFrom",
+  "dateTo",
+  "isLinked",
+  "isRecurring",
+  "addTags",
+  "notes",
+] as const;
+
+const SERIES_FIELDS = [
+  "accountId",
+  "name",
+  "description",
+  "amount",
+  "type",
+  "frequency",
+  "interval",
+  "startDate",
+  "endDate",
+  "categoryId",
+  "payeeId",
+  "active",
+  "notes",
+] as const;
+
+const TERM_FIELDS = [
+  // The series is part of the term's row rather than of its own address: it is
+  // what the write endpoint needs, and no other read can supply it.
+  "seriesId",
+  "startDate",
+  "endDate",
+  "amount",
+  "accountId",
+] as const;
+
+// The loan's *terms*, not its schedule: the amortization periods are derived
+// server-side from these, so a queued edit is a change to the terms and nothing
+// else.
+const LOAN_TERMS_FIELDS = [
+  "principal",
+  "processingFee",
+  "disbursalDate",
+  "annualRateBps",
+  "tenureMonths",
+  "startDate",
+] as const;
+
+// hasToken is deliberately absent: the settings response reports whether a token
+// is set and never carries it, so a projection naming a token field would put on
+// the wire a value this client has never read from anywhere.
+const SETTINGS_FIELDS = ["paperlessUrl", "paperlessTag", "pageSize"] as const;
+
+// readTransaction serves the PATCH and all seven row-naming writes: they address
+// the same transaction and differ only in how the write travels.
+//
+// It scopes with `q=id:` and nothing else, and that is load-bearing. The list
+// endpoint injects synthetic summary rows — a per-cycle "Total outstanding", a
+// month-end "Running balance" — when a single account is filtered and the sort is
+// by date, and it guards on accountUUID, which comes from an accountId parameter
+// and never from a q= term. Scoping this read by account as well would make
+// data[0] a summary row rather than the row being merged.
+const readTransaction = async (rowId: string): Promise<FieldPatch | null> => {
+  const { data } = await api.getTransactions({ q: `id:${rowId}`, limit: 1 }, { live: true });
+  const [row] = data;
+  return row ? project(row, TRANSACTION_FIELDS) : null;
+};
+
+// readTerm finds a term by its own id. The term endpoints are addressed by series
+// and there is no read that lists a user's terms across series, so the series are
+// asked in turn; the read is also what supplies the series the write needs (see
+// recurringTerm.put's apply).
+const readTerm = async (rowId: string): Promise<FieldPatch | null> => {
+  const { data: series } = await api.getRecurringSeries({ live: true });
+  const terms = await Promise.all(
+    series.map((one) => api.getRecurringTerms(one.id, { live: true })),
+  );
+  const term = terms
+    .flatMap((response) => response.data ?? [])
+    .find((candidate) => candidate.id === rowId);
+  return term ? project(term, TERM_FIELDS) : null;
+};
+
+// REMOVE_TAG marks a tag the entry removes rather than adds. The bulk-tags
+// endpoint takes two lists and applyMany is given one value, so the value is the
+// only place the direction can live: a registry that guessed would send a
+// removal back as an addition and the tag the user took off would come back on
+// its own.
+const REMOVE_TAG = "-";
+
+function asTagList(value: FieldValue): string[] {
+  // The value is a list by construction — the field this op writes is `tags` —
+  // and anything else writes no tags at all, which the endpoint refuses.
+  return Array.isArray(value) ? value.map((tag) => String(tag)) : [];
+}
+
+// asId is a bulk write's value as the id its endpoint takes. The value is a field
+// of the transaction being written, so it is an id, or the null/empty that two of
+// these endpoints read as "detach" — which is what those call sites name.
+function asId(value: FieldValue): string {
+  return value === undefined || value === null ? "" : String(value);
+}
+
+// multiRow is the shape of every write that names its rows: one field, set on the
+// rows the entry lists, through one request that touches nothing else. That is
+// the contract a PATCH has, which is the shape the family declares. `field` is
+// the transaction column the write is about — what the merge reads, and what the
+// single-row apply pulls out of the diff — and `request` is the one call the
+// endpoint needs, so the two forms of the write cannot disagree about it.
+function multiRow(
+  op: WriteOp,
+  field: string,
+  request: (rows: string[], value: FieldValue) => Promise<unknown>,
+): OpSpec {
+  return {
+    op,
+    shape: "patch",
+    read: readTransaction,
+    applyMany: async (rows, value) => {
+      await request(rows, value);
+    },
+    // The single row of the same request, so an op reached one row at a time
+    // takes exactly the path a batch of one takes.
+    apply: async (rowId, diff) => {
+      await request([rowId], diff[field]);
+    },
+  };
+}
+
+export const OPS: Record<WriteOp, OpSpec> = {
+  "transaction.patch": {
+    op: "transaction.patch",
+    shape: "patch",
+    read: readTransaction,
+    apply: async (rowId, diff) => {
+      // queue: false because the flush is sending an entry that is already in the
+      // queue: a request that does not reach the server must not put a second
+      // copy of it there.
+      await api.updateTransaction(rowId, asRequest<UpdateTransactionRequest>(diff), {
+        queue: false,
+      });
+    },
+    reCreate: async (snapshot, diff) => {
+      // The create body is the row's own projection with the decided diff on top:
+      // every field POST /transactions requires (accountId, date, description,
+      // amount, type) is in the transaction projection and none of them is
+      // nullable, so a re-created row is the row the user edited. The client key
+      // is the same idempotency key every create carries, so a replay the server
+      // already answered is recognised instead of inserted a second time.
+      const created = await api.createTransaction(
+        asRequest<CreateTransactionRequest>({ ...snapshot, ...diff }),
+        { idempotencyKey: newClientKey(), queue: false },
+      );
+      if (!created.id) {
+        throw new Error("The server accepted the re-created transaction but returned no id");
+      }
+      return created.id;
+    },
+  },
+
+  "account.put": {
+    op: "account.put",
+    shape: "putPartial",
+    read: (rowId) => findRow(() => api.getAccounts({ live: true }), rowId, ACCOUNT_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updateAccount(rowId, asRequest<UpdateAccountRequest>(diff));
+    },
+  },
+  "accountType.put": {
+    op: "accountType.put",
+    shape: "putPartial",
+    read: (rowId) =>
+      findRow(() => api.getAccountTypes({ live: true }), rowId, ACCOUNT_TYPE_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updateAccountType(rowId, asRequest<UpdateAccountTypeRequest>(diff));
+    },
+  },
+  "group.put": {
+    op: "group.put",
+    shape: "putPartial",
+    read: (rowId) => findRow(() => api.getGroups({ live: true }), rowId, GROUP_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updateGroup(rowId, asRequest<UpdateCategoryGroupRequest>(diff));
+    },
+  },
+  "category.put": {
+    op: "category.put",
+    shape: "putPartial",
+    read: (rowId) => findRow(() => api.getCategories({ live: true }), rowId, CATEGORY_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updateCategory(rowId, asRequest<UpdateCategoryRequest>(diff));
+    },
+  },
+  "adminCategory.put": {
+    op: "adminCategory.put",
+    shape: "putPartial",
+    // The global catalog, not the user's own categories: this op writes the
+    // shared row, and a user's copy of the catalog does not carry it.
+    read: (rowId) =>
+      findRow(
+        async () => (await api.getAdminCatalog({ live: true })).categories,
+        rowId,
+        CATEGORY_FIELDS,
+      ),
+    apply: async (rowId, diff) => {
+      await api.updateGlobalCategory(rowId, asRequest<UpdateCategoryRequest>(diff));
+    },
+  },
+  "settings.put": {
+    op: "settings.put",
+    shape: "putPartial",
+    // There is one settings row per user, so the rowId is ignored rather than
+    // read: the endpoint is the row.
+    read: async () => project(await api.getUserSettings({ live: true }), SETTINGS_FIELDS),
+    apply: async (_rowId, diff) => {
+      await api.updateUserSettings(asRequest<UpdateUserSettingsRequest>(diff));
+    },
+  },
+
+  "payee.put": {
+    op: "payee.put",
+    shape: "putWhole",
+    read: (rowId) => findRow(() => api.getPayees({ live: true }), rowId, PAYEE_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updatePayee(rowId, asRequest<UpdatePayeeRequest>(diff));
+    },
+  },
+  "rule.put": {
+    op: "rule.put",
+    shape: "putWhole",
+    read: (rowId) => findRow(() => api.getRules({ live: true }), rowId, RULE_FIELDS),
+    apply: async (rowId, diff) => {
+      await api.updateRule(rowId, asRequest<UpdateRuleRequest>(diff));
+    },
+  },
+  "recurring.put": {
+    op: "recurring.put",
+    shape: "putWhole",
+    read: (rowId) =>
+      findRow(
+        async () => (await api.getRecurringSeries({ live: true })).data,
+        rowId,
+        SERIES_FIELDS,
+      ),
+    apply: async (rowId, diff) => {
+      await api.updateRecurringSeries(rowId, asRequest<UpdateRecurringSeriesRequest>(diff));
+    },
+  },
+  "recurringTerm.put": {
+    op: "recurringTerm.put",
+    shape: "putWhole",
+    read: readTerm,
+    apply: async (rowId, diff, theirs) => {
+      // The term endpoint takes a series and a term, and a term carries only its
+      // own id, so the series comes off the row the diff was merged onto. There is
+      // no other source for it, and a term the server no longer has has no series
+      // to address — which the flush records as gone rather than writing into a
+      // series it had to guess.
+      const seriesId = theirs?.seriesId;
+      if (typeof seriesId !== "string") {
+        throw new Error(
+          `recurringTerm.put cannot address the term ${rowId}: its row is gone, so nothing names the series it belongs to`,
+        );
+      }
+      await api.updateRecurringTerm(
+        seriesId,
+        rowId,
+        asRequest<UpdateRecurringSeriesTermRequest>(diff),
+      );
+    },
+  },
+  "loanSchedule.put": {
+    op: "loanSchedule.put",
+    shape: "putWhole",
+    // The row this op addresses is the account: the loan schedule is keyed by
+    // the account it belongs to and has no id of its own to name.
+    read: async (rowId) => {
+      const { schedule } = await api.getLoanSchedule(rowId, { live: true });
+      // A loan with no schedule is not a gone row. saveLoanSchedule upserts the
+      // terms, so there is nothing that could have been deleted, and answering
+      // null would hold the write for the user over a row the endpoint is about
+      // to create — an empty row is what it will find.
+      return schedule ? project(schedule, LOAN_TERMS_FIELDS) : {};
+    },
+    apply: async (rowId, diff) => {
+      await api.saveLoanSchedule(rowId, asRequest<LoanScheduleRequest>(diff));
+    },
+  },
+
+  "transaction.categorize": multiRow(
+    "transaction.categorize",
+    "categoryId",
+    (rows, value) =>
+      // "uncategorized" is the endpoint's own clear sentinel, so the value goes
+      // out as it stands: it is a value of the row's field, not a request field.
+      api.bulkCategorize({ transactionIds: rows, categoryId: asId(value) }),
+  ),
+  "transaction.payee": multiRow("transaction.payee", "payeeId", (rows, value) =>
+    api.bulkUpdatePayee({ transactionIds: rows, payeeId: asId(value) }),
+  ),
+  "transaction.billingCycle": multiRow(
+    "transaction.billingCycle",
+    "billingCycleId",
+    (rows, value) =>
+      api.bulkUpdateBillingCycle({ transactionIds: rows, billingCycleId: asId(value) }),
+  ),
+  "transaction.tags": multiRow("transaction.tags", "tags", (rows, value) => {
+    const add: string[] = [];
+    const remove: string[] = [];
+    for (const tag of asTagList(value)) {
+      if (tag.startsWith(REMOVE_TAG)) remove.push(tag.slice(REMOVE_TAG.length));
+      else add.push(tag);
+    }
+    return api.bulkUpdateTags({ transactionIds: rows, add, remove });
+  }),
+  "transaction.loan": multiRow("transaction.loan", "loanAccountId", (rows, value) =>
+    // A null value detaches, which is what BulkLoanRequest's omitted id means.
+    api.bulkLoan({ transactionIds: rows, loanAccountId: asId(value) || null }),
+  ),
+  "transaction.recurring": multiRow(
+    "transaction.recurring",
+    "recurringSeriesId",
+    (rows, value) => {
+      const seriesId = asId(value);
+      return seriesId
+        ? api.attachRecurring({ seriesId, transactionIds: rows })
+        : api.detachRecurring({ transactionIds: rows });
+    },
+  ),
+  "transaction.loanDisbursement": multiRow(
+    "transaction.loanDisbursement",
+    "loanAccountId",
+    // The write is one credit, so the entry names one row and the loan account
+    // rides as the value: a disbursement is not a column on the transaction, so
+    // there is no field of the row to carry it and no other channel to send it
+    // through. The read is still the transaction's, and it is what says whether
+    // the credit is still there to be linked.
+    (rows, value) => api.linkLoanDisbursement(asId(value), { transactionId: rows[0] }),
+  ),
+};
+
+// readTheirs is the reader the flush merges against. It is this function rather
+// than OPS[op].read at the call site, so "the server's row, never the offline
+// cache" has exactly one implementation to get wrong.
+export function readTheirs(op: WriteOp, rowId: string): Promise<FieldPatch | null> {
+  return OPS[op].read(rowId);
+}
+
+// applyOp is the one seam a resolved diff is sent through, and the declared shape
+// is what it acts on: a putWhole op is sent the diff overlaid onto theirs, since
+// its endpoint writes every column. That overlay is not built yet, and the flush
+// refuses the whole-row family before anything reaches here (see outbox.ts's
+// isPutWhole), so no bare diff can reach an endpoint that would clear a column.
+export function applyOp(
+  op: WriteOp,
+  rowId: string,
+  diff: FieldPatch,
+  theirs: FieldPatch | null,
+): Promise<void> {
+  return OPS[op].apply(rowId, diff, theirs);
+}
