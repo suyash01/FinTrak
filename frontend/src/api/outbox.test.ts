@@ -657,7 +657,9 @@ describe("outbox", () => {
     // r2's base still matches the server's row, so it is the user's write alone;
     // r1 has moved on and is held for the user to decide.
     expect(sent).toEqual([["r2"]]);
-    expect(outcome).toMatchObject({ sent: 1, conflicted: 1, gone: 0 });
+    expect(outcome).toEqual({
+      sent: 1, remaining: 1, failed: 0, unsaved: 0, conflicted: 1, gone: 0, recreated: 0,
+    });
     const left = getOutboxSnapshot(USER);
     expect(left).toHaveLength(1);
     expect(left[0].conflict?.units[0]).toMatchObject({
@@ -677,7 +679,9 @@ describe("outbox", () => {
     }, { theirs: async (_op, rowId) => (rowId === "r2" ? null : { categoryId: "c0" }) });
 
     expect(sent).toEqual([["r1"]]);
-    expect(outcome).toMatchObject({ sent: 1, gone: 1, conflicted: 0 });
+    expect(outcome).toEqual({
+      sent: 1, remaining: 0, failed: 0, unsaved: 0, conflicted: 0, gone: 1, recreated: 0,
+    });
     expect(getOutboxSnapshot(USER)).toHaveLength(0);
   });
 
@@ -697,7 +701,9 @@ describe("outbox", () => {
     } });
 
     expect(attempted).toEqual([]);
-    expect(outcome).toMatchObject({ sent: 0, remaining: 2, unsaved: 0 });
+    expect(outcome).toEqual({
+      sent: 0, remaining: 2, failed: 0, unsaved: 0, conflicted: 0, gone: 0, recreated: 0,
+    });
   });
 
   // Treating a broken reader as "offline" would report a flush that drained
@@ -734,5 +740,137 @@ describe("outbox", () => {
     setItem.mockRestore();
 
     expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  // A resolution names only the fields that conflicted, so it is an override of
+  // the queued patch and never a replacement for it: the fields that merged clean
+  // were always going to be sent, and a decided entry that dropped them would
+  // remove the user's change to a field they were never asked about and then
+  // report the entry as synced.
+  it("keeps the fields that merged clean when only one of them conflicted", async () => {
+    const entry = enqueueEdit(
+      USER,
+      "transaction.patch",
+      "r1",
+      { notes: "a", categoryId: "c0" },
+      { notes: "mine", categoryId: "c2" },
+      { notes: "a", categoryId: "c0" },
+    );
+    // The server moved the notes and nothing else, so the only unit a dialog can
+    // produce is the notes.
+    await flushOutbox(USER, async () => {}, {
+      theirs: async () => ({ notes: "theirs", categoryId: "c0" }),
+    });
+    expect(getOutboxSnapshot(USER)[0].conflict?.units).toHaveLength(1);
+    resolveConflict(USER, entry.key, { notes: "mine" });
+
+    const sent: FieldPatch[] = [];
+    const outcome = await flushOutbox(USER, async (e) => {
+      if (e.kind === "edit") sent.push(e.patch);
+    }, { theirs: async () => ({ notes: "theirs", categoryId: "c0" }) });
+
+    expect(sent).toEqual([{ notes: "mine", categoryId: "c2" }]);
+    expect(outcome).toEqual({
+      sent: 1, remaining: 0, failed: 0, unsaved: 0, conflicted: 0, gone: 0, recreated: 0,
+    });
+  });
+
+  // "theirs" is written by not naming the field: a patch that carried the queued
+  // value for a field the user chose to leave alone would re-assert the very value
+  // they just declined to write.
+  it("drops a field the user decided to leave to the server", async () => {
+    const entry = enqueueEdit(
+      USER,
+      "transaction.patch",
+      "r1",
+      { notes: "a", categoryId: "c0" },
+      { notes: "mine", categoryId: "c2" },
+      { notes: "a", categoryId: "c0" },
+    );
+    await flushOutbox(USER, async () => {}, {
+      theirs: async () => ({ notes: "theirs", categoryId: "c0" }),
+    });
+    resolveConflict(USER, entry.key, { notes: "theirs" });
+
+    const sent: FieldPatch[] = [];
+    await flushOutbox(USER, async (e) => {
+      if (e.kind === "edit") sent.push(e.patch);
+    }, { theirs: async () => ({ notes: "theirs", categoryId: "c0" }) });
+
+    expect(sent).toEqual([{ categoryId: "c2" }]);
+  });
+
+  // The reader is written over api.get*, which throws ApiError for a 500. A row
+  // the server will not serve is not a row to skip past, and it is not a
+  // rejection of the entry either — it stops the flush with the queue in order,
+  // exactly as a 500 from a send would, and records nothing on the entry.
+  it("stops the flush, in order, when reading the row fails with a server error", async () => {
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    enqueueEdit(USER, "transaction.patch", "r2", { notes: "a" }, { notes: "mine" }, { notes: "a" });
+    const attempted: string[] = [];
+
+    const outcome = await flushOutbox(USER, async (entry) => {
+      if (entry.kind === "edit") attempted.push(entry.rowId);
+    }, { theirs: async () => {
+      throw new ApiError("server error", 500);
+    } });
+
+    expect(attempted).toEqual([]);
+    expect(outcome).toEqual({
+      sent: 0, remaining: 2, failed: 0, unsaved: 0, conflicted: 0, gone: 0, recreated: 0,
+    });
+    expect(getOutboxSnapshot(USER)[0].error).toBeUndefined();
+  });
+
+  // A dispatch wired wrong is a bug. A flush that stops quietly reports it as a
+  // queue that did not drain, which is what an offline moment looks like: the
+  // user is told nothing and the cause is nowhere.
+  it("lets a broken send fail loudly rather than read as an offline moment", async () => {
+    enqueueCreate(USER, request(), "key-1");
+
+    await expect(flushOutbox(USER, async () => {
+      throw new TypeError("dispatch is broken");
+    })).rejects.toThrow(/dispatch is broken/);
+  });
+
+  // A field-level patch is the wrong payload for an endpoint that writes every
+  // column: sending one sets the columns it names and leaves the rest exactly as
+  // the server last had them, which is a wipe of the fields the form opened with
+  // and the user was never shown. The right payload is the merged row, and the
+  // overlay that builds it belongs to the op registry — so until that exists this
+  // is loud rather than one enum away from a data wipe.
+  it("refuses to send a .put op, whose endpoint writes every column", async () => {
+    enqueueEdit(USER, "account.put", "acct-1", { name: "old", color: "#fff" }, { name: "new" }, { name: "old", color: "#fff" });
+
+    await expect(flushOutbox(USER, async () => {}, {
+      theirs: async () => ({ name: "new", color: "#000" }),
+    })).rejects.toThrow(/account\.put/);
+
+    // Refusing is not discarding: the entry is still the user's.
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
+  });
+
+  // The heart of it: one request, three states. The clean row goes out, the
+  // conflicted one is held, the gone one is counted, and the entry stays queued
+  // because the user asked for all three and the held row is theirs to answer
+  // for. A reader wired for the easy cases would drop one of the three.
+  it("splits a bulk into clean, conflicted and gone rows in one flush", async () => {
+    enqueueBulk(USER, "transaction.categorize", "categoryId", "c2", ["r1", "r2", "r3"], { r1: "c0", r2: "c0", r3: "c0" });
+    const sent: string[][] = [];
+
+    const outcome = await flushOutbox(USER, async (entry) => {
+      if (entry.kind === "bulk") sent.push(entry.rows);
+    }, { theirs: async (_op, rowId) => {
+      if (rowId === "r3") return null;
+      return { categoryId: rowId === "r2" ? "c9" : "c0" };
+    } });
+
+    expect(sent).toEqual([["r1"]]);
+    expect(outcome).toEqual({
+      sent: 1, remaining: 1, failed: 0, unsaved: 0, conflicted: 1, gone: 1, recreated: 0,
+    });
+    const left = getOutboxSnapshot(USER);
+    expect(left).toHaveLength(1);
+    expect(left[0].conflict?.units[0]).toMatchObject({ rowId: "r2", field: "categoryId" });
   });
 });

@@ -638,8 +638,30 @@ interface WritePlan {
   gone: number;
 }
 
+// isPutWhole is the op family whose endpoint writes every column, so a
+// field-level patch is the wrong payload for it: the columns the patch does not
+// name are written as well, from whatever the server last held, and the rest of
+// the form's row is lost with them. The suffix is the naming the union already
+// gives these ops, and it is a safer test than a list of them would be — an op
+// nobody remembered to add to a list is sent the wrong payload silently.
+function isPutWhole(op: WriteOp): boolean {
+  return op.endsWith(".put");
+}
+
 // planEdit decides one queued edit against the server's current row.
 async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePlan> {
+  if (isPutWhole(entry.op)) {
+    // Loud, and on purpose. The payload this family needs is the merged row
+    // rather than the patch, and building it is the op registry's job: a flush
+    // wired with a reader and no overlay would PUT a bare diff and wipe every
+    // column the form opened with, which no test in this file would catch and no
+    // user would see. The throw is the reminder, and it goes when the overlay
+    // lands.
+    throw new Error(
+      `flushOutbox cannot send a ${entry.op} entry: a .put op writes every column, so it needs the merged row as its payload, and the op registry has not supplied that overlay yet`,
+    );
+  }
+
   const server = await theirs(entry.op, entry.rowId);
   // null is the row, not a field: the server does not have it, so there is
   // nothing to merge against and nothing to write to.
@@ -649,13 +671,22 @@ async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePl
   // server has since moved past, and re-reading it would hold them a second time
   // over a change they never saw — the decision stands and goes out as it stands.
   if (entry.resolution) {
-    const decided: FieldPatch = {};
+    // The answers are an override of the queued patch, never a replacement for it.
+    // A resolution can only name the fields that conflicted, and the fields that
+    // merged clean were always going to be sent — a decided patch built from the
+    // answers alone would drop the rest of the user's edit and the entry would
+    // then be removed and reported as synced, taking their change to a field
+    // they were never asked about with it.
+    const decided: FieldPatch = { ...entry.patch };
     for (const [field, side] of Object.entries(entry.resolution)) {
-      const value = side === "mine" ? entry.patch[field] : server[field];
-      // Omitted rather than set, as everywhere else: absent is not null (see
-      // merge.ts), and a field the answer does not name is a field it says
-      // nothing about.
-      if (value !== undefined) decided[field] = value;
+      // "mine" is what the patch already carries. "theirs" is written by not
+      // naming the field, which is what a field-level patch means by leaving a
+      // value alone (see merge.ts: absent is not null): carrying the queued value
+      // for a field the user chose to leave would re-assert the very value they
+      // declined to write. A `.put` op would have to name it with the server's
+      // value instead — which is why that family refuses to run until the
+      // registry supplies the overlay (see isPutWhole).
+      if (side === "theirs") delete decided[field];
     }
     return { send: { ...entry, patch: decided }, conflict: null, gone: 0 };
   }
@@ -673,9 +704,9 @@ async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePl
   // sets, so its patch echoes every field of the row, and sending it would revert
   // a concurrent change to a field the user never touched — the exact bug this
   // merge exists to prevent. On a clean merge the engine's job is to confirm that
-  // nothing conflicts, not to rewrite the payload. (The one op family for which
-  // the merge's whole-row output is the right payload writes every column anyway;
-  // that overlay belongs to the op registry that knows the family, not here.)
+  // nothing conflicts, not to rewrite the payload. The one family for which the
+  // merge's whole-row output *is* the right payload is refused above, until the
+  // op registry builds that overlay.
   return { send: entry, conflict: null, gone: 0 };
 }
 
@@ -778,12 +809,16 @@ export async function flushOutbox(
         ? await planWrite(entry, options.theirs)
         : { send: entry, conflict: null, gone: 0 };
     } catch (err) {
-      // Reading the server's row is part of the flush, not a lookup beside it: a
-      // connection that dies mid-flush leaves the queue exactly where a failed
-      // send would, in order, for the next reconnect. Anything that is not a
-      // transport failure is a broken reader rather than an offline moment, and
-      // is left loud.
-      if (err instanceof NetworkError) break;
+      // Reading the server's row is part of the flush, not a lookup beside it, so
+      // a read that fails stops the flush exactly as a failed send would: nothing
+      // was applied, so the queue keeps its order and retries on reconnect. Both
+      // ways a server says no land there — a transport failure and a session or
+      // server error alike, because a row the server will not serve right now is
+      // not a row to skip past and answer later, and the reader is written over
+      // api.get*, which throws ApiError for a 500. Neither is a rejection of the
+      // entry, so nothing is recorded on it. Anything that is neither is a broken
+      // reader rather than an offline moment, and is left loud.
+      if (err instanceof NetworkError || err instanceof ApiError) break;
       throw err;
     }
 
@@ -793,15 +828,24 @@ export async function flushOutbox(
         await send(plan.send);
         accepted = true;
       } catch (err) {
-        if (!isRejection(err)) break;
-        // An unrecorded rejection would be retried by the next flush (only a
-        // marked entry is skipped) instead of ever reaching the user, so a queue
-        // that cannot be rewritten stops the flush here.
-        if (!markRejected(userId, entry.key, err.message)) {
-          unsaved += 1;
-          break;
+        if (isRejection(err)) {
+          // An unrecorded rejection would be retried by the next flush (only a
+          // marked entry is skipped) instead of ever reaching the user, so a queue
+          // that cannot be rewritten stops the flush here.
+          if (!markRejected(userId, entry.key, err.message)) {
+            unsaved += 1;
+            break;
+          }
+          continue;
         }
-        continue;
+        // A transport failure and a session or server error both stop the flush
+        // with the queue in order: neither is a definite answer about this entry,
+        // so nothing is recorded on it. An error that is neither an ApiError nor
+        // a NetworkError is a broken dispatch, and must not be reported as an
+        // offline moment — a silent stop is indistinguishable from a connection
+        // that never came back, and the user is told only that the queue waits.
+        if (err instanceof ApiError || err instanceof NetworkError) break;
+        throw err;
       }
       if (!accepted) continue;
       // Counted where the server accepted the entry: deriving this from the queue
