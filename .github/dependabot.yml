@@ -33,7 +33,7 @@ updates:
       interval: "daily"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/frontend"
     schedule:
       interval: "daily"
