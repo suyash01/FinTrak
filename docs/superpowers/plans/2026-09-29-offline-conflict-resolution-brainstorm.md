@@ -18,11 +18,15 @@ alters interfaces others rely on.
       semantics choice, which is text, not layout. No question was clearer shown.
 - [x] 3. Ask clarifying questions, one at a time (6 asked, all answered)
 - [x] 4. Approaches — 2 proposed (queue structure), 1 chosen
-- [ ] 5. Present design in sections, approval per section ← **here**
-- [ ] 6. Write spec to `docs/superpowers/specs/2026-09-29-offline-conflict-resolution-design.md`,
-      commit
-- [ ] 7. Spec self-review (placeholders, consistency, scope, ambiguity)
-- [ ] 8. User reviews the written spec
+- [x] 5. Present design in sections, approval per section — **all six approved**
+- [x] 6. Write spec to `docs/superpowers/specs/2026-09-29-offline-conflict-resolution-design.md`,
+      commit (`450f7d5`)
+- [x] 7. Spec self-review — fixed 2 factual errors of my own (the family count
+      9→10; the loan schedule described as a period-array replacement when
+      `loan.go:324` upserts loan *terms* and the periods are derived), plus 3
+      ambiguities (the byte budget had no number; the envelope was missing
+      `resolution?`; a dangling `compile.go:93` line reference)
+- [ ] 8. User reviews the written spec ← **here**
 - [ ] 9. Invoke writing-plans
 
 ## Decisions (agreed with the user)
