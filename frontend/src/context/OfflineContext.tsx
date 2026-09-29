@@ -459,10 +459,25 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
 
   // Send whatever is waiting as soon as there is a connection — on mount (a
   // queue left over from a previous session) and on every reconnect.
+  //
+  // `decided` is in the dependency list because giving an answer is itself a
+  // reason to send. Recording a resolution clears the hold and adds the answer
+  // to an entry that stays queued, so `pending.length` does not move and
+  // nothing else would ever flush it: on a connected device the user's
+  // decision would sit there until the next reconnect, a relaunch, or a manual
+  // "Sync now" — after a dialog they had just answered. It is a count rather
+  // than the entries themselves because the queue hands out a fresh array on
+  // every read, and an array as the dependency would re-fire the flush on any
+  // write to the queue, including the one the flush is making.
+  const decided = useMemo(
+    () => pending.filter((entry) => entry.resolution !== undefined).length,
+    [pending],
+  );
+
   useEffect(() => {
     if (!online || !userId || pending.length === 0) return;
     void sync();
-  }, [online, userId, pending.length, sync]);
+  }, [online, userId, pending.length, decided, sync]);
 
   const value = useMemo<OfflineContextValue>(
     () => ({

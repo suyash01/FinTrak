@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError, NetworkError } from "../api/errors";
 import {
@@ -7,6 +7,7 @@ import {
   enqueueCreate,
   enqueueEdit,
   getOutboxSnapshot,
+  recordConflict,
 } from "../api/outbox";
 import { projectTransaction } from "../api/projections";
 import { markSynced } from "../api/offlineStatus";
@@ -68,12 +69,18 @@ function queueEdit() {
 
 // jsdom never changes navigator.onLine on its own, so a test drives both the
 // flag and the event the browser would fire with it.
+//
+// In act() because the offline store is a subscriber to that event: without it
+// a case that flips connectivity while a provider is mounted re-renders it
+// outside React's knowledge and the suite reports the noise as a warning.
 function setOnline(online: boolean) {
-  Object.defineProperty(window.navigator, "onLine", {
-    configurable: true,
-    value: online,
+  act(() => {
+    Object.defineProperty(window.navigator, "onLine", {
+      configurable: true,
+      value: online,
+    });
+    window.dispatchEvent(new Event(online ? "online" : "offline"));
   });
-  window.dispatchEvent(new Event(online ? "online" : "offline"));
 }
 
 function Probe() {
@@ -492,12 +499,58 @@ describe("OfflineProvider", () => {
     expect(screen.getByTestId("conflicts")).toHaveTextContent("1");
   });
 
-  it("records a resolution and drops the entry from the held list", async () => {
+  it("sends a resolution the moment the user gives it, without waiting for a reconnect", async () => {
+    // The user has just answered a question in a dialog on a connected device,
+    // so the answer is not a note to be sent later. The entry behind it is
+    // queued and nothing else would flush it: the reconnect effect keys on the
+    // queue's length, and recording a resolution clears the hold and adds an
+    // answer without changing that.
     const user = userEvent.setup();
     queueEdit();
     apiMock.getTransactions.mockResolvedValue({
       data: [serverRow("Someone else's coffee")],
     });
+    apiMock.updateTransaction.mockResolvedValue({ id: "txn-1", queued: false });
+
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId("conflicts")).toHaveTextContent("1"),
+    );
+
+    await user.click(screen.getByText("resolve"));
+
+    // The decided value, and not a second merge: the user answered against the
+    // row they were shown, so re-reading the server's row would hold the same
+    // question again over a change they never saw.
+    await waitFor(() =>
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith(
+        "txn-1",
+        { description: "Tea" },
+        { queue: false },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("pending")).toHaveTextContent("0"),
+    );
+    expect(screen.getByTestId("conflicts")).toHaveTextContent("0");
+    // A decided write is a write, so the pages holding the ledger are stale
+    // until they reload — and the banner's counter is gone because there is
+    // nothing left to answer.
+    expect(screen.getByTestId("synced")).toHaveTextContent("yes");
+  });
+
+  it("keeps a resolution on the entry when the send cannot be made", async () => {
+    // The answer is recorded *before* anything goes out, so a send that never
+    // reached the server leaves the entry queued with the answer still on it.
+    // That is what makes the decision durable rather than one that only ever
+    // existed in a dialog: the next flush re-sends it as it stands, instead of
+    // merging the row again and holding the same question.
+    const user = userEvent.setup();
+    queueEdit();
+    apiMock.getTransactions.mockResolvedValue({
+      data: [serverRow("Someone else's coffee")],
+    });
+    apiMock.updateTransaction.mockRejectedValue(new NetworkError());
 
     renderProvider();
     await waitFor(() =>
@@ -507,14 +560,83 @@ describe("OfflineProvider", () => {
     await user.click(screen.getByText("resolve"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("conflicts")).toHaveTextContent("0"),
+      expect(apiMock.updateTransaction).toHaveBeenCalled(),
     );
-    // The answer is on the entry and the entry is still queued: the decision is
-    // not the send, so a flush that has not happened yet leaves it to be sent.
     const [entry] = getOutboxSnapshot("u1");
     expect(entry.conflict).toBeUndefined();
     expect(entry.resolution).toEqual({ description: "mine" });
     expect(screen.getByTestId("pending")).toHaveTextContent("1");
+  });
+
+  it("keeps a decision made with no connection, and leaves the send to the reconnect", async () => {
+    // The banner's Resolve button is enabled with no connection — recording the
+    // answer is a write to this device's own queue, and the two competing
+    // values the user is choosing between are already in it — so this is the
+    // path a user is really on. The decision has to survive it, and nothing may
+    // go out: the entry stays queued, which is what the reconnect sends.
+    //
+    // Held directly rather than through a flush, because a flush needs the very
+    // connection this case takes away. The queue is where the hold lives, so
+    // writing one there is the same state a completed merge leaves behind.
+    const user = userEvent.setup();
+    apiMock.getTransactions.mockResolvedValue({
+      data: [serverRow("Someone else's coffee")],
+    });
+    apiMock.updateTransaction.mockResolvedValue({ id: "txn-1", queued: false });
+    setOnline(false);
+
+    // Mounted with an empty queue and filled afterwards. The store applies the
+    // connectivity flag when a subscriber arrives rather than before the first
+    // render, so a queue already waiting at mount is flushed against the flag
+    // this test has not applied yet, and a mount-time flush is not what the case
+    // is about. A device that was offline when the user answered had its
+    // conflict held by a flush that still had a connection, and nothing else
+    // happens to the entry until they answer.
+    renderProvider();
+
+    // In act() for the reason setOnline is: this is a write the mounted
+    // provider subscribes to.
+    act(() => {
+      const edit = queueEdit();
+      recordConflict("u1", edit.key, {
+        units: [
+          {
+            rowId: "txn-1",
+            field: "description",
+            base: "Coffee",
+            mine: "Tea",
+            theirs: "Someone else's coffee",
+          },
+        ],
+      });
+    });
+
+    await user.click(screen.getByText("resolve"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("conflicts")).toHaveTextContent("0"),
+    );
+    expect(getOutboxSnapshot("u1")[0].resolution).toEqual({
+      description: "mine",
+    });
+    expect(apiMock.updateTransaction).not.toHaveBeenCalled();
+    expect(screen.getByTestId("pending")).toHaveTextContent("1");
+
+    // And the reconnect is what sends it, which is the other half of the case:
+    // an answer given with no connection is not an answer that waits for the
+    // next launch, it is one that goes out as soon as there is a server to
+    // send it to.
+    setOnline(true);
+    await waitFor(() =>
+      expect(apiMock.updateTransaction).toHaveBeenCalledWith(
+        "txn-1",
+        { description: "Tea" },
+        { queue: false },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("pending")).toHaveTextContent("0"),
+    );
   });
 
   it("says so when a resolution cannot be stored", async () => {

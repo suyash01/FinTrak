@@ -13,19 +13,47 @@ import {
 import { Button } from "@/components/ui/button";
 import { useOffline } from "@/context/OfflineContext";
 
+export interface OfflineBannerProps {
+  // onOpenConflicts opens the dialog the app mounts for the held entries. It is
+  // a prop rather than state this component owns because the repo's rule for an
+  // overlay is that the parent holds its open state — and it is required rather
+  // than optional precisely so that a caller who forgets it is a compile error
+  // instead of a button that reaches nothing, which is how this surface stood
+  // while the banner was rendered with no props at all.
+  onOpenConflicts: () => void;
+}
+
 // OfflineBanner is where the offline layer speaks to the user: that the app is
-// showing saved data rather than live data, how many manual entries are still
-// waiting to be sent, and what to do about the ones the server rejected. It
+// showing saved data rather than live data, and what is in the queue — waiting
+// to be sent, refused by the server, or waiting on the user to decide. It
 // renders nothing while the app is online with an empty outbox.
-export default function OfflineBanner() {
-  const { online, servedFromCache, pending, syncing, sync, discardFailed } =
-    useOffline();
+export default function OfflineBanner({ onOpenConflicts }: OfflineBannerProps) {
+  const {
+    online,
+    servedFromCache,
+    pending,
+    conflicts,
+    syncing,
+    sync,
+    discardFailed,
+  } = useOffline();
 
   const failed = pending.filter((entry) => entry.error !== undefined).length;
-  const waiting = pending.length - failed;
+  const held = conflicts.length;
+  // The three partition the queue rather than each reading all of it. A held
+  // entry is still queued — that is what lets a conflict outlive a reload — but
+  // nothing will send it until the user answers: a flush that tried re-reads the
+  // server's row, finds the same conflict, and holds the same question again.
+  // Counting it as waiting would offer a "Sync now" that cannot do what it says.
+  // Recording a hold clears the entry's rejection (outbox's `hold`), so no entry
+  // is in two of these buckets.
+  const waiting = pending.length - failed - held;
   const showingSaved = !online || servedFromCache;
 
-  if (!showingSaved && pending.length === 0) return null;
+  // The sum rather than `pending.length`, so the guard asks the question the
+  // banner actually answers — is there anything here to say — instead of relying
+  // on a held entry also being queued.
+  if (!showingSaved && waiting + failed + held === 0) return null;
 
   return (
     <div
@@ -61,6 +89,15 @@ export default function OfflineBanner() {
         </span>
       )}
 
+      {held > 0 && (
+        <span className="inline-flex items-center gap-1.5 text-destructive">
+          <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+          {held} need{held === 1 ? "s" : ""} your attention
+        </span>
+      )}
+
+      {/* The actions follow the counters they answer, so the row reads left to
+          right. */}
       <span className="ml-auto inline-flex items-center gap-2">
         {waiting > 0 && (
           <Button
@@ -92,7 +129,7 @@ export default function OfflineBanner() {
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>
-                    Discard {failed} unsent transaction{failed === 1 ? "" : "s"}?
+                    Discard {failed} unsent write{failed === 1 ? "" : "s"}?
                   </AlertDialogTitle>
                   <AlertDialogDescription>
                     The server rejected {failed === 1 ? "it" : "them"} and
@@ -109,6 +146,17 @@ export default function OfflineBanner() {
               </AlertDialogContent>
             </AlertDialog>
           </>
+        )}
+
+        {held > 0 && (
+          // Not disabled offline, unlike the two beside it: recording the
+          // answer is a write to this device's own queue, and the values the
+          // user is choosing between are already in it. A decision they can
+          // only make once they are back online is a decision the offline
+          // layer is not actually offering them.
+          <Button variant="outline" size="xs" onClick={onOpenConflicts}>
+            Resolve
+          </Button>
         )}
       </span>
     </div>

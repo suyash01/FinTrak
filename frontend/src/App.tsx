@@ -133,7 +133,7 @@ function Root() {
         <div className="flex h-screen w-screen overflow-hidden">
           <Sidebar onOpenCommandPalette={() => setCommandOpen(true)} />
           <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-            <OfflineBanner />
+            <OfflineBanner onOpenConflicts={() => setConflictOpen(true)} />
             <ErrorBoundary
               key={location.pathname}
               fallback={<PageErrorFallback onRetry={() => window.location.reload()} />}
