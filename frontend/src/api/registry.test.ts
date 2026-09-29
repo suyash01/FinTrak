@@ -19,7 +19,10 @@ import type { WriteOp } from "./outbox";
 import { OPS, applyOp, readTheirs, type ApplyShape } from "./registry";
 
 // The registry reaches the server only through client.ts, so mocking that module
-// is also the statement of which calls a queued write is allowed to make.
+// is also the statement of which calls a queued write is allowed to make. The
+// module's `newClientKey` is not mocked on purpose: nothing here may mint a key,
+// so a call to it would be a TypeError rather than a silently wrong value.
+vi.mock("./client", () => ({ default: apiMocks }));
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     getTransactions: vi.fn(),
@@ -58,7 +61,7 @@ const { apiMocks } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("./client", () => ({ default: apiMocks, newClientKey: () => "ck-1" }));
+vi.mock("./client", () => ({ default: apiMocks }));
 
 const TRANSACTION: Transaction = {
   id: "t1",
@@ -203,10 +206,11 @@ async function reCreate(
   op: WriteOp,
   snapshot: FieldPatch,
   diff: FieldPatch,
+  key: string,
 ): Promise<string> {
   const spec = OPS[op];
   if (!spec.reCreate) throw new Error(`${op} declares no reCreate`);
-  return spec.reCreate(snapshot, diff);
+  return spec.reCreate(snapshot, diff, key);
 }
 
 // Every op whose entry names its rows, and the field of the transaction each one
@@ -525,11 +529,12 @@ describe("sending a diff", () => {
       "transaction.patch",
       { accountId: "a1", date: "2026-01-15", description: "Coffee", amount: 250.5, type: "debit" },
       { notes: "milk" },
+      "e-entry-1",
     );
     expect(id).toBe("t9");
-    // A client key the server recognises on a replay, and queue: false — the
-    // flush is sending this entry, so a request that never reached the server
-    // must not put a second copy of it in the queue.
+    // The entry's own key, and queue: false — the flush is sending this entry, so
+    // a request that never reached the server must not put a second copy of it in
+    // the queue.
     expect(apiMocks.createTransaction).toHaveBeenCalledWith(
       {
         accountId: "a1",
@@ -539,14 +544,37 @@ describe("sending a diff", () => {
         type: "debit",
         notes: "milk",
       },
-      { idempotencyKey: "ck-1", queue: false },
+      { idempotencyKey: "e-entry-1", queue: false },
     );
+  });
+
+  // The guarantee a re-create exists to keep: a response that was lost (a timeout,
+  // a killed tab) must not cost the user a second money row. It can only hold if
+  // the key comes from the entry, because the entry is the thing a retry repeats.
+  it("sends the same key on every attempt at the same entry", async () => {
+    apiMocks.createTransaction.mockResolvedValue({ id: "t9", queued: false });
+    const snapshot = { accountId: "a1", date: "2026-01-15", description: "Coffee", amount: 250.5, type: "debit" };
+    const diff = { notes: "milk" };
+
+    await reCreate("transaction.patch", snapshot, diff, "e-entry-1");
+    await reCreate("transaction.patch", snapshot, diff, "e-entry-1");
+    // A different entry carries a different key, so the key is the entry's own
+    // rather than a constant the registry invented.
+    await reCreate("transaction.patch", snapshot, diff, "e-entry-2");
+
+    // Asserted on the key, not on how many times the endpoint was called: a fresh
+    // mint per attempt would be three calls and three keys, and only the key says
+    // which of the two it did.
+    const keys = apiMocks.createTransaction.mock.calls.map(
+      (call) => (call[1] as { idempotencyKey: string }).idempotencyKey,
+    );
+    expect(keys).toEqual(["e-entry-1", "e-entry-1", "e-entry-2"]);
   });
 
   it("refuses to re-create a transaction the server accepted without an id", async () => {
     apiMocks.createTransaction.mockResolvedValue({ id: null, queued: false });
     await expect(
-      reCreate("transaction.patch", { accountId: "a1" }, { notes: "x" }),
+      reCreate("transaction.patch", { accountId: "a1" }, { notes: "x" }, "e-entry-1"),
     ).rejects.toThrow(/no id/i);
   });
 });

@@ -166,13 +166,7 @@ function writeOffline(
 // newClientKey identifies one create attempt. It survives the 401 refresh
 // replay and every outbox retry, which is what lets the server recognise a
 // repeat instead of inserting a second row.
-//
-// Exported because the op registry re-creates a row the server no longer has, and
-// the key is the whole of what makes that safe: the registry asks for a key here
-// rather than minting its own, so a second copy of this fallback (a LAN address
-// without TLS is not a secure context) is never a queue that cannot recognise
-// its own replay.
-export function newClientKey(): string {
+function newClientKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }

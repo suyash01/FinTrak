@@ -27,7 +27,7 @@
 // own last belief of the row can only agree with itself, and would overwrite
 // whatever changed since (see outbox.ts's TheirsReader).
 
-import api, { newClientKey } from "./client";
+import api from "./client";
 import type { FieldPatch, FieldValue } from "./merge";
 import type { WriteOp } from "./outbox";
 import type {
@@ -65,8 +65,12 @@ export interface OpSpec {
    * series) — and, for a `putWhole` op, the row the diff is overlaid onto.
    */
   apply(rowId: string, diff: FieldPatch, theirs: FieldPatch | null): Promise<void>;
-  /** Present only for transaction rows, which can be re-created. */
-  reCreate?(snapshot: FieldPatch, diff: FieldPatch): Promise<string>;
+  /**
+   * Present only for transaction rows, which can be re-created. `key` is the
+   * queue entry's own key, and it is what makes a retry safe: see the note on
+   * transaction.patch's reCreate.
+   */
+  reCreate?(snapshot: FieldPatch, diff: FieldPatch, key: string): Promise<string>;
   /** Present on ops that write one field across named rows. */
   applyMany?(rows: string[], value: FieldValue): Promise<void>;
 }
@@ -302,16 +306,27 @@ export const OPS: Record<WriteOp, OpSpec> = {
         queue: false,
       });
     },
-    reCreate: async (snapshot, diff) => {
+    reCreate: async (snapshot, diff, key) => {
       // The create body is the row's own projection with the decided diff on top:
       // every field POST /transactions requires (accountId, date, description,
       // amount, type) is in the transaction projection and none of them is
-      // nullable, so a re-created row is the row the user edited. The client key
-      // is the same idempotency key every create carries, so a replay the server
-      // already answered is recognised instead of inserted a second time.
+      // nullable, so a re-created row is the row the user edited.
+      //
+      // The idempotency key is the queue entry's own, not one minted here, and
+      // that is the whole of the guarantee: a re-create whose response was lost
+      // (a timeout, a killed tab) is attempted again with the same key, so the
+      // server returns the row it already created instead of inserting a second
+      // one. A key minted per call would be a different key every time, which is
+      // a silent duplicate money row on the one path whose entire purpose is to
+      // put a row back. Two entries cannot collide — the key is generated per
+      // entry, and the server matches it per user.
+      //
+      // The entry key carries an "e-" prefix (outbox.ts's newEntryKey), which is
+      // not cosmetic to strip: the server accepts any string up to
+      // maxClientKeyLen (64, transaction.go:35) and `e-` plus a UUID is 38.
       const created = await api.createTransaction(
         asRequest<CreateTransactionRequest>({ ...snapshot, ...diff }),
-        { idempotencyKey: newClientKey(), queue: false },
+        { idempotencyKey: key, queue: false },
       );
       if (!created.id) {
         throw new Error("The server accepted the re-created transaction but returned no id");
