@@ -136,6 +136,100 @@ func TestNewCurrencyAmountsIsNonNil(t *testing.T) {
 	}
 }
 
+// TestDashboardSummaryAsOfJSON pins the wire shape of the as-of response.
+//
+// Subtest 1 (absent) is the backward-compatibility guarantee and passes under
+// either shape - encoding/json omits an empty slice, so a bare []AccountBalance
+// would satisfy it too. Subtest 3 (an empty slice is still an answer) is the one
+// that catches the bare-slice regression, because omitempty omits a non-nil
+// empty slice exactly as it omits a nil one, and only the pointer keeps "asked,
+// and there were no accounts" distinguishable from "not asked".
+func TestDashboardSummaryAsOfJSON(t *testing.T) {
+	t.Run("absent when the request did not ask", func(t *testing.T) {
+		body, err := json.Marshal(DashboardSummary{})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var generic map[string]any
+		if err := json.Unmarshal(body, &generic); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if _, ok := generic["asOf"]; ok {
+			t.Errorf("summary without an asOf request carries an asOf key: %s", body)
+		}
+		if _, ok := generic["balances"]; ok {
+			t.Errorf("summary without an asOf request carries a balances key: %s", body)
+		}
+	})
+
+	t.Run("present and per-currency when it did", func(t *testing.T) {
+		asOf := "2026-03-01"
+		balances := []AccountBalance{{
+			ID:       uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+			Name:     "Savings",
+			Currency: "INR",
+			Balance:  CurrencyAmounts{"INR": 123400},
+		}}
+		body, err := json.Marshal(DashboardSummary{AsOf: &asOf, Balances: &balances})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var generic struct {
+			AsOf     *string `json:"asOf"`
+			Balances []struct {
+				ID       string         `json:"id"`
+				Name     string         `json:"name"`
+				Currency string         `json:"currency"`
+				Balance  map[string]any `json:"balance"`
+			} `json:"balances"`
+		}
+		if err := json.Unmarshal(body, &generic); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if generic.AsOf == nil || *generic.AsOf != asOf {
+			t.Fatalf("asOf = %v, want %q (body: %s)", generic.AsOf, asOf, body)
+		}
+		if len(generic.Balances) != 1 {
+			t.Fatalf("balances = %v, want one account (body: %s)", generic.Balances, body)
+		}
+		b := generic.Balances[0]
+		if b.Currency != "INR" {
+			t.Errorf("currency = %q, want INR", b.Currency)
+		}
+		// A bare number here would be the collapse CurrencyAmounts exists to
+		// refuse, so assert the object shape rather than a parsed value.
+		if got, ok := b.Balance["INR"]; !ok {
+			t.Errorf("balance has no INR key, want the per-currency map: %v", b.Balance)
+		} else if _, isNumber := got.(float64); !isNumber {
+			t.Errorf("balance[INR] = %T, want a number inside the map", got)
+		}
+	})
+
+	t.Run("an empty slice is still an answer", func(t *testing.T) {
+		asOf := "2026-03-01"
+		empty := []AccountBalance{}
+		body, err := json.Marshal(DashboardSummary{AsOf: &asOf, Balances: &empty})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var generic map[string]any
+		if err := json.Unmarshal(body, &generic); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		// "asked, and there were no accounts" is a real answer and "did not ask" is
+		// not the same one, so an asOf response must keep the key even when the
+		// list behind it is empty.
+		balances, ok := generic["balances"]
+		if !ok {
+			t.Fatalf("an asOf response with no balances lost the key: %s", body)
+		}
+		list, ok := balances.([]any)
+		if !ok || len(list) != 0 {
+			t.Errorf("balances = %v, want an empty array", balances)
+		}
+	})
+}
+
 func TestCurrencyAmountsCurrenciesIsSorted(t *testing.T) {
 	got := CurrencyAmounts{"USD": 1, "INR": 2, "EUR": 3}.Currencies()
 

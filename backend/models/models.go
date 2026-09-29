@@ -977,6 +977,36 @@ type DashboardSummary struct {
 	// is framed around statement periods for a single billing-day account.
 	CurrentCycle      *CurrentCycleInfo       `json:"currentCycle,omitempty"`
 	BillingCycleTrend []BillingCycleTrendItem `json:"billingCycleTrend,omitempty"`
+	// AsOf is the day the balances below were computed, as a "YYYY-MM-DD" stored
+	// day string, echoed so a client holding a cached response can tell what it is
+	// looking at. It is deliberately NOT a time.Time: that type would put a UTC
+	// midnight on the wire, which a client parsing it as a local day renders as
+	// the day before. Present only when the request asked for one: a caller that
+	// did not ask gets no field, so responses without asOf are unchanged.
+	//
+	// This asOf is a RESPONSE field - the echo of an ?asOf= request. It is not
+	// LoanPayoff.AsOf (the date a loan payoff is quoted for, a time.Time), which
+	// shares the JSON name by coincidence of vocabulary: a summary never carries
+	// a payoff quote, so the two never appear in one payload, and that is
+	// deliberate rather than an accident waiting to be collapsed.
+	AsOf *string `json:"asOf,omitempty"`
+	// Balances is each account's balance at AsOf, including accounts holding
+	// nothing at that date. Present only when the request asked for one.
+	//
+	// It is a POINTER, not a bare slice, and that is load-bearing for the reason
+	// omitempty is usually NOT enough: encoding/json DOES omit an empty slice, so
+	// a bare `[]AccountBalance` would omit a non-nil empty one just as surely as a
+	// nil one. Three states are meaningful here - not asked, asked with accounts,
+	// asked with none - and a bare slice can only say two. The pointer separates
+	// the first: nil is omitted, and a non-nil pointer to an empty slice is kept
+	// as `"balances": []`, which is the answer to "asked, and there were no
+	// accounts".
+	//
+	// So the slice behind the pointer must be ALLOCATED before its address is
+	// taken. A non-nil pointer to a nil slice is neither of the two states above:
+	// it serialises as `"balances": null`, which is neither "not asked" nor "no
+	// accounts" and reads as a server that lost the value.
+	Balances *[]AccountBalance `json:"balances,omitempty"`
 }
 
 // CurrentCycleInfo describes the billing cycle currently in progress for an
@@ -1818,6 +1848,25 @@ type ScopedAccount struct {
 	Currency string          `json:"currency"`
 	Income   CurrencyAmounts `json:"income"`
 	Expense  CurrencyAmounts `json:"expense"`
+}
+
+// AccountBalance is one account's balance as of a date. Balance is a
+// CurrencyAmounts and never a scalar: an account carries a currency, and an
+// as-of response can span several, so a map is the only honest representation.
+// A zero balance adds no key, so len() counts the accounts that actually held
+// money at that date.
+//
+// For a loan account this is the TOTAL PAID TO DATE - the sum over the
+// transactions attached to the loan, positive and growing with every payment,
+// and the same figure /accounts reports for that account. It is not a
+// bank-style net over the loan account's own (empty) ledger, and it is NOT what
+// the borrower still owes: LoanScheduleDetail.OutstandingPrincipal answers that
+// question over the loan's schedule, and the two are different numbers.
+type AccountBalance struct {
+	ID       uuid.UUID       `json:"id"`
+	Name     string          `json:"name"`
+	Currency string          `json:"currency"`
+	Balance  CurrencyAmounts `json:"balance"`
 }
 
 // CurrencyScope names every currency a response covers and the accounts behind

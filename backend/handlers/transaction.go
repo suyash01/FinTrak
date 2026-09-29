@@ -86,14 +86,14 @@ func isUUID(value string) bool {
 }
 
 // txnQueryFilter parses the shared transaction-list filter query parameters
-// (account, category/group, payee, tag, free-text, date range, type, amount,
-// linked, loan, recurring) into a txnFilter. The free-text search spans the
-// description, notes, payee name, and tags. It is used by both GetTransactions
-// and ExportTransactions so the list and the export can never disagree about
-// what a filter means. A malformed id (accountId, loanAccountId, payeeId,
-// recurringId), dateFrom/dateTo, or amount writes a 400 and returns ok=false:
-// every one of them is compared against a typed column, so letting it through
-// would answer 500 instead of rejecting the filter.
+// (account, category/group, payee, tag, free-text, date range, asOf, type,
+// amount, linked, loan, recurring) into a txnFilter. The free-text search spans
+// the description, notes, payee name, and tags. It is used by both
+// GetTransactions and ExportTransactions so the list and the export can never
+// disagree about what a filter means. A malformed id (accountId, loanAccountId,
+// payeeId, recurringId), dateFrom/dateTo/asOf, or amount writes a 400 and
+// returns ok=false: every one of them is compared against a typed column, so
+// letting it through would answer 500 instead of rejecting the filter.
 //
 // The id parameters (accountId, loanAccountId, categoryId, groupId, payeeId,
 // tags) each take a comma-separated list and match a transaction when it
@@ -122,7 +122,32 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, [
 		return nil, nil, nil, false
 	}
 
+	// asOf reports the ledger at the end of a named day, so it is an upper
+	// bound on the window and is resolved against the window just parsed — the
+	// values above, not a second read of the request, so the clamp parseAsOf
+	// applies and the bounds this filter binds cannot disagree.
+	//
+	// The resolved instant becomes dateTo rather than a clause of its own. It
+	// is the same predicate, the same inclusive comparison, and putting it in
+	// the bound the list already emits is what keeps a request carrying both
+	// dateTo and asOf from binding a second, redundant `t.date <=` argument:
+	// parseAsOf has already pulled the instant back to dateTo, so the two values
+	// would be identical and the second bound would be a wasted placeholder for
+	// a predicate that says nothing the first does not.
+	//
+	// The bound it installs is therefore the effective upper bound, and it is
+	// what lands in f.dateFrom/f.dateTo below — so a caller that reports on the
+	// window reads that and not the requested value.
+	asOf, ok := parseAsOf(c, dateFrom, dateTo)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	if asOf != "" {
+		dateTo = asOf
+	}
+
 	f := newTxnFilter(userID)
+	f.dateFrom, f.dateTo = dateFrom, dateTo
 
 	// Account dimension: any of the selected accounts, plus the EMI payments
 	// attached to any of the selected loan accounts (a loan account owns no
@@ -282,12 +307,15 @@ func txnQueryFilter(c *gin.Context, userID uuid.UUID) (*txnFilter, *uuid.UUID, [
 
 // GetTransactions returns a paginated, filterable list of the user's
 // transactions. Filters cover account, category, payee, tag, free-text
-// (description, notes, payee name, or tag), date range, type, exact amount, and
-// linked state; sorting and pagination are validated/clamped server-side. When
-// filtering a single account that has a billing day set (any account type) and
-// sorting by date, synthetic summary rows (per-cycle outstanding totals) are
-// merged into the response. Sorting is a total order (see txnOrderByDate), so
-// the same request always returns the same rows in the same sequence.
+// (description, notes, payee name, or tag), date range, asOf, type, exact
+// amount, and linked state; sorting and pagination are
+// validated/clamped server-side. `asOf` reports the ledger at the END of that
+// day, so it is clamped to the requested window's end when that comes first.
+// When filtering a single account that has a billing day set (any account type)
+// and sorting by date, synthetic summary rows (per-cycle outstanding totals)
+// are merged into the response, bounded by the same resolved window. Sorting is
+// a total order (see txnOrderByDate), so the same request always returns the
+// same rows in the same sequence.
 func (srv *Server) GetTransactions(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	sortBy := c.DefaultQuery("sortBy", "date")
@@ -424,7 +452,12 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 	// Summary rows only make sense in a date-ordered list, so other sort
 	// columns skip them entirely.
 	if accountUUID != nil && sortBy == "date" {
-		summaryTxns, balanceTxns := srv.buildAccountSummaryRows(c, userID, *accountUUID, c.Query("dateFrom"), c.Query("dateTo"))
+		// The filter's resolved window, not c.Query: the summary rows are
+		// derived figures about the same instant as the list, so an as-of list
+		// must not carry a "Running balance" row dated today. Reading the
+		// request here would hand the builders the requested dateTo and, with
+		// asOf alone, no end at all — which they both default to today.
+		summaryTxns, balanceTxns := srv.buildAccountSummaryRows(c, userID, *accountUUID, f.dateFrom, f.dateTo)
 		transactions = mergeSummaryRows(transactions, summaryTxns, sortBy, sortOrder)
 		transactions = mergeMonthEndRows(transactions, balanceTxns, sortOrder)
 	}
@@ -455,6 +488,15 @@ func (srv *Server) GetTransactions(c *gin.Context) {
 type txnFilter struct {
 	clauses []string
 	args    []any
+	// dateFrom and dateTo are the RESOLVED window, after parseAsOf has clamped
+	// the upper bound. They are here so a caller reporting on the window reads
+	// the same bounds the predicate was built from, rather than re-reading the
+	// request — which would hand back the requested dateTo and silently drop
+	// the instant, letting a summary row report ledger state from after the
+	// as-of day. Empty means "unbounded", which is what the builders read as
+	// "no end date given".
+	dateFrom string
+	dateTo   string
 }
 
 func newTxnFilter(userID uuid.UUID) *txnFilter {

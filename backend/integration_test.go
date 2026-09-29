@@ -3424,3 +3424,189 @@ func plainCalendarCycles(t *testing.T, a *apiClient, window string, accountID uu
 	require.NoError(t, json.Unmarshal(body, &cal))
 	return cal.Cycles
 }
+
+// TestAsOfBalanceEndToEnd runs the as-of balance arithmetic against a real
+// PostgreSQL ledger, which is the only tier that can settle two things the
+// pgxmock suite structurally cannot.
+//
+//  1. THE LOAN BRANCH. A loan account holds no transactions of its own
+//     (db/migrations/000001_initial_schema.up.sql); its balance is the sum over
+//     the transactions ATTACHED to it through loan_attachments. A statement
+//     without that subquery still returns one row per account, still returns
+//     the right columns and still answers 200 - it just reports every loan as
+//     roughly zero, which reads as "you owed nothing" rather than as a bug. The
+//     unit test pins the table name in the *matcher*, which proves the string
+//     the code holds names it; only execution proves the row that comes back is
+//     the loan's real principal. This is the assertion that fails if the loan
+//     branch is missing, or bounded by the wrong date in a way the text check
+//     cannot see (a date added to only one of the two branches, say).
+//
+//  2. SUM(bigint) DECODING. PostgreSQL types SUM(bigint) as numeric, not
+//     bigint, so the value arrives through pgx's numeric codec and reaches
+//     money.Amount.Scan as a string rather than the int64 the mock hands it.
+//     A codec that refused that string, or a Scan that mis-parsed it, would
+//     answer 500 - or worse, a zero - and pgxmock would never see either.
+//
+// The loan's attached payments are debits, and the loan branch is
+// debit-positive, so each contributes +amount and the figure is the total paid
+// to date: positive, and growing. It is NOT the outstanding principal, and this
+// test pins the number the code actually returns rather than the number the
+// prose once claimed.
+//
+// The card the EMIs are made from is ALSO credit-positive (db/seed.go seeds
+// `credit_card` as 'credit', same as `bank`), which is precisely why those same
+// two debits read NEGATIVE there. So the card is a second reading of the ELSE
+// branch over the very same payments, not a sign contrast against the bank -
+// and the consequence is worth stating plainly: the ELSE branch's
+// `WHEN at.positive_txn_type = 'debit'` arm is NOT exercised by this fixture at
+// all, because the only debit-positive seed is `loan` and a loan never reaches
+// the ELSE branch. The card is here so the ELSE branch has two accounts on
+// either side of the asOf date, not to contrast signs.
+func TestAsOfBalanceEndToEnd(t *testing.T) {
+	a := newAPIClient(t)
+	a.register("asof@example.com")
+
+	// The EMIs are debits made FROM the card and attached to the loan, so they
+	// never enter the bank's arithmetic: the figures below are read as their own
+	// fixtures rather than summed.
+	bank := a.createAccount("Everyday", "bank", nil)
+	card := a.createAccount("EMI card", "credit_card", nil)
+	loan := a.createAccount("Car loan", "loan", nil)
+
+	// One transaction on each side of 2026-03-01, on the bank.
+	a.createTransaction(bank.ID, nil, "2026-01-15", "January salary", 100, "credit")
+	a.createTransaction(bank.ID, nil, "2026-04-20", "April spend", 30, "debit")
+
+	// Two EMI payments, also one on each side, attached to the loan. Each is a
+	// debit, and the loan branch is debit-positive, so the loan's figure is the
+	// total paid to date - 40.00 by the instant, 100.00 by June.
+	feb := a.createTransaction(card.ID, nil, "2026-02-10", "EMI February", 40, "debit")
+	may := a.createTransaction(card.ID, nil, "2026-05-01", "EMI May", 60, "debit")
+	a.call(http.MethodPost, "/api/v1/transactions/bulk-loan", map[string]any{
+		"transactionIds": []uuid.UUID{feb, may}, "loanAccountId": loan.ID,
+	}, http.StatusOK, nil)
+
+	// The attachments really landed. This guards ASSERTION 3 specifically: that
+	// one requires every balance to be zero, so a loan with nothing attached
+	// would satisfy it vacuously - the zero would be the absence of the fixture
+	// rather than the arithmetic. Assertion 1 needs no such guard, because a
+	// failed attach yields {} there and the assertion requires {"INR": 4000}.
+	var me models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &me)
+	ctx := context.Background()
+	var attached int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM loan_attachments WHERE loan_account_id = $1 AND user_id = $2`,
+		loan.ID, me.ID).Scan(&attached))
+	require.Equal(t, 2, attached, "both EMI payments must be attached to the loan")
+
+	// balances reads one entry out of the summary's as-of block, so an account
+	// the report dropped is a named failure rather than a nil map comparison.
+	balances := func(body []byte) map[uuid.UUID]models.CurrencyAmounts {
+		t.Helper()
+		var summary models.DashboardSummary
+		require.NoError(t, json.Unmarshal(body, &summary), "body: %s", body)
+		require.NotNil(t, summary.Balances, "an as-of report must carry balances; body: %s", body)
+		out := make(map[uuid.UUID]models.CurrencyAmounts, len(*summary.Balances))
+		for _, b := range *summary.Balances {
+			out[b.ID] = b.Balance
+		}
+		return out
+	}
+
+	// Assertion 1 - the arithmetic, at 2026-03-01.
+	//
+	// The bank has taken 100.00 and spent nothing by then, so 100.00; the April
+	// debit is after the instant. The loan has been paid 40.00 and 60.00, of
+	// which only the first had happened, so 40.00 - read from loan_attachments,
+	// not from the loan account's own (empty) ledger, which would report nothing
+	// at all.
+	const asOf = "2026-03-01"
+	status, body := a.request(http.MethodGet, "/api/v1/dashboard/summary?asOf="+asOf, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	got := balances(body)
+
+	// The echo names the instant, so a client holding this response can tell
+	// what it is looking at.
+	var echoed models.DashboardSummary
+	require.NoError(t, json.Unmarshal(body, &echoed))
+	require.NotNil(t, echoed.AsOf)
+	require.Equal(t, asOf, *echoed.AsOf)
+
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, got[bank.ID],
+		"by 2026-03-01 the bank has received 100.00 and spent nothing; the April debit is after the instant")
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(40)}, got[loan.ID],
+		"the loan had been paid 40.00 by 2026-03-01, from its attached payments; the May EMI is after the instant")
+	// The card is credit-positive too (db/seed.go seeds `credit_card` as
+	// 'credit'), which is why these same two debits read negative there while
+	// the loan's own reading of them is positive. So this is not a sign contrast
+	// between the two accounts - it is the same ELSE-branch arithmetic applied
+	// to a second account, and it is what makes a loan branch that read the
+	// attachments the card's way round fail rather than return 40.00's magnitude.
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(-40)}, got[card.ID],
+		"a card is credit-positive, so the one EMI paid by 2026-03-01 is a negative balance")
+
+	// The same reading a month later, so the instant demonstrably moves every
+	// figure rather than each being a constant of the fixture.
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/summary?asOf=2026-06-30", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	later := balances(body)
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(100)}, later[loan.ID],
+		"by June both EMIs are attached and paid, so the loan reads 40.00 + 60.00")
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(70)}, later[bank.ID],
+		"by June the April spend has happened too, so the bank reads 100.00 - 30.00")
+	require.Equal(t, models.CurrencyAmounts{"INR": money.FromFloat(-100)}, later[card.ID])
+
+	// Assertion 2 - the compatibility guarantee, on the raw bytes.
+	//
+	// The two fields are pointers with omitempty, and nil is what omits them. A
+	// decoded struct cannot see a missing key, and neither can a test that only
+	// checks the fields it knows about, so this asserts on the body: today's
+	// response must be byte-identical to what it was before asOf existed.
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/summary", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.NotContains(t, string(body), `"asOf"`, "an unasked-for instant must not reach the wire")
+	require.NotContains(t, string(body), `"balances"`, "an unasked-for balance block must not reach the wire")
+
+	// And the decoded keys are absent rather than present-and-empty, so this is
+	// not a naming accident: `"balances":[]` would satisfy neither string above
+	// and still be a change to today's response.
+	var plain map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body, &plain))
+	_, hasAsOf := plain["asOf"]
+	_, hasBalances := plain["balances"]
+	require.False(t, hasAsOf, "asOf present without a request for one")
+	require.False(t, hasBalances, "balances present without a request for one")
+
+	// Assertion 3 - an instant before every transaction. "How much had I saved
+	// on the day I started" is answered by a report of zeros, NOT by an empty
+	// list: an empty list says the user has no accounts at all, which is a
+	// different and wrong answer. This is the case the correlated subqueries
+	// exist for - a GROUP BY over the transactions would drop every account
+	// and leave `[]`.
+	status, body = a.request(http.MethodGet, "/api/v1/dashboard/summary?asOf=2026-01-01", nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, string(body), `"balances":[`,
+		"the balances block must be present, not omitted and not null; body: %s", body)
+	early := balances(body)
+	require.Len(t, early, 3, "all three accounts are still accounts on 2026-01-01; body: %s", body)
+	require.Contains(t, early, bank.ID, "the bank existed before its first transaction")
+	require.Contains(t, early, card.ID, "the card existed before its first transaction")
+	require.Contains(t, early, loan.ID, "the loan existed before its first payment")
+	for id, b := range early {
+		require.Empty(t, b, "account %s held nothing on 2026-01-01, so its balance carries no key", id)
+	}
+	// The loan specifically: it is the account whose own ledger is empty for
+	// the whole of its life, so "no rows to sum" is its ordinary state and the
+	// zero here is the correlated subquery's COALESCE rather than an accident.
+	require.NotContains(t, early[loan.ID], "INR")
+
+	// Assertion 4 - a window that starts after the instant it ends at. This is
+	// the empty-window rejection, and it must name BOTH dates: a client that
+	// sent them needs to know which of its two parameters is the problem.
+	status, body = a.request(http.MethodGet,
+		"/api/v1/dashboard/summary?asOf=2026-03-01&dateFrom=2026-04-01", nil)
+	require.Equal(t, http.StatusBadRequest, status, "body: %s", body)
+	require.Contains(t, string(body), "2026-04-01", "the 400 must name dateFrom")
+	require.Contains(t, string(body), "2026-03-01", "the 400 must name asOf")
+}
