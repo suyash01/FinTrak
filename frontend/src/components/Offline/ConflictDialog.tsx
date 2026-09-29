@@ -6,7 +6,7 @@
 // One note on the signature: the return type is ReactElement rather than the
 // JSX.Element the interface in the plan spells, because React 19 dropped the
 // global JSX namespace and `JSX.Element` does not resolve in this project.
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/table";
 import type { BulkEntry, ConflictUnit, EditEntry, QueuedWrite } from "@/api/outbox";
 import type { FieldValue } from "@/api/merge";
+import { OPS } from "@/api/registry";
 import { formatNumber } from "@/utils/formatters";
 
 type Side = "mine" | "theirs";
@@ -121,6 +122,29 @@ export default function ConflictDialog({
   // needs no effect to agree with a unit the user has not seen yet.
   const [choices, setChoices] = useState<Record<string, Record<string, Side>>>({});
 
+  // The keys as one string, because the queue hands out a fresh array on every
+  // read: an array as the dependency would prune on any re-render the queue
+  // causes, and a background flush can land while the user is still picking.
+  const heldKeys = entries.map((entry) => entry.key).join("\n");
+
+  // A key that leaves the held set and comes back is a new question, and the
+  // picks go with it. `choices` outliving the entry it answers would arrive
+  // pre-filled by a click the user can no longer see on screen, while the
+  // buttons say the default is mine — and the display is what the user trusts,
+  // so state and display have to agree. Pruned per key rather than cleared
+  // wholesale, so an entry that is still held keeps the answers already given.
+  useEffect(() => {
+    const present = new Set(heldKeys.split("\n").filter((key) => key !== ""));
+    setChoices((prev) => {
+      const kept = Object.fromEntries(
+        Object.entries(prev).filter(([key]) => present.has(key)),
+      );
+      // prev itself when nothing is stale, so a change in the held set that
+      // affects no choice does not schedule another render.
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
+  }, [heldKeys]);
+
   const choice = (key: string, field: string): Side => choices[key]?.[field] ?? "mine";
 
   const choose = (key: string, field: string, side: Side) =>
@@ -187,21 +211,30 @@ export default function ConflictDialog({
             </DialogTitle>
           </div>
           <DialogDescription>
-            {fields > 0 && (
+            {fields > 0 ? (
               <>
-                Someone else changed{" "}
-                {fields === 1 ? "a field" : `${fields} fields`} you edited while you
-                were offline.{" "}
+                {gone > 0 && (
+                  <>
+                    {gone === 1 ? "A row" : `${gone} rows`} you edited no longer{" "}
+                    {gone === 1 ? "exists" : "exist"} on the server.{" "}
+                  </>
+                )}
+                {fields === 1 ? "A field" : `${fields} fields`} you edited{" "}
+                {fields === 1 ? "was" : "were"} changed by somebody else while you
+                were offline. Nothing has been sent — choose which version to keep,
+                and the next sync sends it.
               </>
-            )}
-            {gone > 0 && (
+            ) : (
+              // Reached whenever every hold is a gone row, which is the likeliest
+              // single hold there is. There is no field to choose between, so the
+              // sentence has to be the one that is true: nothing was written, and
+              // what happens next is per row rather than per field.
               <>
                 {gone === 1 ? "A row" : `${gone} rows`} you edited no longer{" "}
-                {gone === 1 ? "exists" : "exist"} on the server.{" "}
+                {gone === 1 ? "exists" : "exist"} on the server, so none of this was
+                written. Write it again as a new row, or discard it.
               </>
             )}
-            Nothing has been sent — choose which version to keep for each field, and
-            the next sync sends it.
           </DialogDescription>
         </DialogHeader>
 
@@ -233,7 +266,13 @@ export default function ConflictDialog({
           {/* Recording the answer is not sending it: the entry stays queued and
               goes out on the next sync, which is why the description above says
               so rather than promising an immediate write. */}
-          <Button onClick={save}>Save</Button>
+          {/* Absent when nothing is conflicted, and that is the whole decision
+              here: with only gone rows there is no resolution to record, so Save
+              would call onResolve with nothing and close on an action that did
+              not happen. A primary button that does nothing is worse than no
+              primary button — the row's own Re-create and Discard are the real
+              actions here, and Close is still in the footer. */}
+          {fields > 0 && <Button onClick={save}>Save</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -386,11 +425,18 @@ function GoneSection({
   onReCreate: (key: string) => void;
   onDiscard: (key: string) => void;
 }) {
-  // A create against a row the server still has would insert a second money
-  // row, so the context refuses it; and a bulk write is not one row to rebuild,
-  // so it refuses that too. Neither is offered here, because an action that
-  // fails is worse than an action that is absent.
-  const canReCreate = entry.kind === "edit";
+  // Both halves matter, and neither is a guess about the other. A create against
+  // a row the server still has would insert a second money row, so a merely
+  // conflicted entry is not offered it; and a write whose op has no create
+  // endpoint cannot be written again at all, so neither is it. The op question is
+  // asked of the registry rather than answered here, because that is where the
+  // answer lives — `transaction.patch` is the only op with a reCreate today, and a
+  // second list of which ops those are would be one more thing to forget when one
+  // is added. The context refuses both, so offering either would be a primary
+  // button that answers with an error toast, and an action that fails is worse
+  // than an action that is absent.
+  const canReCreate =
+    entry.kind === "edit" && OPS[entry.op].reCreate !== undefined;
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-border bg-muted/50 p-3">
       <div>

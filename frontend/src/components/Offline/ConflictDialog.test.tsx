@@ -280,6 +280,66 @@ describe("ConflictDialog", () => {
     expect(screen.queryByRole("button", { name: /re-create/i })).toBeNull();
   });
 
+  it("does not offer re-create for a row the op has no create endpoint for", () => {
+    // The kind is not enough: only transaction.patch declares a reCreate, so a
+    // gone account would answer the context's refusal with an error toast. The
+    // dialog asks the registry rather than keeping its own list of which ops can
+    // be re-created, so a new op's answer is the registry's too.
+    renderDialog({
+      entries: [goneEdit({ op: "account.put", base: { name: "Old" }, patch: { name: "New" }, snapshot: { name: "Old" } })],
+    });
+
+    expect(screen.queryByRole("button", { name: /re-create/i })).toBeNull();
+    // Discard is the only way out, so it has to be there.
+    expect(screen.getByRole("button", { name: /^discard$/i })).toBeInTheDocument();
+  });
+
+  it("asks for no choice it cannot be given when every hold is a gone row", async () => {
+    const user = userEvent.setup();
+    const props = renderDialog({ entries: [goneEdit()] });
+
+    // Nothing is conflicted, so the dialog must not tell the user to choose a
+    // version per field when no field is on screen, and it must not offer a
+    // primary action that records nothing.
+    expect(
+      screen.queryByText(/choose which version to keep/i),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
+
+    // Re-create and discard are the whole decision, and both still work.
+    await user.click(screen.getByRole("button", { name: /re-create/i }));
+    expect(props.onReCreate).toHaveBeenCalledWith("key-1");
+    expect(props.onResolve).not.toHaveBeenCalled();
+  });
+
+  it("forgets a resolved entry's picks if the same key is held again", async () => {
+    const user = userEvent.setup();
+    const base = props();
+    const { rerender } = render(<ConflictDialog {...base} />);
+
+    await user.click(screen.getByRole("button", { name: /keep theirs for notes/i }));
+    expect(screen.getByRole("button", { name: /keep theirs for notes/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // The entry is answered, so it leaves the held set — and a later flush can
+    // hold the very same key again, which is a new question about a row the user
+    // has not seen.
+    rerender(<ConflictDialog {...base} entries={[]} />);
+    rerender(<ConflictDialog {...base} />);
+
+    // State and display have to agree: nothing on screen shows the old click, so
+    // the answer starts at the default again rather than arriving pre-answered.
+    expect(screen.getByRole("button", { name: /keep mine for notes/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: /keep theirs for notes/i }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("does not offer re-create for a bulk write, which cannot be re-created", () => {
     renderDialog({
       entries: [
