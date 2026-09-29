@@ -168,13 +168,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
           markSynced(Date.now());
         }
         if (outcome.sent > 0) {
-          // Entries, so a bulk write of 199 rows reports as one, and the noun
-          // is left as it was rather than corrected here: this line says what
-          // drained the queue, and the wording shown next to the pending count
-          // is the banner's to own. It reads "transaction" for an edit, which
-          // is the one piece of copy this seam now gets wrong.
+          // Entries, not rows, and the unit is stated rather than implied: a
+          // bulk write of 199 rows is one entry and one request, so both the
+          // number and the noun have to be the ones the user can reconcile with
+          // what they watched happen. The noun changed with the dispatch — a
+          // create is the only thing this said "transaction" about, and it is no
+          // longer the only thing that reaches it.
           toast.success(
-            `Synced ${outcome.sent} offline transaction${outcome.sent === 1 ? "" : "s"}`,
+            `Synced ${outcome.sent} offline write${outcome.sent === 1 ? "" : "s"}`,
           );
         }
         if (outcome.conflicted > 0) {
@@ -196,11 +197,15 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
           );
         }
         if (outcome.failed > 0) {
+          // "write" for the same reason as the success toast above, and the
+          // reason is taken off the first rejected entry rather than counted
+          // per kind: the server's message is what tells the user what to change,
+          // and it names its own row.
           const reason = getOutboxSnapshot(userId).find(
             (entry) => entry.error !== undefined,
           )?.error;
           toast.error(
-            `${outcome.failed} offline transaction${outcome.failed === 1 ? "" : "s"} was rejected${reason ? `: ${reason}` : ""}`,
+            `${outcome.failed} offline write${outcome.failed === 1 ? "" : "s"} was rejected${reason ? `: ${reason}` : ""}`,
           );
         }
         if (outcome.unsaved > 0) {
@@ -231,8 +236,10 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (dropped > 0) {
+      // "write" rather than "transaction", as above — a rejected entry is
+      // whatever the server declined, and an edit can be declined too.
       toast.success(
-        `Discarded ${dropped} offline transaction${dropped === 1 ? "" : "s"}`,
+        `Discarded ${dropped} offline write${dropped === 1 ? "" : "s"}`,
       );
     }
   }, [userId]);
@@ -248,12 +255,15 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     try {
       dropped = discardHeldEntries(userId);
     } catch (err) {
+      // The entries are still queued, for discardFailed's reason: saying nothing
+      // would leave the user clicking a button that does not do what it says,
+      // over edits of their own.
       toast.error((err as Error).message);
       return;
     }
     if (dropped > 0) {
       toast.success(
-        `Discarded ${dropped} offline change${dropped === 1 ? "" : "s"}`,
+        `Discarded ${dropped} offline write${dropped === 1 ? "" : "s"}`,
       );
     }
   }, [userId]);

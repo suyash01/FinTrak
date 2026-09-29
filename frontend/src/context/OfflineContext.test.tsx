@@ -156,9 +156,7 @@ describe("OfflineProvider", () => {
       { idempotencyKey: "key-1", queue: false },
     );
     expect(screen.getByTestId("synced")).toHaveTextContent("yes");
-    expect(toastMock.success).toHaveBeenCalledWith(
-      "Synced 1 offline transaction",
-    );
+    expect(toastMock.success).toHaveBeenCalledWith("Synced 1 offline write");
   });
 
   it("keeps the queue when the send never reached the server", async () => {
@@ -216,9 +214,7 @@ describe("OfflineProvider", () => {
     await user.click(screen.getByText("discard"));
 
     await waitFor(() => expect(screen.getByTestId("pending")).toHaveTextContent("0"));
-    expect(toastMock.success).toHaveBeenCalledWith(
-      "Discarded 1 offline transaction",
-    );
+    expect(toastMock.success).toHaveBeenCalledWith("Discarded 1 offline write");
   });
 
   it("says so when the queue cannot be updated after a sync", async () => {
@@ -518,8 +514,6 @@ describe("OfflineProvider", () => {
     // a user's change disappears without anybody being asked.
     expect(screen.getByTestId("failed")).toHaveTextContent("1");
     expect(screen.getByTestId("pending")).toHaveTextContent("1");
-    expect(toastMock.success).toHaveBeenCalledWith(
-      "Discarded 1 offline change",
-    );
+    expect(toastMock.success).toHaveBeenCalledWith("Discarded 1 offline write");
   });
 });
