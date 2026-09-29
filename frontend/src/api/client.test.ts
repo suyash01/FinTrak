@@ -2040,8 +2040,12 @@ describe("offline behaviour", () => {
   }) => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
-    // queue: false is what a caller *sending* an already-queued write passes: a
-    // second copy of the entry behind the flush's back would replay it twice.
+    // `queue: false` is the half that says "this entry is already in the queue";
+    // the base is the half that lets one be recorded at all, and neither alone
+    // protects anything. The flush passes neither — it sends a bulk entry through
+    // applyMany with no options at all — and is stopped by that second half: with
+    // no base there is nothing to record, so the transport failure propagates
+    // instead of putting a second copy of the entry in the queue to be replayed.
     await expect(send({ payload, base, queue: false })).rejects.toThrow(NetworkError);
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
@@ -2172,6 +2176,11 @@ describe("offline behaviour", () => {
       { theirs: async () => ({ tags: ["milk", "bread"] }) },
     );
 
+    // Two requests, and the count is the point: the first is the client's own
+    // attempt, which is this same URL with this same body (the payload went out
+    // verbatim before any of this existed), so an assertion on the last call alone
+    // would still pass if the flush had dispatched nothing at all.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [called, opts] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
     expect(called).toBe(`${API_BASE}/transactions/bulk-tags`);
     expect(JSON.parse(opts.body as string)).toEqual({

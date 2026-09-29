@@ -1093,3 +1093,62 @@ describe("the row-naming writes", () => {
     });
   });
 });
+
+// Every op a queued entry can carry, from the registry itself rather than from a
+// list kept beside it. A list copied out of the registry would only catch a new
+// op on the day someone compared the two by hand; this sweep runs whatever OPS
+// declares, so an op that refuses with a plain throw fails on the day it is added.
+const ALL_OPS = Object.keys(OPS) as WriteOp[];
+
+// A row that exists and names whatever its endpoint addresses, so a refusal sweep
+// reaches the wire instead of tripping an invariant throw first: a term's series
+// is the only identifier its write cannot do without, and it comes off the row the
+// diff was merged onto (see recurringTerm.put).
+const THEIRS: FieldPatch = { seriesId: "s1" };
+
+describe("the shape of a refusal", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(apiMocks)) fn.mockReset();
+  });
+
+  // What a queued write can ask for that an endpoint may not be able to express is
+  // a clear, so that is what every op is asked here. Either answer is fine — the
+  // write goes out, or it is refused — but the shape of the refusal is not the
+  // registry's to choose: flushOutbox rethrows anything that is neither an ApiError
+  // nor a NetworkError, so a refusal thrown as a plain Error stops every sync and
+  // records nothing on the entry. One clear the app asked for once, and nothing
+  // behind it in the queue can ever be sent.
+  it.each(ALL_OPS)("%s answers a clear with an ApiError, or not at all", async (op) => {
+    const asked: [string, () => unknown][] = [
+      ["applyMany with a null", () => OPS[op].applyMany?.(["row-1"], null)],
+      ["applyMany with an empty string", () => OPS[op].applyMany?.(["row-1"], "")],
+      ["applyOp with a null in the diff", () => applyOp(op, "row-1", { notes: null }, THEIRS)],
+      [
+        "applyOp with an empty string in the diff",
+        () => applyOp(op, "row-1", { notes: "" }, THEIRS),
+      ],
+    ];
+
+    for (const [what, ask] of asked) {
+      try {
+        await ask();
+      } catch (err) {
+        if (!(err instanceof ApiError)) {
+          throw new Error(
+            `${op} refused ${what} with a ${(err as Error).constructor?.name ?? "throw"} rather than an ApiError: the flush rethrows anything else, so this one clear would stop every sync and record nothing on the entry (${(err as Error).message})`,
+          );
+        }
+      }
+    }
+  });
+
+  // The same question asked of a refusal that is not a clear: this op has no
+  // single-row form at all, and saying so is an answer about the write rather than
+  // a broken invariant (see transaction.tags in registry.ts).
+  it("refuses a single-row tag change as an ApiError too", async () => {
+    await expect(
+      applyOp("transaction.tags", "row-1", { tags: ["-milk"] }, THEIRS),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(apiMocks.bulkUpdateTags).not.toHaveBeenCalled();
+  });
+});

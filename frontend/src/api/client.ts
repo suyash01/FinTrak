@@ -584,10 +584,17 @@ export interface TermWrite<Row, Data> {
 //
 // It is what makes the write a patch, per row, and the rows and bases that go out
 // are the ones the queue records, so a write that reached the server and one that
-// did not cannot disagree about what the user changed. `queue: false` is what a
-// caller that is *sending* an already-queued write passes — the outbox flush,
-// which must not put a second copy of an entry back in the queue when the request
-// does not reach the server.
+// did not cannot disagree about what the user changed. It is also the only thing
+// that lets a write be queued at all: with no base there is nothing to tell the
+// user's change from somebody else's, and a request that never reached the server
+// is raised as a failure rather than recorded.
+//
+// `queue: false` says the opposite — that the write is already in the queue, so do
+// not put a second copy there. Neither option is what stops the flush: a bulk
+// entry is sent through registry.ts's applyMany, which calls these methods with
+// no options at all, and what protects it is the no-base rule above. A caller
+// that *does* hold a base and is sending an already-queued write has to pass both,
+// and nothing in the app does that today.
 export interface BulkOptions {
   base?: Record<string, FieldValue>;
   queue?: boolean;

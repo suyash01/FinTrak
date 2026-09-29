@@ -433,8 +433,18 @@ export const OPS: Record<WriteOp, OpSpec> = {
       await api.bulkUpdateTags({ transactionIds: rows, add, remove });
     },
     apply: async () => {
-      throw new Error(
+      // An ApiError with a 4xx, like the other two refusals in this file and for
+      // their reason: this is an answer about the write — the endpoint cannot make
+      // it — and not a broken invariant, so the flush has to record it on the entry
+      // and carry on rather than rethrow it and stop every sync behind it. It is
+      // unreachable today (no call site enqueues this op as a single-row edit, and
+      // a bulk entry reaches applyMany), which is exactly why the class is pinned
+      // by a sweep in registry.test.ts rather than left to this one call site: the
+      // single-row tag edit is the obvious next thing to add, and it would arrive
+      // as a plain Error by default.
+      throw new ApiError(
         "transaction.tags has no single-row form: a tag change is a delta of additions and removals, which only POST /transactions/bulk-tags can express, and a field-level value here is the row's tag list — read as a delta it would add back the tag the user removed",
+        422,
       );
     },
   },
