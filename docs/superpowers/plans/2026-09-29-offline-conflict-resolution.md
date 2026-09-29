@@ -1146,7 +1146,12 @@ const outcome = await flushOutbox(userId, send, { ...options, theirs: readTheirs
 
 `readTheirs` is `registry.ts`'s `(op, rowId) => OPS[op].read(rowId)`, so the live read lives in one place and the "never from the offline cache" rule has exactly one implementation to get wrong.
 
-`resolveConflict` calls the queue mutator and toasts its error on a `false` return, matching how `discardFailed` already reports. `reCreate` looks the entry up, calls `OPS[op].reCreate(snapshot, patch)`, removes the entry, calls `markSynced`, and toasts the new id — because a new row is a change to the server's copy of the ledger, and the row that comes back is not the row the user was editing.
+`resolveConflict` calls the queue mutator and toasts its error on a `false` return, matching how `discardFailed` already reports. `reCreate` looks the entry up, calls `OPS[op].reCreate(snapshot, patch, entry.key)` — the
+entry's own key is the idempotency key, so a re-create whose response was lost is
+recognised on the next attempt rather than inserting a second row — removes the entry,
+calls `markSynced`, and toasts the new id, because a new row is a change to the
+server's copy of the ledger, and the row that comes back is not the row the user was
+editing.
 
 - [ ] **Step 4: Set `syncedAt` correctly**
 
