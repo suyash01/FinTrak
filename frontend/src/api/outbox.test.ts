@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { CreateTransactionRequest } from "../types";
 import { ApiError, NetworkError } from "./errors";
-import type { FieldPatch } from "./merge";
+import { mergeFields, type FieldPatch } from "./merge";
 import {
   discardFailed,
   enqueueBulk,
@@ -392,5 +392,64 @@ describe("outbox", () => {
       { seriesId: "series-1" },
     );
     expect(attached.seriesId).toBe("series-1");
+  });
+
+  // A bulk write is a queued write to a row like any other: one field set on two
+  // hundred rows has to move the base of an edit to one of those rows, because the
+  // bulk entry's field is the same field of the same row and the two ops only
+  // differ in how they travel.
+  it("folds a queued bulk write into the base of a later edit to the same row", () => {
+    enqueueBulk(USER, "transaction.categorize", "categoryId", "c1", ["r1", "r2"], { r1: null, r2: null });
+    // r1 was null before the bulk write and will be "c1" after it.
+    enqueueEdit(USER, "transaction.patch", "r1", { categoryId: null, notes: "old" }, { notes: "new" }, { categoryId: null, notes: "old" });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    // The stored base must be what the bulk write will produce, not the pre-bulk row.
+    expect(edits[0].base.categoryId).toBe("c1");
+    // And the merge must not then report a conflict the user never caused.
+    const result = mergeFields(edits[0].base, edits[0].patch, { categoryId: "c1", notes: "old" });
+    expect(result.conflicts).toEqual([]);
+
+    // The pending value is the same one whichever op is asking about it, and it is
+    // the row that decides, not the op: a bulk categorize and a single patch write
+    // the same field of the same row. r2 was never edited, so only the bulk write
+    // has anything to say about it.
+    expect(queuedPatchFor(USER, "transaction.patch", "r1", "categoryId")).toBe("c1");
+    expect(queuedPatchFor(USER, "transaction.patch", "r2", "categoryId")).toBe("c1");
+  });
+
+  // The conflict this projection prevents is on a field the user *did* change
+  // after the bulk write. A form opened on the pre-bulk row bases the edit on the
+  // old category, so a base that does not carry the queued bulk write reads as a
+  // third party's change to a field the user is settling themselves — held in front
+  // of them to decide, over a value they wrote.
+  it("does not report a conflict on a field changed after a queued bulk write", () => {
+    enqueueBulk(USER, "transaction.categorize", "categoryId", "c1", ["r1"], { r1: "c0" });
+    enqueueEdit(USER, "transaction.patch", "r1", { categoryId: "c0" }, { categoryId: "c2" }, { categoryId: "c0" });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    // "theirs" is what the bulk write left on the server: c1.
+    const result = mergeFields(edits[0].base, edits[0].patch, { categoryId: "c1" });
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.patch).toEqual({ categoryId: "c2" });
+  });
+
+  // The queue drains in the order it was recorded, so the projection has to fold
+  // the writes in that order: a bulk write is a writer among the edits, and a pass
+  // of its own would put the bulk's value in the base of every edit — including
+  // the ones the user made after it, which are based on the edit before them.
+  it("applies a queued bulk write in queue order, not in a pass of its own", () => {
+    enqueueBulk(USER, "transaction.patch", "notes", "bulk", ["r1"], { r1: "old" });
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "old" }, { notes: "first" }, { notes: "old" });
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "old" }, { notes: "second" }, { notes: "old" });
+
+    // The last writer of the field is the edit queued last.
+    expect(queuedPatchFor(USER, "transaction.patch", "r1", "notes")).toBe("second");
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    // The first edit is based on the bulk write, and the second on the first edit:
+    // a bulk write overlaid last would report "bulk" for both.
+    expect(edits[0].base.notes).toBe("bulk");
+    expect(edits[1].base.notes).toBe("first");
   });
 });
