@@ -137,6 +137,16 @@ const TRANSACTION_FIELDS = [
   "recurringSeriesId",
 ] as const;
 
+// projectTransaction is a transaction's mergeable projection, and it is exported
+// because an offline edit is diffed against a base the client builds for itself:
+// a base described by any other field list would be missing fields the merge
+// reasons about, and the edit would be read as though the user had never touched
+// them. One projection, so the base and the row the flush later reads are the
+// same shape.
+export function projectTransaction(row: object): FieldPatch {
+  return project(row, TRANSACTION_FIELDS);
+}
+
 const ACCOUNT_FIELDS = [
   "name",
   "accountTypeId",
@@ -231,7 +241,7 @@ const SETTINGS_FIELDS = ["paperlessUrl", "paperlessTag", "pageSize"] as const;
 const readTransaction = async (rowId: string): Promise<FieldPatch | null> => {
   const { data } = await api.getTransactions({ q: `id:${rowId}`, limit: 1 }, { live: true });
   const [row] = data;
-  return row ? project(row, TRANSACTION_FIELDS) : null;
+  return row ? projectTransaction(row) : null;
 };
 
 // readTerm finds a term by its own id. The term endpoints are addressed by series

@@ -242,7 +242,7 @@ beforeEach(() => {
   apiMock.getBillingCycles.mockResolvedValue({ data: [] });
   apiMock.getRecurringSeries.mockResolvedValue({ data: [] });
   apiMock.getTags.mockResolvedValue({ data: [] });
-  apiMock.updateTransaction.mockResolvedValue({});
+  apiMock.updateTransaction.mockResolvedValue({ id: "t1", queued: false });
   apiMock.bulkCategorize.mockResolvedValue({});
   apiMock.updateUserSettings.mockResolvedValue({});
   domainMock.useDomainData.mockReturnValue(defaultDomain());

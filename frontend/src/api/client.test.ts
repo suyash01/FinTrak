@@ -4,6 +4,7 @@ import { NetworkError } from "./errors";
 import { readCached } from "./offlineCache";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
 import { getOutboxSnapshot, OutboxStorageError } from "./outbox";
+import type { Transaction } from "../types";
 
 const API_BASE = "/api/v1";
 
@@ -468,6 +469,22 @@ describe("offline behaviour", () => {
     type: "debit" as const,
   };
 
+  // The row a form would have opened with: an offline edit is a patch against
+  // this, so it has to be a whole row the registry can project.
+  const txn: Transaction = {
+    id: "t1",
+    accountId: "acct-1",
+    date: "2026-01-15",
+    description: "Coffee",
+    amount: 250.5,
+    type: "debit",
+    categoryId: null,
+    tags: [],
+    notes: "old",
+    payeeId: null,
+    billingCycleId: null,
+  };
+
   beforeEach(() => {
     localStorage.clear();
     setServedFromCache(false);
@@ -490,6 +507,10 @@ describe("offline behaviour", () => {
   });
 
   afterEach(() => {
+    // A test that makes the browser refuse to write the queue stubs
+    // Storage.prototype.setItem, and a spy that outlived a failing assertion
+    // would take every test after it down with it.
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -706,6 +727,179 @@ describe("offline behaviour", () => {
     );
     setItem.mockRestore();
 
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("reads one transaction by id, scoped with q alone", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [txn], total: 1, page: 1, pages: 1 }),
+    );
+
+    await expect(api.getTransaction("t1")).resolves.toEqual(txn);
+
+    // No accountId, and never one: the list endpoint injects synthetic summary
+    // rows (a per-cycle "Total outstanding", a month-end "Running balance") when
+    // a single account is filtered and the sort is by date, and it guards on
+    // accountUUID, which only an accountId parameter sets — a q= term never
+    // reaches it. Scoped by account as well, this could answer a summary row
+    // rather than the row an edit is about to be based on.
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${API_BASE}/transactions?q=id%3At1&limit=1`,
+    );
+  });
+
+  it("answers null for a transaction the server no longer has", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [], total: 0, page: 1, pages: 0 }),
+    );
+
+    await expect(api.getTransaction("t1")).resolves.toBeNull();
+  });
+
+  it("never answers a single-transaction read from the offline cache", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [txn], total: 1, page: 1, pages: 1 }),
+    );
+    await api.getTransaction("t1");
+    // isQueriedLedgerRead keeps a q= read out of the cache, so the row an edit
+    // is based on cannot come back as this browser's own last belief of it: a
+    // base that agreed with the client by construction would merge the edit
+    // against itself and never see a conflict.
+    expect(readCached("u1", "/transactions?q=id%3At1&limit=1")).toBeNull();
+
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(api.getTransaction("t1")).rejects.toThrow(NetworkError);
+    expect(getOfflineSnapshot().servedFromCache).toBe(false);
+  });
+
+  it("queues an edit that never reached the server, and answers queued", async () => {
+    fetchMock.mockRejectedValue(new TypeError("failed to fetch"));
+
+    const result = await api.updateTransaction(
+      "t1",
+      { notes: "offline" },
+      { base: txn },
+    );
+
+    expect(result).toEqual({ id: "t1", queued: true });
+    const entries = getOutboxSnapshot("u1");
+    expect(entries[0]).toMatchObject({
+      kind: "edit",
+      op: "transaction.patch",
+      rowId: "t1",
+      // The queued patch is the diff that would have gone out, and the base is
+      // the row it was made against — the two things the flush merges.
+      patch: { notes: "offline" },
+      base: { notes: "old", description: "Coffee" },
+    });
+  });
+
+  it("sends only the changed field when a base is supplied", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
+
+    await api.updateTransaction(
+      "t1",
+      { notes: "new", description: "Coffee" },
+      { base: txn },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ notes: "new" });
+  });
+
+  it("keeps a field the user cleared in the diff", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
+
+    // null is the user clearing the category, not a value this side of the diff
+    // may drop: absent is not null (merge.ts). A projection of the payload would
+    // drop it, and the category would stay attached while the user was told the
+    // edit was saved.
+    await api.updateTransaction(
+      "t1",
+      { categoryId: null },
+      { base: { ...txn, categoryId: "c1" } },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ categoryId: null });
+  });
+
+  it("sends the whole payload when no base is supplied", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: "updated" }));
+
+    await api.updateTransaction("t1", { notes: "new", description: "Coffee" });
+
+    // A caller holding no base row must behave exactly as it did before the
+    // offline edit existed: its payload, whole, because it is the only thing
+    // that says what the user changed.
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ notes: "new", description: "Coffee" });
+  });
+
+  it("surfaces a rejected edit rather than queueing it", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ errors: [{ message: "amount must be positive" }] }, 400),
+    );
+
+    await expect(
+      api.updateTransaction("t1", { amount: -1 }, { base: txn }),
+    ).rejects.toMatchObject({ message: "amount must be positive", status: 400 });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("fails the flush rather than re-queueing the entry it is sending", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // queue: false is what a caller *sending* an already-queued edit passes: a
+    // second copy of the entry behind the flush's back would replay it twice.
+    await expect(
+      api.updateTransaction("t1", { notes: "x" }, { base: txn, queue: false }),
+    ).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("refuses to queue an edit under a session that replaced the issuing one", async () => {
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.reject(new TypeError("Failed to fetch"));
+    });
+
+    // Neither queue may take it: u1 is gone from this browser and u2 never
+    // recorded it, and the server would reject an u1 entry flushed under u2.
+    await expect(
+      api.updateTransaction("t1", { notes: "x" }, { base: txn }),
+    ).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+    expect(getOutboxSnapshot("u2")).toHaveLength(0);
+  });
+
+  it("refuses to queue an edit the browser would not let it store", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    // A queue that does not exist is an edit the user believes is saved: this
+    // has to fail loudly rather than resolve `queued: true`.
+    await expect(
+      api.updateTransaction("t1", { notes: "x" }, { base: txn }),
+    ).rejects.toBeInstanceOf(OutboxStorageError);
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("cannot queue an edit made with no base", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // There is nothing to be a patch *against*: an entry with an empty base
+    // would merge as though the user had changed every field in it. Answering
+    // `queued` here would be a lie the flush cannot act on either.
+    await expect(
+      api.updateTransaction("t1", { notes: "x" }),
+    ).rejects.toThrow(NetworkError);
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
   });
 });

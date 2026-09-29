@@ -78,8 +78,10 @@ import type {
   ValidateTransactionsResponse,
 } from "../types";
 import { ApiError, NetworkError, isNetworkError } from "./errors";
+import { diffAgainstBase, type FieldPatch } from "./merge";
 import { clearCached, isCacheablePath, readCached, writeCached } from "./offlineCache";
-import { enqueueCreate } from "./outbox";
+import { enqueueCreate, enqueueEdit } from "./outbox";
+import { projectTransaction } from "./registry";
 import { setServedFromCache } from "./offlineStatus";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
@@ -474,6 +476,16 @@ export interface CreateTransactionResult {
   queued: boolean;
 }
 
+// UpdateTransactionResult is what an update resolves to, and `queued` is the only
+// thing in it a caller can learn: whether the server holds the write or the
+// offline outbox is holding it. The id is the row the caller addressed — PATCH
+// /transactions/{id} answers a message, not a row — so it is the same either way,
+// and a queued edit is named by the row the flush will merge it into.
+export interface UpdateTransactionResult {
+  id: string;
+  queued: boolean;
+}
+
 const api = {
   // Auth
   register: (data: RegisterRequest): Promise<AuthResponse> =>
@@ -587,20 +599,78 @@ const api = {
       },
     );
   },
+  // The one transaction the app needs by id: the row a form is about to edit, read
+  // so the edit has a base to be made against if the server turns out to be
+  // unreachable.
+  //
+  // It scopes with `q=` alone, and never with an accountId: the list endpoint
+  // injects synthetic summary rows (a per-cycle "Total outstanding", a month-end
+  // "Running balance") when a single account is filtered and the sort is by date,
+  // and it guards on accountUUID, which only an accountId parameter sets — so an
+  // accountId here could answer a summary row rather than the row the caller
+  // asked for. It is not cached, which is what makes it the right read for a
+  // base: isQueriedLedgerRead keeps a q= read out of the offline cache, so the row
+  // cannot come back as this browser's own last belief of it.
+  getTransaction: (id: string): Promise<Transaction | null> =>
+    api
+      .getTransactions({ q: `id:${id}`, limit: 1 })
+      .then((r) => r.data[0] ?? null),
   updateTransaction: (
     id: string,
     data: UpdateTransactionRequest,
+    // `base` is the row the caller's form opened with. With it the request
+    // carries only the fields the user actually changed, so a PATCH cannot revert
+    // a column another writer moved while the form was open — and the same patch
+    // is what gets queued, so an edit that never reached the server and one that
+    // did cannot disagree about what the user changed.
+    //
     // `queue: false` is what a caller that is *sending* an already-queued edit
     // passes — the outbox flush, which must not put a second copy of an entry
-    // back in the queue when the request does not reach the server. Nothing
-    // queues from this call yet, so the option is inert until the offline edit
-    // does, and a caller that passes nothing behaves exactly as it always has.
-    options: { queue?: boolean } = {},
-  ): Promise<Transaction> =>
-    request(`/transactions/${id}`, {
+    // back in the queue when the request does not reach the server.
+    options: { base?: Transaction; queue?: boolean } = {},
+  ): Promise<UpdateTransactionResult> => {
+    // One diff, both paths: the payload on the wire and the patch recorded in the
+    // queue are reduced from the same base by the same projection the flush will
+    // merge with. Without a base there is nothing to reduce against, so the
+    // payload goes out as it always has.
+    const base = options.base ? projectTransaction(options.base) : null;
+    // The user's side is the payload as given rather than a projection of it, and
+    // the whole difference is the nulls: project() drops a nullish value because
+    // the *server's* row reports a null for a column it holds nothing in, while
+    // here a null is the user clearing the field (merge.ts: absent is not null).
+    // Every field UpdateTransactionRequest can carry is a mergeable one, so
+    // projecting it would drop the clears and nothing else. Unchecked cast: an
+    // interface carries no implicit index signature, the same seam registry.ts's
+    // asRequest crosses in the other direction.
+    const mine = data as unknown as FieldPatch;
+    const patch = base ? diffAgainstBase(base, mine) : null;
+    // The queue entry belongs to the session that issued the edit: an entry
+    // attributed to whoever is signed in later would be flushed against that
+    // account, which the server rejects as not the entry's own.
+    const owner = offlineUserId();
+    return request(`/transactions/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(patch ?? data),
+    }).then(
+      (): UpdateTransactionResult => ({ id, queued: false }),
+      (err: unknown): UpdateTransactionResult => {
+        // Only a request that never reached the server may be replayed later; a
+        // rejected one is the server refusing this payload, and the user has to
+        // see that.
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        // No base is no queue: a patch with nothing to be a patch *against* would
+        // merge as though the user had changed every field in it. Failing is the
+        // honest answer — the caller has a base to pass.
+        if (!base || !patch) throw err;
+        // Never answer `queued` unless the entry is really in the queue: a
+        // refused write (or a full queue) has to reach the user as a failure, or
+        // the UI confirms a save that no flush will ever perform.
+        enqueueEdit(owner, "transaction.patch", id, base, patch, base);
+        return { id, queued: true };
+      },
+    );
+  },
   deleteTransaction: (id: string): Promise<null> =>
     request(`/transactions/${id}`, { method: "DELETE" }),
   importTransactions: (
