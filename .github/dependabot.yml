@@ -10,7 +10,7 @@ updates:
   - package-ecosystem: "gomod"
     directory: "/backend"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   # client/, tui/ and mcp/ are their own modules (`go.mod` each), so each needs
@@ -18,57 +18,57 @@ updates:
   - package-ecosystem: "gomod"
     directory: "/client"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "gomod"
     directory: "/tui"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "gomod"
     directory: "/mcp"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   # uv.lock is a CI-enforced lockfile (`uv lock --check` in the parser job).
   - package-ecosystem: "uv"
     directory: "/statement_parser"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   # Base images of the four Dockerfiles (one entry per file location).
   - package-ecosystem: "docker"
     directory: "/backend"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "docker"
     directory: "/frontend"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "docker"
     directory: "/statement_parser"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "docker"
     directory: "/tui"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   # The compose files pin `postgres`, `adminer`, `dpage/pgadmin4` and
@@ -77,11 +77,11 @@ updates:
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     open-pull-requests-limit: 5
