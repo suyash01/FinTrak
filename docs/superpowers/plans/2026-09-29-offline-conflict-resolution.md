@@ -317,7 +317,12 @@ git commit -m "feat(query): an id: term, so one transaction can be read back"
   }
   export interface BulkEntry extends WriteEnvelope {
     kind: "bulk"; op: WriteOp; field: string; value: FieldValue; rows: string[]; bases: Record<string, FieldValue>;
-    accountId?: string;
+    // The op's non-row identifiers, named after what each endpoint actually takes:
+    // `seriesId` for transaction.recurring (RecurringAttachRequest), and
+    // `loanAccountId` for transaction.loan (BulkLoanRequest, where omitting it
+    // means detach). Detach and disbursement need neither.
+    seriesId?: string;
+    loanAccountId?: string;
   }
   export type QueuedWrite = CreateEntry | EditEntry | BulkEntry;
   export function getOutboxSnapshot(userId: string): QueuedWrite[];
@@ -407,7 +412,8 @@ This is where Review Focus #1 is pinned: the base of a second edit to the same r
   ): EditEntry;
   export function enqueueBulk(
     userId: string, op: WriteOp, field: string, value: FieldValue,
-    rows: string[], bases: Record<string, FieldValue>, accountId?: string,
+    rows: string[], bases: Record<string, FieldValue>,
+    ids?: { seriesId?: string; loanAccountId?: string },
   ): BulkEntry;
   export function queuedPatchFor(userId: string, op: WriteOp, rowId: string, field: string): FieldValue;
   export function queuedRowProjection(userId: string, op: WriteOp, rowId: string): FieldPatch | null;
