@@ -123,6 +123,8 @@ const TRANSACTION_FIELDS = [
   "amount",
   "type",
   "categoryId",
+  // What the row holds, complete. transaction.tags writes the same column as a
+  // delta, which is a different question about it and lives at that op's entry.
   "tags",
   "notes",
   "payeeId",
@@ -260,19 +262,49 @@ function asTagList(value: FieldValue): string[] {
   return Array.isArray(value) ? value.map((tag) => String(tag)) : [];
 }
 
-// asId is a bulk write's value as the id its endpoint takes. The value is a field
-// of the transaction being written, so it is an id, or the null/empty that two of
-// these endpoints read as "detach" — which is what those call sites name.
-function asId(value: FieldValue): string {
-  return value === undefined || value === null ? "" : String(value);
+// isCleared is the one question the row-naming writes ask about a nullish value,
+// and it is the question they do not agree on: it is a clear to BulkCategorize
+// (as its own sentinel) and a detach to BulkLoanRequest, and nothing at all to the
+// two endpoints that cannot express one.
+function isCleared(value: FieldValue): boolean {
+  return value === undefined || value === null;
 }
 
-// multiRow is the shape of every write that names its rows: one field, set on the
-// rows the entry lists, through one request that touches nothing else. That is
-// the contract a PATCH has, which is the shape the family declares. `field` is
-// the transaction column the write is about — what the merge reads, and what the
+// asCategory is the categorize value as the endpoint reads it: a category uuid,
+// or the literal "uncategorized" that BulkCategorize clears on — the handler
+// sends everything else to uuid.Parse (transaction_bulk.go:35), so an empty
+// string is a 400 rather than a clear. Only a nullish value is read as the clear
+// here, because "" is not this endpoint's way of saying anything and pretending
+// otherwise would be the same guess, inverted.
+function asCategory(value: FieldValue): string {
+  return isCleared(value) ? "uncategorized" : String(value);
+}
+
+// requiredId is the value as the id an endpoint that cannot do without one takes,
+// and it refuses a clear rather than sending one. Three of these endpoints bind a
+// required uuid.UUID and then guard the write with an EXISTS on it, so the zero
+// uuid an empty string unmarshals to matches no row and the answer is 200 with
+// updated: 0: a clear the server never performed, reported as one that was.
+// Only BulkLoanRequest reads a null as "detach" (its LoanAccountID is a
+// *uuid.UUID), and it says so at its own call site — a helper that assumed the
+// seven endpoints agreed here was the bug.
+function requiredId(op: WriteOp, value: FieldValue): string {
+  if (isCleared(value) || value === "") {
+    throw new Error(
+      `${op} cannot detach: its endpoint takes a required uuid and has no way to clear one, so a clear is refused here rather than sent as an id that matches no row (the server would answer 200 with updated: 0)`,
+    );
+  }
+  return String(value);
+}
+
+// multiRow is the shape of a write that names its rows and sets one field on
+// them: one request, the rows the entry lists, and nothing else. That is the
+// contract a PATCH has, which is the shape the family declares. `field` is the
+// transaction column the write is about — what the merge reads, and what the
 // single-row apply pulls out of the diff — and `request` is the one call the
 // endpoint needs, so the two forms of the write cannot disagree about it.
+// transaction.tags is not built here: its value is a delta rather than a field,
+// and it says why at its own entry.
 function multiRow(
   op: WriteOp,
   field: string,
@@ -467,42 +499,60 @@ export const OPS: Record<WriteOp, OpSpec> = {
   "transaction.categorize": multiRow(
     "transaction.categorize",
     "categoryId",
-    (rows, value) =>
-      // "uncategorized" is the endpoint's own clear sentinel, so the value goes
-      // out as it stands: it is a value of the row's field, not a request field.
-      api.bulkCategorize({ transactionIds: rows, categoryId: asId(value) }),
+    (rows, value) => api.bulkCategorize({ transactionIds: rows, categoryId: asCategory(value) }),
   ),
   "transaction.payee": multiRow("transaction.payee", "payeeId", (rows, value) =>
-    api.bulkUpdatePayee({ transactionIds: rows, payeeId: asId(value) }),
+    api.bulkUpdatePayee({ transactionIds: rows, payeeId: requiredId("transaction.payee", value) }),
   ),
   "transaction.billingCycle": multiRow(
     "transaction.billingCycle",
     "billingCycleId",
     (rows, value) =>
-      api.bulkUpdateBillingCycle({ transactionIds: rows, billingCycleId: asId(value) }),
+      api.bulkUpdateBillingCycle({
+        transactionIds: rows,
+        billingCycleId: requiredId("transaction.billingCycle", value),
+      }),
   ),
-  "transaction.tags": multiRow("transaction.tags", "tags", (rows, value) => {
-    const add: string[] = [];
-    const remove: string[] = [];
-    for (const tag of asTagList(value)) {
-      if (tag.startsWith(REMOVE_TAG)) remove.push(tag.slice(REMOVE_TAG.length));
-      else add.push(tag);
-    }
-    return api.bulkUpdateTags({ transactionIds: rows, add, remove });
-  }),
+
+  // The one op of the seven that is not a multiRow, and the reason is the field.
+  // "tags" is two different questions about one column: the projection answers
+  // "what does the row hold" (the complete list, which is what the merge needs to
+  // decide whether the tags changed at all), and the write answers "what changes"
+  // (a delta of additions and removals, the only thing BulkUpdateTagsRequest can
+  // express). Reading the row's list as that delta would *add* a tag the user
+  // removed, so the single-row form is refused rather than guessed at.
+  "transaction.tags": {
+    op: "transaction.tags",
+    shape: "patch",
+    read: readTransaction,
+    applyMany: async (rows, value) => {
+      const add: string[] = [];
+      const remove: string[] = [];
+      for (const tag of asTagList(value)) {
+        if (tag.startsWith(REMOVE_TAG)) remove.push(tag.slice(REMOVE_TAG.length));
+        else add.push(tag);
+      }
+      await api.bulkUpdateTags({ transactionIds: rows, add, remove });
+    },
+    apply: async () => {
+      throw new Error(
+        "transaction.tags has no single-row form: a tag change is a delta of additions and removals, which only POST /transactions/bulk-tags can express, and a field-level value here is the row's tag list — read as a delta it would add back the tag the user removed",
+      );
+    },
+  },
+
   "transaction.loan": multiRow("transaction.loan", "loanAccountId", (rows, value) =>
-    // A null value detaches, which is what BulkLoanRequest's omitted id means.
-    api.bulkLoan({ transactionIds: rows, loanAccountId: asId(value) || null }),
+    // The one endpoint in this file that reads a null as "detach":
+    // BulkLoanRequest.LoanAccountID is a *uuid.UUID, and an absent one detaches.
+    api.bulkLoan({ transactionIds: rows, loanAccountId: isCleared(value) ? null : String(value) }),
   ),
   "transaction.recurring": multiRow(
     "transaction.recurring",
     "recurringSeriesId",
-    (rows, value) => {
-      const seriesId = asId(value);
-      return seriesId
-        ? api.attachRecurring({ seriesId, transactionIds: rows })
-        : api.detachRecurring({ transactionIds: rows });
-    },
+    (rows, value) =>
+      isCleared(value)
+        ? api.detachRecurring({ transactionIds: rows })
+        : api.attachRecurring({ seriesId: String(value), transactionIds: rows }),
   ),
   "transaction.loanDisbursement": multiRow(
     "transaction.loanDisbursement",
@@ -512,7 +562,11 @@ export const OPS: Record<WriteOp, OpSpec> = {
     // there is no field of the row to carry it and no other channel to send it
     // through. The read is still the transaction's, and it is what says whether
     // the credit is still there to be linked.
-    (rows, value) => api.linkLoanDisbursement(asId(value), { transactionId: rows[0] }),
+    (rows, value) =>
+      api.linkLoanDisbursement(
+        requiredId("transaction.loanDisbursement", value),
+        { transactionId: rows[0] },
+      ),
   ),
 };
 

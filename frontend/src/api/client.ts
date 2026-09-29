@@ -209,6 +209,13 @@ interface RequestOptions {
   live?: boolean;
 }
 
+// ReadOptions is what a GET takes. Narrower than RequestOptions on purpose:
+// method, body and headers are honoured by request(), so a read typed as
+// RequestOptions would accept api.getAccounts({ method: "DELETE" }) and quietly
+// stop being a read. getTransactions keeps the wider type it already had, since
+// its second argument is a general RequestOptions.
+type ReadOptions = Pick<RequestOptions, "live" | "signal" | "timeout">;
+
 function buildQuery(params: QueryParams): string {
   return new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
@@ -478,7 +485,7 @@ const api = {
   me: (): Promise<User> => request("/auth/me"),
 
   // Accounts
-  getAccounts: (options: RequestOptions = {}): Promise<Account[]> =>
+  getAccounts: (options: ReadOptions = {}): Promise<Account[]> =>
     request("/accounts", options),
   createAccount: (data: CreateAccountRequest): Promise<Account> =>
     request("/accounts", { method: "POST", body: JSON.stringify(data) }),
@@ -490,7 +497,7 @@ const api = {
     request(`/accounts/${accountId}/billing-cycles`),
 
   // Account Types
-  getAccountTypes: (options: RequestOptions = {}): Promise<AccountType[]> =>
+  getAccountTypes: (options: ReadOptions = {}): Promise<AccountType[]> =>
     request("/account-types", options),
   createAccountType: (data: CreateAccountTypeRequest): Promise<AccountType> =>
     request("/account-types", { method: "POST", body: JSON.stringify(data) }),
@@ -506,7 +513,7 @@ const api = {
     request(`/account-types/${id}`, { method: "DELETE" }),
 
   // Categories & groups
-  getCategories: (options: RequestOptions = {}): Promise<Category[]> =>
+  getCategories: (options: ReadOptions = {}): Promise<Category[]> =>
     request("/categories", options),
   createCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/categories", { method: "POST", body: JSON.stringify(data) }),
@@ -514,7 +521,7 @@ const api = {
     request(`/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteCategory: (id: string): Promise<DeleteCategoryResult> =>
     request(`/categories/${id}`, { method: "DELETE" }),
-  getGroups: (options: RequestOptions = {}): Promise<CategoryGroup[]> =>
+  getGroups: (options: ReadOptions = {}): Promise<CategoryGroup[]> =>
     request("/groups", options),
   createGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/groups", { method: "POST", body: JSON.stringify(data) }),
@@ -527,7 +534,7 @@ const api = {
     request(`/groups/${id}`, { method: "DELETE" }),
 
   // Admin: global groups & categories shared by every user
-  getAdminCatalog: (options: RequestOptions = {}): Promise<AdminCatalog> =>
+  getAdminCatalog: (options: ReadOptions = {}): Promise<AdminCatalog> =>
     request("/admin/catalog", options),
   createGlobalGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/admin/groups", { method: "POST", body: JSON.stringify(data) }),
@@ -641,7 +648,7 @@ const api = {
   // schedule: null when the loan has no schedule yet.
   getLoanSchedule: (
     accountId: string,
-    options: RequestOptions = {},
+    options: ReadOptions = {},
   ): Promise<LoanScheduleDetail> =>
     request(`/accounts/${accountId}/loan-schedule`, options),
   // What settling this loan on `date` ("YYYY-MM-DD") costs: its outstanding
@@ -725,7 +732,7 @@ const api = {
 
   // Generic per-user settings (the same /paperless/settings endpoint also
   // carries the transactions page-size preference).
-  getUserSettings: (options: RequestOptions = {}): Promise<UserSettings> =>
+  getUserSettings: (options: ReadOptions = {}): Promise<UserSettings> =>
     request("/paperless/settings", options),
   updateUserSettings: (data: UpdateUserSettingsRequest): Promise<null> =>
     request("/paperless/settings", {
@@ -781,7 +788,7 @@ const api = {
   },
 
   // Rules
-  getRules: (options: RequestOptions = {}): Promise<Rule[]> =>
+  getRules: (options: ReadOptions = {}): Promise<Rule[]> =>
     request("/rules", options),
   createRule: (data: CreateRuleRequest): Promise<Rule> =>
     request("/rules", { method: "POST", body: JSON.stringify(data) }),
@@ -795,7 +802,7 @@ const api = {
     request("/rules/preview", { method: "POST", body: JSON.stringify(data) }),
 
   // Payees
-  getPayees: (options: RequestOptions = {}): Promise<Payee[]> =>
+  getPayees: (options: ReadOptions = {}): Promise<Payee[]> =>
     request("/payees", options),
   createPayee: (data: CreatePayeeRequest): Promise<Payee> =>
     request("/payees", { method: "POST", body: JSON.stringify(data) }),
@@ -825,7 +832,7 @@ const api = {
     }),
 
   // Recurring series & subscriptions (forecast + manual linking only)
-  getRecurringSeries: (options: RequestOptions = {}): Promise<{ data: RecurringSeries[] }> =>
+  getRecurringSeries: (options: ReadOptions = {}): Promise<{ data: RecurringSeries[] }> =>
     request("/recurring", options),
   createRecurringSeries: (
     data: CreateRecurringSeriesRequest,
@@ -854,7 +861,7 @@ const api = {
     request(`/recurring/${id}/transactions`),
   getRecurringTerms: (
     id: string,
-    options: RequestOptions = {},
+    options: ReadOptions = {},
   ): Promise<{ data: RecurringSeriesTerm[] }> =>
     request(`/recurring/${id}/terms`, options),
   createRecurringTerm: (

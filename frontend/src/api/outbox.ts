@@ -638,12 +638,18 @@ interface WritePlan {
   gone: number;
 }
 
-// isPutWhole is the op family whose endpoint writes every column, so a
-// field-level patch is the wrong payload for it: the columns the patch does not
-// name are written as well, from whatever the server last held, and the rest of
-// the form's row is lost with them. The suffix is the naming the union already
-// gives these ops, and it is a safer test than a list of them would be — an op
-// nobody remembered to add to a list is sent the wrong payload silently.
+// isPutWhole names the ops the registry declares as putWhole: the five whose
+// endpoint writes every column on every call, so a field-level patch is the wrong
+// payload for them — the columns the patch does not name are written too, from
+// whatever the server last held, and the rest of the form's row is lost with them.
+//
+// The test is the suffix rather than a list, and that is deliberately too broad:
+// it also catches the six putPartial ops, which the registry declares as leaving
+// an omitted key alone and which would be perfectly happy with a diff. The
+// refusal is over-broad in the safe direction — an over-broad refusal is loud and
+// costs the user one clear message, while a missing one is a silent column wipe —
+// and it narrows to `OPS[op].shape === "putWhole"` when the registry's overlay
+// lands, which is the thing that makes the whole-row payload buildable.
 function isPutWhole(op: WriteOp): boolean {
   return op.endsWith(".put");
 }
@@ -651,14 +657,15 @@ function isPutWhole(op: WriteOp): boolean {
 // planEdit decides one queued edit against the server's current row.
 async function planEdit(entry: EditEntry, theirs: TheirsReader): Promise<WritePlan> {
   if (isPutWhole(entry.op)) {
-    // Loud, and on purpose. The payload this family needs is the merged row
-    // rather than the patch, and building it is the op registry's job: a flush
-    // wired with a reader and no overlay would PUT a bare diff and wipe every
-    // column the form opened with, which no test in this file would catch and no
-    // user would see. The throw is the reminder, and it goes when the overlay
-    // lands.
+    // Loud, and on purpose, for the reason isPutWhole gives: this family needs the
+    // merged row rather than the patch, and building that overlay is the op
+    // registry's job. A flush wired with a reader and no overlay would PUT a bare
+    // diff and wipe every column the form opened with, which no test in this file
+    // would catch and no user would see. The throw is the reminder, and it goes
+    // when the overlay lands — narrowed to the ops the registry declares as
+    // putWhole, which is why the six putPartial ops will start flowing again.
     throw new Error(
-      `flushOutbox cannot send a ${entry.op} entry: a .put op writes every column, so it needs the merged row as its payload, and the op registry has not supplied that overlay yet`,
+      `flushOutbox cannot send a ${entry.op} entry: a .put op is sent the merged row rather than the patch, and the op registry has not supplied that overlay yet`,
     );
   }
 

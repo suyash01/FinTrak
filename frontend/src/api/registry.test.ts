@@ -18,11 +18,6 @@ import type { FieldPatch, FieldValue } from "./merge";
 import type { WriteOp } from "./outbox";
 import { OPS, applyOp, readTheirs, type ApplyShape } from "./registry";
 
-// The registry reaches the server only through client.ts, so mocking that module
-// is also the statement of which calls a queued write is allowed to make. The
-// module's `newClientKey` is not mocked on purpose: nothing here may mint a key,
-// so a call to it would be a TypeError rather than a silently wrong value.
-vi.mock("./client", () => ({ default: apiMocks }));
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     getTransactions: vi.fn(),
@@ -61,6 +56,10 @@ const { apiMocks } = vi.hoisted(() => ({
   },
 }));
 
+// The registry reaches the server only through client.ts, so mocking that module
+// is also the statement of which calls a queued write is allowed to make. The
+// module's `newClientKey` is not mocked on purpose: nothing here may mint a key,
+// so a call to it would be a TypeError rather than a silently wrong value.
 vi.mock("./client", () => ({ default: apiMocks }));
 
 const TRANSACTION: Transaction = {
@@ -602,6 +601,46 @@ describe("the row-naming writes", () => {
     });
   });
 
+  // BulkCategorizeRequest.CategoryID is a required string and the handler reads
+  // only the literal "uncategorized" as a clear (everything else goes to
+  // uuid.Parse), so the empty string asId used to send was a 400 — and the
+  // endpoint does have a real clear, under a name of its own.
+  it("categorizes to uncategorized when the user cleared the category", async () => {
+    await applyMany("transaction.categorize", ["t1", "t2"], null);
+    expect(apiMocks.bulkCategorize).toHaveBeenCalledWith({
+      transactionIds: ["t1", "t2"],
+      categoryId: "uncategorized",
+    });
+  });
+
+  // BulkUpdatePayeeRequest.PayeeID and BulkBillingCycleRequest.BillingCycleID are
+  // required uuids behind an EXISTS guard, so the zero uuid an empty string
+  // unmarshals to matches no row: a 200 carrying updated: 0. There is no way to
+  // clear either through these endpoints, and a clear reported as applied is a
+  // user's edit lost to a success the server never performed.
+  it.each<[WriteOp, keyof typeof apiMocks]>([
+    ["transaction.payee", "bulkUpdatePayee"],
+    ["transaction.billingCycle", "bulkUpdateBillingCycle"],
+  ])("%s refuses a clear rather than sending an id the endpoint cannot read", async (op, method) => {
+    await expect(applyMany(op, ["t1"], null)).rejects.toThrow(
+      new RegExp(`${op}.*cannot detach`, "s"),
+    );
+    expect(apiMocks[method]).not.toHaveBeenCalled();
+  });
+
+  it("passes a real id through unchanged, so a refusal above cannot be a blanket one", async () => {
+    await applyMany("transaction.payee", ["t1"], "p1");
+    await applyMany("transaction.billingCycle", ["t1"], "bc1");
+    expect(apiMocks.bulkUpdatePayee).toHaveBeenCalledWith({
+      transactionIds: ["t1"],
+      payeeId: "p1",
+    });
+    expect(apiMocks.bulkUpdateBillingCycle).toHaveBeenCalledWith({
+      transactionIds: ["t1"],
+      billingCycleId: "bc1",
+    });
+  });
+
   it("adds the tags the entry names", async () => {
     await applyMany("transaction.tags", ["t1", "t2"], ["milk"]);
     expect(apiMocks.bulkUpdateTags).toHaveBeenCalledWith({
@@ -674,14 +713,28 @@ describe("the row-naming writes", () => {
     ["transaction.categorize", "categoryId", "c1", "bulkCategorize", { transactionIds: ["t1"], categoryId: "c1" }],
     ["transaction.payee", "payeeId", "p1", "bulkUpdatePayee", { transactionIds: ["t1"], payeeId: "p1" }],
     ["transaction.billingCycle", "billingCycleId", "bc1", "bulkUpdateBillingCycle", { transactionIds: ["t1"], billingCycleId: "bc1" }],
-    ["transaction.tags", "tags", ["milk"], "bulkUpdateTags", { transactionIds: ["t1"], add: ["milk"], remove: [] }],
     ["transaction.loan", "loanAccountId", "a1", "bulkLoan", { transactionIds: ["t1"], loanAccountId: "a1" }],
     ["transaction.recurring", "recurringSeriesId", "s1", "attachRecurring", { seriesId: "s1", transactionIds: ["t1"] }],
   ])("%s sends one row the same way, with the field it writes", async (op, field, value, method, body) => {
     // The single-row apply is the batch of one, so the two cannot disagree about
-    // which field of the diff the write is about.
+    // which field of the diff the write is about. transaction.tags is not here and
+    // the table below says what it does instead.
     await applyOp(op, "t1", { [field]: value }, null);
     expect(apiMocks[method]).toHaveBeenCalledWith(body);
+  });
+
+  // The one op of the seven whose single-row form does not exist. Its value is a
+  // delta of add/remove names, not the row's tag list, so a field-level patch can
+  // only be read as an addition — and a removal routed here would be added
+  // instead, which is a user's edit becoming its opposite. The row's complete tag
+  // list belongs to the projection, where the merge needs it; the two are
+  // different questions about the same field, not the same value.
+  it("refuses the single-row form of a tag change, which only the bulk endpoint can make", async () => {
+    await expect(
+      applyOp("transaction.tags", "t1", { tags: ["-milk"] }, null),
+    ).rejects.toThrow(/transaction\.tags[\s\S]*bulk/i);
+    // Nothing went out in the wrong direction either.
+    expect(apiMocks.bulkUpdateTags).not.toHaveBeenCalled();
   });
 
   it("links a single disbursement credit the same way", async () => {

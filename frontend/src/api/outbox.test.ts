@@ -865,13 +865,19 @@ describe("outbox", () => {
     })).rejects.toThrow(/dispatch is broken/);
   });
 
-  // A field-level patch is the wrong payload for an endpoint that writes every
-  // column: sending one sets the columns it names and leaves the rest exactly as
-  // the server last had them, which is a wipe of the fields the form opened with
-  // and the user was never shown. The right payload is the merged row, and the
-  // overlay that builds it belongs to the op registry — so until that exists this
-  // is loud rather than one enum away from a data wipe.
-  it("refuses to send a .put op, whose endpoint writes every column", async () => {
+  // A field-level patch is the wrong payload for a putWhole op, whose endpoint
+  // writes every column on every call: sending one leaves the columns it does not
+  // name exactly as the server last had them, which is a wipe of the fields the
+  // form opened with and the user was never shown. The right payload is the merged
+  // row, and the overlay that builds it belongs to the op registry — so until that
+  // exists this is loud rather than one enum away from a data wipe.
+  //
+  // The op below is a putPartial one, which the registry declares as leaving an
+  // omitted key alone and which would be perfectly happy with a diff: the test is
+  // the `.put` suffix, so the refusal is deliberately wider than the reason. It is
+  // over-broad in the safe direction, and it narrows to the registry's declared
+  // shape when the overlay lands.
+  it("refuses to send a .put op, whose payload is not built yet", async () => {
     enqueueEdit(USER, "account.put", "acct-1", { name: "old", color: "#fff" }, { name: "new" }, { name: "old", color: "#fff" });
 
     await expect(flushOutbox(USER, async () => {}, {
