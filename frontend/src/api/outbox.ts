@@ -321,28 +321,27 @@ export function enqueueEdit(
   if (existing?.kind === "edit") return existing;
 
   // The stored base is the row as it stands *locally*: the caller's base — the
-  // row the form opened with — advanced by everything the queue will write to
-  // this row. The two are merged rather than swapped, because the caller's base
-  // holds the fields nothing queued has touched, and dropping one of those would
-  // leave the merge with no shared baseline for a field the user did set, which
-  // it holds as a conflict.
+  // server's row as of the moment this form opened — advanced by every write the
+  // queue will make to this row. Only the writes are overlaid, never a whole row
+  // read back off an earlier entry: that entry's base is a snapshot of an earlier
+  // moment, and the server does not stand still for a queued edit (a flush that
+  // stopped at a 401/5xx leaves its entries queued while somebody else moves the row
+  // on), so a snapshot winning here puts a field nobody queued a write for back to
+  // a value the user has already read past — and the merge then holds that field as
+  // a conflict between the user and a third party who never touched it.
   //
-  // Basing this edit on the server's row instead is what makes a second offline
-  // edit look like an argument: the merge compares `theirs` against the base, so
-  // a base that predates an earlier queued write reads as the user having changed
-  // the fields that write changed — a phantom conflict, on a field they never
-  // argued about, held in front of them to decide. And basing it on the form's
-  // original row is no better: it is the same row the server's response would give,
-  // so the same phantom conflict appears on every field the earlier write touched.
-  // Only the projection says "the user moved this from 'first' to 'second'", which
-  // is what happened.
+  // Projecting at all is what keeps the opposite failure away: a base that predates
+  // an earlier queued write reads as the user having changed the fields that write
+  // changed, so the merge holds a phantom conflict on a field they never argued
+  // about. Only the projection says "the user moved this from 'first' to 'second'",
+  // which is what happened.
   const entry: EditEntry = {
     key,
     queuedAt: Date.now(),
     kind: "edit",
     op,
     rowId,
-    base: { ...base, ...queuedRowProjection(userId, op, rowId) },
+    base: { ...base, ...Object.fromEntries(pendingWrites(entries, rowId)) },
     patch,
     snapshot,
   };
@@ -387,29 +386,31 @@ export function enqueueBulk(
 }
 
 // pendingWrites lists what the queue will put on one row, as `[field, value]` pairs
-// in the order the entries were recorded: an edit contributes the fields its patch
-// carries, and a bulk write contributes the one field it sets, for every row it
-// lists. One list for both readers, because the two have to agree about what is
-// pending for a row — a reader that counted fewer writers than the other would
-// store a base holding a value the queue itself is about to overwrite.
+// in the order the entries were recorded: everything queued for the row is a writer
+// to it, matched on row membership and field name and nothing else. An edit
+// contributes the fields its patch carries; a bulk write contributes the one field it
+// sets, for every row it lists.
 //
-// A bulk write matches on row membership and field name, never on the op. A bulk
-// categorize and a single `transaction.patch` are different operations writing the
-// same field of the same row, and matching on the op would leave the row reading as
-// untouched: an edit made after the bulk write would be stored against the pre-bulk
-// row, and the flush would hold a conflict on a field the user never argued about,
-// over a change the user themselves made. The op still filters the edits, which are
-// resource-scoped: it is what says which resource's row this is.
+// The op is deliberately not part of the match. The transaction ops — .patch, .payee,
+// .categorize, .tags, .billingCycle, .loan, .recurring, .loanDisbursement — all
+// address the same transaction row and differ only in how the write travels, and a
+// bulk write and a single edit are the same kind of writer twice over. Matching on
+// the op would make a queued write invisible to the next edit's base whenever the two
+// went through different ops, and the merge would then hold a conflict on a field the
+// user edited, over a change the user themselves made.
+//
+// One list for everyone who has to know what is pending for a row, because they have
+// to agree: the code that stores a base and a reader that draws the row would
+// otherwise disagree about what the row is about to say.
 function pendingWrites(
   entries: QueuedWrite[],
-  op: WriteOp,
   rowId: string,
 ): [string, FieldValue][] {
   const writes: [string, FieldValue][] = [];
   for (const entry of entries) {
     if (entry.kind === "bulk") {
       if (entry.rows.includes(rowId)) writes.push([entry.field, entry.value]);
-    } else if (entry.kind === "edit" && entry.op === op && entry.rowId === rowId) {
+    } else if (entry.kind === "edit" && entry.rowId === rowId) {
       for (const [field, value] of Object.entries(entry.patch)) {
         // An explicit undefined is not a field (merge.ts: absent is not null), and
         // JSON would have dropped it on the way into storage in any case.
@@ -428,48 +429,50 @@ function pendingWrites(
 // not null).
 export function queuedPatchFor(
   userId: string,
-  op: WriteOp,
   rowId: string,
   field: string,
 ): FieldValue {
-  const writes = pendingWrites(readEntries(userId), op, rowId);
+  const writes = pendingWrites(readEntries(userId), rowId);
   for (let i = writes.length - 1; i >= 0; i -= 1) {
     if (writes[i][0] === field) return writes[i][1];
   }
   return undefined;
 }
 
-// queuedRowProjection is the row as it stands locally: the first queued edit's base
-// with every queued write applied in order, or null when nothing at all is queued
-// for the row. It is what enqueueEdit advances the caller's base by, and it is the
-// only answer to "what does this row say now" while the queue is not empty — the
-// server's response is a row the user has since moved away from.
-//
-// The overlay is a plain last-write one, and a bulk write to the same row is one of
-// those writers, in the order it was queued: the user may have edited a row before
-// and after a bulk write, and the last one to write a field is what the row will
-// say. Leaving bulk writes out would put their stale pre-write value in the base of
-// the next edit, and the merge would then hold a conflict on a field the user never
-// argued about. merge.ts's valuesEqual is a comparison, not a merge, and there is
-// nothing here to reconcile: these entries are the user's own.
-export function queuedRowProjection(
-  userId: string,
-  op: WriteOp,
-  rowId: string,
-): FieldPatch | null {
-  const entries = readEntries(userId);
+// projectionOf is the row as it stands locally, seeded from the first queued edit's
+// base. That seed is a whole-row snapshot and it belongs to a reader with no row of
+// its own to start from, so it is *not* what enqueueEdit stores as a base — see the
+// comment there, where a superseded snapshot would regress the fields no queued write
+// touches.
+function projectionOf(entries: QueuedWrite[], rowId: string): FieldPatch | null {
   const queued = entries.filter(
-    (entry): entry is EditEntry =>
-      entry.kind === "edit" && entry.op === op && entry.rowId === rowId,
+    (entry): entry is EditEntry => entry.kind === "edit" && entry.rowId === rowId,
   );
   // A bulk write carries no base for the row, so with no edit queued there is
   // nothing to seed from and the projection is the bulk write's own contribution.
-  const writes = pendingWrites(entries, op, rowId);
+  const writes = pendingWrites(entries, rowId);
   if (queued.length === 0 && writes.length === 0) return null;
 
   const row: FieldPatch = { ...queued[0]?.base };
   for (const [field, value] of writes) row[field] = value;
   return row;
+}
+
+// queuedRowProjection is that row: the first queued edit's base with every queued
+// write applied in order, or null when nothing at all is queued for the row. It is
+// the only answer to "what does this row say now" while the queue is not empty — the
+// server's response is a row the user has since moved away from.
+//
+// The overlay is a plain last-write one, and a bulk write to the same row is one of
+// those writers, in the order it was queued: the user may have edited a row before
+// and after a bulk write, and the last one to write a field is what the row will say.
+// merge.ts's valuesEqual is a comparison, not a merge, and there is nothing here to
+// reconcile: these entries are the user's own.
+export function queuedRowProjection(
+  userId: string,
+  rowId: string,
+): FieldPatch | null {
+  return projectionOf(readEntries(userId), rowId);
 }
 
 // removeEntry drops one entry from the queue and reports whether the removal is

@@ -348,7 +348,7 @@ describe("outbox", () => {
   // lose the first.
   it("bases a second edit to the same row on the locally projected row", () => {
     enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "first" }, { notes: "" });
-    expect(queuedRowProjection(USER, "transaction.patch", "row-1")).toEqual({ notes: "first" });
+    expect(queuedRowProjection(USER, "row-1")).toEqual({ notes: "first" });
 
     enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "second" }, { notes: "" });
 
@@ -358,9 +358,9 @@ describe("outbox", () => {
   });
 
   it("reports the effective queued value for a field, or undefined when untouched", () => {
-    expect(queuedPatchFor(USER, "transaction.patch", "row-1", "notes")).toBeUndefined();
+    expect(queuedPatchFor(USER, "row-1", "notes")).toBeUndefined();
     enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "x" }, { notes: "" });
-    expect(queuedPatchFor(USER, "transaction.patch", "row-1", "notes")).toBe("x");
+    expect(queuedPatchFor(USER, "row-1", "notes")).toBe("x");
   });
 
   // A bulk write records the base of every row it touches rather than one base
@@ -410,12 +410,12 @@ describe("outbox", () => {
     const result = mergeFields(edits[0].base, edits[0].patch, { categoryId: "c1", notes: "old" });
     expect(result.conflicts).toEqual([]);
 
-    // The pending value is the same one whichever op is asking about it, and it is
-    // the row that decides, not the op: a bulk categorize and a single patch write
-    // the same field of the same row. r2 was never edited, so only the bulk write
-    // has anything to say about it.
-    expect(queuedPatchFor(USER, "transaction.patch", "r1", "categoryId")).toBe("c1");
-    expect(queuedPatchFor(USER, "transaction.patch", "r2", "categoryId")).toBe("c1");
+    // The pending value is read per row, because that is what a write has: the bulk
+    // categorize and a single patch both set this field of this row, so they have
+    // one answer between them. r2 was never edited, so only the bulk write has
+    // anything to say about it.
+    expect(queuedPatchFor(USER, "r1", "categoryId")).toBe("c1");
+    expect(queuedPatchFor(USER, "r2", "categoryId")).toBe("c1");
   });
 
   // The conflict this projection prevents is on a field the user *did* change
@@ -445,11 +445,95 @@ describe("outbox", () => {
     enqueueEdit(USER, "transaction.patch", "r1", { notes: "old" }, { notes: "second" }, { notes: "old" });
 
     // The last writer of the field is the edit queued last.
-    expect(queuedPatchFor(USER, "transaction.patch", "r1", "notes")).toBe("second");
+    expect(queuedPatchFor(USER, "r1", "notes")).toBe("second");
     const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
     // The first edit is based on the bulk write, and the second on the first edit:
     // a bulk write overlaid last would report "bulk" for both.
     expect(edits[0].base.notes).toBe("bulk");
     expect(edits[1].base.notes).toBe("first");
+  });
+
+  // A queued edit is a write to a row, not to a field of a form, so what advances
+  // the next edit's base is every write queued for the row — whatever op it went
+  // through. transaction.patch, .payee, .categorize, .tags, .billingCycle, .loan,
+  // .recurring and .loanDisbursement all address the same transaction row, and two
+  // edits to one transaction through two of them are one row's history: a base that
+  // could not see the first would hold a conflict on the field the user edited.
+  it("advances the base across queued edits made through different ops", () => {
+    enqueueEdit(USER, "transaction.payee", "r1", { payeeId: "p0" }, { payeeId: "p1" }, { payeeId: "p0" });
+    enqueueEdit(USER, "transaction.patch", "r1", { payeeId: "p0" }, { notes: "n" }, { payeeId: "p0" });
+    enqueueEdit(USER, "transaction.tags", "r1", { payeeId: "p0" }, { tags: ["t"] }, { payeeId: "p0" });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    expect(edits[0].base.payeeId).toBe("p0");
+    expect(edits[1].base.payeeId).toBe("p1");
+    expect(edits[2].base.payeeId).toBe("p1");
+  });
+
+  // The row the form opened on is the server's row *as of that moment*, and a
+  // queued edit does not stop the server moving on: a flush that stopped at a
+  // 401/5xx keeps its entries while somebody else edits the row, and the next read
+  // brings the newer row back. The base has to start from that newer row, because
+  // the earlier edit's own base is a snapshot of a moment that has been superseded
+  // — and a field nobody queued a write for is one the base must not regress.
+  it("keeps a re-read server row as the base of an edit queued after an earlier one", () => {
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "n", amount: 100 }, { notes: "n1" }, { notes: "n", amount: 100 });
+    // The row is read again while that entry is still queued: the server took the
+    // notes, and somebody else moved the amount to 105.
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "n1", amount: 105 }, { amount: 110 }, { notes: "n1", amount: 105 });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    // notes comes from the queued write; amount comes from the row just re-read. The
+    // first entry's base still says 100, and that snapshot must not win.
+    expect(edits[1].base).toEqual({ notes: "n1", amount: 105 });
+  });
+
+  // The conflict this pins is the one a stale snapshot manufactures: the engine
+  // reads theirs.amount=105 against a base of 100, sees a third party, and holds a
+  // field the user has just set — with no third party in it. The assertion has to be
+  // on amount, which is in both the patch and the base; a field absent from the
+  // patch is attributed to nobody and would report no conflict either way.
+  it("does not conflict on a field the server changed while an edit was queued", () => {
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "n", amount: 100 }, { notes: "n1" }, { notes: "n", amount: 100 });
+    enqueueEdit(USER, "transaction.patch", "r1", { notes: "n1", amount: 105 }, { amount: 110 }, { notes: "n1", amount: 105 });
+
+    const edits = getOutboxSnapshot(USER).filter((e) => e.kind === "edit");
+    const result = mergeFields(edits[1].base, edits[1].patch, { notes: "n1", amount: 105 });
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.patch).toEqual({ notes: "n1", amount: 110 });
+  });
+
+  // The stored text is the only copy of the queue, so a refused write has to reach
+  // the caller on the new paths too: an edit reported as queued that is stored
+  // nowhere is a change the user believes is saved and that will never be sent.
+  it("throws rather than claiming a queued edit the browser refused to write", () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    expect(() =>
+      enqueueEdit(USER, "transaction.patch", "row-1", { notes: "" }, { notes: "x" }, { notes: "" }),
+    ).toThrow(OutboxStorageError);
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot(USER)).toHaveLength(0);
+  });
+
+  it("throws rather than claiming a queued bulk write the browser refused to write", () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+
+    expect(() =>
+      enqueueBulk(USER, "transaction.tags", "tags", ["t"], ["row-1"], { "row-1": [] }),
+    ).toThrow(OutboxStorageError);
+    setItem.mockRestore();
+
+    expect(getOutboxSnapshot(USER)).toHaveLength(0);
   });
 });
