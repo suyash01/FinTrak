@@ -9,6 +9,7 @@ import {
   OutboxStorageError,
   removeEntry,
   subscribeOutbox,
+  type QueuedWrite,
 } from "./outbox";
 
 const USER = "user-1";
@@ -287,5 +288,30 @@ describe("outbox", () => {
     // above while leaving an entry the flush cannot send.
     if (entry.kind !== "create") throw new Error("not adopted as a create");
     expect(entry.request.description).toBe("Legacy");
+  });
+
+  // Widening the entry type opened a path this flush cannot take yet, and
+  // quietly leaving such an entry queued is the one failure mode this module
+  // exists to avoid: the queue is the source of truth, so a write that cannot be
+  // sent has to say so rather than sit there looking like progress. It reads as
+  // a programming gap rather than a rejection — nothing catches this but a
+  // developer, which is the point.
+  it("refuses to flush a non-create entry instead of leaving it queued silently", async () => {
+    const edit: QueuedWrite = {
+      kind: "edit",
+      key: "key-1",
+      queuedAt: 1,
+      op: "transaction.patch",
+      rowId: "row-1",
+      base: { notes: "a" },
+      patch: { notes: "mine" },
+      snapshot: { notes: "a" },
+    };
+    localStorage.setItem(`fintrak_outbox:v1:${USER}`, JSON.stringify([edit]));
+
+    await expect(flushOutbox(USER, async () => {})).rejects.toThrow(/edit/);
+
+    // Refusing is not discarding: the entry is still the user's.
+    expect(getOutboxSnapshot(USER)).toHaveLength(1);
   });
 });

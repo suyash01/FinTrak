@@ -305,10 +305,15 @@ export async function flushOutbox(
   for (const entry of readEntries(userId)) {
     // Only a create is sendable through this seam: an edit or a bulk write has
     // to be merged against the server's row first, and posting one to the create
-    // endpoint would be a different request wearing this entry's key. Such an
-    // entry stays queued and still counts in `remaining`, so the queue cannot
-    // look drained while one is waiting.
-    if (entry.kind !== "create") continue;
+    // endpoint would be a different request wearing this entry's key. Throwing
+    // rather than skipping is the point — a `continue` here would leave the entry
+    // queued and counted in `remaining`, which reads as progress to a user
+    // waiting for a sync that is never coming, and the only way it can arise is a
+    // path this module has not written yet. So it is loud: the entry is untouched
+    // and the flush stops, which is what a developer needs to see.
+    if (entry.kind !== "create") {
+      throw new Error(`flushOutbox cannot send a ${entry.kind} entry: not implemented yet`);
+    }
     if (entry.error && !options.retryFailed) continue;
 
     let accepted = false;
