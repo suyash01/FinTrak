@@ -12,12 +12,17 @@ import {
 import { toast } from "sonner";
 import api from "../api/client";
 import {
+  discardConflicts as discardHeldEntries,
   discardFailed as discardFailedEntries,
   flushOutbox,
   getOutboxSnapshot,
+  removeEntry,
+  resolveConflict as recordResolution,
   subscribeOutbox,
   type OutboxEntry,
+  type QueuedWrite,
 } from "../api/outbox";
+import { applyOp, OPS, readTheirs } from "../api/registry";
 import { getOfflineSnapshot, markSynced, subscribeOffline } from "../api/offlineStatus";
 import { useAuth } from "./AuthContext";
 
@@ -27,12 +32,25 @@ interface OfflineContextValue {
   online: boolean;
   servedFromCache: boolean;
   pending: OutboxEntry[];
+  // conflicts are the entries waiting on the *user* rather than on the server: a
+  // field the merge could not attribute to a side, or a row the server no longer
+  // has. They are entries and not counts because the dialog shows the two
+  // competing values and the base they were edited away from, and all three
+  // travel with the entry. They are also disjoint from `pending`'s rejected
+  // entries, which is what lets the banner say which is which.
+  conflicts: QueuedWrite[];
   syncing: boolean;
   // syncedAt changes after a flush wrote something, so a page showing ledger
   // data can reload it.
   syncedAt: number;
   sync: (options?: { retryFailed?: boolean }) => Promise<void>;
   discardFailed: () => void;
+  discardConflicts: () => void;
+  resolveConflict: (
+    key: string,
+    resolution: Record<string, "mine" | "theirs">,
+  ) => void;
+  reCreate: (key: string) => Promise<void>;
 }
 
 const OfflineContext = createContext<OfflineContextValue | undefined>(undefined);
@@ -52,6 +70,18 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     getOutboxSnapshot(userId ?? ""),
   );
 
+  // Derived rather than counted: an entry can be held for a conflict and later
+  // be discarded, and a tally kept in state would have to survive every write to
+  // the queue. The queue is the only place this is recorded, and it outlives the
+  // tab, so the count is read off it rather than mirrored.
+  const conflicts = useMemo(
+    () =>
+      pending.filter(
+        (entry) => entry.conflict !== undefined || entry.gone === true,
+      ),
+    [pending],
+  );
+
   const [syncing, setSyncing] = useState(false);
   // A ref, not the state, guards re-entry: it keeps `sync` stable so the
   // reconnect effect cannot re-trigger itself through a changed dependency.
@@ -66,27 +96,103 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
         const outcome = await flushOutbox(
           userId,
           async (entry) => {
+            // The two row writes are named positively and the create is what is
+            // left, rather than the other way round: `CreateEntry.kind` is
+            // optional for an entry written before the union existed, so testing
+            // `kind === "create"` cannot exclude a create from the branches
+            // after it (outbox.ts's isRowWrite says the same about the flush's
+            // own dispatch).
+            if (entry.kind === "edit") {
+              // applyOp, not OPS[op].apply directly: the shape is what decides
+              // whether a diff goes out as-is or is overlaid onto the server's
+              // own row, and it is the one place that decision is made. `theirs`
+              // is read here rather than carried from the merge because the
+              // flush hands `send` the decided entry alone, and a `putWhole` op
+              // needs the row to overlay onto — a diff on its own would clear
+              // every column the body did not name.
+              await applyOp(
+                entry.op,
+                entry.rowId,
+                entry.patch,
+                await readTheirs(entry.op, entry.rowId),
+              );
+              return;
+            }
+            if (entry.kind === "bulk") {
+              const spec = OPS[entry.op];
+              // Loud rather than skipped. `applyMany` is the whole of a bulk
+              // write, so an op without one is a write this seam cannot make,
+              // and a flush that swallowed it would remove the entry as applied
+              // and report a batch sent that never left the browser. The flush
+              // rethrows anything that is neither a rejection nor an offline
+              // moment, so the sync stops here with the queue intact.
+              if (!spec.applyMany) {
+                throw new Error(
+                  `cannot post a ${entry.op} bulk write: the op has no batch endpoint`,
+                );
+              }
+              // The rows are the ones the flush narrowed the entry to, so a
+              // batch that partly conflicted sends the rows that did not.
+              await spec.applyMany(entry.rows, entry.value);
+              return;
+            }
+            // Nothing to merge: a create is a whole new row, so there is
+            // nothing on the server it could collide with.
+            //
             // queue: false — the flush owns the retry, so a transport failure
             // must propagate instead of re-queueing the entry it just took.
-            //
-            // Only a create reaches this seam: the flush refuses to dispatch an
-            // edit or a bulk write without a reader that can merge it against
-            // the server's current row, and the op registry is what will supply
-            // one and widen this to all three kinds of queued write.
-            if (entry.kind !== "create") {
-              throw new Error(`cannot post a ${entry.kind} entry`);
-            }
             await api.createTransaction(entry.request, {
               idempotencyKey: entry.key,
               queue: false,
             });
           },
-          options,
+          // The reader is what makes the merge happen at all. Without it
+          // planWrite throws, so an edit would be unsendable rather than
+          // unsafely applied — which is the intended state for a caller with no
+          // registry, and not this one. It is registry's readTheirs rather than
+          // a reader written here so that "the server's row, never the offline
+          // read cache" has exactly one implementation to get wrong: a merge
+          // answered from the cache is a merge against this browser's own belief
+          // of the row, which agrees with itself and can never find a conflict.
+          { ...options, theirs: readTheirs },
         );
-        if (outcome.sent > 0) {
+        // Only a write revalidates the pages holding ledger data. A held
+        // conflict and a gone row are questions for the user, and neither put
+        // anything on the server — a page reloading on them would show the same
+        // rows it already has and report a sync that did not happen. The
+        // `recreated` term is the count the flush cannot yet produce: reCreate
+        // below is the only path that writes a gone row and it marks its own
+        // sync, and the disjunct is here so a flush that starts counting it does
+        // not need this rule re-derived.
+        if (outcome.sent > 0 || outcome.recreated > 0) {
           markSynced(Date.now());
+        }
+        if (outcome.sent > 0) {
+          // Entries, so a bulk write of 199 rows reports as one, and the noun
+          // is left as it was rather than corrected here: this line says what
+          // drained the queue, and the wording shown next to the pending count
+          // is the banner's to own. It reads "transaction" for an edit, which
+          // is the one piece of copy this seam now gets wrong.
           toast.success(
             `Synced ${outcome.sent} offline transaction${outcome.sent === 1 ? "" : "s"}`,
+          );
+        }
+        if (outcome.conflicted > 0) {
+          // Fields, not entries, and this flush's count rather than a running
+          // total: a still-held entry is re-read and re-merged on the next
+          // flush, so it is counted again there. A caller that accumulated it
+          // would double-count every conflict the user has not answered yet;
+          // the banner displays it, which is the shape that stays honest.
+          toast.error(
+            `${outcome.conflicted} offline change${outcome.conflicted === 1 ? " needs" : "s need"} your decision: someone else edited the same field${outcome.conflicted === 1 ? "" : "s"}`,
+          );
+        }
+        if (outcome.gone > 0) {
+          // Rows, not entries: a batch of two hundred that lost one row is not
+          // two hundred failures, and saying so is what tells the user the
+          // write mostly landed.
+          toast.error(
+            `${outcome.gone} offline row${outcome.gone === 1 ? "" : "s"} no longer ${outcome.gone === 1 ? "exists" : "exist"} on the server and ${outcome.gone === 1 ? "was" : "were"} not applied`,
           );
         }
         if (outcome.failed > 0) {
@@ -131,6 +237,110 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     }
   }, [userId]);
 
+  // The explicit counterpart to discardFailed, and separate from it because the
+  // two answer different questions: a rejected entry is a payload the server
+  // would not take, while a held one is an edit nobody has decided about yet.
+  // Folding them into one button would drop the user's own work behind a
+  // decision about the server's.
+  const discardConflicts = useCallback(() => {
+    if (!userId) return;
+    let dropped: number;
+    try {
+      dropped = discardHeldEntries(userId);
+    } catch (err) {
+      toast.error((err as Error).message);
+      return;
+    }
+    if (dropped > 0) {
+      toast.success(
+        `Discarded ${dropped} offline change${dropped === 1 ? "" : "s"}`,
+      );
+    }
+  }, [userId]);
+
+  const resolveConflict = useCallback(
+    (key: string, resolution: Record<string, "mine" | "theirs">) => {
+      if (!userId) return;
+      // A `false` here is not a no-op to be ignored: the entry still carries its
+      // conflict, so the next flush re-reads the server's row and holds the same
+      // question again — and a dialog that closed over a decision the queue
+      // never learned about is the silent discard this feature exists to
+      // prevent.
+      if (!recordResolution(userId, key, resolution)) {
+        toast.error(
+          "Could not record your answer: browser storage is unavailable or full. Nothing was lost — the change is still queued, so try again.",
+        );
+      }
+    },
+    [userId],
+  );
+
+  const reCreate = useCallback(
+    async (key: string) => {
+      if (!userId) return;
+      // Read from the queue rather than from `conflicts`: the entry is the only
+      // place the snapshot and the patch both exist, and a key that is no longer
+      // queued is a re-create that already happened.
+      const entry = getOutboxSnapshot(userId).find(
+        (candidate) => candidate.key === key,
+      );
+      if (!entry) return;
+      if (entry.kind !== "edit") {
+        toast.error("Only a single-row change can be re-created as a new row.");
+        return;
+      }
+      // Present only on transaction rows, so an op without one is a row this
+      // path cannot rebuild — the server's create endpoint makes a transaction
+      // and nothing else. Refusing is better than a row that is not the one the
+      // user was editing.
+      const reCreateRow = OPS[entry.op].reCreate;
+      if (!reCreateRow) {
+        toast.error(
+          `This kind of change cannot be re-created as a new row: ${entry.op} has no create endpoint.`,
+        );
+        return;
+      }
+      // The entry's own key, so a re-create whose response was lost (a timeout,
+      // a killed tab) is recognised on the next attempt rather than inserting a
+      // second money row. It is the same key the entry was stored under, and the
+      // server matches it per user.
+      let id: string;
+      try {
+        id = await reCreateRow(entry.snapshot, entry.patch, entry.key);
+      } catch (err) {
+        // Caught rather than propagated, and the entry deliberately stays
+        // queued. Both ways this can fail leave the row unwritten — a transport
+        // failure reached nobody, and a rejection is the server declining a
+        // payload — so re-creating again is the right answer either way, and the
+        // message is the server's own where there is one. Letting the rejection
+        // escape would leave a click with nothing to show and no way back to the
+        // dialog, since the caller cannot act on a promise it was handed as a
+        // plain handler.
+        toast.error((err as Error).message);
+        return;
+      }
+      // Only now: the row exists on the server, and an entry left queued would be
+      // replayed on the next flush against a row the user has already been told
+      // about. A removal the browser refuses is reported rather than swallowed,
+      // for the sync's reason — the entry is still there, and the user watching
+      // the pending count is the only way they would learn the queue is stuck.
+      if (!removeEntry(userId, key)) {
+        toast.error(
+          "The transaction was re-created, but this browser could not update the offline queue. Nothing was lost — the re-created row will not be created twice.",
+        );
+        return;
+      }
+      // A new row is a change to the server's copy of the ledger, so the pages
+      // showing ledger data are stale until they reload.
+      markSynced(Date.now());
+      // The new id is named because the row that came back is not the row the
+      // user was editing: they are still holding the old one, and a message
+      // without it would leave them looking for an edit that moved.
+      toast.success(`Re-created the transaction as a new one (${id})`);
+    },
+    [userId],
+  );
+
   // Send whatever is waiting as soon as there is a connection — on mount (a
   // queue left over from a previous session) and on every reconnect.
   useEffect(() => {
@@ -143,12 +353,28 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       online,
       servedFromCache,
       pending,
+      conflicts,
       syncing,
       syncedAt,
       sync,
       discardFailed,
+      discardConflicts,
+      resolveConflict,
+      reCreate,
     }),
-    [online, servedFromCache, pending, syncing, syncedAt, sync, discardFailed],
+    [
+      online,
+      servedFromCache,
+      pending,
+      conflicts,
+      syncing,
+      syncedAt,
+      sync,
+      discardFailed,
+      discardConflicts,
+      resolveConflict,
+      reCreate,
+    ],
   );
 
   return (
