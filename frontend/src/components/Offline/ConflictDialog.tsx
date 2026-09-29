@@ -189,16 +189,26 @@ export default function ConflictDialog({
     (total, entry) => total + unitsOf(entry).length,
     0,
   );
-  // Rows rather than entries, for the reason the section under it counts them:
-  // a bulk write that lost one row of two hundred is one entry and one lost row,
+  // Filtered rather than counted in place, because the map below renders exactly
+  // these entries as a gone section and the description has to be counting the
+  // same ones: a count that included an entry nothing renders would describe a
+  // row the user cannot see.
+  const goneEntries = entries.filter(
+    (entry): entry is EditEntry | BulkEntry =>
+      entry.gone === true && isRowWrite(entry),
+  );
+  // Rows rather than entries, for the reason the section under it counts them: a
+  // bulk write that lost one row of two hundred is one entry and one lost row,
   // and a count of entries would say the opposite of what the user is reading.
-  const gone = entries.reduce(
-    (total, entry) =>
-      entry.gone === true
-        ? total + (entry.kind === "bulk" ? entry.rows.length : 1)
-        : total,
+  const gone = goneEntries.reduce(
+    (total, entry) => total + (entry.kind === "bulk" ? entry.rows.length : 1),
     0,
   );
+  // Read from the same `canReCreate` the button is rendered from rather than from
+  // a second condition. The two have to agree: a description that promises to
+  // write a row again while the section offers no way to do it is the same defect
+  // as offering a button that fails, one layer of copy further out.
+  const reCreatable = goneEntries.some(canReCreate);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -211,29 +221,38 @@ export default function ConflictDialog({
             </DialogTitle>
           </div>
           <DialogDescription>
+            {fields > 0 && gone > 0 && (
+              <>
+                {gone === 1 ? "A row" : `${gone} rows`} you edited no longer{" "}
+                {gone === 1 ? "exists" : "exist"} on the server.{" "}
+              </>
+            )}
             {fields > 0 ? (
               <>
-                {gone > 0 && (
-                  <>
-                    {gone === 1 ? "A row" : `${gone} rows`} you edited no longer{" "}
-                    {gone === 1 ? "exists" : "exist"} on the server.{" "}
-                  </>
-                )}
                 {fields === 1 ? "A field" : `${fields} fields`} you edited{" "}
                 {fields === 1 ? "was" : "were"} changed by somebody else while you
                 were offline. Nothing has been sent — choose which version to keep,
                 and the next sync sends it.
               </>
-            ) : (
+            ) : gone > 0 ? (
               // Reached whenever every hold is a gone row, which is the likeliest
               // single hold there is. There is no field to choose between, so the
-              // sentence has to be the one that is true: nothing was written, and
-              // what happens next is per row rather than per field.
+              // sentence has to be the one that is true, and the last clause names
+              // only the action the section will actually offer.
               <>
                 {gone === 1 ? "A row" : `${gone} rows`} you edited no longer{" "}
                 {gone === 1 ? "exists" : "exist"} on the server, so none of this was
-                written. Write it again as a new row, or discard it.
+                written.{" "}
+                {reCreatable
+                  ? "Write it again as a new row, or discard it."
+                  : "It can only be discarded from here."}
               </>
+            ) : (
+              // Neither hold is on screen, which the queue should not produce — a
+              // hold is recorded with units in it. Said rather than left blank
+              // because an empty paragraph is what `aria-describedby` would then
+              // point at.
+              "There is nothing here to choose between."
             )}
           </DialogDescription>
         </DialogHeader>
@@ -290,6 +309,27 @@ function unitsOf(entry: QueuedWrite): ConflictUnit[] {
 
 function isRowWrite(entry: QueuedWrite): entry is EditEntry | BulkEntry {
   return entry.kind !== "create";
+}
+
+// canReCreate is the one question about a gone entry, and it is a function rather
+// than a condition written twice because it is read in two places that must not
+// disagree: whether the section renders a Re-create button, and what the dialog's
+// description promises the user can do. A copy that says "write it again" beside a
+// section with no way to do it is the same defect as a button that fails when it is
+// clicked, one layer of copy further out.
+//
+// Both halves are needed and neither is a guess about the other. A create against a
+// row the server still has would insert a second money row, so a merely conflicted
+// entry is not offered one. And a write whose op has no create endpoint cannot be
+// written again at all, so neither is it — the op question is asked of the registry
+// rather than answered here, because that is where the answer lives:
+// `transaction.patch` is the only op with a reCreate today, and a second list of
+// which ops those are would be one more thing to forget when one is added. The
+// context refuses both, so offering either would be a primary button that answers
+// with an error toast, and an action that fails is worse than an action that is
+// absent.
+function canReCreate(entry: EditEntry | BulkEntry): boolean {
+  return entry.kind === "edit" && OPS[entry.op].reCreate !== undefined;
 }
 
 interface ConflictSectionProps {
@@ -425,18 +465,10 @@ function GoneSection({
   onReCreate: (key: string) => void;
   onDiscard: (key: string) => void;
 }) {
-  // Both halves matter, and neither is a guess about the other. A create against
-  // a row the server still has would insert a second money row, so a merely
-  // conflicted entry is not offered it; and a write whose op has no create
-  // endpoint cannot be written again at all, so neither is it. The op question is
-  // asked of the registry rather than answered here, because that is where the
-  // answer lives — `transaction.patch` is the only op with a reCreate today, and a
-  // second list of which ops those are would be one more thing to forget when one
-  // is added. The context refuses both, so offering either would be a primary
-  // button that answers with an error toast, and an action that fails is worse
-  // than an action that is absent.
-  const canReCreate =
-    entry.kind === "edit" && OPS[entry.op].reCreate !== undefined;
+  // canReCreate, the function, rather than a condition written here: the dialog's
+  // description reads the same one, and a button and a sentence that disagree
+  // about the same entry is the defect both of them are here to avoid.
+  const canRe = canReCreate(entry);
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-border bg-muted/50 p-3">
       <div>
@@ -461,7 +493,7 @@ function GoneSection({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {canReCreate && (
+        {canRe && (
           <Button size="sm" onClick={() => onReCreate(entry.key)}>
             Re-create as a new row
           </Button>

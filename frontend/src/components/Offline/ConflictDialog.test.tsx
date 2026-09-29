@@ -306,10 +306,46 @@ describe("ConflictDialog", () => {
     ).toBeNull();
     expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
 
+    // Asserted positively as well as negatively, because a branch that rendered
+    // nothing at all would satisfy every absence above and leave Radix pointing
+    // `aria-describedby` at an empty paragraph. This row's op is
+    // transaction.patch, so writing it again is on offer and the copy says so.
+    expect(
+      screen.getByText(/Write it again as a new row, or discard it\./),
+    ).toBeInTheDocument();
+
     // Re-create and discard are the whole decision, and both still work.
     await user.click(screen.getByRole("button", { name: /re-create/i }));
     expect(props.onReCreate).toHaveBeenCalledWith("key-1");
     expect(props.onResolve).not.toHaveBeenCalled();
+  });
+
+  it("does not tell a gone row to be written again when the op cannot re-create it", () => {
+    // The same branch, for an op with no create endpoint. Re-create is absent
+    // there — the button condition asks the registry — so instructing the user to
+    // write the row again would be a promise the section does not keep, which is
+    // finding 2's own defect in new words.
+    renderDialog({
+      entries: [
+        goneEdit({
+          op: "account.put",
+          base: { name: "Old" },
+          patch: { name: "New" },
+          snapshot: { name: "Old" },
+        }),
+      ],
+    });
+
+    expect(screen.queryByRole("button", { name: /re-create/i })).toBeNull();
+    expect(screen.queryByText(/Write it again/i)).toBeNull();
+    // And it still says something, and something true: the row is gone, and
+    // discarding is the only action on offer.
+    expect(
+      screen.getByText(/no longer exists on the server, so none of this was written\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/can only be discarded from here\./),
+    ).toBeInTheDocument();
   });
 
   it("forgets a resolved entry's picks if the same key is held again", async () => {
