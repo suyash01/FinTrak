@@ -4,7 +4,19 @@ import { NetworkError } from "./errors";
 import { readCached } from "./offlineCache";
 import { getOfflineSnapshot, setServedFromCache } from "./offlineStatus";
 import { getOutboxSnapshot, OutboxStorageError } from "./outbox";
-import type { Transaction } from "../types";
+import type {
+  Account,
+  AccountType,
+  Category,
+  CategoryGroup,
+  Transaction,
+  UpdateAccountRequest,
+  UpdateAccountTypeRequest,
+  UpdateCategoryGroupRequest,
+  UpdateCategoryRequest,
+  UpdateUserSettingsRequest,
+  UserSettings,
+} from "../types";
 
 const API_BASE = "/api/v1";
 
@@ -485,6 +497,205 @@ describe("offline behaviour", () => {
     billingCycleId: null,
   };
 
+  // The five row-named partial-update families and the settings singleton, each
+  // as its form opened with. `balance`, `isBase`, `sortOrder` and `hasToken` are
+  // on these rows and on none of the projections: they are what a queued base
+  // must not carry, because a base holding a field the row cannot be written
+  // with reads as a difference the user made.
+  const account: Account = {
+    id: "a1",
+    name: "Wallet",
+    accountTypeId: "at1",
+    bank: "HDFC",
+    currency: "INR",
+    color: "#fff",
+    isDefault: true,
+    closed: false,
+    balance: 100,
+  };
+  const accountType: AccountType = {
+    id: "at1",
+    name: "Savings",
+    positiveTxnType: "credit",
+  };
+  const category: Category = {
+    id: "c1",
+    name: "Coffee",
+    icon: "cup",
+    color: "#0f0",
+    groupId: "g1",
+  };
+  const group: CategoryGroup = {
+    id: "g1",
+    name: "Food",
+    icon: "utensils",
+    color: "#f00",
+    isBase: true,
+    isGlobal: false,
+    sortOrder: 0,
+  };
+  // hasToken is what the settings endpoint answers with in place of the token
+  // itself (models.go:272-277), so it is on the row from the start: a base
+  // carrying it would put a value on the wire that this client never read from
+  // anywhere, and a queued diff would claim the user had changed it.
+  const settings: UserSettings = {
+    paperlessUrl: "https://paperless.example",
+    hasToken: true,
+    paperlessTag: "fintrak",
+    pageSize: 50,
+  };
+
+  // One pattern, six endpoints, so the shared behaviour is one table rather than
+  // six near-copies. Each entry is the row the form opened with, the projection
+  // of it that a queued entry has to carry, the payload the save sends, the diff
+  // that payload reduces to against that base, and the save itself. `revert` is
+  // the payload with the edited field back at the base's own value — the form
+  // saved without changing anything — and it is the only thing that turns into a
+  // second payload here, so the entry states its body once.
+  interface PartialFamily {
+    op: string;
+    rowId: string;
+    url: string;
+    base: unknown;
+    queuedBase: Record<string, unknown>;
+    payload: Record<string, unknown>;
+    revert: Record<string, unknown>;
+    diff: Record<string, unknown>;
+    send: (
+      payload: Record<string, unknown>,
+      call: { base?: unknown; queue?: boolean },
+    ) => Promise<unknown>;
+  }
+
+  const PARTIAL_FAMILY: PartialFamily[] = [
+    {
+      op: "account.put",
+      rowId: "a1",
+      url: "/accounts/a1",
+      base: account,
+      queuedBase: {
+        name: "Wallet",
+        accountTypeId: "at1",
+        bank: "HDFC",
+        currency: "INR",
+        color: "#fff",
+        isDefault: true,
+        closed: false,
+      },
+      // What Accounts.tsx's form sends: the row's fields, not the row. A payload
+      // carrying id or balance would put them in the diff as well — the endpoint
+      // ignores them, but the merge would carry a change the user never made.
+      // billingDay: null is the form's default for an account that has none, and
+      // the base carries no such key, so it is not a change.
+      payload: {
+        name: "Renamed",
+        accountTypeId: "at1",
+        bank: "HDFC",
+        currency: "INR",
+        color: "#fff",
+        isDefault: true,
+        closed: false,
+        billingDay: null,
+      },
+      revert: { name: "Wallet" },
+      diff: { name: "Renamed" },
+      send: (payload, { base, queue }) =>
+        api.updateAccount(
+          "a1",
+          payload as unknown as UpdateAccountRequest,
+          base === undefined ? { queue } : { base: base as Account, queue },
+        ),
+    },
+    {
+      op: "accountType.put",
+      rowId: "at1",
+      url: "/account-types/at1",
+      base: accountType,
+      queuedBase: { name: "Savings", positiveTxnType: "credit" },
+      payload: { name: "Current", positiveTxnType: "credit" },
+      revert: { name: "Savings" },
+      diff: { name: "Current" },
+      send: (payload, { base, queue }) =>
+        api.updateAccountType(
+          "at1",
+          payload as unknown as UpdateAccountTypeRequest,
+          base === undefined ? { queue } : { base: base as AccountType, queue },
+        ),
+    },
+    {
+      op: "category.put",
+      rowId: "c1",
+      url: "/categories/c1",
+      base: category,
+      queuedBase: { name: "Coffee", icon: "cup", color: "#0f0", groupId: "g1" },
+      payload: { name: "Tea", icon: "cup", color: "#0f0", groupId: "g1" },
+      revert: { name: "Coffee" },
+      diff: { name: "Tea" },
+      send: (payload, { base, queue }) =>
+        api.updateCategory(
+          "c1",
+          payload as unknown as UpdateCategoryRequest,
+          base === undefined ? { queue } : { base: base as Category, queue },
+        ),
+    },
+    {
+      op: "adminCategory.put",
+      rowId: "c1",
+      url: "/admin/categories/c1",
+      base: category,
+      queuedBase: { name: "Coffee", icon: "cup", color: "#0f0", groupId: "g1" },
+      payload: { name: "Tea", icon: "cup", color: "#0f0", groupId: "g1" },
+      revert: { name: "Coffee" },
+      diff: { name: "Tea" },
+      send: (payload, { base, queue }) =>
+        api.updateGlobalCategory(
+          "c1",
+          payload as unknown as UpdateCategoryRequest,
+          base === undefined ? { queue } : { base: base as Category, queue },
+        ),
+    },
+    {
+      op: "group.put",
+      rowId: "g1",
+      url: "/groups/g1",
+      base: group,
+      queuedBase: { name: "Food", icon: "utensils", color: "#f00" },
+      payload: { name: "Food", icon: "cup", color: "#f00" },
+      revert: { icon: "utensils" },
+      diff: { icon: "cup" },
+      send: (payload, { base, queue }) =>
+        api.updateGroup(
+          "g1",
+          payload as unknown as UpdateCategoryGroupRequest,
+          base === undefined ? { queue } : { base: base as CategoryGroup, queue },
+        ),
+    },
+    {
+      // The singleton: no id in the path, and the row the entry is queued against
+      // is the user. A settings form names the fields it means to set rather than
+      // the row — the row carries hasToken, which is not a field the endpoint
+      // takes and not one the base can hold — so for this one the whole payload
+      // and the diff are the same object.
+      op: "settings.put",
+      rowId: "u1",
+      url: "/paperless/settings",
+      base: settings,
+      queuedBase: {
+        paperlessUrl: "https://paperless.example",
+        paperlessTag: "fintrak",
+        pageSize: 50,
+      },
+      payload: { paperlessTag: "receipts" },
+      revert: { paperlessTag: "fintrak" },
+      diff: { paperlessTag: "receipts" },
+      send: (payload, { base, queue }) =>
+        api.updateUserSettings(
+          payload as unknown as UpdateUserSettingsRequest,
+          base === undefined ? { queue } : { base: base as UserSettings, queue },
+        ),
+    },
+  ];
+
   beforeEach(() => {
     localStorage.clear();
     setServedFromCache(false);
@@ -957,6 +1168,167 @@ describe("offline behaviour", () => {
       api.updateTransaction("t1", { notes: "x" }),
     ).rejects.toThrow(NetworkError);
     expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  // The partial-update families from here on. They are the same pattern as the
+  // transaction above — a base, a diff, and a queue on a transport failure — on
+  // the six endpoints whose handlers leave an omitted key alone.
+  it.each(PARTIAL_FAMILY)("$op PUTs only the field the user changed", async ({
+    url,
+    diff,
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "x" }));
+
+    await send(payload, { base });
+
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(opts.method).toBe("PUT");
+    expect(JSON.parse(opts.body)).toEqual(diff);
+  });
+
+  it.each(PARTIAL_FAMILY)("$op sends the whole payload when no base is supplied", async ({
+    url,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "x" }));
+
+    await send(payload, {});
+
+    // A caller holding no base row must behave exactly as it did before the
+    // offline edit existed: its payload, whole, because it is the only thing
+    // that says what the user changed.
+    const [called, opts] = fetchMock.mock.calls[0];
+    expect(called).toBe(`${API_BASE}${url}`);
+    expect(JSON.parse(opts.body)).toEqual(payload);
+  });
+
+  it.each(PARTIAL_FAMILY)("$op sends no request at all when the form changed nothing", async ({
+    base,
+    payload,
+    revert,
+    send,
+  }) => {
+    // The row already says what the form says. Sending it anyway would put a
+    // request on the wire that writes nothing — and on the offline path would
+    // queue an entry with no change in it.
+    const result = await send({ ...payload, ...revert }, { base });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ queued: false });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(PARTIAL_FAMILY)("$op queues the diff against the projected base when the server is unreachable", async ({
+    op,
+    rowId,
+    diff,
+    queuedBase,
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await send(payload, { base });
+
+    expect(result).toEqual({ queued: true });
+    const entries = getOutboxSnapshot("u1");
+    expect(entries).toHaveLength(1);
+    // The entry is the merge's whole input: which endpoint to reach, which row,
+    // the fields the user changed, and the base they were changed from.
+    expect(entries[0]).toMatchObject({ kind: "edit", op, rowId, patch: diff });
+    const entry = entries[0];
+    if (entry.kind !== "edit") throw new Error(`${op} queued a non-edit`);
+    // The projection, not the row: `balance`, `hasToken` and the rest are on the
+    // row and on no endpoint, and a base carrying one of them would hold the
+    // field as a change nobody made.
+    expect(entry.base).toEqual(queuedBase);
+  });
+
+  it.each(PARTIAL_FAMILY)("$op fails the flush rather than re-queueing the entry it is sending", async ({
+    base,
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // queue: false is what a caller *sending* an already-queued edit passes: a
+    // second copy of the entry behind the flush's back would replay it twice.
+    await expect(send(payload, { base, queue: false })).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it.each(PARTIAL_FAMILY)("$op cannot queue an edit made with no base", async ({
+    payload,
+    send,
+  }) => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // Nothing to be a patch *against*, so there is nothing to record: an entry
+    // with an empty base would merge as though the user had changed every field
+    // in it. The failure is the honest answer.
+    await expect(send(payload, {})).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("keeps a cleared field in a queued diff, and never the token beside it", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    // Two things about the settings singleton in one payload. pageSize: null is
+    // the user clearing the page size, and the endpoint reads a null as a clear
+    // (paperless.go:504 binds page_size whenever the field is set) — a
+    // projection of the user's side would have dropped it, so the queue would
+    // hold a change that is not there. paperlessToken is the field the base can
+    // never carry, and it is sent only because the user typed it.
+    await api.updateUserSettings(
+      { pageSize: null, paperlessToken: "typed-by-the-user" },
+      { base: settings },
+    );
+
+    const entries = getOutboxSnapshot("u1");
+    const entry = entries[0];
+    if (entry.kind !== "edit") throw new Error("updateUserSettings queued a non-edit");
+    expect(entry.patch).toEqual({ pageSize: null, paperlessToken: "typed-by-the-user" });
+    // The base never holds a token, and never hasToken either: the response
+    // reports whether one is set and never what it is (models.go:272-277), so a
+    // base carrying either would put a value on the wire this client never read.
+    expect(entry.base).not.toHaveProperty("paperlessToken");
+    expect(entry.base).not.toHaveProperty("hasToken");
+  });
+
+  it("surfaces a rejected partial update rather than queueing it", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ errors: [{ message: "name is required" }] }, 400),
+    );
+
+    await expect(
+      api.updateCategory("c1", { name: "" }, { base: category }),
+    ).rejects.toMatchObject({ message: "name is required", status: 400 });
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+  });
+
+  it("refuses to queue a partial update under a session that replaced the issuing one", async () => {
+    fetchMock.mockImplementation(() => {
+      storeUser({ id: "u2", email: "b@c.d" } as never);
+      return Promise.reject(new TypeError("Failed to fetch"));
+    });
+
+    // Neither queue may take it: u1 is gone from this browser and u2 never
+    // recorded it, and the server would reject an u1 entry flushed under u2.
+    await expect(
+      api.updateAccount(
+        "a1",
+        { name: "Renamed", accountTypeId: "at1", bank: "HDFC" },
+        { base: account },
+      ),
+    ).rejects.toThrow(NetworkError);
+    expect(getOutboxSnapshot("u1")).toHaveLength(0);
+    expect(getOutboxSnapshot("u2")).toHaveLength(0);
   });
 });
 

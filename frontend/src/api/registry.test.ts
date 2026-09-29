@@ -16,6 +16,7 @@ import type {
 } from "../types";
 import type { FieldPatch, FieldValue } from "./merge";
 import type { WriteOp } from "./outbox";
+import { ApiError } from "./errors";
 import { OPS, applyOp, readTheirs, type ApplyShape } from "./registry";
 
 const { apiMocks } = vi.hoisted(() => ({
@@ -472,6 +473,75 @@ describe("sending a diff", () => {
   ])("%s sends its diff unchanged, because its endpoint leaves an omitted key alone", async (op, method, rowId) => {
     await applyOp(op, rowId, { name: "New" }, { name: "Old" });
     expect(apiMocks[method]).toHaveBeenCalledWith(rowId, { name: "New" });
+  });
+
+  // Review Focus #2. account.go:277-291 writes bank = COALESCE(NULLIF($3, ''),
+  // bank), so an empty string means "not provided" — the server would ignore the
+  // clear and the queue would remove the entry as "applied". Refuse it instead.
+  it("refuses a putPartial clear to an empty string rather than reporting it applied", async () => {
+    await expect(applyOp("account.put", "a1", { bank: "" }, { bank: "HDFC" })).rejects.toThrow(
+      /cannot be cleared to an empty value/i,
+    );
+  });
+
+  // The refusal is the family's, not one op's: it is keyed on the declared shape,
+  // so every putPartial op carries it. The status is part of what it is — the
+  // flush records the message on an entry for a 4xx and rethrows anything that is
+  // not an ApiError or a NetworkError (see outbox.ts isRejection), so a plain
+  // Error here would abort the whole sync and tell the user nothing.
+  it.each<[WriteOp, keyof typeof apiMocks, string]>([
+    ["account.put", "updateAccount", "a1"],
+    ["accountType.put", "updateAccountType", "at1"],
+    ["group.put", "updateGroup", "g1"],
+    ["category.put", "updateCategory", "c1"],
+    ["adminCategory.put", "updateGlobalCategory", "c1"],
+  ])("%s refuses a clear to an empty string, whatever the field", async (op, method, rowId) => {
+    const refusal = await applyOp(op, rowId, { name: "" }, { name: "Old" }).then(
+      () => null,
+      (err: unknown) => err as ApiError,
+    );
+
+    // Named for the entry it fails: the field, so the user knows which clear was
+    // refused, and the op, so a queue holding several of them says which.
+    expect(refusal).toBeInstanceOf(ApiError);
+    expect(refusal?.message).toContain("name cannot be cleared to an empty value");
+    expect(refusal?.message).toContain(op);
+    expect(refusal?.status).toBeGreaterThanOrEqual(400);
+    expect(refusal?.status).toBeLessThan(500);
+    // And nothing went out: a request the server would answer 200 without
+    // changing anything is the failure this refuses to commit.
+    expect(apiMocks[method]).not.toHaveBeenCalled();
+  });
+
+  // The settings singleton is the sixth. Its endpoint is the odd one of the six —
+  // paperless.go:478-508 builds its SET clause by clause behind `if req.X != nil`
+  // rather than with COALESCE(NULLIF(...)), so a "" handed to it is a value it
+  // would store — and the refusal is the family's anyway. A queued diff says
+  // which fields changed, this family is declared putPartial, and over-refusing
+  // is loud: the entry is marked with the reason and the user is told. Leaving it
+  // to a per-endpoint judgement is the silent discard this feature exists to
+  // prevent.
+  it("refuses an empty-string clear on the settings singleton too", async () => {
+    await expect(
+      applyOp("settings.put", "singleton", { paperlessTag: "" }, { paperlessTag: "fintrak" }),
+    ).rejects.toThrow(/paperlessTag cannot be cleared to an empty value by settings\.put/i);
+    expect(apiMocks.updateUserSettings).not.toHaveBeenCalled();
+  });
+
+  // The guard reads the declared shape, so it must not reach across it. A PATCH
+  // builds its SET from the fields present in the body and a putWhole writes every
+  // column, and both write an empty string as a value — refusing there would
+  // refuse a write the endpoint performs.
+  it("lets a patch and a whole-row write send an empty string, which those endpoints do write", async () => {
+    await applyOp("transaction.patch", "t1", { notes: "" }, null);
+    expect(apiMocks.updateTransaction).toHaveBeenCalledWith(
+      "t1",
+      { notes: "" },
+      { queue: false },
+    );
+
+    await applyOp("payee.put", "p1", { name: "" }, { name: "Old" });
+    expect(apiMocks.updatePayee).toHaveBeenCalledWith("p1", { name: "" });
   });
 
   it("sends the settings singleton's diff, which is addressed by nothing", async () => {

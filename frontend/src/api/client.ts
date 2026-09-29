@@ -81,7 +81,14 @@ import { ApiError, NetworkError, isNetworkError } from "./errors";
 import { diffAgainstBase, type FieldPatch } from "./merge";
 import { clearCached, isCacheablePath, readCached, writeCached } from "./offlineCache";
 import { enqueueCreate, enqueueEdit } from "./outbox";
-import { projectTransaction } from "./projections";
+import {
+  projectAccount,
+  projectAccountType,
+  projectCategory,
+  projectGroup,
+  projectSettings,
+  projectTransaction,
+} from "./projections";
 import { setServedFromCache } from "./offlineStatus";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
@@ -486,6 +493,59 @@ export interface UpdateTransactionResult {
   queued: boolean;
 }
 
+// QueuedEdit is what a write that never became a request resolves to in place of
+// a row: `queued: true` when the offline outbox is holding the edit, `queued:
+// false` when there was nothing to send. Only a caller that passed a base can see
+// one, and that is a fact about the write rather than about the type — see
+// EditWrite.
+export interface QueuedEdit {
+  queued: boolean;
+}
+
+// EditOptions is the offline half of a family's write. `base` is the row the
+// caller's form opened with, and it is what makes the write a patch: only the
+// fields the user changed go on the wire, so a concurrent change to a field the
+// form never opened cannot be reverted by this save, and the same patch is what
+// the queue records, so an edit that reached the server and one that did not
+// cannot disagree about what the user changed.
+//
+// The payload stays the caller's own, reduced field by field against the projected
+// base, so it names the fields it means to set rather than the whole row: a
+// payload carrying a key the endpoint does not take (an `id`, a computed
+// `balance`) puts that key in the diff too, where the server ignores it and the
+// merge carries a change nobody made. Every field these six request types can
+// carry is a mergeable one, so projecting the user's side would buy nothing and
+// cost the clears — a null it drops is a clear the user made.
+//
+// `queue: false` is what a caller that is *sending* an already-queued edit
+// passes — the outbox flush, which must not put a second copy of an entry back in
+// the queue when the request does not reach the server.
+export interface EditOptions<Row> {
+  base?: Row;
+  queue?: boolean;
+}
+
+// EditWrite is the call shape of a family whose edit can be queued, and the two
+// signatures are one implementation read from two angles rather than two
+// behaviours: a write with no base has no patch to record, so a request that
+// never reached the server is raised as a failure (updateTransaction refuses to
+// queue on exactly these grounds) and the caller always gets back the server's
+// row. Pass a base and the result may be a QueuedEdit instead, which the caller
+// has to narrow before it reads a row off it — that is the cost of a write that
+// can be held, and it is paid only by the callers that can be held.
+export interface EditWrite<Row, Data> {
+  (id: string, data: Data): Promise<Row>;
+  (id: string, data: Data, options: EditOptions<Row>): Promise<Row | QueuedEdit>;
+}
+
+// SettingsWrite is EditWrite for the one row this API has that is addressed by
+// no id: there is a single settings row per user, so the endpoint takes the body
+// alone.
+export interface SettingsWrite<Row, Data> {
+  (data: Data): Promise<null>;
+  (data: Data, options: EditOptions<Row>): Promise<null | QueuedEdit>;
+}
+
 const api = {
   // Auth
   register: (data: RegisterRequest): Promise<AuthResponse> =>
@@ -501,8 +561,52 @@ const api = {
     request("/accounts", options),
   createAccount: (data: CreateAccountRequest): Promise<Account> =>
     request("/accounts", { method: "POST", body: JSON.stringify(data) }),
-  updateAccount: (id: string, data: UpdateAccountRequest): Promise<Account> =>
-    request(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  updateAccount: (async (
+    id: string,
+    data: UpdateAccountRequest,
+    options: EditOptions<Account> = {},
+  ) => {
+    // updateTransaction's rules, one for one: project the base, take the user's
+    // side as given, put only the diff on the wire, and record that same diff
+    // when the request never reached the server. They are spelled out there, once
+    // — what follows is what is particular to an account.
+    //
+    // The payload is not projected: billingDay is nullable, and a null there is
+    // the user clearing it, which account.go:286 does perform (it binds
+    // billing_day whenever the field is set, null included). A projection of the
+    // user's side would have dropped that clear, and a form that always sends
+    // `billingDay: null` for an account with none would have queued a change to a
+    // field nobody touched.
+    const base = options.base ? projectAccount(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    // An empty diff is not a write: the row already says what the form says, so
+    // there is nothing to send and nothing to queue.
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    // The queue entry belongs to the session that issued the edit.
+    const owner = offlineUserId();
+    return request<Account>(`/accounts/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        // Only a request that never reached the server may be replayed later; a
+        // rejected one is the server refusing this payload, and the user has to
+        // see that.
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        // No base is no queue: a patch with nothing to be a patch *against* would
+        // merge as though the user had changed every field in it.
+        if (!edit) throw err;
+        enqueueEdit(owner, "account.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<Account, UpdateAccountRequest>,
   deleteAccount: (id: string): Promise<{ message?: string; transactionsDeleted?: number }> =>
       request(`/accounts/${id}`, { method: "DELETE" }),
   getBillingCycles: (accountId: string): Promise<{ data: BillingCycle[] }> =>
@@ -513,14 +617,38 @@ const api = {
     request("/account-types", options),
   createAccountType: (data: CreateAccountTypeRequest): Promise<AccountType> =>
     request("/account-types", { method: "POST", body: JSON.stringify(data) }),
-  updateAccountType: (
+  updateAccountType: (async (
     id: string,
     data: UpdateAccountTypeRequest,
-  ): Promise<AccountType> =>
-    request(`/account-types/${id}`, {
+    options: EditOptions<AccountType> = {},
+  ) => {
+    // Name and positiveTxnType, both non-null strings, so the diff is a set of
+    // values and never a clear. An empty string is still refused at the queue
+    // (see registry.ts's applyOp): the user emptying this form is a clear
+    // account_type.go:136 cannot perform, and reporting it as saved would be
+    // reporting a write that never happened.
+    const base = options.base ? projectAccountType(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<AccountType>(`/account-types/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "accountType.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<AccountType, UpdateAccountTypeRequest>,
   deleteAccountType: (id: string): Promise<null> =>
     request(`/account-types/${id}`, { method: "DELETE" }),
 
@@ -529,19 +657,74 @@ const api = {
     request("/categories", options),
   createCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/categories", { method: "POST", body: JSON.stringify(data) }),
-  updateCategory: (id: string, data: UpdateCategoryRequest): Promise<Category> =>
-    request(`/categories/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  updateCategory: (async (
+    id: string,
+    data: UpdateCategoryRequest,
+    options: EditOptions<Category> = {},
+  ) => {
+    // A user's own category: name, icon, colour and group, all non-null strings,
+    // so the diff is a set of values and never a clear. category.go:133 reads an
+    // empty string as "not provided", which is what the queue refuses to record
+    // as one (see registry.ts's applyOp).
+    const base = options.base ? projectCategory(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<Category>(`/categories/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "category.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<Category, UpdateCategoryRequest>,
   deleteCategory: (id: string): Promise<DeleteCategoryResult> =>
     request(`/categories/${id}`, { method: "DELETE" }),
   getGroups: (options: ReadOptions = {}): Promise<CategoryGroup[]> =>
     request("/groups", options),
   createGroup: (data: CreateCategoryGroupRequest): Promise<CategoryGroup> =>
     request("/groups", { method: "POST", body: JSON.stringify(data) }),
-  updateGroup: (
+  updateGroup: (async (
     id: string,
     data: UpdateCategoryGroupRequest,
-  ): Promise<CategoryGroup> =>
-    request(`/groups/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    options: EditOptions<CategoryGroup> = {},
+  ) => {
+    // Name, icon and colour, and nothing nullable: the diff is the set of them
+    // that changed. isBase, isGlobal and sortOrder are not fields this endpoint
+    // writes, so they are not in the projection either — a base carrying one
+    // would read as a change the user made.
+    const base = options.base ? projectGroup(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<CategoryGroup>(`/groups/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(owner, "group.put", id, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<CategoryGroup, UpdateCategoryGroupRequest>,
   deleteGroup: (id: string): Promise<null> =>
     request(`/groups/${id}`, { method: "DELETE" }),
 
@@ -552,14 +735,45 @@ const api = {
     request("/admin/groups", { method: "POST", body: JSON.stringify(data) }),
   createGlobalCategory: (data: CreateCategoryRequest): Promise<Category> =>
     request("/admin/categories", { method: "POST", body: JSON.stringify(data) }),
-  updateGlobalCategory: (
+  updateGlobalCategory: (async (
     id: string,
     data: UpdateCategoryRequest,
-  ): Promise<Category> =>
-    request(`/admin/categories/${id}`, {
+    options: EditOptions<Category> = {},
+  ) => {
+    // The shared catalog, not the user's copy of it: the same fields and the same
+    // partial-update endpoint as updateCategory (category.go:326), on a row every
+    // user of the instance sees. The diff is the user's own either way; what the
+    // flush merges it against is the server's current catalog row, not this
+    // user's copy of the catalog (see registry.ts's adminCategory.put).
+    const base = options.base ? projectCategory(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<Category>(`/admin/categories/${id}`, {
       method: "PUT",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        enqueueEdit(
+          owner,
+          "adminCategory.put",
+          id,
+          edit.base,
+          edit.patch,
+          edit.base,
+        );
+        return { queued: true };
+      },
+    );
+  }) as EditWrite<Category, UpdateCategoryRequest>,
   deleteGlobalCategory: (id: string): Promise<DeleteCategoryResult> =>
     request(`/admin/categories/${id}`, { method: "DELETE" }),
 
@@ -838,11 +1052,43 @@ const api = {
   // carries the transactions page-size preference).
   getUserSettings: (options: ReadOptions = {}): Promise<UserSettings> =>
     request("/paperless/settings", options),
-  updateUserSettings: (data: UpdateUserSettingsRequest): Promise<null> =>
-    request("/paperless/settings", {
+  updateUserSettings: (async (
+    data: UpdateUserSettingsRequest,
+    options: EditOptions<UserSettings> = {},
+  ) => {
+    // The singleton: there is no id to address, so the row an edit is queued
+    // against is the user, and the endpoint takes the body alone. The base is the
+    // UserSettings the settings form opened with.
+    //
+    // projectSettings is what keeps a token out of this. The response carries
+    // hasToken and never the token (models.go:272-277), so the base cannot hold
+    // one, and the diff is reduced against it field by field — a token the user
+    // typed is a change the base never carried, and goes out as itself, while
+    // nothing the client has not read can be written back to the row.
+    const base = options.base ? projectSettings(options.base) : null;
+    const edit = base
+      ? { base, patch: diffAgainstBase(base, data as unknown as FieldPatch) }
+      : null;
+    if (edit && Object.keys(edit.patch).length === 0) {
+      return { queued: false };
+    }
+    const owner = offlineUserId();
+    return request<null>("/paperless/settings", {
       method: "PUT",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(edit ? edit.patch : data),
+    }).then(
+      (row) => row,
+      (err: unknown) => {
+        if (options.queue === false || !isNetworkError(err)) throw err;
+        if (!stillOwner(owner)) throw err;
+        if (!edit) throw err;
+        // The user is the row: registry.ts's settings.put reads the singleton
+        // rather than the id, so this is the only identifier the entry can carry.
+        enqueueEdit(owner, "settings.put", owner, edit.base, edit.patch, edit.base);
+        return { queued: true };
+      },
+    );
+  }) as SettingsWrite<UserSettings, UpdateUserSettingsRequest>,
   getPaperlessDocuments: (
     params?: PaperlessDocumentsParams,
     options: RequestOptions = {},

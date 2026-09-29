@@ -28,6 +28,7 @@
 // whatever changed since (see outbox.ts's TheirsReader).
 
 import api from "./client";
+import { ApiError } from "./errors";
 import type { FieldPatch, FieldValue } from "./merge";
 import {
   findRow,
@@ -462,15 +463,46 @@ export function readTheirs(op: WriteOp, rowId: string): Promise<FieldPatch | nul
 }
 
 // applyOp is the one seam a resolved diff is sent through, and the declared shape
-// is what it acts on: a putWhole op is sent the diff overlaid onto theirs, since
-// its endpoint writes every column. That overlay is not built yet, and the flush
-// refuses the whole-row family before anything reaches here (see outbox.ts's
-// isPutWhole), so no bare diff can reach an endpoint that would clear a column.
-export function applyOp(
+// is what it acts on: a putPartial op is refused a clear to "", which its
+// endpoints read as "not provided", and a putWhole op is sent the diff overlaid
+// onto theirs, since its endpoint writes every column. That overlay is not built
+// yet, and the flush refuses the whole-row family before anything reaches here
+// (see outbox.ts's isPutWhole), so no bare diff can reach an endpoint that would
+// clear a column.
+export async function applyOp(
   op: WriteOp,
   rowId: string,
   diff: FieldPatch,
   theirs: FieldPatch | null,
 ): Promise<void> {
-  return OPS[op].apply(rowId, diff, theirs);
+  const spec = OPS[op];
+  if (spec.shape === "putPartial") {
+    // The one thing a putPartial diff can say that the endpoint cannot do. These
+    // handlers write `col = COALESCE(NULLIF($n, ''), col)` — account.go:277-291,
+    // account_type.go:136, category.go:133 and :326, category_group.go:122 — and
+    // paperless.go:478-508 builds the same update clause by clause behind
+    // `if req.X != nil`. So an empty string is how those endpoints say "not
+    // provided": the write succeeds, the column keeps the value it had, and a
+    // flush that removed the entry as applied would have reported a clear the
+    // server never performed. That is the silent discard this whole feature
+    // exists to prevent, one layer below the obvious one. A clear is expressed by
+    // omitting the key, so there is nothing to send and the edit is refused here
+    // instead — a `patch` or `putWhole` op is not touched, because an empty string
+    // is a value those endpoints do write.
+    const cleared = Object.keys(diff).find((field) => diff[field] === "");
+    if (cleared !== undefined) {
+      // An ApiError with a 4xx, because that is the branch the flush treats as a
+      // definite answer about the entry: it records the message on it, leaves it
+      // queued for the user, and carries on with the entries behind it (see
+      // outbox.ts isRejection). A plain Error here would be neither recorded nor
+      // skipped — the flush rethrows anything that is not an ApiError or a
+      // NetworkError, so the refusal would take the whole sync down with it and
+      // the user would be told nothing at all.
+      throw new ApiError(
+        `${cleared} cannot be cleared to an empty value by ${op}: this endpoint reads "" as "not provided" and leaves the field as it was, so the request would succeed without doing anything. Clear the field by removing it instead.`,
+        422,
+      );
+    }
+  }
+  return spec.apply(rowId, diff, theirs);
 }
