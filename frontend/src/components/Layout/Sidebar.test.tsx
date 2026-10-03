@@ -56,6 +56,16 @@ describe("Sidebar", () => {
     }
   });
 
+  it("sizes nav items from the density variables, not a fixed padding", () => {
+    renderSidebar();
+
+    for (const name of ["Dashboard", "Import", "Settings"]) {
+      const cls = screen.getByRole("link", { name }).className;
+      expect(cls).toContain("py-(--density-cell-y)");
+      expect(cls).not.toMatch(/\bpy-\d/);
+    }
+  });
+
   it("shows the user email and version", () => {
     renderSidebar();
     expect(screen.getByText("me@example.com")).toBeInTheDocument();

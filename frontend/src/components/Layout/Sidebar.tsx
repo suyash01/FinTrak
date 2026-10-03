@@ -60,7 +60,7 @@ export default function Sidebar({ onOpenCommandPalette }: SidebarProps) {
   };
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-3 py-2.5 rounded-lg no-underline text-sm font-medium cursor-pointer transition-all border ${
+    `flex items-center gap-3 py-(--density-cell-y) rounded-lg no-underline text-sm font-medium cursor-pointer transition-all border ${
       collapsed ? "justify-center px-2" : "px-3.5"
     } ${
       isActive
