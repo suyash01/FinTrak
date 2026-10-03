@@ -21,6 +21,36 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Accounts — the containers every transaction belongs to — and the one place
+// in this package where "balance" is computed rather than summed.
+//
+// The balance expression is the thing to read first, because it has two
+// branches and the loan one is not a variation of the other:
+//
+//	at.id = 'loan'   the SUM runs over loan_attachments, not transactions.
+//	                 A loan account holds no transactions of its own, so
+//	                 summing its own rows would always be 0. It is the total
+//	                 *attached* (repaid) amount, positive and growing — NOT
+//	                 what the borrower still owes.
+//	otherwise        signed by the account type's positive_txn_type, so a
+//	                 bank account (credit) and a loan-type account (debit)
+//	                 accumulate opposite ways from identical transactions.
+//
+// That loan branch is duplicated verbatim in asof_balance.go's as-of query and
+// in the dashboard's balance block. They must not drift: a dropped branch still
+// returns a row per account and still answers 200, and it reports every loan as
+// zero — which under these semantics reads as "nothing was ever paid on it"
+// rather than as a bug. Change one, change the other; the tests pin the
+// loan_attachments table name for exactly this reason.
+//
+// `billing_day` is also worth knowing before reading the rest of the package: it
+// is what makes an account produce billing cycles at all, and therefore what
+// decides whether `groupBy=billing_cycle` is offered for it.
+//
+// Closing an account (`closed`) is a one-way immutability switch, not a delete:
+// its transactions stay and stay readable, but every manual and bulk write skips
+// them (see the NOT EXISTS guards throughout this package). Linking still works.
+
 // errAccountNotFound is returned by account helpers when a delete/update
 // targets an account that doesn't exist (or isn't owned by the user), so the
 // caller can translate it to a 404.
@@ -29,6 +59,11 @@ var errAccountNotFound = errors.New("account not found")
 // GetAccounts lists the authenticated user's accounts, newest first, each with
 // a computed running balance based on its account type's positive_txn_type.
 func (srv *Server) GetAccounts(c *gin.Context) {
+	// $1 appears twice and $2 once: the balance subqueries scope transactions by
+	// user as well as by account. The redundant user predicate is not defensive
+	// padding — the loan branch joins through loan_attachments, which has its own
+	// user_id, and without it the attachment's own scope would be the only thing
+	// standing between one user's loan balance and another's transactions.
 	userID := auth.GetUserID(c)
 	query := `
 		SELECT a.id, a.name, a.account_type_id, at.name as account_type_name, a.bank, a.currency, a.color, a.is_default, a.billing_day, a.created_at, a.closed,
@@ -232,6 +267,31 @@ func (srv *Server) DeleteAccount(c *gin.Context) {
 // UpdateAccount edits an account's fields, preserves the current default flag
 // when the request omits it (via *bool), keeps only one default account, and
 // renames the account-linked payee to match.
+//
+// This is the package's most intricate partial update and the three-part
+// placeholder scheme is why:
+//
+//	$1..$6   always present, bound positionally
+//	$7/$8    id and user_id, pinned
+//	$9+      billing_day and closed, appended only when the request carries them
+//
+// The two optional columns are *appended* rather than occupying fixed slots
+// because they are tri-state in different ways. billingDay is an OptionalInt:
+// absent, an explicit value, or an explicit null meaning "no billing day", which
+// is a real user choice. closed is a plain *bool: absent or a value. If both
+// sat at fixed positions, a request setting only one would have to bind a
+// placeholder for the other — and there is no value that means "leave alone" for
+// a column that also has to accept NULL.
+//
+// It is `putPartial`, so as elsewhere an empty string leaves a column alone and
+// cannot clear it. Note that `bank` and `color` are nullable columns being
+// written through COALESCE(NULLIF(...)), which means they can never be nulled
+// through this route.
+//
+// The WITH updated AS (...) SELECT is not decoration: it is what lets the
+// response carry the recomputed balance from the same statement that performed
+// the write, using the loan/non-loan CASE documented in the file header. Doing it
+// as a separate SELECT would race with a concurrent transaction.
 func (srv *Server) UpdateAccount(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -322,6 +382,12 @@ func (srv *Server) UpdateAccount(c *gin.Context) {
 		}
 
 		// Synchronize with Payees: Update the corresponding payee name
+		//
+		// An account and its linked payee are two views of the same
+		// counterparty, so renaming one must rename the other or the user's
+		// ledger shows the old name on transactions that name the new account.
+		// Inside the transaction, so a failure here cannot leave the account
+		// renamed and the payee stale.
 		_, err = tx.Exec(c,
 			`UPDATE payees SET name = $1 WHERE account_id = $2 AND user_id = $3`,
 			account.Name, account.ID, userID,

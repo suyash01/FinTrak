@@ -21,6 +21,34 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// The ledger's core resource, and the widest surface in this package: one
+// create, one edit, the filtered list, the q-language filter, and the several
+// ways a write can be refused. Other transaction-shaped writes live in sibling
+// files (transaction_import, transaction_bulk, transaction_export,
+// transaction_summary).
+//
+// Three rules below shape almost every handler here, and each looks like
+// pedantry until the failure it prevents happens:
+//
+//   - `?asOf` is resolved once, by parseAsOf (asof.go), against the caller's
+//     *already-validated* window — never by a second c.Query read. It becomes
+//     the window's upper bound rather than a predicate of its own, which is what
+//     keeps /transactions and /transactions/export in agreement. The two share
+//     the *filter*, not the rows: the list injects synthetic summary rows for a
+//     single-account date sort, and the export never does.
+//   - A date or account move clears `billing_cycle_id`, unless the user explicitly
+//     detached the transaction (`billing_cycle_detached`), which a back-fill must
+//     never undo. Naming a cycle in the request always wins over the re-derivation.
+//   - `tags` is never NULL. Write edges bind `{}` and every reader wraps it in
+//     COALESCE(t.tags, '{}'). A NULL breaks `unnest(tags || $n::text[])` — so a
+//     bulk tag add would silently store nothing — and serializes as
+//     `"tags": null` where the spec promises an array.
+//
+// The `q` filter is a small query language (internal/query + txnQueryFilter
+// below) rather than a pile of separate query params, and it is the one place
+// user input is turned into SQL text. It builds fragments from a closed set and
+// binds every value; never interpolate a caller-supplied string into a clause.
+
 // maxImportBatch caps the number of transactions accepted in a single import so
 // that a malformed or malicious request can't queue an unbounded batch.
 const maxImportBatch = 10000

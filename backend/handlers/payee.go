@@ -14,6 +14,21 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Payees — who the user paid, and optionally which of their own accounts that
+// person belongs to.
+//
+// `account_id` is the field to understand. NULL means a payee the user typed in
+// ("Amazon"); set means the account *is* the counterparty ("HDFC Bank"), and the
+// partial unique index payees_account_id_tenant_uq allows at most one of those
+// per account. That index is not incidental — link.go's transfer re-categorization
+// looks up a payee by `account_id` in a scalar subquery, which is only
+// well-defined because a second account-linked payee cannot exist.
+//
+// Two uniqueness rules meet here and a change must keep both: one payee per name
+// per user (payees_user_name_uq, added in migration 000010), and one per account
+// per user (the partial index). The first is why the handlers map a 23505 to 409
+// rather than letting it be a 500.
+
 // GetPayees lists the user's payees alphabetically by name.
 func (srv *Server) GetPayees(c *gin.Context) {
 	rows, err := srv.db.Query(c, "SELECT id, name, account_id, created_at, updated_at FROM payees WHERE user_id = $1 ORDER BY name", auth.GetUserID(c))
@@ -100,6 +115,25 @@ func respondPayeeUniqueViolation(c *gin.Context, err error) bool {
 
 // UpdatePayee renames a payee and/or re-links it to an account, enforcing
 // ownership of both the payee and any referenced account.
+//
+// This is the `putWhole` shape, and it is the one place the difference from the
+// COALESCE(NULLIF(...)) partial updates matters most. `SET name = $1,
+// account_id = $2` writes both columns whether or not the body carried them, so
+// an absent account_id arrives as the uuid zero value and is treated as NULL —
+// un-linking a payee that was never un-linked. There is no `if req.X != nil`
+// here to prevent it, because CreatePayeeRequest binds both as plain values
+// rather than optionals.
+//
+// The client side is what compensates: the frontend's offline outbox declares
+// this op `putWhole` and overlays the queued diff onto the server's own row
+// before sending (src/api/registry.ts, applyOp → mergedRow), so the body always
+// carries the values the row should end up with rather than the ones that
+// changed. Callers outside that path must send the full pair themselves.
+//
+// The `$2::uuid IS NULL OR EXISTS (...)` predicate is an ownership check, not a
+// filter: it refuses the whole UPDATE when the caller names an account that is
+// not theirs, which is what turns "payee not found" into a 404 rather than
+// letting them repoint someone else's payee.
 func (srv *Server) UpdatePayee(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

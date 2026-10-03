@@ -15,10 +15,43 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Categories, and the two-tenant trick they rest on.
+//
+// A category row is either the user's own (`user_id` set) or global
+// (`user_id IS NULL`, created by an admin). There is no `is_global` column to
+// say so — NULL *is* the flag, which is why every query in this file reads
+// `user_id = $1 OR user_id IS NULL` to mean "mine plus everyone's", and why the
+// ownership predicates on the user-facing routes are a bare `user_id = $1`.
+// A global row has no owner, so `user_id = $1` can never match it: that is what
+// makes the user routes unable to touch one, without a second column.
+//
+// The corollary is the split between the two halves of this file. The
+// user-facing handlers (GetCategories, CreateCategory, UpdateCategory,
+// DeleteCategory) scope by `user_id = $1` and can therefore never see or reach a
+// global row. The admin handlers (CreateGlobalCategory, UpdateGlobalCategory,
+// DeleteGlobalCategory) scope by `user_id IS NULL` instead and operate across
+// every user. Both halves are needed: an admin editing the shared catalog must
+// not be able to edit a personal category by supplying its id.
+//
+// The groups these categories sit in work the same way — see category_group.go,
+// which owns the group half, and admin_catalog.go for the admin console.
+//
+// User-created categories are seeded per user at registration
+// (db.SeedDefaultCategories) rather than being global. That is why the stock
+// "Transfer" category each user gets is their own row: link.go finds it by
+// name, and a global one would be shared mutable state.
+
 // GetCategories lists every category visible to the user: their own categories
 // plus the global (admin-created) ones, in group order (base groups first, then
 // custom groups) and alphabetically by name within each group.
 func (srv *Server) GetCategories(c *gin.Context) {
+	// `(c.user_id IS NULL) as is_global` is derived per row rather than stored:
+	// the client needs to know which rows it may edit, and the server enforces
+	// the same thing separately by scoping the write to `user_id = $1`. The
+	// INNER JOIN to category_groups is deliberate too — a category whose group
+	// row is missing cannot be placed, so it is omitted rather than returned
+	// with a null group name.
+	//
 	rows, err := srv.db.Query(c, `SELECT c.id, c.name, c.icon, c.color, c.group_id,
 		       (c.user_id IS NULL) as is_global, g.name, g.is_base
 		 FROM categories c
@@ -94,6 +127,20 @@ func (srv *Server) CreateCategory(c *gin.Context) {
 
 // UpdateCategory edits a user's own category. Global categories are immutable
 // through this endpoint; an admin-only path handles those.
+//
+// This is the `putPartial` shape, and the COALESCE(NULLIF($n, empty), col) in the
+// UPDATE below is what makes it partial: an empty string means "leave this
+// column alone", so a client may send only the fields it wants to change. The
+// consequence to know before editing is that an empty string is *unreachable* as
+// a value — there is no way to clear `icon` or `color` through this route, only
+// to overwrite them. Clearing one is what the frontend's offline outbox refuses
+// to send (src/api/registry.ts, applyOp), because the request would succeed,
+// empty nothing, and be reported as a clear the server never performed.
+//
+// The group check runs first and separately, even though the UPDATE's
+// WHERE could not enforce it: `group_id = COALESCE(NULLIF($5, empty), group_id)`
+// writes whatever uuid is passed, so validating in Go is what stops a user
+// moving their category into a group that is neither global nor their own.
 func (srv *Server) UpdateCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -157,6 +204,23 @@ func (srv *Server) UpdateCategory(c *gin.Context) {
 // auto-categorization rules pointing at it, so nothing dangles. The response
 // reports how many transactions/rules were affected so the UI can confirm the
 // uncategorization warning.
+//
+// The order of the three statements inside the transaction is a consequence, not
+// a style choice: the row must still exist while the transactions and rules that
+// name it are being cleared, and the DELETE that actually removes it is last.
+// `transactions.category_id` and `rules.category_id` are ON DELETE SET NULL
+// in the schema, so the two clearing statements are belt-and-braces — they exist
+// to *count* the affected rows for the response, and they run first so that a
+// category deleted out from under a rule cannot leave the UI reporting a rule
+// count of zero while the rule was in fact deleted by the cascade.
+//
+// The transaction is all-or-nothing: a failure in any statement rolls back the
+// uncategorization too. Half of it — transactions cleared, rules still pointing
+// at a category that no longer exists — is the state this exists to prevent.
+//
+// DeleteGlobalCategory is the same three statements with the ownership
+// predicate dropped: it clears across every user rather than one, which is the
+// only difference between the two handlers.
 func (srv *Server) DeleteCategory(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

@@ -19,6 +19,28 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// This is the single write edge every import path funnels through — CSV upload,
+// statement PDF, Paperless document, and the offline outbox's replay. They all
+// differ in how the rows are *produced*; once they have them, they post here and
+// are subject to exactly the same validation.
+//
+// What that centralization buys, and what it costs:
+//
+//   - One place enforces the date window (validation.CheckTransactionDate) that
+//     keeps ensureBillingCycles from emitting a month of cycles per row for a
+//     typo'd year.
+//   - One place enforces the closed-account rule.
+//   - One transaction for the whole batch, so an import is all-or-nothing.
+//   - `clientKey` is the idempotency key. Every row carries one from the client,
+//     so a replayed request — a lost response, a killed tab, the outbox flushing
+//     twice — is recognized and does not insert a second money row. Never create
+//     twice, on either side of this boundary.
+//
+// The dedupe here is about *within-ledger* duplicates (the same statement imported
+// twice, or overlapping CSV exports), which is a different problem from
+// clientKey: the latter protects a retry of the same request, the former a user
+// action. Both must hold.
+
 // ImportTransactions batch-inserts a validated list of transactions for an
 // account. It enforces payload bounds and ownership of the account, billing
 // cycle, and any explicit payees, deduplicates rows when duplicateAction is
@@ -389,6 +411,17 @@ func loadExistingFingerprints(ctx context.Context, q transactionQueryer, account
 // same fingerprint matching as ImportTransactions (so the results agree with
 // what an import with duplicateAction "skip" would drop) but writes nothing.
 func (srv *Server) ValidateTransactions(c *gin.Context) {
+	// "Reuses the same fingerprint" is a hard requirement, not a convenience.
+	// The import preview shows this result and the user then chooses skip or
+	// keep; if the two disagreed on what a duplicate is, the preview would
+	// under-report and a skip import would silently drop rows the UI had said
+	// were new. Sharing the fingerprint helper is what keeps them in step —
+	// do not re-implement the match here.
+	//
+	// It is a preview, so it carries no date-window or closed-account
+	// enforcement of its own: those belong to the import that follows, and
+	// rejecting here would block a user from seeing which rows of an otherwise
+	// bad import are already known.
 	var req models.ValidateTransactionsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		validation.RespondBindError(c, err)

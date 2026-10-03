@@ -19,6 +19,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The money-flow Sankey: money sources → accounts → spending categories →
+// payees, over an optional window, account and currency filter.
+//
+// Three things make this file harder to read than the rest of the package, and
+// all three are stated on the pieces below rather than being visible at a glance.
+//
+//   - The graph is assembled from four independent SQL queries plus a separate
+//     link rollup (queryIncomeFlows, queryAccountCategoryFlows,
+//     queryCategoryPayeeFlows, queryAccountLinkFlows, queryMoneyFlowLinks), and
+//     buildMoneyFlowGraph is what reconciles them into one consistent set of
+//     nodes and edges. It aggregates nodes and their edges through the same
+//     rollup precisely so a node's total and the widths leaving it cannot
+//     disagree.
+//   - Every amount is per-currency (models.CurrencyAmounts). A category earning
+//     into an INR account and a USD one is two flows, not one — which is why
+//     each query carries the account's currency through the SELECT, the GROUP BY
+//     and the predicate rather than merely projecting it.
+//   - Cross-account links are made acyclic before drawing: reciprocal pairs are
+//     netted, then DFS back edges are dropped (see the flowCycle types). The
+//     dropped edges are not discarded silently — they are reported as
+//     diagnostics, which is the only way a user can see money bouncing between
+//     accounts or a half-entered transfer.
+//
+// It is a read. Unlike the billing-cycle routes, this GET does not materialize
+// anything, so it is not in crossSiteGetGuard's list and not in
+// mcp/internal/readonly.SideEffectingGETs.
+
 // Per-stage node cap for the money-flow graph. The top N nodes by volume in the
 // income, category, and payee stages are kept and the remainder collapse into a
 // single "Other" node; account nodes are never capped (a user has few accounts
@@ -858,6 +885,11 @@ func flowIncomeNodeID(catID string) string {
 	return "income:" + catID
 }
 
+// flowAccountNodeID has no "empty" case: an account always has an id, so there
+// is no such thing as an unattributed account flow. The prefix exists only to
+// keep account ids from colliding with category or payee ids in a shared node
+// map — the three resources have independent uuid spaces, so without it two
+// unrelated nodes could share a key.
 func flowAccountNodeID(id string) string { return "account:" + id }
 
 func flowCategoryNodeID(catID string) string {
@@ -901,6 +933,10 @@ func buildMoneyFlowGraph(incomeRows []flowIncomeRow, acctCatRows []flowAcctCatRo
 			Total: models.NewCurrencyAmounts().Add(currency, amount),
 		}
 	}
+	// addAccountFlow is addNode's total-only sibling: account nodes are already
+	// created above with the metadata (name, color) that only the account query
+	// has, so their per-currency totals accumulate separately and are read back
+	// off the node afterwards. It is the same Add, minus the create branch.
 	addAccountFlow := func(m map[string]models.CurrencyAmounts, id, currency string, amount money.Amount) {
 		cur, ok := m[id]
 		if !ok {

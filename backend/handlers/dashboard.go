@@ -18,6 +18,32 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// GetDashboardSummary assembles the dashboard: stat cards, category and account
+// breakdowns, a period trend, and (when groupBy=billing_cycle) the same figures
+// framed by an account's statement periods instead of calendar months.
+//
+// Two things are worth knowing before reading it, and both are about the answers
+// being per-currency rather than scalar.
+//
+//   - An account carries a `currency` and a transaction carries none, so a window
+//     over an INR account and a USD one spans currencies and no single number
+//     represents it. Every figure here is therefore a CurrencyAmounts (a map of
+//     currency -> amount), and a derived value is a difference *inside* one
+//     currency — see models.CurrencyAmounts and the Add/Sub rules there.
+//   - ?currency= narrows the window, but not every field of the response. It does
+//     not narrow `totalAccounts` (a plain COUNT over the user's accounts) and
+//     does not narrow `balances`, because those are account-driven rather than
+//     transaction-driven: every account holds a balance on the day asked about
+//     whatever window was requested. That asymmetry is documented on
+//     GetDashboardSummary's own doc comment and pinned by
+//     TestAsOfBalancesAreNotNarrowedByTheCurrencyOrAccountFilter.
+//
+// The second branch worth knowing about is the billing-cycle view, because it is
+// not a variant of the first: `groupBy=billing_cycle` replaces the calendar
+// window with the cycles' own bounds, which is why that response carries neither
+// `asOf` nor `balances` even though parseAsOf has already validated the parameter
+// by then (it runs before the branch, so a malformed value is still a 400).
+
 const (
 	billingCycleGroupBy  = "billing_cycle"
 	defaultBillingCycles = 12

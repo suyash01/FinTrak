@@ -1,20 +1,26 @@
 """
-extractor.py
-------------
-Core logic to pull the transaction table out of an SBI Card (PhonePe SBI Card
-SELECT BLACK style) monthly statement PDF. Works with password-protected PDFs.
+sbi_cc_extractor.py
+-------------------
+Extractor for SBI Card (PhonePe SBI Card SELECT BLACK style) monthly statement
+PDFs. Works with password-protected PDFs.
 
-Usage as a library:
+This module is one of several issuer extractors and is NOT the entry point. The
+service entry point is app.py (the Flask app); the registry that dispatches to
+this file is extractor.py. To parse a file, call the registry, not this module
+directly:
 
-    from extractor import extract_transactions
+    from .extractor import extract_transactions, to_csv_bytes
 
-    result = extract_transactions("statement.pdf", password="1234")
+    result = extract_transactions(path, extractor_name="sbi_cc", password="1234")
     result["transactions"]  # list of dicts
     result["summary"]       # dict of account summary fields (best effort)
 
-Usage from the command line:
+(The `main()` at the bottom of this file is a developer convenience for parsing
+one PDF from the shell; the app does not use it.)
 
-    python extractor.py statement.pdf --password 1234 --out transactions.csv
+Adding a new issuer means writing a sibling `*_extractor.py` exposing the same
+surface — `extract_transactions(path, password)`, `to_csv_bytes(transactions)` —
+and registering it in extractor.py. Nothing here is imported by the others.
 """
 
 import argparse
@@ -82,6 +88,27 @@ def _decrypt_if_needed(path: str, password: Optional[str]) -> None:
 
 
 def _parse_line(line: str) -> Optional[Transaction]:
+    """Parse one line into a Transaction, or return None if it is not one.
+
+    None is the answer for the overwhelming majority of lines in a statement —
+    headers, footers, page furniture, wrapped continuation lines — and the
+    extractor simply skips them. So this is deliberately permissive: it returns
+    a transaction only when the whole TXN_LINE_RE matches, and never raises on
+    a line it does not recognize. A line that *almost* matches is dropped, not
+    guessed at.
+
+    Two things worth knowing about the result:
+
+    - `date` is left as the printed text ("18 May 26"), not normalized to an
+      ISO day. The statement is the source of truth for how a date is written
+      and the backend re-parses it (see validation.CheckTransactionDate), so
+      normalizing here would be a second, subtly different date grammar to keep
+      in step.
+    - `amount` is a float. That is display-only and never used for comparison;
+      money.py's integer-cents helpers exist precisely because float comparison
+      of these values is representation-dependent. The one place this value is
+      compared is the summary reconciliation, and it goes through same_money.
+    """
     line = line.strip()
     if not line or line.startswith(SKIP_PREFIXES):
         return None

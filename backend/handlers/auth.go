@@ -18,6 +18,31 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Registration, login, refresh, logout and the "who am I" probe — the only
+// routes in the API a caller may reach without a session.
+//
+// The access token is a short-lived JWT in an httpOnly cookie; the refresh token
+// is server-recorded, so this is not a stateless scheme:
+//
+//   - POST /auth/refresh rotates both the cookie and the `refresh_tokens` row
+//     (SHA-256 of the token only), grouped into a rotation `family_id`.
+//   - Presenting an already-rotated token is *reuse*, and reuse revokes the whole
+//     family. Logout revokes the family too.
+//   - Refresh does not extend the original session deadline — a family dies when
+//     it was created plus its window, however many times it is rotated.
+//
+// So no code path here may mint an access token without a live row for the
+// presented refresh token. That single rule is what makes the reuse detection
+// meaningful, and the TUI and MCP clients both depend on it: they hold no
+// cookie jar (see AGENTS.md on client/auth.go) and replay once after a
+// single-flight refresh.
+//
+// The credential endpoints are throttled per client IP, and separately carry a
+// per-identity budget that is charged *only* for failed credentials. That split
+// is deliberate: an identity budget charged on success could lock a real user out
+// of their own account, while the IP budget alone would let one attacker spread
+// guesses across IPs. Neither replaces the body cap below.
+
 // isAdminEmail reports whether email (already trimmed/lowercased by callers)
 // appears in the configured admin allowlist.
 func isAdminEmail(email string, adminEmails []string) bool {

@@ -22,11 +22,38 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Recurring series tracking. A recurring_series row is a user-defined
-// expectation of a repeating charge/income. The backend only forecasts the
-// schedule and suggests matching transactions — it never creates transactions
-// from a series and never links transactions automatically; the user confirms
-// every link explicitly (see AttachRecurring).
+// This file owns recurring series: a user's standing expectation of a repeating
+// charge or income. Read it top to bottom as three layers.
+//
+//   - The pure helpers (lines ~52-580) generate the *schedule* and rank
+//     candidates. They touch no database and are where the date arithmetic
+//     lives: addMonthsAnchored, recurringOccurrenceAt, nearestRecurringOccurrence.
+//   - The loaders (~300-370, ~450-510) bridge those helpers to SQL, and
+//     applyRecurringChange is the one place that writes term ranges.
+//   - The handlers are thin: validate, load, delegate, render.
+//
+// The domain model is the part worth knowing before reading any of it. A series
+// does NOT store an amount, an account, or a period. Those are *derived* from
+// its terms: recurring_series_terms rows are effective-dated [start, end)
+// ranges, each carrying its own amount and account, and deriveRecurringSeries
+// rolls them up into the series' StartDate/EndDate/AccountID/Amount. That is why
+// a price rise is a new term rather than an edited series, and why
+// scanRecurringSeries can return a series whose derived fields are still zero —
+// the caller must run deriveRecurringSeries over the terms before responding.
+//
+// Two rules follow from the term list and are enforced rather than assumed:
+// ranges must not overlap (parseSeriesRanges, errRecurringRangeOverlap) and gaps
+// are allowed (a discontinued-then-resumed subscription is two terms with space
+// between them, not an edit). Whether a *matching* transaction in a gap matches
+// nothing (recurringTermContaining) is deliberately different from how the
+// *display* resolver treats it (recurringTermAt) — see each.
+//
+// Nothing here ever creates or links a transaction automatically. The backend
+// forecasts the schedule and suggests candidates; every link is an explicit
+// user confirmation (AttachRecurring).
+//
+// It also never writes outside the series' own rows except through
+// AttachRecurring: forecasting and suggesting are reads.
 const (
 	recurringFreqDaily   = "daily"
 	recurringFreqWeekly  = "weekly"
@@ -680,6 +707,14 @@ func (srv *Server) CreateRecurringSeries(c *gin.Context) {
 	// range ends where the next begins, the last open-ended), or a single range
 	// from StartDate + AccountID + Amount. The subscription's own period is
 	// derived from the ranges.
+	//
+	// Two request shapes reach the same rows. `ranges` is the newer form, where
+	// the client sends effective-dated terms directly and may include gaps for a
+	// discontinued-then-resumed subscription. The legacy form is the single
+	// StartDate + AccountID + Amount triple, promoted to a one-element range
+	// below — an open-ended one, since a series with no stated end is a series
+	// that has not ended. Both write only recurring_series_terms; the series row
+	// itself never stores an amount or an account (see the file header).
 	var err error
 	var ranges []parsedRecurringRange
 	if len(req.Ranges) > 0 {
@@ -772,6 +807,33 @@ func (srv *Server) CreateRecurringSeries(c *gin.Context) {
 // the provided fields are merged in, the merged result is validated, and a
 // single fixed UPDATE persists it (enforcing ownership of any referenced
 // account/category/payee).
+//
+// Read-merge-write, not a COALESCE(NULLIF(...)) statement like the other
+// partial updates in this package. It has to be a merge because the validation
+// below (positive amount, valid frequency, interval range) and the amount/
+// account change itself can only be decided against the *merged* row — and
+// because the amount/account change has to be written to the term table, not
+// to recurring_series, whose Amount/AccountID columns are derived and never
+// read back (see the file header).
+//
+// The response's derived fields come from re-reading the terms after the commit
+// rather than from the values computed above: applyRecurringChange may have
+// split a range in two, and only the reloaded terms say which term is now in
+// force today.
+//
+// There are two mutually exclusive ways a change reaches the terms, and the
+// switch below is what makes them so:
+//
+//	len(req.Ranges) > 0   the form edit: replace the whole term list
+//	valueChanged         the lightweight edit: one amount/account change
+//	                      effective from `eff`, which applyRecurringChange
+//	                      resolves by closing the covering term and opening a
+//	                      new one
+//
+// Sending both a range list and an amount change is rejected upstream by
+// parseSeriesRanges' validation of the ranges themselves, so `valueChanged` is
+// computed as `len(newRanges) == 0 && ...` rather than being an error case
+// here.
 func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -892,6 +954,12 @@ func (srv *Server) UpdateRecurringSeries(c *gin.Context) {
 	}
 
 	err = db.WithTx(c, srv.db, func(tx pgx.Tx) error {
+		// Terms first, then the series row, and both inside one transaction:
+		// applyRecurringChange can split the covering term, and a series row
+		// updated against terms that then failed to write would report a
+		// change that never landed. Returning errRecurringRangeOverlap (23505)
+		// from the range INSERT rolls the whole thing back rather than leaving
+		// a half-edited term list.
 		switch {
 		case len(newRanges) > 0:
 			// Replace every range with the supplied list.
@@ -1012,6 +1080,19 @@ func (srv *Server) GetRecurringTerms(c *gin.Context) {
 
 // CreateRecurringTerm records a date-ranged amount/account entry. Its range
 // must not overlap an existing entry of the same series.
+//
+// This is the single-term counterpart of the two-way edit in
+// UpdateRecurringSeries: adding a term leaves the existing ones untouched
+// (contrast `len(req.Ranges) > 0`, which replaces them all). Both routes exist
+// because the UI offers both — a form that rewrites the whole series, and a
+// quick "price went up from this date" action.
+//
+// The overlap check is done twice on purpose. recurringTermsOverlap above is
+// the 400 a user sees for a range that overlaps a term the server already
+// knows about; the 23505 below catches the case where a concurrent request
+// inserted a term between that read and this insert. The in-Go check alone
+// would let the race through and rely on the constraint to raise a 500, so the
+// second check exists to turn that into the same 400.
 func (srv *Server) CreateRecurringTerm(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -1093,6 +1174,24 @@ func (srv *Server) CreateRecurringTerm(c *gin.Context) {
 
 // UpdateRecurringTerm edits a term's date range, amount, or account. The edited
 // range must not overlap another entry of the same series.
+//
+// Like UpdateRecurringSeries this is a read-merge-write, and for the same
+// reason: `end > start` is a relation between two fields, so it can only be
+// checked once the omitted fields have been filled in from the existing row.
+// Editing only the amount must not fail because the stored end date precedes
+// the stored start.
+//
+// The end date is tri-state here, which is why it is not `if req.EndDate != nil`
+// alone. Omitted leaves the range's end alone; present-but-empty clears it to
+// open-ended (nil); present-with-a-date sets it. An absent field and an empty
+// string mean opposite things, so the TrimSpace check below is load-bearing: a
+// JSON form that always submits the field as "" would otherwise silently
+// re-open every range it saved.
+//
+// The overlap check excludes this term's own id (recurringTermsOverlap's
+// excludeID). Passing uuid.Nil instead would compare the row against itself and
+// reject every edit that did not move the range at all — an amount-only edit
+// would 400.
 func (srv *Server) UpdateRecurringTerm(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -1277,6 +1376,21 @@ func (srv *Server) DeleteRecurringTerm(c *gin.Context) {
 
 // GetRecurringForecast projects the next occurrences of a series and marks
 // which already have a matching attached transaction.
+//
+// Purely a projection: nothing here reads a transaction's amount or decides
+// whether one satisfies an occurrence. The schedule comes from
+// recurringUpcoming, and "matched" is computed by attributing each *already
+// attached* transaction to its single nearest occurrence — never by searching
+// for an unlinked one. Unlinked candidates are GetRecurringSuggestions' job,
+// and keeping the two apart is why a forecast cannot drift into suggesting.
+//
+// The per-occurrence amount lookup is what makes a price change visible in the
+// forecast rather than applied to the whole series: each occurrence resolves
+// the term covering its own date. It uses recurringTermAt rather than
+// recurringTermContaining, so an occurrence landing in a deliberate gap (a
+// discontinued subscription) still shows the nearest term's amount instead of
+// falling back to the series' first term — the forecast stays readable during a
+// gap while the *matching* rule stays strict.
 func (srv *Server) GetRecurringForecast(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -1389,6 +1503,34 @@ func recurringMatchedOccurrences(s models.RecurringSeries, attached []recurringA
 // on the same account, of the same type, with an exactly matching amount, and
 // near an expected occurrence are considered. Nothing is linked here — the
 // caller confirms links via AttachRecurring.
+//
+// The shape of this function is a two-stage narrowing: SQL selects a cheap
+// superset, then Go filters it to the exact answer. That ordering is
+// deliberate and both halves are load-bearing.
+//
+//	stage 1 (SQL)      the union over all ranges — every (account, amount)
+//	                   pair the series has ever used, the whole spanned date
+//	                   range, and a hard cap of maxRecurringCandidates rows
+//	stage 2 (Go, above) the exact per-date (account, amount) that the range
+//	                   covering *this transaction's date* requires
+//
+// Stage 1 cannot express stage 2's predicate, because the account/amount in
+// force is a function of the row's own date and the database has no per-row
+// call into the term table here. Stage 2 cannot be folded into stage 1 either,
+// because "the range containing this date" is what makes an older price range
+// suggest its own historical transactions at all: filtering on the series'
+// *current* amount would return nothing for a subscription that has since been
+// repriced, which is precisely the history this endpoint exists to surface.
+//
+// Two consequences a change must not lose:
+//
+//   - Unattached only. `NOT EXISTS (recurring_attachments)` excludes a
+//     transaction already confirmed against *any* series. Re-suggesting a
+//     linked transaction would offer the user a link that can never be
+//     attached a second time.
+//   - The cap is applied before scoring, so a series with a long history can
+//     have its earliest candidates dropped. It is a safety bound well above
+//     any realistic subscription history, not a correctness limit.
 func (srv *Server) GetRecurringSuggestions(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {

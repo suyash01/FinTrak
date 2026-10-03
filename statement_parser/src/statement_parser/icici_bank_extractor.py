@@ -1,6 +1,6 @@
 """
-icici_sb_extractor.py
-----------------------
+icici_bank_extractor.py
+-----------------------
 Extractor for ICICI Bank Savings / Current account statement PDFs — the
 "Statement of Transactions in ... Account XXXXXXXXnnnn" table format ICICI
 uses for its retail savings/current account e-statements.
@@ -15,15 +15,20 @@ extractors in this project (icici_cc_extractor, sbi_cc_extractor):
 
 Register it in extractor.py the same way the others are registered:
 
-    from .icici_sb_extractor import (
+    from .icici_bank_extractor import (
         PdfPasswordRequired,
-        extract_transactions as _icici_sb_extract_transactions,
-        to_csv_bytes as _icici_sb_to_csv_bytes,
+        extract_transactions as _icici_bank_extract_transactions,
+        to_csv_bytes as _icici_bank_to_csv_bytes,
     )
     register_extractor(
-        "icici_sb", "ICICI Savings/Current Account",
-        _icici_sb_extract_transactions, _icici_sb_to_csv_bytes,
+        "icici_bank", "ICICI Bank Statement",
+        _icici_bank_extract_transactions, _icici_bank_to_csv_bytes,
     )
+
+(This is in fact how it *is* registered today — the block above is the working
+example, not a sketch. Note the registry key `icici_bank` is what the
+`?extractor=` query parameter carries from app.py, so renaming the module
+without renaming the key changes which statement the default UI selects.)
 
 Driver: the ruled grid
 ------------------------

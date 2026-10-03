@@ -14,9 +14,29 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Category groups — the level above a category. Groups and categories share the
+// same two-tenant model (see the header of category.go): `user_id IS NULL` is a
+// global row, and that NULL is what every predicate here keys off.
+//
+// The four base groups (income, expense, transfer, cashback) are inserted
+// globally on every boot by db.SeedCategoryGroups, marked `is_base` so they can
+// never be deleted, and given a fixed `sort_order`. That sort_order is the whole
+// reason the list below orders by it: the user's own groups have no canonical
+// position, so `is_base` groups lead in their seeded order and custom groups
+// follow by their own.
+//
+// Note the asymmetry with categories: a group is addressed by a *slug* the user
+// types (validated by groupIDSlugRe below) rather than by a uuid, because a group
+// is shared vocabulary — "Expenses" is the same group for every user — while a
+// user's personal category is their own row.
+
 // GetGroups lists the groups visible to the user: the immutable base/global
 // groups first (in canonical order), then the user's own custom groups.
 func (srv *Server) GetGroups(c *gin.Context) {
+	// The CASE in the ORDER BY is what puts global groups ahead of the user's
+	// own regardless of their sort_order values, which are independent columns
+	// from the base groups' seeded 1-4. Ordering by sort_order alone would
+	// interleave them, and a user's group with sort_order 1 would precede Income.
 	rows, err := srv.db.Query(c, `SELECT id, name, icon, color, is_base, user_id, sort_order
 		 FROM category_groups
 		 WHERE user_id IS NULL OR user_id = $1
@@ -36,6 +56,8 @@ func (srv *Server) GetGroups(c *gin.Context) {
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		// IsGlobal is a derived response field, not a column: like a category's
+		// is_global, it tells the client which rows its own routes may write.
 		g.IsGlobal = g.UserID == nil
 		groups = append(groups, g)
 	}
@@ -101,6 +123,18 @@ func (srv *Server) CreateGroup(c *gin.Context) {
 
 // UpdateGroup renames / restyles a user's own custom group. Base and global
 // groups are immutable.
+//
+// Three predicates are AND-ed into the UPDATE's WHERE, and each refuses a
+// different thing: `user_id = $5` keeps the write to the caller's own group,
+// `is_base = FALSE` protects the four seeded groups even for an admin, and the
+// id is the user's slug. Because they are one statement, all three produce the
+// same pgx.ErrNoRows — which is why the 404 has to go back and re-query to tell
+// "not yours" apart from "not there at all". Guessing would either leak the
+// existence of another user's group or report a base group as missing.
+//
+// The COALESCE(NULLIF(...)) columns make this the `putPartial` shape: an empty
+// string leaves that column alone and cannot clear it (see UpdateCategory for
+// what that costs).
 func (srv *Server) UpdateGroup(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -153,6 +187,17 @@ func (srv *Server) UpdateGroup(c *gin.Context) {
 
 // DeleteGroup removes a user's own custom group. A group that still has
 // categories cannot be deleted — the user must move or delete them first.
+//
+// That refusal is the one place this resource refuses rather than cleans up.
+// A category can be deleted and uncategorize its transactions (DeleteCategory
+// does that, in a transaction, and reports the count); a group cannot, because
+// the transactions would be left pointing at nothing with no category to fall
+// back to. Blocking the delete keeps the fix in the user's hands — move the
+// categories, or delete them first.
+//
+// The count is scoped to `user_id = $2`, so a global category sitting in the
+// user's group would not block it; the DELETE below re-checks ownership of the
+// group itself.
 func (srv *Server) DeleteGroup(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {

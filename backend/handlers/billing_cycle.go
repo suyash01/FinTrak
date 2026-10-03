@@ -18,6 +18,33 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Billing cycles — the statement periods of an account that has a `billing_day`.
+//
+// A cycle is a [start, end) window derived from the account's billing day and
+// the date of its first transaction. They are generated, not entered: this file
+// calls ensureBillingCycles, which materializes any missing cycles and back-fills
+// `transactions.billing_cycle_id` for the transactions that fall inside them.
+//
+// That is why some GETs in this package write, and it is load-bearing rather than
+// an oversight — see crossSiteGetGuard for the routes it forces to refuse a
+// cross-site navigation. The one thing a change must preserve is the date
+// validation: a typo'd year on a transaction would otherwise make ensureBillingCycles
+// emit one INSERT per month back to year 1 on *every read of that account*, which
+// is what validation.CheckTransactionDate on the write edge prevents.
+//
+// The three dates a cycle carries, and why they are not interchangeable:
+//
+//	StartDate  the day after the previous cycle ended
+//	EndDate    inclusive — a transaction dated on it belongs to this cycle
+//	DueDate    the day the payment falls, i.e. the next billing day
+//
+// `billingCycleMonths` clamps a cycle's own span so a billing day near the end of
+// a short month cannot produce a window that runs backwards.
+//
+// The one piece of user intent this file respects above all: a transaction can
+// be *detached* from its cycle (`transactions.billing_cycle_detached`), and
+// back-filling must never re-attach it.
+
 // cycleQueryer is the minimal query surface shared by *pgxpool.Pool (via
 // db.DBPool) and pgx.Tx so the billing-cycle readers can run against either.
 // The regeneration below is not a reader: it takes a pgx.Tx, so a caller cannot
@@ -35,6 +62,11 @@ type cycleQueryer interface {
 // payments, refunds, cashbacks — posted up to that date) — and its
 // transaction count.
 func (srv *Server) GetBillingCycles(c *gin.Context) {
+	// The billing-day lookup is not an authorization shortcut — it is what
+	// decides whether this account has cycles at all, and it also 404s an
+	// account the caller does not own. Both answers are wanted, so they come
+	// from one row: a NULL billing_day means "no cycles", a missing row means
+	// "not yours or not there".
 	userID := auth.GetUserID(c)
 	accountID, err := uuid.Parse(c.Param("id"))
 	if err != nil {

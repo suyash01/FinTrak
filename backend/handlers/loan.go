@@ -21,6 +21,42 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Loans and EMI, in four parts that are easier to read separately than
+// together:
+//
+//   1. Attachment. A loan account holds NO transactions of its own. EMI payments
+//      are ordinary transactions on the user's bank or card, attached to the
+//      loan through loan_attachments — which is why an account's balance means
+//      different things by account type, and why loanAccountTypeID's
+//      positive_txn_type is 'debit' (the balance is the total repaid).
+//   2. The amortization schedule. loan_schedules stores the loan's terms
+//      (principal, rate, tenure, first installment date); the installment table
+//      itself is *generated*, never stored, so it is always consistent with the
+//      terms it was derived from. UpsertLoanSchedule replaces the terms and
+//      re-derives; nothing has to be migrated.
+//   3. Matching payments to installments. Generated installments are matched
+//      against the attached transactions by date and amount, so a loan's
+//      "paid" state is a read-time computation rather than a stored flag.
+//   4. Balance transfer. Settling one loan at its payoff (principal still owed
+//      plus interest accrued since the last EMI payment) and applying that to
+//      another loan — either recasting the installments the target still owes,
+//      or taking the amount over so the target releases that much less cash.
+//
+// Two invariants run through all four and are the thing to check first when
+// reading a change here:
+//
+//   - A transaction is either an EMI payment or a loan's disbursement credit,
+//     never both. That exclusivity is enforced inside the attach INSERT and
+//     guarded by errLoanDisbursementCredit, so it holds under concurrency
+//     rather than by a read-then-write.
+//   - Principal never leaves the system as money. A processing fee is recorded
+//     for reference without entering the table, and a balance transfer moves
+//     principal between loans. Both are why the schedule always amortizes the
+//     full principal over the full tenure.
+//
+// All arithmetic is money.Amount (integer minor units) or integer basis points.
+// There is no float64 money in this file.
+
 // loanAccountTypeID is the built-in account type for Loan / EMI accounts.
 // Loan accounts hold no transactions of their own: EMI payments are
 // transactions on other accounts that are attached via loan_attachments.
@@ -259,6 +295,26 @@ func (srv *Server) GetLoanSchedule(c *gin.Context) {
 // UpsertLoanSchedule creates or replaces a loan account's amortization schedule
 // and returns the same detail as GET, so the caller can render the generated
 // table without a second request.
+//
+// Upsert rather than patch: a schedule's terms are a unit, and editing one of
+// them invalidates the generated table built from all of them. ON CONFLICT
+// (user_id, loan_account_id) DO UPDATE therefore replaces every column at once,
+// so there is no state in which the stored terms describe a table that was
+// generated from different terms — the table is derived at read time and cannot
+// drift.
+//
+// The block of validation above the write is the loan's own bounds, and each has
+// a reason rather than being arbitrary: tenure and rate are capped because both
+// feed the annuity solve, where a large value overflows the float64 factor the
+// EMI is computed from; processingFee may not be negative because it is
+// displayed but never amortized, so a negative one would read as a rebate the
+// schedule does not model.
+//
+// The disbursal date is optional and the empty case is meaningful: without one
+// the first period is a whole month (the historical behavior). With one, a
+// disbursal that lands mid-month produces a broken first period, which
+// loanAmortization charges its actual days over a 30-day month — see the file
+// header and firstPeriodStub.
 func (srv *Server) UpsertLoanSchedule(c *gin.Context) {
 	accountID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -385,6 +441,14 @@ func (srv *Server) DeleteLoanSchedule(c *gin.Context) {
 // source's settled state, the target's derived schedule, and every cancelled
 // installment are derived from the single transfer row, so the operation is
 // reversible by deleting it.
+//
+// The two guards immediately after the source is loaded are what make the
+// operation reversible in one direction only, and the asymmetry is the
+// point: a source with no schedule cannot be quoted (there is no payoff to
+// compute), and an already-settled source has no live balance to move, so
+// both refuse before the target is ever read. Once past them the target is
+// validated in the same transaction, so a bad target cannot leave the source
+// half-settled.
 func (srv *Server) TransferLoanBalance(c *gin.Context) {
 	sourceID, err := uuid.Parse(c.Param("id"))
 	if err != nil {

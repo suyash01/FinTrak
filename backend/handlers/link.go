@@ -17,6 +17,41 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Transaction links: the user's declaration that two of their transactions are
+// really the same money seen twice — a transfer between their own accounts, a
+// refund or cashback against a purchase, a bill payment and the charge it
+// settled.
+//
+// A link is a plain row over two transaction ids plus a type. It does not move
+// or restate anything: both transactions keep their own amount, date and
+// account, and the *link* is what reporting reads to avoid counting the pair
+// twice. That is why deleting a link is a pure removal and why the graph in
+// money_flow.go can be rebuilt from links without them having been rewritten.
+//
+// The one side effect lives in this file, not in the ledger: creating a
+// `transfer` link also writes the category and payee of its two transactions,
+// because a transfer is not a purchase by anything. That write is the source of
+// two things a reader should know:
+//
+//   - It looks the category up by the literal name 'Transfer'. That name is not
+//     arbitrary and not global — db.SeedDefaultCategories inserts a per-user
+//     category with exactly that name at registration, which is why the
+//     subquery also filters `user_id = $3`. If a user renames or deletes their
+//     Transfer category, the subquery matches nothing and the UPDATE writes
+//     category_id = NULL: the two transactions are left uncategorized, with no
+//     error and no log entry. The link itself is unaffected.
+//
+//   - The two payee back-fills are scalar subqueries with no LIMIT 1 over
+//     `payees WHERE account_id = ...`. The schema's partial unique index
+//     (payees_account_id_tenant_uq) allows only one payee per account, so in
+//     practice at most one row matches and the subquery is well-defined. That
+//     index is what this depends on: if it were ever relaxed to allow several
+//     account-linked payees, these would return multiple rows and pgx would
+//     surface it as a query error rather than picking one.
+//
+// calculateTransferScore (at the bottom of this file) is the scoring half and
+// is read-only: suggestions are never created from it.
+
 // GetLinks lists the user's links, optionally filtered by type and/or a
 // transaction ID, newest first. Both linked transactions are joined in with
 // their account names for display.
@@ -101,6 +136,16 @@ func isValidLinkType(t string) bool {
 // missing transactions, and exact duplicates. For "transfer" links it also
 // re-categorizes both transactions as "Transfer" and swaps their payees to the
 // counterpart account's linked payee. Runs in a transaction.
+//
+// Everything after the INSERT is that one transfer side effect, and it is why
+// the link INSERT and the two transaction UPDATEs share a transaction: a link
+// whose payees were not swapped would report a transfer that the ledger does not
+// reflect. The 'Transfer' category lookup and the payee back-fill both depend on
+// things this file does not own — see the file header for what those are.
+//
+// The two payee statements are the same query with $1/$2 swapped rather than one
+// statement, because each transaction takes the *other's* account's payee: the
+// debit records the destination account, the credit records the source.
 func (srv *Server) CreateLink(c *gin.Context) {
 	var req models.CreateLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -224,6 +269,20 @@ func (srv *Server) CreateLink(c *gin.Context) {
 // BulkCreateLinks creates many links in one transaction, validating each entry,
 // skipping exact duplicates, and applying the same transfer re-categorization
 // as CreateLink. Returns the number of links actually created.
+//
+// Duplicates are skipped rather than rejected, and `ON CONFLICT DO NOTHING`
+// plus `tag.RowsAffected() == 0 → continue` is what implements that. It is not
+// only about repeats within one request: the unique index is
+// (user_id, type, from_txn_id, to_txn_id), so two concurrent bulk requests
+// submitting the same pair converge on one row without either seeing an error.
+// The count returned is rows actually written, which is what lets the caller
+// tell "all linked" from "some were already linked".
+//
+// One transaction for the whole batch means a single bad entry aborts all of
+// them — the alternative, committing what validated so far, would report a
+// partial success the user cannot reconcile against the pairs they sent. The
+// per-entry 400s (invalid type, self-link, unowned transaction) therefore
+// reject the batch rather than the entry.
 func (srv *Server) BulkCreateLinks(c *gin.Context) {
 	var req models.BulkCreateLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

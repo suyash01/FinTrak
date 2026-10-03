@@ -1,26 +1,32 @@
 """
-icici_extractor.py
--------------------
-Core logic to pull the transaction table out of an ICICI Bank Credit Card
-monthly statement PDF (Amazon Pay, MakeMyTrip, HPCL Coral and similar retail
-card templates). Works with password-protected PDFs.
+icici_cc_extractor.py
+---------------------
+Extractor for ICICI Bank Credit Card monthly statement PDFs (Amazon Pay,
+MakeMyTrip, HPCL Coral and similar retail card templates). Works with
+password-protected PDFs.
 
-This mirrors the structure of `sbi_cc_extractor.py` (same public surface:
-`extract_transactions`, `to_csv_bytes`, `PdfPasswordRequired`, a CLI `main`)
-so it can be dropped in as a sibling/"subclass-style" extractor for a
-different issuer.
+This module is one of several issuer extractors and is NOT the entry point. The
+service entry point is app.py (the Flask app); the registry that dispatches to
+this file is extractor.py. To parse a file, call the registry, not this module
+directly:
 
-Usage as a library:
+    from .extractor import extract_transactions, to_csv_bytes
 
-    from icici_extractor import extract_transactions
-
-    result = extract_transactions("statement.pdf", password="1234")
+    result = extract_transactions(path, extractor_name="icici_cc", password="1234")
     result["transactions"]  # list of dicts
     result["summary"]       # dict of account summary fields (best effort)
 
-Usage from the command line:
+(The `main()` at the bottom of this file is a developer convenience for parsing
+one PDF from the shell; the app does not use it.)
 
-    python icici_extractor.py statement.pdf --password 1234 --out transactions.csv
+It mirrors the structure of `sbi_cc_extractor.py` — same public surface
+(`extract_transactions`, `to_csv_bytes`, `PdfPasswordRequired`, a CLI `main`) —
+so it can be dropped in as a sibling/"subclass-style" extractor for a different
+issuer.
+
+Usage from the command line (developer convenience; the app uses the registry):
+
+    python icici_cc_extractor.py statement.pdf --password 1234 --out transactions.csv
 
 Notes on the ICICI template quirks handled here:
   * Some ICICI statements render bold header labels (STATEMENT DATE /

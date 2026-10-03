@@ -17,6 +17,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The GitHub-style cash-flow heatmap: one cell per day, shaded by that day's
+// net, over a window the user scrubs.
+//
+// Two things make this endpoint's arithmetic different from the rest of the
+// dashboard, and both are about the heatmap's *scale*:
+//
+//   - Every cell is per-currency, and so is the scale that shades them. The
+//     largest absolute net in the window is `MaxAbsNet`, which is itself a
+//     CurrencyAmounts map for the same reason the cells are: adding across
+//     currencies to get one "biggest day" would be meaningless. It is the
+//     standing example of a value that could only exist by adding across
+//     currencies and is therefore a map, not a number.
+//   - A day's Net is a difference *inside* one currency, computed with Sub — not
+//     two independently-derived figures subtracted by the client.
+//
+// The overlay fields are the other half. When a single account is selected, the
+// response carries that account's billing-cycle boundaries and the same
+// synthetic summary rows the transactions list shows (see transaction_summary.go)
+// so the calendar can draw them in place. Note that `cycles[].outstanding` and
+// `markers[].amount` are keyed by the named account's own currency and are NOT
+// narrowed by `?currency=`, because attachCashFlowOverlays takes no currency
+// argument. A filter can therefore still be answered with a figure in a currency
+// it excluded; that is deliberate and documented rather than an oversight.
+
 // GetCashFlowCalendar aggregates the user's transactions by day for the
 // GitHub-style cash-flow heatmap: per-day income, expense, and net over an
 // optional date range and account filter. When a single account is supplied,
