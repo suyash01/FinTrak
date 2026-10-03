@@ -1,31 +1,55 @@
--- FinTrak canonical baseline schema (squashed).
--- This baseline is followed by the incremental migrations in this directory;
--- it is not the final schema by itself. Later migrations add or repair data
--- including per-owner payee-name uniqueness, loan schedules, recurring term
--- history, refresh sessions, and client-key idempotency.
+-- FinTrak canonical baseline schema.
+--
+-- This file is the whole schema: it is applied to an empty database in one step
+-- and there is nothing after it yet. Every later schema change is a new
+-- NNNNNN_*.up.sql migration, as before.
+--
 --   * composite tenant keys: accounts and payees are keyed by (user_id, id),
 --     and every FK that targets them carries the user_id so a row can never
 --     reference another user's account/payee
 --   * users, account types, accounts (including billing_day and closed),
 --     billing cycles, category groups, categories, payees, transactions,
 --     rules, and links
+--   * server-recorded refresh sessions: refresh_tokens holds one row per issued
+--     refresh token (SHA-256 only), family_id groups one session's rotation
+--     chain, revoked_at marks a token spent, replaced_by points at its successor
 --   * loan/EMI accounts: a closed flag and the loan_attachments junction that
 --     attaches a transaction to exactly one loan account; a trigger rejects
 --     writes that would place a transaction on a loan account
+--   * the amortization side of a loan: loan_schedules records its terms,
+--     loan_transfers one row per balance transfer/refinance, and
+--     loan_disbursements the bank credit its disbursement is reconciled against
 --   * foreign keys with cascade/set-null semantics: transactions.account_id ->
 --     accounts, links.from_txn_id/to_txn_id -> transactions, and the
 --     category/payee references on transactions/rules/payees; links also
 --     reject self-links (from_txn_id = to_txn_id) and duplicate identities
 --   * a transaction's billing cycle must belong to the transaction's own
---     account (composite FK to billing_cycles (id, account_id))
+--     account: the composite FK to billing_cycles (id, account_id) is the only
+--     cycle constraint, and MATCH SIMPLE leaves rows with a NULL cycle untouched
 --   * rules.match_type without the never-implemented 'regex' value
 --   * transaction amounts stored as integer minor units (BIGINT cents)
---   * the baseline recurring_series and recurring_attachments tables; later
---     migrations add effective-dated recurring_series_terms history
+--   * per-owner payee-name uniqueness, so two payees in one ledger can never be
+--     indistinguishable in the picker, in payee rules or in the account<->payee
+--     link
+--   * client-key idempotency on transaction creates, which is what makes an
+--     offline create replayable rather than a second money row
+--   * transactions.billing_cycle_detached, the per-row record that a cleared
+--     cycle was cleared deliberately, so the read-side back-fill does not
+--     re-derive it
+--   * transactions.tags is NOT NULL: a NULL breaks `unnest(tags || ...)` and so
+--     silently stores nothing on a bulk tag add
+--   * the baseline recurring_series and recurring_series_terms tables, whose
+--     effective-dated terms carry the piecewise amount/account history
 --   * the query and performance indexes added for the dominant
---     listing/aggregate/suggestion patterns
--- The historical orphan-cleanup, duplicate-collapse, and backfill statements
--- are no-ops on a fresh database and are intentionally not carried over.
+--     listing/aggregate/suggestion patterns, including the list endpoint's own
+--     (user_id, date DESC, credit-before-debit, id) ordering
+--
+-- This baseline was squashed from the incremental history that preceded the
+-- first release. The repairs that history performed -- clearing cross-account
+-- cycle references, backfilling transfer principal, merging duplicate payees,
+-- nulling legacy NULL tags -- are no-ops on an empty database and are not
+-- carried over; only the invariant each of them left behind is, and it is
+-- stated in this file as a constraint.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Users (authentication)
@@ -41,6 +65,32 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Server-side refresh sessions: rotation, reuse detection and revocation.
+--
+-- Only the SHA-256 of the token is stored (the token itself is never
+-- persisted), family_id groups one session's rotation chain, revoked_at marks a
+-- token as spent and replaced_by points at its successor. Presenting a revoked
+-- token is proof the value leaked -- the only legitimate holder was handed the
+-- successor when the cookie was replaced -- and revokes the family.
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    family_id UUID NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    replaced_by UUID
+);
+
+-- Lookups are by hash (unique constraint above) and revocations are by family.
+-- Expired and revoked rows are retained so reuse detection can distinguish a
+-- spent token from an unknown one. The application does not currently run an
+-- automatic cleanup job; any future pruning must preserve that retention
+-- window and be operated as a reviewed maintenance task.
+CREATE INDEX IF NOT EXISTS refresh_tokens_family_id_idx ON refresh_tokens (family_id);
+CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens (user_id);
 
 -- Account types (reference data, global)
 -- Credit card statements typically export purchases as negative amounts and
@@ -116,8 +166,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 -- An explicit, persisted period (start_date..end_date) that transactions are
 -- attached to via transactions.billing_cycle_id. Cycles are generated from the
 -- account's configured billing day; the assignment can be changed manually.
--- The composite UNIQUE (id, account_id) backs the transactions composite FK
--- that keeps a transaction's cycle and account in agreement.
+-- UNIQUE (user_id, account_id, id) is what backs the composite FK from
+-- transactions that keeps a transaction's cycle and account in agreement.
 CREATE TABLE IF NOT EXISTS billing_cycles (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL,
@@ -152,12 +202,29 @@ CREATE TABLE IF NOT EXISTS payees (
 CREATE UNIQUE INDEX IF NOT EXISTS payees_account_id_tenant_uq
     ON payees (user_id, account_id) WHERE account_id IS NOT NULL;
 
+-- A payee name is unique per owner, not column-wide, so the same name can exist
+-- in two ledgers. POST /payees and PUT /payees/:id turn a 23505 here into 409
+-- "a payee with this name already exists"; the account handlers turn it into
+-- "an account-linked payee with this name already exists".
+CREATE UNIQUE INDEX IF NOT EXISTS payees_user_name_uq
+    ON payees (user_id, name);
+
 -- Transactions. amount is stored as integer minor units (cents) so
 -- aggregation, balance, and transfer-scoring math use exact integer arithmetic.
 -- category_id/payee_id references are set to NULL when the target is removed.
+-- tags is NOT NULL: the write edges always bind an array, and a NULL would
+-- break `unnest(tags || $n::text[])` so a bulk tag add would store nothing.
+-- client_key is the client-generated idempotency key for creates -- nullable,
+-- because a client need not send one, and indexed partially so the many NULL
+-- rows do not collide. billing_cycle_detached records that the user cleared the
+-- cycle on purpose, which is otherwise indistinguishable from never-assigned.
+--
 -- The composite billing-cycle FK targets billing_cycles (id, account_id): the
 -- default MATCH SIMPLE semantics leave rows with a NULL cycle untouched, while
--- a non-NULL cycle must belong to the transaction's own account.
+-- a non-NULL cycle must belong to the transaction's own account. Every handler
+-- path re-checks the pairing, and listBillingCycles aggregates transactions
+-- WHERE billing_cycle_id = bc.id without re-checking the account, so this is
+-- the constraint that stops a row being counted into the wrong cycle's totals.
 CREATE TABLE IF NOT EXISTS transactions (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL,
@@ -166,15 +233,15 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount BIGINT NOT NULL,
     type VARCHAR(10) NOT NULL CHECK (type IN ('debit', 'credit')),
     category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
-    -- The current application writes a non-null array; 000013 backfills legacy
-    -- NULLs and enforces the invariant at the database boundary.
-    tags TEXT[] DEFAULT '{}',
+    tags TEXT[] NOT NULL DEFAULT '{}',
     notes TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     payee_id UUID,
     billing_cycle_id UUID,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_key TEXT,
+    billing_cycle_detached BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (user_id, id),
     CONSTRAINT transactions_account_tenant_fkey
         FOREIGN KEY (user_id, account_id)
@@ -182,9 +249,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     CONSTRAINT transactions_payee_tenant_fkey
         FOREIGN KEY (user_id, payee_id)
         REFERENCES payees (user_id, id) ON DELETE SET NULL (payee_id),
-    CONSTRAINT transactions_billing_cycle_tenant_fkey
-        FOREIGN KEY (user_id, billing_cycle_id)
-        REFERENCES billing_cycles (user_id, id)
+    CONSTRAINT transactions_billing_cycle_account_fkey
+        FOREIGN KEY (user_id, account_id, billing_cycle_id)
+        REFERENCES billing_cycles (user_id, account_id, id)
         ON DELETE SET NULL (billing_cycle_id)
 );
 
@@ -199,9 +266,30 @@ CREATE INDEX IF NOT EXISTS transactions_tenant_billing_cycle_id
 CREATE INDEX IF NOT EXISTS transactions_tenant_type
     ON transactions (user_id, type);
 
+-- The transaction list's default ordering, which is txnOrderByDate
+-- (handlers/transaction.go) exactly and in the same direction: `date DESC`,
+-- then credits before debits within a day, then the id as the final tiebreak.
+-- Postgres can therefore satisfy the ORDER BY from the index and stop after
+-- LIMIT rows instead of sorting the user's whole prefix, and the count query
+-- shares the `user_id = ...` prefix. DESC matches the endpoint's default; an
+-- ascending list keeps sorting, which is not worth a second index on the
+-- app's hottest table.
+CREATE INDEX IF NOT EXISTS transactions_tenant_date
+    ON transactions (user_id, date DESC, (CASE WHEN type = 'credit' THEN 0 ELSE 1 END), id);
+
+-- A repeat of a client key returns the transaction it already created instead
+-- of inserting a second row. The offline outbox depends on it: an entry
+-- recorded while the API was unreachable is replayed on reconnect, and neither
+-- a create whose response was lost nor a replayed one may post twice. Scoped by
+-- user_id because the key is client-generated and only needs to be unique per
+-- ledger.
+CREATE UNIQUE INDEX IF NOT EXISTS transactions_user_client_key
+    ON transactions (user_id, client_key)
+    WHERE client_key IS NOT NULL;
+
 -- Links. A link joins two distinct transactions; self-links are rejected.
 -- The identity of a link is (user_id, type, from_txn_id, to_txn_id); the unique
--- index below makes CreateLink atomic via ON CONFLICT DO NOTHING.
+-- constraint below makes CreateLink atomic via ON CONFLICT DO NOTHING.
 CREATE TABLE IF NOT EXISTS links (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     type VARCHAR(20) NOT NULL CHECK (type IN ('transfer', 'cashback', 'refund', 'bill_payment')),
@@ -273,6 +361,128 @@ CREATE TRIGGER transactions_reject_loan_account
     BEFORE INSERT OR UPDATE OF account_id ON transactions
     FOR EACH ROW EXECUTE FUNCTION enforce_transaction_not_loan_account();
 
+-- Optional amortization schedule for a Loan / EMI account. A loan account holds
+-- no transactions of its own and an attached EMI payment carries no principal/
+-- interest split -- the account's "repaid" balance is just the sum of its
+-- attachments. A schedule records the loan's terms so the amortization table can
+-- be generated (each installment decomposed into principal and interest, the
+-- final one absorbing rounding so the loan repays exactly) and matched against
+-- the attached EMI payments in date order.
+--
+-- At most one schedule per loan account. Money is stored as integer minor units
+-- (cents) and the rate as integer basis points (950 = 9.50% p.a.), so no money
+-- arithmetic ever runs in float64.
+--
+-- processing_fee is what the lender charged, in minor units like every other
+-- money column. It is reference data: the amortization table is generated over
+-- the whole principal and the outstanding balance runs against that, so
+-- recording the fee never moves a single installment. A lender that finances
+-- its charges instead has them entered in the principal.
+--
+-- disbursal_date is when the money was actually released. The first installment
+-- covers disbursal -> first due date; when that period is not a whole anchored
+-- month (disbursed on the 20th, first EMI on the 5th) the handler charges
+-- day-count interest for the broken period, so installment 1 splits differently
+-- from every later one. NULL means the first period is exactly one month.
+CREATE TABLE IF NOT EXISTS loan_schedules (
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    loan_account_id UUID NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    principal BIGINT NOT NULL CHECK (principal > 0),
+    annual_rate_bps INTEGER NOT NULL CHECK (annual_rate_bps >= 0),
+    tenure_months INTEGER NOT NULL CHECK (tenure_months BETWEEN 1 AND 600),
+    start_date DATE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    processing_fee BIGINT NOT NULL DEFAULT 0,
+    disbursal_date DATE,
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, loan_account_id),
+    CONSTRAINT loan_schedules_account_tenant_fkey
+        FOREIGN KEY (user_id, loan_account_id)
+        REFERENCES accounts (user_id, id) ON DELETE CASCADE,
+    CONSTRAINT loan_schedules_processing_fee_nonnegative
+        CHECK (processing_fee >= 0)
+);
+
+-- One row per balance transfer / refinance. The source loan is settled at its
+-- outstanding balance on transfer_date and the target loan absorbs that amount,
+-- recasting its remaining installments. Both loans' tables are derived from
+-- these rows, so deleting one reverts both sides rather than leaving
+-- half-applied balances behind.
+--
+-- UNIQUE (user_id, from_loan_account_id) encodes "a loan can be transferred out
+-- at most once" in the database: once settled it has no remaining balance to
+-- move again, and the constraint turns a concurrent double-transfer into a
+-- constraint violation the handler maps to a 409 instead of two recasts. It
+-- also indexes the source-side lookup; the target side gets its own index.
+--
+-- mode names the three shapes a transfer can have on the receiving loan:
+--   recast   -- the target's installments due after the transfer absorb the
+--               amount, so it is an addition to the balance it still repays
+--   opens    -- the transfer created the target's schedule; the amount is its
+--               principal and must not be added on top of it a second time
+--   takeover -- the target keeps amortizing its own principal and the amount is
+--               paid out of the target's disbursement to settle the source, so
+--               it reduces the cash the target released rather than increasing
+--               what it owes
+--
+-- principal is what the settled transfer moved as principal, which is what the
+-- source actually owed; the rest of amount is the interest time cost, and
+-- keeping the two apart is the only way to tell a large payoff from a large
+-- principal. 0 <= principal <= amount.
+CREATE TABLE IF NOT EXISTS loan_transfers (
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    from_loan_account_id UUID NOT NULL,
+    to_loan_account_id UUID NOT NULL,
+    amount BIGINT NOT NULL CHECK (amount > 0),
+    transfer_date DATE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    mode TEXT NOT NULL DEFAULT 'recast',
+    principal BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, from_loan_account_id),
+    CONSTRAINT loan_transfers_distinct_accounts
+        CHECK (from_loan_account_id <> to_loan_account_id),
+    CONSTRAINT loan_transfers_mode_check
+        CHECK (mode IN ('recast', 'opens', 'takeover')),
+    CONSTRAINT loan_transfers_principal_check
+        CHECK (principal >= 0 AND principal <= amount),
+    CONSTRAINT loan_transfers_from_account_tenant_fkey
+        FOREIGN KEY (user_id, from_loan_account_id)
+        REFERENCES accounts (user_id, id) ON DELETE CASCADE,
+    CONSTRAINT loan_transfers_to_account_tenant_fkey
+        FOREIGN KEY (user_id, to_loan_account_id)
+        REFERENCES accounts (user_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS loan_transfers_tenant_to_loan_account_id
+    ON loan_transfers (user_id, to_loan_account_id);
+
+-- The bank credit that released a loan, so the disbursement the schedule implies
+-- (principal - processing fee - takeovers it funded) can be reconciled against
+-- what actually landed in the borrower's account -- the one number a sanction
+-- letter and a bank statement have to agree on.
+--
+-- One credit per loan and one loan per credit: a transaction that is already an
+-- EMI payment, or another loan's disbursement, cannot be this one's.
+CREATE TABLE IF NOT EXISTS loan_disbursements (
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    loan_account_id UUID NOT NULL,
+    transaction_id UUID NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, loan_account_id),
+    CONSTRAINT loan_disbursements_account_tenant_fkey
+        FOREIGN KEY (user_id, loan_account_id)
+        REFERENCES accounts (user_id, id) ON DELETE CASCADE,
+    CONSTRAINT loan_disbursements_transaction_tenant_fkey
+        FOREIGN KEY (user_id, transaction_id)
+        REFERENCES transactions (user_id, id) ON DELETE CASCADE
+);
+
 -- A recurring_series row is a user-defined *expectation*: a repeating charge or
 -- income the user wants to track (rent, salary, a subscription). It is a
 -- template only -- FinTrak never auto-creates transactions from it and never
@@ -331,8 +541,6 @@ CREATE TABLE IF NOT EXISTS recurring_series_terms (
 CREATE INDEX IF NOT EXISTS recurring_series_terms_tenant_series_id
     ON recurring_series_terms (user_id, series_id);
 
--- Recurring series & subscription tracking.
---
 -- Recurring attachments. The junction links a real transaction to the recurring
 -- series it satisfies. The UNIQUE on transaction_id enforces "one transaction
 -- belongs to at most one recurring series" at the database level (mirroring
@@ -352,9 +560,31 @@ CREATE TABLE IF NOT EXISTS recurring_attachments (
         REFERENCES transactions (user_id, id) ON DELETE CASCADE
 );
 
--- Rules. category_id cascades with its category (NOT NULL); payee_id is set to
--- NULL when its payee is removed. 'regex' is intentionally not a valid
--- match_type: no code path ever implemented it.
+-- The series column leads the index after user_id, matching the predicates that
+-- read this junction: the attached-transaction list and fetch filter
+-- ra.user_id/ra.series_id, the series list runs a correlated
+-- SELECT COUNT(*) ... WHERE ra.series_id = rs.id once per series row, and the
+-- ON DELETE CASCADE from recurring_series has to locate its referencing rows.
+CREATE INDEX IF NOT EXISTS recurring_attachments_tenant_series_id
+    ON recurring_attachments (user_id, series_id);
+
+-- Rules.
+--
+-- A rule matches a description and assigns a category (the action, NOT NULL,
+-- which also keeps the "first matching rule wins" guard in ApplyRules
+-- (category_id IS NULL) intact) and optionally a payee.
+--
+-- The optional conditions are all ANDed; every one is nullable, and for the two
+-- booleans NULL means "either". The two actions beyond category/payee are
+-- add_tags (tags to union onto the transaction) and notes (appended to any
+-- existing notes).
+--
+-- 'regex' is intentionally not a valid match_type: no code path ever
+-- implemented it.
+--
+-- The condition references are tenant-scoped except filter_category_id, which
+-- may reference a global (admin) category and so is a plain FK mirroring
+-- rules.category_id.
 CREATE TABLE IF NOT EXISTS rules (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     pattern VARCHAR(500) NOT NULL,
@@ -363,8 +593,29 @@ CREATE TABLE IF NOT EXISTS rules (
     payee_id UUID,
     priority INT DEFAULT 0,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id UUID,
+    filter_category_id UUID,
+    filter_payee_id UUID,
+    min_amount BIGINT,
+    max_amount BIGINT,
+    txn_type VARCHAR(10) CHECK (txn_type IN ('debit', 'credit')),
+    date_from DATE,
+    date_to DATE,
+    is_linked BOOLEAN,
+    is_recurring BOOLEAN,
+    add_tags TEXT[] DEFAULT '{}',
+    notes TEXT DEFAULT '',
     PRIMARY KEY (user_id, id),
     CONSTRAINT rules_payee_tenant_fkey
         FOREIGN KEY (user_id, payee_id)
-        REFERENCES payees (user_id, id) ON DELETE SET NULL (payee_id)
+        REFERENCES payees (user_id, id) ON DELETE SET NULL (payee_id),
+    CONSTRAINT rules_account_tenant_fkey
+        FOREIGN KEY (user_id, account_id)
+        REFERENCES accounts (user_id, id) ON DELETE SET NULL (account_id),
+    CONSTRAINT rules_filter_category_fkey
+        FOREIGN KEY (filter_category_id)
+        REFERENCES categories (id) ON DELETE SET NULL,
+    CONSTRAINT rules_filter_payee_tenant_fkey
+        FOREIGN KEY (user_id, filter_payee_id)
+        REFERENCES payees (user_id, id) ON DELETE SET NULL (filter_payee_id)
 );

@@ -177,8 +177,11 @@ The backend runs schema migrations on startup, and the frontend reverse-proxies 
 
 Both Compose files serve **plain HTTP** and are designed to sit behind a TLS-terminating reverse proxy or ingress: production publishes only the frontend (`3000`), with the API reachable exclusively through the frontend's nginx over the internal `app-net` (the development stack additionally publishes the API on `8080`, plus its database and tool ports — all of them bound to `127.0.0.1`, so nothing in the dev stack is reachable from another machine). With `COOKIE_SECURE=true` (the production default) browsers only send the httpOnly session cookie over HTTPS, and `Strict-Transport-Security` is ignored over HTTP — so exposing the stack directly over HTTP is not a supported deployment. The supported topology is:
 
-```
-browser --HTTPS--> TLS terminator (nginx/Caddy/Traefik/cloud LB) --HTTP--> frontend:3000 --HTTP(internal)--> backend:8080
+```mermaid
+flowchart LR
+    BROWSER["browser"] -->|"HTTPS"| TLS["TLS terminator<br/>(nginx / Caddy / Traefik / cloud LB)"]
+    TLS -->|"HTTP"| FRONTEND["frontend:3000"]
+    FRONTEND -->|"HTTP (internal)"| BACKEND["backend:8080"]
 ```
 
 Requirements for the terminator:
@@ -433,7 +436,7 @@ All five accept a `currency` query parameter, and a code that is not three lette
 
 All endpoints require authentication except the public ones: `/health`, `/openapi.yaml`, and the auth endpoints (`/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`). The login/register endpoints deliver an httpOnly, `SameSite=Lax` access-token cookie (`fintrak_token`, 15 minutes) plus a long-lived refresh-token cookie (`fintrak_refresh`, 30 days, scoped to `/api/v1/auth`). The browser sends both automatically, so neither token is exposed to JavaScript. A bearer `Authorization: Bearer <access-token>` header is still accepted (used by internal tooling/tests). Set the signing secret via the `JWT_SECRET` environment variable. Because a `SameSite=Lax` cookie is attached to a cross-site top-level navigation, the handful of authenticated `GET` routes that write (the billing-cycle generation and Paperless re-seal paths) additionally refuse a request that declares `Sec-Fetch-Site: cross-site`; same-origin requests and non-browser clients (which send no `Sec-Fetch-*` header) are unaffected.
 
-When the short-lived access token expires, the SPA calls `POST /auth/refresh`, which exchanges the refresh cookie for a new access token and retries the original request transparently, so an active user is not kicked out every 15 minutes. Sessions are recorded server-side (migration `000012_refresh_tokens`): only the SHA-256 of each refresh token is stored, the tokens of one session form a rotation family, and every successful refresh rotates the cookie (revoking the presented token and storing its successor). Refreshing never extends the session's absolute deadline: the refresh token expires 30 days after login, after which the user must sign in again. Presenting a token that was already rotated is treated as **reuse** — the only holder of a replaced value is someone who copied it — and revokes the whole family, so a leaked cookie is not silently re-armed. `POST /auth/logout` revokes the family as well as clearing the browser's cookies, so signing out really ends the session.
+When the short-lived access token expires, the SPA calls `POST /auth/refresh`, which exchanges the refresh cookie for a new access token and retries the original request transparently, so an active user is not kicked out every 15 minutes. Sessions are recorded server-side (the `refresh_tokens` table): only the SHA-256 of each refresh token is stored, the tokens of one session form a rotation family, and every successful refresh rotates the cookie (revoking the presented token and storing its successor). Refreshing never extends the session's absolute deadline: the refresh token expires 30 days after login, after which the user must sign in again. Presenting a token that was already rotated is treated as **reuse** — the only holder of a replaced value is someone who copied it — and revokes the whole family, so a leaked cookie is not silently re-armed. `POST /auth/logout` revokes the family as well as clearing the browser's cookies, so signing out really ends the session.
 
 ---
 

@@ -643,11 +643,11 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 			movedToFallback, fallbackGroupName))
 	}
 
-	// Payees. The (user_id, name) unique index (migration 000010) makes two
-	// payees of the same name impossible, but a bundle written before that index
-	// existed can still hold them — and a single duplicate would fail the whole
-	// all-or-nothing restore on the payees insert. Merge them the same way the
-	// migration does, then point every reference at the survivor.
+	// Payees. The (user_id, name) unique index makes two payees of the same
+	// name impossible, but a bundle written before that index existed can still
+	// hold them — and a single duplicate would fail the whole all-or-nothing
+	// restore on the payees insert. Merge them the same way the index's migration
+	// did, then point every reference at the survivor.
 	bundlePayees, foldedPayees := mergeBackupPayees(b.Payees)
 	if len(foldedPayees) > 0 {
 		addBackupWarning(res, "merged payees that shared a name")
@@ -1148,8 +1148,8 @@ func backupTransferMode(mode string) string {
 }
 
 // mergeBackupPayees folds payees that share a name into one survivor, so a
-// bundle written before the payees_user_name_uq index (migration 000010)
-// existed can still be restored. The survivor of a name is the account-linked
+// bundle written before the payees_user_name_uq index existed can still be
+// restored. The survivor of a name is the account-linked
 // row when the bundle has one — that is the payee the account UI resolves — and
 // the first row otherwise; the folded ids are returned mapped to their
 // survivor so transactions, rules and recurring series keep their payee.
@@ -1157,7 +1157,8 @@ func backupTransferMode(mode string) string {
 // A second account-linked row of the same name can only come from two accounts
 // that share a name (accounts are not name-unique) and is not folded: deleting
 // it would strip its account of the linked payee the account handlers never
-// re-create. It gets the same id-suffix disambiguation the migration applies.
+// re-create. It gets the same id-suffix disambiguation the index's migration
+// applied.
 func mergeBackupPayees(payees []models.BackupPayee) ([]models.BackupPayee, map[uuid.UUID]uuid.UUID) {
 	survivor := make(map[string]models.BackupPayee, len(payees))
 	for _, p := range payees {
@@ -1196,8 +1197,8 @@ func mergeBackupPayees(payees []models.BackupPayee) ([]models.BackupPayee, map[u
 // disambiguatedPayeeName appends a disambiguating id suffix to a payee name
 // without overflowing payees.name (VARCHAR(255)): the suffix is 11 characters
 // (" (12345678)"), so the name keeps at most 244 characters — the same bound
-// migration 000010 applies when it disambiguates. The truncation is by rune,
-// which is what VARCHAR(255) counts.
+// the index's migration applied when it disambiguated. The truncation is by
+// rune, which is what VARCHAR(255) counts.
 func disambiguatedPayeeName(name string, id uuid.UUID) string {
 	const suffixLen = len(" (12345678)")
 	runes := []rune(name)

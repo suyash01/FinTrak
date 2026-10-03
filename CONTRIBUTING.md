@@ -184,7 +184,10 @@ There is no ticket system beyond GitHub Issues: a [GitHub Issue](https://github.
   existing `newTestServer` / `pgxmock` pattern rather than inventing a new one.
 - **Schema changes are new migrations.** Add `NNNNNN_<name>.up.sql` and
   `.down.sql` in `backend/db/migrations`; never edit an existing migration, because
-  deployed databases have already run it.
+  deployed databases have already run it. The one deliberate exception was the
+  pre-release squash into `000001_initial_schema`, which reset the numbering — so the
+  next migration is `000002_`, and a local database from before the squash has to be
+  recreated (`docker compose down -v`) rather than migrated.
 - **Never commit secrets.** `.env` and `.env.*` are ignored and must stay that way, and
   `.dockerignore` keeps them out of the build context a remote builder receives. Use
   `.env.example` to document a new variable.

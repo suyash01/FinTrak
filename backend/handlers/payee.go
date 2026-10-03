@@ -25,7 +25,7 @@ import (
 // well-defined because a second account-linked payee cannot exist.
 //
 // Two uniqueness rules meet here and a change must keep both: one payee per name
-// per user (payees_user_name_uq, added in migration 000010), and one per account
+// per user (payees_user_name_uq), and one per account
 // per user (the partial index). The first is why the handlers map a 23505 to 409
 // rather than letting it be a 500.
 

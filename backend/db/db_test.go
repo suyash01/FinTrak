@@ -110,7 +110,7 @@ func TestMigrateRejectsInvalidURL(t *testing.T) {
 	assert.Error(t, Migrate("://not-a-valid-dsn"))
 }
 
-// migrationVersionPattern matches "000011_transactions_list_index.up.sql".
+// migrationVersionPattern matches "000001_initial_schema.up.sql".
 var migrationVersionPattern = regexp.MustCompile(`^(\d{6})_.+\.(up|down)\.sql$`)
 
 // TestEmbeddedMigrationsAreCompleteAndPaired guards the property golang-migrate

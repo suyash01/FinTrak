@@ -97,7 +97,8 @@ constraint on any proposal. Verified against the code, not assumed.
 On top of everything above:
 
 1. `backend/db/migrations/NNNNNN_*.up.sql` + `.down.sql`. The schema is never edited in
-   place; `000001_initial_schema` is a squashed base that later migrations alter.
+   place; `000001_initial_schema` is the squashed baseline that creates the whole
+   schema, and the next migration is `000002_`.
 2. The tenant convention: composite `(user_id, id)` primary key and composite tenant
    foreign keys. Every existing table does this, including transactions, links and
    billing cycles.
@@ -112,8 +113,9 @@ On top of everything above:
 
 ### 2.3 Invariants any proposal must respect
 
-- `transactions.tags` is never NULL (`'{}'`, enforced at the DB boundary since
-  migration `000013`). A NULL silently breaks `unnest(tags || …)` so a bulk tag add
+- `transactions.tags` is never NULL (`'{}'`, enforced at the DB boundary by the
+  `NOT NULL` in `000001_initial_schema`). A NULL silently breaks
+  `unnest(tags || …)` so a bulk tag add
   stores nothing, and serializes as `"tags": null`.
 - Every transaction-date write edge goes through `validation.CheckTransactionDate`
   (`[1900-01-01, today+1y]`).

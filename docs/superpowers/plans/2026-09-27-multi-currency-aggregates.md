@@ -3100,14 +3100,27 @@ Tasks 1 → 2 → 3 are independent of each other and of everything after them; 
 
 Task 9 restores the spec and the shared client; Task 10 restores `mcp/`; Task 11 restores `tui/`; Task 12 restores the SPA. **The branch is whole only after Task 11**, and `make test-tui-cover-check` / `test-mcp-cover-check` / `openapi-check` are expected to fail if run before then. Do not "fix" a downstream compile error by reverting a model field: that is the shape change being undone, and the correct fix is always to bring the consumer forward.
 
-```
-1 ─┐
-2 ─┼─→ 4 ─┐
-3 ─┘      ├─→ 9 ─┬─→ 10
-           5 ─┤     ├─→ 11  ← branch whole here
-           6 ─┤     └─→ 12
-           7 ─┤
-           8 ─┘
-           └─→ 14
-13 (independent, any time)
+```mermaid
+flowchart LR
+    T1["1"] --> T4["4"]
+    T2["2"] --> T4
+    T3["3"] --> T4
+
+    T4 --> T9["9 — needs all of 4-8"]
+    T5["5"] --> T9
+    T6["6"] --> T9
+    T7["7"] --> T9
+    T8["8"] --> T9
+
+    T9 --> T10["10"]
+    T9 --> T11["11 — branch whole here"]
+    T9 --> T12["12"]
+
+    T4 --> T14["14"]
+    T5 --> T14
+    T6 --> T14
+    T7 --> T14
+    T8 --> T14
+
+    T13["13 — independent, any time"]
 ```

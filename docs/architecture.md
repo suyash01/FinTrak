@@ -2,12 +2,15 @@
 
 ## Runtime components and trust boundaries
 
-```text
-SPA/PWA ─┐
-TUI ─────┼─> Go API (Gin) ──> PostgreSQL
-MCP ─────┘          │
-                    ├──> statement-parser (private Flask service)
-                    └──> Paperless-ngx (per-user configured instance)
+```mermaid
+flowchart TD
+    SPA["SPA / PWA"] --> API["Go API (Gin)"]
+    TUI["TUI"] --> API
+    MCP["MCP server"] --> API
+
+    API --> PG[("PostgreSQL")]
+    API --> PARSER["statement-parser<br/>(private Flask service)"]
+    API --> PAPERLESS["Paperless-ngx<br/>(per-user configured instance)"]
 ```
 
 The web frontend and its nginx proxy expose the API under `/api/v1`. The TUI and
