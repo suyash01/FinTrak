@@ -282,15 +282,15 @@ export default function Dashboard() {
   );
 
   const recentColumns = useMemo<ColumnDef<Transaction, any>[]>(() => {
-    const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
-    const headBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap`;
+    const headBase =
+      "h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 whitespace-nowrap";
     return [
       recentColumnHelper.accessor("date", {
         header: () => "Date",
         cell: ({ row }) => (
           <span className="text-sm">{formatDate(row.original.date)}</span>
         ),
-        meta: { headerClassName: headBase, cellClassName: pad },
+        meta: { headerClassName: headBase },
       }),
       recentColumnHelper.accessor("description", {
         header: () => "Description",
@@ -306,14 +306,14 @@ export default function Dashboard() {
             )}
           </div>
         ),
-        meta: { headerClassName: headBase, cellClassName: `${pad} max-w-75` },
+        meta: { headerClassName: headBase, cellClassName: "max-w-75" },
       }),
       recentColumnHelper.accessor("accountName", {
         header: () => "Account",
         cell: ({ row }) => (
           <span className="text-sm">{row.original.accountName}</span>
         ),
-        meta: { headerClassName: headBase, cellClassName: pad },
+        meta: { headerClassName: headBase },
       }),
       recentColumnHelper.display({
         id: "category",
@@ -334,7 +334,7 @@ export default function Dashboard() {
           ) : (
             <span className="text-muted-foreground text-sm">—</span>
           ),
-        meta: { headerClassName: headBase, cellClassName: pad },
+        meta: { headerClassName: headBase },
       }),
       recentColumnHelper.accessor("amount", {
         header: () => "Amount",
@@ -360,17 +360,18 @@ export default function Dashboard() {
         ),
         meta: {
           headerClassName: `${headBase} text-right`,
-          cellClassName: `${pad} text-right`,
+          cellClassName: "text-right",
         },
       }),
     ];
-    // compactLayout is the only thing that changes the columns' shape; the
-    // formatters used inside the cells are module-level and stable.
+    // The formatters used inside the cells are module-level and stable, and the
+    // cell padding the columns used to carry now comes from the density
+    // variables, so nothing here depends on the toggle.
     // currencyByAccount is a dependency because the amount cell reads it, and
     // leaving it out is the same class of bug as leaving a value out of a
     // PATCH body: the memo would keep serving cells built from a currency map
     // that has since changed, and the table would quietly show a stale currency.
-  }, [compactLayout, currencyByAccount]);
+  }, [currencyByAccount]);
 
   // A refetch — a filter change, or the offline layer reporting a sync — must
   // not replace the page the user is reading: the spinner and the error screen
@@ -428,14 +429,14 @@ export default function Dashboard() {
             onValueChange={(v) => setAccountId(v === ALL_ACCOUNTS ? "" : v)}
             placeholder="All Accounts"
             ariaLabel="Filter by account"
-            triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            triggerClassName="bg-background"
             extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
           />
           {codes.length > 0 && (
             <Select value={code} onValueChange={setCode}>
               <SelectTrigger
                 aria-label="Currency"
-                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-32`}
+                className="bg-background w-32"
               >
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
@@ -452,7 +453,7 @@ export default function Dashboard() {
             <Select value={cycles} onValueChange={setCycles}>
               <SelectTrigger
                 aria-label="Number of billing cycles"
-                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-40`}
+                className="bg-background w-40"
               >
                 <SelectValue placeholder="Cycles" />
               </SelectTrigger>
@@ -467,7 +468,7 @@ export default function Dashboard() {
               <Select value={period} onValueChange={applyPeriod}>
                 <SelectTrigger
                   aria-label="Period"
-                  className={`${compactLayout ? "h-8" : "h-10"} bg-background w-44`}
+                  className="bg-background w-44"
                 >
                   <SelectValue placeholder="Period" />
                 </SelectTrigger>
@@ -483,7 +484,7 @@ export default function Dashboard() {
               </Select>
               <Input
                 type="date"
-                className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+                className="w-auto bg-background scheme-light dark:scheme-dark"
                 value={dateFrom}
                 onChange={(e) => {
                   setDateFrom(e.target.value);
@@ -494,7 +495,7 @@ export default function Dashboard() {
               />
               <Input
                 type="date"
-                className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+                className="w-auto bg-background scheme-light dark:scheme-dark"
                 value={dateTo}
                 onChange={(e) => {
                   setDateTo(e.target.value);
@@ -507,7 +508,7 @@ export default function Dashboard() {
           )}
           {isBillingAccount && (
             <label
-              className={`flex items-center gap-2 cursor-pointer select-none ${compactLayout ? "h-8" : "h-10"}`}
+              className="flex items-center gap-2 cursor-pointer select-none"
             >
               <Switch
                 checked={isBillingCycleMode}
@@ -544,10 +545,7 @@ export default function Dashboard() {
         <div
           className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 ${compactLayout ? "gap-3 mb-4" : "gap-5 mb-6"}`}
         >
-          <Card
-            size={compactLayout ? "sm" : "default"}
-            className="hover:ring-foreground/20 transition-colors"
-          >
+          <Card className="hover:ring-foreground/20 transition-colors">
             <CardContent className="flex flex-col">
               <div className="w-11 h-11 rounded-lg flex items-center justify-center bg-chart-3/15 mb-3">
                 <TrendingUp size={22} className="text-chart-3" />
@@ -614,10 +612,7 @@ export default function Dashboard() {
         {/* Charts */}
         <div className="grid grid-cols-1 gap-6 mb-6">
           {/* Monthly Trend */}
-          <Card
-            size={compactLayout ? "sm" : "default"}
-            className="flex flex-col w-full"
-          >
+          <Card className="flex flex-col w-full">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
             >
@@ -695,7 +690,7 @@ export default function Dashboard() {
         <RecurringSection series={recurring} accountId={accountId} />
 
         {/* Recent Transactions */}
-        <Card size={compactLayout ? "sm" : "default"}>
+        <Card>
           <CardHeader
             className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
           >
@@ -761,7 +756,6 @@ function RecurringSection({
 
   return (
     <Card
-      size={compactLayout ? "sm" : "default"}
       className={`flex flex-col ${compactLayout ? "mb-4" : "mb-6"}`}
     >
       <CardHeader
@@ -874,10 +868,7 @@ function CategoryPieSection({
     projectScoped(cat, ["total"], scoped),
   );
   return (
-    <Card
-      size={compactLayout ? "sm" : "default"}
-      className="flex flex-col"
-    >
+    <Card className="flex flex-col">
       <CardHeader
         className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
       >

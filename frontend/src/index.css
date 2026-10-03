@@ -143,6 +143,31 @@
   --sidebar-ring: oklch(0.789 0.154 211.53);
 }
 
+/* Density (the Compact Layout toggle). The shadcn primitives read these instead
+   of a fixed height/padding, so the toggle is one attribute write on <html>
+   (public/theme-init.js sets it before mount; SettingsContext keeps it in sync)
+   rather than a boolean threaded through every call site. Compact is the bare
+   :root value, so a page that never gets the attribute — or whose stored value
+   is missing, which is what SettingsContext defaults to — still renders at the
+   default density. Plain rem equivalents of Tailwind's --spacing(n) scale,
+   written literally so they resolve outside @theme too.
+   Consumed by: button, input, select, card, table. */
+:root {
+  --density-control: 2rem; /* h-8    */
+  --density-card: 0.75rem; /* p-3    */
+  --density-card-sm: 0.5rem; /* p-2    */
+  --density-cell-y: 0.375rem; /* py-1.5 */
+  --density-cell-x: 0.75rem; /* px-3   */
+}
+
+:root[data-density="comfortable"] {
+  --density-control: 2.5rem; /* h-10  */
+  --density-card: 1rem; /* p-4   */
+  --density-card-sm: 0.75rem; /* p-3   */
+  --density-cell-y: 0.625rem; /* py-2.5 */
+  --density-cell-x: 1rem; /* px-4   */
+}
+
 /* Accent themes (override primary/ring/sidebar-primary; cyan is the base) */
 :root[data-theme="violet"] {
   --primary: oklch(0.541 0.281 293.009);

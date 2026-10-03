@@ -53,7 +53,7 @@ export default function ValidationDialog({
         ),
         meta: {
           headerClassName: `${headBase} w-28`,
-          cellClassName: "py-2.5 px-4 text-sm",
+          cellClassName: "text-sm",
         },
       }),
       colHelper.accessor("description", {
@@ -63,7 +63,7 @@ export default function ValidationDialog({
             {row.original.description}
           </span>
         ),
-        meta: { headerClassName: headBase, cellClassName: "py-2.5 px-4 text-sm" },
+        meta: { headerClassName: headBase, cellClassName: "text-sm" },
       }),
       colHelper.accessor("type", {
         header: () => "Type",
@@ -81,7 +81,6 @@ export default function ValidationDialog({
         ),
         meta: {
           headerClassName: `${headBase} w-24`,
-          cellClassName: "py-2.5 px-4",
         },
       }),
       colHelper.accessor("amount", {
@@ -100,7 +99,7 @@ export default function ValidationDialog({
         ),
         meta: {
           headerClassName: `${headBase} text-right w-32`,
-          cellClassName: "py-2.5 px-4 text-right",
+          cellClassName: "text-right",
         },
       }),
       colHelper.display({
@@ -124,7 +123,6 @@ export default function ValidationDialog({
           ),
         meta: {
           headerClassName: `${headBase} w-32`,
-          cellClassName: "py-2.5 px-4",
         },
       }),
     ];

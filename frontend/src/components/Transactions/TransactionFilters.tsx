@@ -83,8 +83,6 @@ export default function TransactionFilters({
   onQueryCommit,
   onQueryTextChange,
 }: TransactionFiltersProps) {
-  const triggerHeight = compactLayout ? "h-8" : "h-10";
-
   const accountGroups = useMemo<MultiSelectGroup[]>(
     () =>
       groupAccountsByType(accounts).map((group) => ({
@@ -187,7 +185,6 @@ export default function TransactionFilters({
           onSubmit={onQueryCommit}
           diagnostics={queryDiagnostics}
           onInProgressChange={onQueryInProgressChange}
-          compactLayout={compactLayout}
         />
       </div>
       <div
@@ -201,7 +198,7 @@ export default function TransactionFilters({
           groups={accountGroups}
           placeholder="All Accounts"
           ariaLabel="Filter by account"
-          triggerClassName={`${triggerHeight} bg-background`}
+          triggerClassName="bg-background"
         />
         <MultiSelect
           values={[
@@ -219,7 +216,7 @@ export default function TransactionFilters({
           groups={categoryGroups}
           placeholder="All Categories"
           ariaLabel="Filter by category"
-          triggerClassName={`${triggerHeight} bg-background`}
+          triggerClassName="bg-background"
         />
         <MultiSelect
           values={parseFilterList(filters.payeeId)}
@@ -229,7 +226,7 @@ export default function TransactionFilters({
           groups={payeeGroups}
           placeholder="All Payees"
           ariaLabel="Filter by payee"
-          triggerClassName={`${triggerHeight} bg-background`}
+          triggerClassName="bg-background"
         />
         <MultiSelect
           values={parseFilterList(filters.tags)}
@@ -237,7 +234,7 @@ export default function TransactionFilters({
           groups={tagGroups}
           placeholder="All Tags"
           ariaLabel="Filter by tag"
-          triggerClassName={`${triggerHeight} bg-background`}
+          triggerClassName="bg-background"
         />
         <Select
           value={String(filters.type || "all")}
@@ -245,7 +242,7 @@ export default function TransactionFilters({
         >
           <SelectTrigger
             aria-label="Filter by type"
-            className={`${triggerHeight} bg-background`}
+            className="bg-background"
           >
             <SelectValue placeholder="All Types" />
           </SelectTrigger>
@@ -261,7 +258,7 @@ export default function TransactionFilters({
         >
           <SelectTrigger
             aria-label="Filter by link status"
-            className={`${triggerHeight} bg-background`}
+            className="bg-background"
           >
             <SelectValue placeholder="All Link Status" />
           </SelectTrigger>
@@ -273,7 +270,7 @@ export default function TransactionFilters({
         </Select>
         <Input
           type="date"
-          className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
+          className="w-auto bg-background"
           value={filters.dateFrom}
           onChange={(e) => onFilterChange("dateFrom", e.target.value)}
           title="From date"
@@ -281,7 +278,7 @@ export default function TransactionFilters({
         />
         <Input
           type="date"
-          className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background`}
+          className="w-auto bg-background"
           value={filters.dateTo}
           onChange={(e) => onFilterChange("dateTo", e.target.value)}
           title="To date"
@@ -299,7 +296,7 @@ export default function TransactionFilters({
           <Select value={preset} onValueChange={onPresetChange}>
             <SelectTrigger
               id="rows-per-page"
-              className={`${compactLayout ? "h-8" : "h-9"} bg-background cursor-pointer`}
+              className="bg-background cursor-pointer"
             >
               <SelectValue />
             </SelectTrigger>
@@ -323,7 +320,7 @@ export default function TransactionFilters({
               onKeyDown={(e) => e.key === "Enter" && onCommitCustom()}
               placeholder="Custom"
               aria-label="Custom rows per page"
-              className={`w-24 ${compactLayout ? "h-8" : "h-9"} bg-background`}
+              className="w-24 bg-background"
             />
           )}
         </div>

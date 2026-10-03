@@ -45,7 +45,7 @@ export default function ImportPreviewTable({
   const columns = useMemo<ColumnDef<ImportTransaction, any>[]>(() => {
     const colHelper = createColumnHelper<ImportTransaction>();
     const headBase =
-      "py-3 px-4 h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";
+      "h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground";
 
     const cols: ColumnDef<ImportTransaction, any>[] = [
       colHelper.display({
@@ -87,7 +87,6 @@ export default function ImportPreviewTable({
         ),
         meta: {
           headerClassName: `${headBase} w-12`,
-          cellClassName: "py-2.5 px-4",
         },
       }),
       colHelper.accessor("date", {
@@ -99,7 +98,7 @@ export default function ImportPreviewTable({
         ),
         meta: {
           headerClassName: `${headBase} w-28`,
-          cellClassName: "py-2.5 px-4 text-sm",
+          cellClassName: "text-sm",
         },
       }),
       colHelper.accessor("description", {
@@ -109,7 +108,7 @@ export default function ImportPreviewTable({
             {row.original.description}
           </span>
         ),
-        meta: { headerClassName: headBase, cellClassName: "py-2.5 px-4 text-sm" },
+        meta: { headerClassName: headBase, cellClassName: "text-sm" },
       }),
     ];
 
@@ -128,7 +127,7 @@ export default function ImportPreviewTable({
           meta: {
             headerClassName: headBase,
             cellClassName:
-              "py-2.5 px-4 text-sm max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap",
+              "text-sm max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap",
           },
         }),
       );
@@ -151,7 +150,6 @@ export default function ImportPreviewTable({
         ),
         meta: {
           headerClassName: `${headBase} w-24`,
-          cellClassName: "py-2.5 px-4",
         },
       }),
       colHelper.accessor("amount", {
@@ -170,7 +168,7 @@ export default function ImportPreviewTable({
         ),
         meta: {
           headerClassName: `${headBase} text-right w-32`,
-          cellClassName: "py-2.5 px-4 text-right",
+          cellClassName: "text-right",
         },
       }),
     );

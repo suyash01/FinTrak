@@ -51,9 +51,6 @@ vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("../../context/DomainDataContext", () => ({
   useDomainData: domainMock.useDomainData,
 }));
-vi.mock("../../context/SettingsContext", () => ({
-  useSettings: () => ({ compactLayout: false }),
-}));
 
 const account: Account = {
   id: "loan-1",

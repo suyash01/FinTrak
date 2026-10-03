@@ -14,5 +14,15 @@
     var root = document.documentElement;
     root.classList.toggle("dark", dark);
     if (stored.accent) root.dataset.theme = stored.accent;
+    // Density, same reason and same file: the primitives size themselves from
+    // --density-*, so the attribute has to be on <html> before first paint or
+    // every control renders one size and then jumps. Mirrors
+    // readStoredCompactLayout — anything but a boolean is compact.
+    var compact = true;
+    try {
+      var parsed = JSON.parse(localStorage.getItem("compactLayout"));
+      if (typeof parsed === "boolean") compact = parsed;
+    } catch (e) {}
+    root.dataset.density = compact ? "compact" : "comfortable";
   } catch (e) {}
 })();

@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { Plus, Building2, ArrowUp, ArrowDown } from "lucide-react";
 import api, { downloadCSV } from "../../api/client";
-import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import type { Account } from "../../types";
 import { Button } from "@/components/ui/button";
@@ -52,7 +51,6 @@ export default function Accounts() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const { compactLayout } = useSettings();
 
   useCommandIntent("new-account", () => setCreateOpen(true));
 
@@ -188,8 +186,7 @@ export default function Accounts() {
 
   const toggleSort = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 
-  const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
-  const headerBase = `${cellPad} text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
+  const headerBase = "text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap";
 
   return (
     <>
@@ -206,7 +203,7 @@ export default function Accounts() {
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger
                 aria-label="Filter by account type"
-                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-44`}
+                className="bg-background w-44"
               >
                 <SelectValue placeholder="All Types" />
               </SelectTrigger>
@@ -223,7 +220,7 @@ export default function Accounts() {
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger
                 aria-label="Filter by status"
-                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-36`}
+                className="bg-background w-36"
               >
                 <SelectValue placeholder="All Statuses" />
               </SelectTrigger>
@@ -299,8 +296,6 @@ export default function Accounts() {
                   <AccountRow
                     key={acc.id}
                     account={acc}
-                    cellPad={cellPad}
-                    compactLayout={compactLayout}
                     onSetDefault={handleSetDefault}
                     onExport={handleExport}
                     onEdit={startEdit}

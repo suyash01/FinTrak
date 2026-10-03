@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import { useDomainData } from "../../context/DomainDataContext";
-import { useSettings } from "../../context/SettingsContext";
 import type { Payee } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,7 +66,6 @@ const NO_ACCOUNT = "none";
 
 export default function Payees() {
   const { payees, accounts, loading, refreshPayees } = useDomainData();
-  const { compactLayout } = useSettings();
   const [searchParams, setSearchParams] = useSearchParams();
   const syncedUrlRef = useRef(searchParams.toString());
   const [search, setSearch] = useState(() => searchParams.get("search") || "");
@@ -160,8 +158,7 @@ export default function Payees() {
 
   const toggleSort = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 
-  const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
-  const headerBase = `${cellPad} text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
+  const headerBase = "text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap";
 
   return (
     <div className="flex flex-col h-full">
@@ -186,7 +183,7 @@ export default function Payees() {
               type="text"
               placeholder="Search payees..."
               aria-label="Search payees"
-              className={`pl-9 ${compactLayout ? "h-8" : "h-10"}`}
+              className="pl-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -258,16 +255,16 @@ export default function Payees() {
               <TableBody>
                 {filteredPayees.map((payee) => (
                   <TableRow key={payee.id} className="border-border">
-                    <TableCell className={cellPad}>
+                    <TableCell>
                       <div className="flex items-center gap-2.5">
                         {payee.accountId ? (
                           <Wallet
-                            size={compactLayout ? 16 : 18}
+                            size={16}
                             className="text-chart-2 shrink-0"
                           />
                         ) : (
                           <ReceiptText
-                            size={compactLayout ? 16 : 18}
+                            size={16}
                             className="text-primary shrink-0"
                           />
                         )}
@@ -282,18 +279,18 @@ export default function Payees() {
                       </div>
                     </TableCell>
                     <TableCell
-                      className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}
+                      className="text-sm text-muted-foreground whitespace-nowrap"
                     >
                       {payee.accountId ? "Linked" : "Standalone"}
                     </TableCell>
                     <TableCell
-                      className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}
+                      className="text-sm text-muted-foreground whitespace-nowrap"
                     >
                       {payee.accountId
                         ? accountNameById.get(payee.accountId) || "—"
                         : "—"}
                     </TableCell>
-                    <TableCell className={`${cellPad} text-right`}>
+                    <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-0.5">
                         <Button
                           variant="ghost"

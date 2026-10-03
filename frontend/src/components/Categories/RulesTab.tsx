@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Trash2, Play, Edit2, Tag, StickyNote } from "lucide-react";
 import api from "../../api/client";
-import { useSettings } from "../../context/SettingsContext";
 import { useDomainData } from "../../context/DomainDataContext";
 import { buildCategorySections } from "../../lib/categories";
 import { Button } from "@/components/ui/button";
@@ -65,7 +64,6 @@ function conditionSummary(r: Rule): string {
 
 export default function RulesTab() {
   const { categories, groups, payees, accounts } = useDomainData();
-  const { compactLayout } = useSettings();
 
   const [rules, setRules] = useState<Rule[]>([]);
   const [showNewRule, setShowNewRule] = useState(false);
@@ -205,7 +203,7 @@ export default function RulesTab() {
                 (h, i) => (
                   <th
                     key={h || "actions"}
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 6 ? "w-12.5" : ""}`}
+                    className={`text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 6 ? "w-12.5" : ""}`}
                   >
                     {h}
                   </th>
@@ -230,12 +228,12 @@ export default function RulesTab() {
                   className="hover:bg-muted/30 transition-colors border-b border-border last:border-0"
                 >
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm font-medium text-foreground`}
+                    className="text-sm font-medium text-foreground"
                   >
                     "{r.pattern}"
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
+                    className="text-sm"
                   >
                     <Badge
                       variant="outline"
@@ -245,17 +243,17 @@ export default function RulesTab() {
                     </Badge>
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-foreground`}
+                    className="text-sm text-foreground"
                   >
                     {r.categoryName}
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-muted-foreground`}
+                    className="text-sm text-muted-foreground"
                   >
                     {r.payee || "—"}
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm`}
+                    className="text-sm"
                   >
                     <div className="flex flex-wrap gap-1">
                       {hasConditions(r) && (
@@ -295,12 +293,12 @@ export default function RulesTab() {
                     </div>
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-muted-foreground`}
+                    className="text-sm text-muted-foreground"
                   >
                     {r.priority}
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-right`}
+                    className="text-right"
                   >
                     <div className="flex justify-end gap-1">
                       <Button

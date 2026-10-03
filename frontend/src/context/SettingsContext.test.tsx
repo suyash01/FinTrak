@@ -26,6 +26,7 @@ function renderHarness() {
 describe("SettingsProvider", () => {
   beforeEach(() => {
     localStorage.clear();
+    delete document.documentElement.dataset.density;
   });
 
   it("defaults compactLayout to true", () => {
@@ -98,6 +99,26 @@ describe("SettingsProvider", () => {
     // The reader tolerates a bad value, so the writer has to tolerate a refused
     // one: throwing during commit blanks the app for a layout toggle.
     expect(screen.getByTestId("compact").textContent).toBe("false");
+  });
+
+  // The primitives size themselves from --density-*, so the attribute is the
+  // whole mechanism: a toggle that only moved the boolean would restyle nothing.
+  it("drives the density attribute on <html>", async () => {
+    const user = userEvent.setup();
+    renderHarness();
+    expect(document.documentElement.dataset.density).toBe("compact");
+
+    await user.click(screen.getByText("toggle"));
+    expect(document.documentElement.dataset.density).toBe("comfortable");
+
+    await user.click(screen.getByText("toggle"));
+    expect(document.documentElement.dataset.density).toBe("compact");
+  });
+
+  it("applies a saved density on mount, without a toggle", () => {
+    localStorage.setItem("compactLayout", "false");
+    renderHarness();
+    expect(document.documentElement.dataset.density).toBe("comfortable");
   });
 });
 

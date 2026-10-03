@@ -16,8 +16,6 @@ import { balanceLabel, ordinal } from "./accountHelpers";
 
 interface AccountRowProps {
   account: Account;
-  cellPad: string;
-  compactLayout: boolean;
   onSetDefault: (acc: Account) => void;
   onExport: (id: string) => void;
   onEdit: (acc: Account) => void;
@@ -28,8 +26,6 @@ interface AccountRowProps {
 
 export default function AccountRow({
   account: acc,
-  cellPad,
-  compactLayout,
   onSetDefault,
   onExport,
   onEdit,
@@ -39,12 +35,12 @@ export default function AccountRow({
 }: AccountRowProps) {
   return (
     <TableRow className="border-border">
-      <TableCell className={cellPad}>
+      <TableCell>
         <div className="flex items-center gap-2.5">
           <AccountTypeIcon
             accountTypeId={acc.accountTypeId}
             color={acc.color}
-            size={compactLayout ? 16 : 18}
+            size={16}
           />
           <span
             className={`font-medium ${
@@ -65,13 +61,13 @@ export default function AccountRow({
           )}
         </div>
       </TableCell>
-      <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
+      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
         {acc.accountTypeName}
       </TableCell>
-      <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
+      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
         {acc.bank || "—"}
       </TableCell>
-      <TableCell className={`${cellPad} text-right whitespace-nowrap`}>
+      <TableCell className="text-right whitespace-nowrap">
         <div className="text-sm font-semibold text-foreground font-mono">
           {/* formatOne, not formatCurrency: acc.currency is three letters a user
               typed with nothing checking they name a real currency, and Intl
@@ -85,17 +81,17 @@ export default function AccountRow({
           {balanceLabel(acc)}
         </div>
       </TableCell>
-      <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
+      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
         {acc.billingDay ? `${acc.billingDay}${ordinal(acc.billingDay)}` : "—"}
       </TableCell>
-      <TableCell className={`${cellPad} text-sm whitespace-nowrap`}>
+      <TableCell className="text-sm whitespace-nowrap">
         {acc.closed ? (
           <span className="text-destructive">Closed</span>
         ) : (
           <span className="text-chart-3">Open</span>
         )}
       </TableCell>
-      <TableCell className={`${cellPad} text-right`}>
+      <TableCell className="text-right">
         <div className="flex items-center justify-end gap-0.5">
           <Button
             variant="ghost"

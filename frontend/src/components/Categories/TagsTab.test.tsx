@@ -18,9 +18,6 @@ const { apiMock, toastMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../api/client", () => ({ default: apiMock }));
-vi.mock("../../context/SettingsContext", () => ({
-  useSettings: () => ({ compactLayout: false }),
-}));
 vi.mock("sonner", () => ({ toast: toastMock }));
 
 const tags = [

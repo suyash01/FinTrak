@@ -94,9 +94,9 @@ export default function MappingStep({
         ),
         meta: {
           headerClassName:
-            "py-2.5 px-4 h-auto text-xs font-semibold text-muted-foreground bg-background border-b border-border whitespace-nowrap",
+            "h-auto text-xs font-semibold text-muted-foreground bg-background border-b border-border whitespace-nowrap",
           cellClassName:
-            "py-2 px-4 text-xs max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap",
+            "text-xs max-w-37.5 overflow-hidden text-ellipsis whitespace-nowrap",
         },
       }),
     );

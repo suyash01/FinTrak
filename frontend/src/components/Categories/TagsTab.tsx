@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Tag as TagIcon, Pencil } from "lucide-react";
 import api from "../../api/client";
-import { useSettings } from "../../context/SettingsContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +16,6 @@ import { toast } from "sonner";
 import type { TagCount } from "../../types";
 
 export default function TagsTab() {
-  const { compactLayout } = useSettings();
   const [tags, setTags] = useState<TagCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [renaming, setRenaming] = useState<TagCount | null>(null);
@@ -77,7 +75,7 @@ export default function TagsTab() {
               {["Tag", "Transactions", ""].map((h, i) => (
                 <th
                   key={h || "actions"}
-                  className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 2 ? "w-12.5" : ""}`}
+                  className={`text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 border-b border-border whitespace-nowrap ${i === 2 ? "w-12.5" : ""}`}
                 >
                   {h}
                 </th>
@@ -103,7 +101,7 @@ export default function TagsTab() {
                   className="hover:bg-muted/30 transition-colors border-b border-border last:border-0"
                 >
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm font-medium text-foreground`}
+                    className="text-sm font-medium text-foreground"
                   >
                     <span className="flex items-center gap-2">
                       <TagIcon size={14} className="text-muted-foreground" />
@@ -111,12 +109,12 @@ export default function TagsTab() {
                     </span>
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-sm text-muted-foreground`}
+                    className="text-sm text-muted-foreground"
                   >
                     {t.count.toLocaleString()}
                   </td>
                   <td
-                    className={`${compactLayout ? "py-1.5 px-3" : "py-3 px-4"} text-right`}
+                    className="text-right"
                   >
                     <Button
                       variant="ghost"

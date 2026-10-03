@@ -34,9 +34,6 @@ vi.mock("../../api/client", () => ({
 vi.mock("../../context/DomainDataContext", () => ({
   useDomainData: domainMock.useDomainData,
 }));
-vi.mock("../../context/SettingsContext", () => ({
-  useSettings: () => ({ compactLayout: false }),
-}));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 function account(overrides: Partial<Account> = {}): Account {

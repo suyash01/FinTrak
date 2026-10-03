@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import api from "../../api/client";
 import { useDomainData } from "../../context/DomainDataContext";
-import { useSettings } from "../../context/SettingsContext";
 import type { RecurringSeries } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -69,7 +68,6 @@ export default function Recurring() {
   // across currencies (see foldRecurringMonthly); this is the per-row figure
   // that has to agree with it.
   const currencyOf = useAccountCurrency(accounts);
-  const { compactLayout } = useSettings();
   const [series, setSeries] = useState<RecurringSeries[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -124,8 +122,7 @@ export default function Recurring() {
 
   useCommandIntent("new-recurring", openCreate);
 
-  const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
-  const headerBase = `${cellPad} text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
+  const headerBase = "text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap";
 
   return (
     <div className="flex flex-col h-full">
@@ -248,7 +245,7 @@ export default function Recurring() {
                     className="border-border cursor-pointer"
                     onClick={() => setDetail(s)}
                   >
-                    <TableCell className={cellPad}>
+                    <TableCell>
                       <div className="flex items-center gap-2.5">
                         {s.categoryColor && (
                           <span
@@ -264,18 +261,18 @@ export default function Recurring() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground`}>
+                    <TableCell className="text-sm text-muted-foreground">
                       {s.accountName || "—"}
                     </TableCell>
                     <TableCell
-                      className={`${cellPad} text-sm text-right text-foreground whitespace-nowrap`}
+                      className="text-sm text-right text-foreground whitespace-nowrap"
                     >
                       {formatOne(s.amount, currencyOf(s.accountId))}
                     </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
+                    <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                       {cadenceLabel(s)}
                     </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-muted-foreground whitespace-nowrap`}>
+                    <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                       {s.nextDueDate ? (
                         <span className="inline-flex items-center gap-1.5">
                           <CalendarClock size={14} />
@@ -285,10 +282,10 @@ export default function Recurring() {
                         "—"
                       )}
                     </TableCell>
-                    <TableCell className={`${cellPad} text-sm text-right text-muted-foreground`}>
+                    <TableCell className="text-sm text-right text-muted-foreground">
                       {s.attachedCount}
                     </TableCell>
-                    <TableCell className={`${cellPad} text-right`}>
+                    <TableCell className="text-right">
                       <div
                         className="flex items-center justify-end gap-0.5"
                         onClick={(e) => e.stopPropagation()}

@@ -145,7 +145,6 @@ export interface QueryInputProps {
   diagnostics: QueryDiagnostic[];
   onInProgressChange?: (token: string | null) => void;
   onQueryCommit?: () => void;
-  compactLayout?: boolean;
   placeholder?: string;
 }
 
@@ -156,7 +155,6 @@ export function QueryInput({
   onSubmit,
   diagnostics,
   onInProgressChange,
-  compactLayout,
   placeholder = "Try: cat:Groceries amt>50",
 }: QueryInputProps) {
   const [open, setOpen] = useState(false);
@@ -235,7 +233,7 @@ export function QueryInput({
           aria-label="Transaction query"
           role="combobox"
           aria-expanded={showing}
-          className={cn("pl-8 pr-9", compactLayout ? "h-8" : "h-9")}
+          className="pl-8 pr-9"
         />
         <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
           <SheetTrigger asChild>

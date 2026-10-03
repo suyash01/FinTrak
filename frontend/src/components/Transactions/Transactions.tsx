@@ -801,8 +801,7 @@ export default function Transactions() {
     [loadTransactions, refreshAccounts],
   );
 
-  const pad = compactLayout ? "py-1.5 px-3" : "py-3 px-4";
-  const headerBase = `${pad} h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap`;
+  const headerBase = "h-auto text-xs font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap";
 
   const columns = useTransactionColumns({
     payeeOptions,
@@ -927,7 +926,6 @@ export default function Transactions() {
           onRowSelectionChange={onRowSelectionChange}
           containerClassName="bg-card border border-border rounded-xl overflow-x-auto"
           headerClassName={headerBase}
-          cellClassName={pad}
           virtualize
           maxHeight={
             compactLayout ? "calc(100vh - 190px)" : "calc(100vh - 240px)"

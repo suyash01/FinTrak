@@ -14,7 +14,6 @@ import { formatDate } from "../../utils/formatters";
 import { formatOne, useAccountCurrency } from "../../lib/currency";
 import { todayLocalISO } from "../../lib/dates";
 import { useDomainData } from "../../context/DomainDataContext";
-import { useSettings } from "../../context/SettingsContext";
 import type {
   Account,
   LoanPayoff,
@@ -151,7 +150,6 @@ export default function LoanScheduleDialog({
   account,
   onClose,
 }: LoanScheduleDialogProps) {
-  const { compactLayout } = useSettings();
   const { accounts } = useDomainData();
   const currencyOf = useAccountCurrency(accounts);
   // Every figure on this screen except the balance-transfer rows belongs to THIS
@@ -417,7 +415,6 @@ export default function LoanScheduleDialog({
     }
   };
 
-  const cellPad = compactLayout ? "py-1.5 px-3" : "py-2.5 px-4";
   // The transfer that settled this loan is the last one leaving this account,
   // since transfers are returned in date order.
   const settledTransfer = detail?.settledOn
@@ -695,19 +692,19 @@ export default function LoanScheduleDialog({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className={cellPad}>#</TableHead>
-                    <TableHead className={cellPad}>Due</TableHead>
-                    <TableHead className={`${cellPad} text-right`}>EMI</TableHead>
-                    <TableHead className={`${cellPad} text-right`}>
+                    <TableHead>#</TableHead>
+                    <TableHead>Due</TableHead>
+                    <TableHead className="text-right">EMI</TableHead>
+                    <TableHead className="text-right">
                       Principal
                     </TableHead>
-                    <TableHead className={`${cellPad} text-right`}>
+                    <TableHead className="text-right">
                       Interest
                     </TableHead>
-                    <TableHead className={`${cellPad} text-right`}>
+                    <TableHead className="text-right">
                       Balance
                     </TableHead>
-                    <TableHead className={cellPad} />
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -725,37 +722,36 @@ export default function LoanScheduleDialog({
                         key={e.number}
                         className={dim ? "text-muted-foreground" : undefined}
                       >
-                        <TableCell className={cn(cellPad, struck)}>
+                        <TableCell className={struck}>
                           {e.number}
                         </TableCell>
-                        <TableCell className={cn(cellPad, struck)}>
+                        <TableCell className={struck}>
                           {formatDate(e.dueDate)}
                         </TableCell>
                         <TableCell
-                          className={cn(cellPad, "text-right", struck)}
+                          className={cn("text-right", struck)}
                         >
                           {money(e.amount)}
                         </TableCell>
                         <TableCell
-                          className={cn(cellPad, "text-right", struck)}
+                          className={cn("text-right", struck)}
                         >
                           {money(e.principal)}
                         </TableCell>
                         <TableCell
-                          className={cn(cellPad, "text-right", struck)}
+                          className={cn("text-right", struck)}
                         >
                           {money(e.interest)}
                         </TableCell>
                         <TableCell
                           className={cn(
-                            cellPad,
                             "text-right",
                             dim ? struck : "text-muted-foreground",
                           )}
                         >
                           {money(e.balance)}
                         </TableCell>
-                        <TableCell className={cellPad}>
+                        <TableCell>
                           <div className="flex flex-wrap items-center gap-1">
                             {e.paid && (
                               <Badge

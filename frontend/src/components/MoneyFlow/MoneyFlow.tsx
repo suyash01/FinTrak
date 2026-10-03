@@ -504,7 +504,6 @@ export default function MoneyFlow() {
         </div>
         <Button
           variant="outline"
-          size={compactLayout ? "sm" : "default"}
           onClick={reloadAll}
           disabled={loading}
           title="Refresh"
@@ -524,14 +523,14 @@ export default function MoneyFlow() {
             onValueChange={(v) => setAccountId(v === ALL_ACCOUNTS ? "" : v)}
             placeholder="All Accounts"
             ariaLabel="Filter by account"
-            triggerClassName={`${compactLayout ? "h-8" : "h-10"} bg-background`}
+            triggerClassName="bg-background"
             extraItems={<SelectItem value={ALL_ACCOUNTS}>All Accounts</SelectItem>}
           />
           {codes.length > 0 && (
             <Select value={code} onValueChange={setCode}>
               <SelectTrigger
                 aria-label="Currency"
-                className={`${compactLayout ? "h-8" : "h-10"} bg-background w-32`}
+                className="bg-background w-32"
               >
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
@@ -547,7 +546,7 @@ export default function MoneyFlow() {
           <Select value={period} onValueChange={applyPeriod}>
             <SelectTrigger
               aria-label="Period"
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background w-44`}
+              className="bg-background w-44"
             >
               <SelectValue placeholder="Period" />
             </SelectTrigger>
@@ -563,7 +562,7 @@ export default function MoneyFlow() {
           </Select>
           <Input
             type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+            className="w-auto bg-background scheme-light dark:scheme-dark"
             value={dateFrom}
             onChange={(e) => {
               setDateFrom(e.target.value);
@@ -574,7 +573,7 @@ export default function MoneyFlow() {
           />
           <Input
             type="date"
-            className={`w-auto ${compactLayout ? "h-9" : "h-10"} bg-background scheme-light dark:scheme-dark`}
+            className="w-auto bg-background scheme-light dark:scheme-dark"
             value={dateTo}
             onChange={(e) => {
               setDateTo(e.target.value);
@@ -586,7 +585,7 @@ export default function MoneyFlow() {
           <Select value={limit} onValueChange={setLimit}>
             <SelectTrigger
               aria-label="Nodes per stage"
-              className={`${compactLayout ? "h-8" : "h-10"} bg-background w-40`}
+              className="bg-background w-40"
             >
               <SelectValue placeholder="Nodes" />
             </SelectTrigger>
@@ -641,7 +640,6 @@ export default function MoneyFlow() {
         </div>
 
         <Card
-          size={compactLayout ? "sm" : "default"}
           className={`flex flex-col ${compactLayout ? "mb-4" : "mb-6"}`}
         >
           <CardHeader
@@ -660,7 +658,7 @@ export default function MoneyFlow() {
               >
                 <SelectTrigger
                   aria-label="Timeline grouping"
-                  className={`${compactLayout ? "h-8" : "h-10"} w-40 bg-background`}
+                  className="w-40 bg-background"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -689,10 +687,7 @@ export default function MoneyFlow() {
         </Card>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          <Card
-            size={compactLayout ? "sm" : "default"}
-            className="xl:col-span-2 flex flex-col"
-          >
+          <Card className="xl:col-span-2 flex flex-col">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
             >
@@ -751,7 +746,7 @@ export default function MoneyFlow() {
             </CardContent>
           </Card>
 
-          <Card size={compactLayout ? "sm" : "default"} className="flex flex-col">
+          <Card className="flex flex-col">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
             >
@@ -782,7 +777,7 @@ export default function MoneyFlow() {
         </div>
 
         {(cycles || data.suppressedCycles.length > 0) && (
-          <Card size={compactLayout ? "sm" : "default"} className="mt-6">
+          <Card className="mt-6">
             <CardHeader
               className={`flex flex-row items-center justify-between ${compactLayout ? "mb-3" : "mb-5"}`}
             >
@@ -899,10 +894,7 @@ function StatCard({
   compact: boolean;
 }) {
   return (
-    <Card
-      size={compact ? "sm" : "default"}
-      className="hover:ring-foreground/20 transition-colors"
-    >
+    <Card className="hover:ring-foreground/20 transition-colors">
       <CardContent className="flex flex-col">
         <div
           className={`w-11 h-11 rounded-lg flex items-center justify-center ${iconClass} ${compact ? "mb-2" : "mb-3"}`}

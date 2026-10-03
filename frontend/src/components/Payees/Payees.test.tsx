@@ -28,9 +28,6 @@ vi.mock("../../api/client", () => ({ default: apiMock }));
 vi.mock("../../context/DomainDataContext", () => ({
   useDomainData: domainMock.useDomainData,
 }));
-vi.mock("../../context/SettingsContext", () => ({
-  useSettings: () => ({ compactLayout: false }),
-}));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const payees = [

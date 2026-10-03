@@ -32,12 +32,22 @@ function readStoredCompactLayout(): boolean {
   }
 }
 
+// Density is a stylesheet concern, not a per-component one: the shadcn
+// primitives size themselves from --density-* (see index.css), so the whole
+// toggle is one attribute on <html>. theme-init.js has already set it before
+// React mounts; this keeps it in step with the state. The boolean is still
+// exposed for what CSS cannot carry — the virtualised transaction list's row
+// estimate, and section spacing that belongs to a screen rather than a
+// primitive.
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [compactLayout, setCompactLayout] = useState<boolean>(
     readStoredCompactLayout,
   );
 
   useEffect(() => {
+    document.documentElement.dataset.density = compactLayout
+      ? "compact"
+      : "comfortable";
     try {
       localStorage.setItem(COMPACT_LAYOUT_KEY, JSON.stringify(compactLayout));
     } catch {
