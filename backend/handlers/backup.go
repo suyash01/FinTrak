@@ -21,6 +21,41 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Whole-account backup and restore — the user's entire graph as one JSON
+// bundle, portable to another FinTrak instance. Distinct from
+// transaction_export.go, which is a flat CSV of one account's rows for a
+// spreadsheet; this is a faithful copy including the relationships.
+//
+// Two halves, and the direction matters when reading them:
+//
+//	export  buildUserBackup   one query per table, all scoped to the user
+//	restore restoreUserBackup one transaction, id remapped throughout
+//
+// The hard part is restore, and it is entirely about identity. A bundle
+// carries the *source instance's* uuids, so every row that references another
+// row has to be rewritten as it is inserted: old account id -> new account id,
+// old category id -> new category id, and so on. That mapping is threaded
+// through as a set of uuid.UUID -> uuid.UUID maps and applied by
+// mapBackupUUID. Restoring with the original ids would also be wrong, since the
+// target user may already have rows and ids are not namespaced per user.
+//
+// Three consequences a change here must respect:
+//
+//   - Restore is one transaction and is not partial. A bundle that would produce
+//     inconsistent references aborts rather than landing half a ledger.
+//   - Reference data is *reconciled* rather than blindly inserted. A category
+//     group is matched by name first (findUserGroupID), and payees arriving
+//     twice from different source accounts are merged (mergeBackupPayees) —
+//     because the target may legitimately already have a group or payee of that
+//     name, and a duplicate would violate a unique constraint.
+//   - Unknown account types and unmatched references become *warnings*
+//     (addBackupWarning), not failures, and the response reports them. A bundle
+//     exported from a newer instance should not be unimportable into an older
+//     one because one row could not be placed.
+//
+// Nothing secret is exported: settings are non-secret only, and Paperless tokens
+// and refresh tokens are not part of the bundle.
+
 // maxBackupBytes bounds an uploaded backup bundle. A large personal finance
 // history fits comfortably; the cap keeps a hostile body from exhausting
 // memory, since the whole bundle is decoded before the restore transaction.
@@ -127,6 +162,27 @@ func exportUserRows(ctx context.Context, pool db.DBPool, query string, args []an
 // buildUserBackup gathers the whole bundle in memory. The volume for a personal
 // finance history is small enough that buffering simplifies error handling
 // (any failure becomes a clean 500 before a byte of the response is written).
+//
+// Two conventions run through every query below, and both are load-bearing:
+//
+//   - `WHERE user_id = $1`. Note this is the *strict* form, not the
+//     `OR user_id IS NULL` of the reference-data reads: a backup is the user's
+//     own rows, so global accounts/categories are not exported here. They are
+//     re-resolved on the way back in (see the file header).
+//   - `COALESCE(col, <empty string>)` on every nullable text column. The bundle
+//     is JSON, and
+//     a null and an empty string are not the same thing to a consumer reading
+//     it; coalescing here means restore never has to distinguish "absent" from
+//     "blank", and an omitted optional field is unambiguous.
+//
+// The ORDER BY on each query is not cosmetic: it makes the export byte-stable
+// for an unchanged ledger, which is what lets two exports be diffed and lets the
+// restore path's reconciliation (match by name, merge duplicate payees) reach
+// the same answer on the same data every time.
+//
+// Slice fields are initialized to empty rather than nil above, so an account
+// with no payees serializes as `[]` and not `null` — restore ranges over these
+// unconditionally and a null would fail the decode.
 func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*models.BackupBundle, error) {
 	b := &models.BackupBundle{
 		Format:               models.BackupFormat,
@@ -426,7 +482,10 @@ func buildUserBackup(ctx context.Context, pool db.DBPool, userID uuid.UUID) (*mo
 	return b, nil
 }
 
-// backupDatePtr formats an optional DATE for the bundle.
+// backupDatePtr formats an optional DATE for the bundle. Calendar days, never
+// timestamps: the ledger's dates are days, so restoring through a
+// time.Time round-trip would be a needless risk of shifting the day for a
+// bundle written in another timezone.
 func backupDatePtr(t *time.Time) *string {
 	if t == nil {
 		return nil
@@ -438,6 +497,20 @@ func backupDatePtr(t *time.Time) *string {
 // restoreUserBackup inserts the bundle into tx under userID, remapping every
 // reference. The bundle's own IDs are never reused: rows are inserted in
 // dependency order with fresh UUIDs recorded in per-resource maps.
+//
+// Fresh ids are not a precaution — they are required. The target user's rows are
+// namespaced per user rather than per instance, so a bundle exported from one
+// FinTrak could carry ids that already exist in the target user's ledger, and
+// restoring them as-is would either collide or silently attach the imported
+// transactions to the user's pre-existing accounts. Every map below therefore
+// goes source-id -> newly minted id, and every later row resolves its
+// references through the maps rather than using the bundle's values.
+//
+// The function is one long, strictly ordered sequence — accounts, then groups,
+// then categories, then payees, cycles, transactions, and only then the rows
+// that reference transactions (links, attachments, rules). That order is the
+// function's whole correctness argument: each stage can only resolve references
+// to stages before it.
 func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *models.BackupBundle, res *models.BackupImportResult) error {
 	// Serialize restores per user before the emptiness check. That check is a
 	// plain read, so two overlapping imports of the same bundle would both see
@@ -463,6 +536,14 @@ func restoreUserBackup(ctx context.Context, tx pgx.Tx, userID uuid.UUID, b *mode
 	}
 
 	// Accounts.
+	//
+	// The two columns needing care are is_default and created_at. The bundle may
+	// mark several accounts default (or none); the schema allows one, so
+	// `a.IsDefault && !defaultUsed` keeps the first in export order and demotes
+	// the rest rather than failing the import or leaving the user with no
+	// default at all. And created_at is what the ORDER BY in the export sorted
+	// by, so preserving it keeps "the account I made first" first after a
+	// restore rather than leaving them in insert order.
 	accountMap := map[uuid.UUID]uuid.UUID{}
 	accountRows := make([][]any, 0, len(b.Accounts))
 	defaultUsed := false

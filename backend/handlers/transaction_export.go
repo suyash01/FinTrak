@@ -15,6 +15,31 @@ import (
 )
 
 // maxExportRows caps how many transactions a single filtered export may stream,
+// Filter-aware CSV export — the "export exactly what I'm looking at" escape
+// hatch. It is the same filter grammar /transactions uses, so what the list shows
+// is what the CSV contains (see the shared txnQueryFilter; the two agree on the
+// *filter*, though not on rows, because the list injects synthetic summary rows
+// and the export never does).
+//
+// This is not the same thing as backup.go's JSON export. The CSV here is for a
+// spreadsheet and deliberately loses everything relational — it is flat, one row
+// per transaction, with names denormalized in. The backup bundle is for moving
+// to another FinTrak and preserves the graph.
+//
+// Two properties of the CSV format drive the rest of the file:
+//
+//   - It streams and has no trailer. There is nowhere to put "…and there were
+//     more rows" in a file a spreadsheet opens, so maxExportRows *refuses* an
+//     over-cap export instead of truncating it — a silently truncated CSV looks
+//     complete to whoever opens it.
+//   - Every text cell passes through csvCell to defuse spreadsheet formula
+//     injection. A bank description is attacker-influenced text and a leading
+//     =, +, - or @ would be evaluated as a formula by Excel/LibreOffice/Sheets.
+//
+// A single account's history has its own route (/accounts/{id}/export), which is
+// why that one is in crossSiteGetGuard — a pure read, but a cross-site navigation
+// must not silently download an authenticated file.
+
 // so an unfiltered export of a huge history can't pin a connection
 // indefinitely. A filter that matches more than the cap is refused, not
 // truncated: a partial CSV looks complete to whoever opens it, and a CSV body

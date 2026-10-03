@@ -20,10 +20,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// PDF statement parsing — and only the forwarding half of it.
+//
+// There is no PDF parsing in this repository's Go code. The backend accepts an
+// uploaded PDF, wraps it in multipart, and forwards it to the standalone Python
+// service in statement_parser/ over HTTP. That service is unauthenticated by
+// design and must stay on a private network; see docs/architecture.md for the
+// trust boundary.
+//
+// The split matters when reading the three call paths that reach the parser:
+//
+//	ParseStatement             the manual upload endpoint
+//	ImportPaperlessDocument    paperless.go, fetch-then-parse
+//	forwardStatementToParser  the shared helper both of the above use
+//
+// The helper is the only place that builds the multipart request, so a change to
+// the wire format has one place to change. Do not inline it.
+//
+// This file's real job is the edges around that call: bounding the upload and
+// the response, saturating under load, and normalizing the parser's envelope
+// (which is snake_case and carries its own error and password-required signals)
+// into the camelCase shape the SPA expects. It writes nothing — the transactions
+// a parse returns are imported afterwards through the normal import path, so a
+// failed import can never leave a half-written statement behind.
+
 // maxStatementUpload caps the size of a statement PDF we are willing to forward.
+// It is a forward-only bound: the body is streamed to the parser rather than
+// buffered here, so this limits what we will hand over, not what we hold.
 const maxStatementUpload = 20 * 1024 * 1024 // 20 MB
 
-// maxParserResponse caps the statement-parser response body.
+// maxParserResponse caps the statement-parser response body. This one *is* a
+// memory bound, which is why it exists separately: a parser response is decoded
+// whole into rawParserResponse, so an unexpectedly large body would be
+// allocated before anything could reject it. io.LimitReader in
+// forwardStatementToParser is what enforces it.
 const maxParserResponse = 20 * 1024 * 1024 // 20 MB
 
 // parseStatementResult is the normalized payload returned to the frontend after
@@ -66,6 +96,12 @@ type rawParserResponse struct {
 // optional password), forwards it to the statement-parser service over HTTP, and
 // returns the extracted transactions normalized to the app's import format so the
 // frontend can preview and import them directly.
+//
+// It writes nothing. The response is a preview: the user chooses which rows to
+// keep and posts them through the ordinary import endpoint, which is what
+// enforces the date window, the account check and the clientKey dedupe. Keeping
+// this endpoint side-effect-free is why it can be retried freely and why a parse
+// the user abandons costs them nothing but the upload.
 func (srv *Server) ParseStatement(c *gin.Context) {
 	// Cap the request body before gin parses the multipart form: c.FormFile would
 	// otherwise read (and spool) an unbounded upload before the size check runs.

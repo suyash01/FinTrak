@@ -18,6 +18,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The period strip beneath the Money Flow Sankey — a row of clickable periods
+// that scrub the graph's window.
+//
+// It exists because the Sankey aggregates the *whole* window into one graph.
+// This endpoint is what lets the user narrow that window without re-deriving it
+// blind: each cell carries the income/expense/net for one period, so the strip
+// is both the scrubber and a coarse chart of the same data.
+//
+// It is a GET that materializes: it reaches ensureBillingCycles in the
+// billing-cycle branch, which is why /dashboard/money-flow and this route are in
+// both crossSiteGetGuard and readonly.SideEffectingGETs. All reads run in one
+// repeatable-read transaction so the strip and the graph it scrubs describe the
+// same snapshot.
+//
+// Note the split from the Sankey itself: this is per-period, and the graph is
+// per-window. Changing the strip's selection narrows the graph's filters — it
+// does not filter the Sankey server-side per node.
+
 // GetMoneyFlowTimeline returns per-period income/expense/net for the Money Flow
 // page's timeline strip, so a period can be clicked to scrub the Sankey window.
 // Periods are calendar months by default; with groupBy=billing_cycle (which

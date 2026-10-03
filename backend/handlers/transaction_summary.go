@@ -15,6 +15,36 @@ import (
 )
 
 // summaryNamespace seeds the deterministic UUIDs used for synthetic summary rows
+// Synthetic summary rows: the "Total outstanding" / "Running balance" lines the
+// transaction list interleaves among real transactions.
+//
+// The thing to understand before reading this file is that these rows do not
+// exist. They are computed per request, never persisted, and exist only when the
+// list is filtered to a single account and sorted by date — the summary rows of a
+// multi-account view would be meaningless (a balance is per account) and of an
+// unsorted view would appear in a position that means nothing.
+//
+// That conditional is why `/transactions/export` does NOT include them even
+// though it shares the filter: the export selects real transactions only. Two
+// endpoints can agree on a filter and still disagree on rows, which is why the
+// guarantee is documented as "the same filter", never "the same rows".
+//
+// There are two shapes, chosen by whether the account has a billing day:
+//
+//	billing day set     per-cycle "Total outstanding" (an account's balance at
+//	                    the cycle's end date)
+//	no billing day      month-end "Running balance" (credits minus debits to
+//	                    the end of each month that has transactions)
+//
+// The billing-day branch calls ensureBillingCycles, which *writes* — so this is
+// reached through a GET that materializes and back-fills. That is the reason
+// /transactions is in crossSiteGetGuard, and it runs inside db.WithTx because the
+// regeneration detaches and recreates the account's cycles (see
+// buildAccountSummaryRows).
+//
+// IDs come from summaryNamespace, a fixed UUID, so React keys stay stable across
+// requests — a random id per response would remount every row on each refetch.
+
 // so React keys stay stable across requests.
 var summaryNamespace = uuid.MustParse("00000000-0000-0000-0000-00000000f1a7")
 

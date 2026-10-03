@@ -16,6 +16,27 @@ import (
 // the request validators) rather than by a column constraint.
 const maxTagLength = 50
 
+// Tags. There is no tag table: a tag is a string in `transactions.tags`, and the
+// vocabulary is whatever those arrays contain. Every read here is therefore an
+// aggregate over the ledger rather than a lookup, and the consequences ripple
+// through the whole file:
+//
+//   - The vocabulary is free text, so it drifts. RenameTag is a history-wide
+//     rewrite rather than a rename of one row, and the count it returns is how
+//     the UI reports the blast radius.
+//   - Tags are a set, not a list, so the bulk add/remove endpoints diff
+//     (array_agg DISTINCT) instead of appending. Adding a tag twice must not
+//     produce it twice.
+//   - `transactions.tags` is never NULL by contract: write edges bind `{}` and
+//     every read here wraps it in COALESCE(t.tags, '{}'). A NULL breaks
+//     `unnest(tags || $n::text[])` outright, so a bulk add would silently store
+//     nothing rather than fail — see AGENTS.md.
+//
+// Tag add/remove are whole-value operations even though they look like deltas,
+// and that asymmetry with the rest of the package is deliberate: a bulk tag add
+// is declared `patch`-shaped in the frontend's outbox but its payload is the
+// tag list, not the row's current tags, so replaying it is idempotent.
+
 // maxTagsPerRequest bounds how many distinct tags a single bulk add/remove may
 // carry, mirroring maxBulkBatch's role for transaction ids.
 const maxTagsPerRequest = 100
@@ -25,6 +46,18 @@ const maxTagsPerRequest = 100
 // transactions.tags (there is no tag table), so this is the canonical source
 // for the tag filter, picker, and management UI.
 func (srv *Server) GetTags(c *gin.Context) {
+	// The LATERAL unnest is what turns one row per transaction into one row per
+	// (transaction, tag) pair, and it is why this needs no tag table. The
+	// COALESCE inside it is the NULL guard the file header describes: without it
+	// a NULL tags array would make the row vanish from the cross join instead of
+	// contributing nothing, and the vocabulary would silently lose tags.
+	//
+	// `tag <> ''` drops the empty string, which the write edges never produce but
+	// which an empty-array artifact or a hand-edited row could contain — and which
+	// would otherwise show up in the picker as a blank option.
+	//
+	// The tiebreak on the name keeps the list stable between requests, so two
+	// identically-used tags do not swap places on each refetch.
 	rows, err := srv.db.Query(c,
 		`SELECT tag, COUNT(*)::int AS count
 		 FROM transactions t
@@ -114,6 +147,24 @@ func (srv *Server) BulkUpdateTags(c *gin.Context) {
 // RenameTag rewrites every occurrence of one tag to another across the user's
 // transactions, collapsing duplicates a rename may create. This is the tag
 // equivalent of renaming a managed entity, since tags have no id.
+//
+// Three details in the UPDATE below are each load-bearing:
+//
+//   - `unnest(tags)` is NOT wrapped in COALESCE here, unlike every read. That is
+//     safe only because the WHERE requires `$2 = ANY(tags)`, which is false for
+//     NULL — so a NULL row can never reach the SET. The file header's "never
+//     NULL" contract is what makes the omission safe, and it is why a NULL
+//     would be inert here rather than an error.
+//   - The inner CASE maps each element to the new name and the outer
+//     array_agg(DISTINCT ...) collapses the result. Without the DISTINCT a
+//     transaction carrying both `from` and `to` would end up with `to` twice.
+//   - ORDER BY inside the aggregate sorts each rewritten array. Not cosmetic:
+//     it is what makes the result stable, so a tag array's order does not churn
+//     between two identical renames.
+//
+// The `from == to` short-circuit returns 0 rather than running the statement,
+// because the UPDATE would be a no-op that rewrites every matching row's array
+// ordering and reports a large count for nothing.
 func (srv *Server) RenameTag(c *gin.Context) {
 	var req models.RenameTagRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

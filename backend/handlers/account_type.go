@@ -13,6 +13,27 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Account types: the small vocabulary that decides what a transaction *means*
+// for a given account, and therefore how that account's balance is computed.
+//
+// Unlike categories and groups, account types are global and NOT owned by a
+// user — there is no user_id column at all. Read every query in this file
+// knowing that: nothing here is scoped, because nothing here can be. That is
+// also why they are the one reference table whose delete is destructive rather
+// than per-user: an account still pointing at a retired type would have no
+// defined balance, so the guarded delete below refuses while any account uses it.
+//
+// The load-bearing field is `positive_txn_type`, and it is a convention rather
+// than a rule: 'credit' or 'debit' saying which transaction type adds to the
+// running balance for an account of this type. `bank` and `credit_card` are
+// both 'credit' (money in is money in), while `loan` is 'debit' because a loan
+// account's balance is the total repaid — see db.SeedAccountTypes, where that is
+// spelled out, and account.go, which is where the expression is actually applied.
+//
+// Adding a type is therefore a way to change balance semantics for every
+// account of that type, which is why the three seeded ids are immutable even for
+// an admin.
+
 // builtInAccountTypeIDs are seeded by db.SeedAccountTypes and shared by every
 // user; changing their balance semantics or deleting them would corrupt all
 // accounts, so they are immutable even for admins.
@@ -109,6 +130,17 @@ func (srv *Server) CreateAccountType(c *gin.Context) {
 
 // UpdateAccountType edits a custom account type (admin only). Empty fields keep
 // their current value; built-in types are immutable.
+//
+// `putPartial`, so positiveTxnType is only re-validated when non-empty and the
+// COALESCE(NULLIF(...)) leaves the stored value alone otherwise. The asymmetry
+// with the validation just above is deliberate: an empty string is a valid
+// "leave alone" signal, so it must not be rejected as a bad value before the
+// statement gets the chance to ignore it.
+//
+// Flipping positiveTxnType silently re-bases every account of that type: the
+// balance expression in account.go reads this column, so the same transactions
+// now sum the other way. Nothing here re-derives or warns — the row-level
+// effect is the whole reason the three built-ins are frozen.
 func (srv *Server) UpdateAccountType(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -166,7 +198,12 @@ func (srv *Server) DeleteAccountType(c *gin.Context) {
 		return
 	}
 
-	// Check if any accounts are using this type
+	// Check if any accounts are using this type. Global, not per-user: the
+	// count spans every account on the instance, because the type is global and
+	// deleting it would leave another user's account without a balance rule.
+	// The race between this COUNT and the DELETE is why the schema's FK matters
+	// as a backstop — a concurrent account created in the gap is caught there
+	// rather than dangling.
 	var count int
 	if err := srv.db.QueryRow(c, "SELECT COUNT(*) FROM accounts WHERE account_type_id = $1", id).Scan(&count); err != nil {
 		slog.Error("DeleteAccountType (usage count)", slog.String("error", err.Error()))

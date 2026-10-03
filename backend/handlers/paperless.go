@@ -27,6 +27,34 @@ import (
 	"github.com/google/uuid"
 )
 
+// Paperless-ngx integration: importing a statement PDF straight from the user's
+// own document archive.
+//
+// Paperless is the one *outbound*, user-configured integration in this codebase.
+// Everything else talks to services FinTrak owns. The difference drives most of
+// this file's shape — the URL and token are per-user settings, the target is
+// untrusted until proven otherwise, and every read of it is bounded:
+//
+//   - The base URL and API token live in columns on `users` (paperless_url,
+//     paperless_token), NOT in config or the environment. They are set through
+//     the Settings UI, and the import UI stays hidden until both are present.
+//   - The token is encrypted at rest and decrypted on demand. Reads still handle
+//     a legacy plaintext token, re-sealing it on the way past — which is why
+//     `GET /paperless/documents` is a *writing* GET despite looking like a pure
+//     read. See readonly.SideEffectingGETs and crossSiteGetGuard.
+//   - Every upstream response is bounded (maxPaperlessResponse, maxPaperlessDocument)
+//     because the instance is not under our control.
+//
+// The one part that is not user-configurable is the parser: a document fetched
+// here is handed to statement_parser/ through forwardStatementToParser, the same
+// helper the manual upload path uses. So Paperless import is fetch-then-parse —
+// the parse and preview-then-import flow is shared with a plain upload, and only
+// the way the bytes arrive differs.
+//
+// Post-import tagging (addPaperlessTag) runs *after* the import commits, not
+// inside it: a Paperless hiccup must not roll back financial rows the user
+// already imported.
+
 // paperlessClientTimeout bounds calls to the user's Paperless-ngx instance.
 const paperlessClientTimeout = 60 * time.Second
 
@@ -680,6 +708,14 @@ func hasNextPage(raw json.RawMessage) bool {
 // filters are resolved against Paperless's lookup tables, so a lookup that
 // cannot be fetched fails the request (502/504) instead of being dropped.
 // Requires the user to have configured both a URL and an API token.
+//
+// This is the GET that writes. paperlessConfig decrypts the stored token and
+// re-seals it if it is still in the legacy plaintext format, so simply listing
+// documents can UPDATE the user's row. That is why it appears in
+// crossSiteGetGuard (a SameSite=Lax cookie rides a cross-site top-level
+// navigation) and why the MCP read-only surface carries a SideEffect for it —
+// see mcp/internal/readonly.SideEffectingGETs. Do not "simplify" the config
+// read into a pure read without updating both lists.
 func (srv *Server) ListPaperlessDocuments(c *gin.Context) {
 	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {
@@ -968,6 +1004,18 @@ func (srv *Server) GetPaperlessDocumentFile(c *gin.Context) {
 // user's Paperless-ngx instance and feeds it through the existing statement
 // parser, returning the same normalized result as the manual upload path so the
 // frontend can preview and import it.
+//
+// Like ParseStatement, this writes nothing. It returns a preview; the rows are
+// committed later through the ordinary import endpoint. The only difference from
+// a manual upload is where the bytes came from — which is why both paths share
+// forwardStatementToParser rather than each building their own multipart request.
+//
+// Two guards run before any byte is fetched, and both exist because the URL is
+// user-supplied: paperlessConfigured rejects a half-configured account, and
+// validatePaperlessHost is the SSRF check. The second is the one to preserve —
+// without it a user could point Paperless at the internal network and use the
+// backend as a proxy. appEnv decides how strict it is, because the production
+// and development stacks have different internal topology.
 func (srv *Server) ImportPaperlessDocument(c *gin.Context) {
 	settings, err := srv.paperlessConfig(c, auth.GetUserID(c))
 	if err != nil {

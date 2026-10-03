@@ -14,6 +14,34 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The diagnostics half of the money-flow graph: what a Sankey cannot draw.
+//
+// money_flow.go has to keep the account-to-account subgraph acyclic, because a
+// cyclic Sankey is unreadable. It gets there by netting reciprocal pairs into
+// one edge and dropping DFS back edges — both of which *hide* real flows. This
+// file is the counterpart: it reports exactly what was netted away or broken, so
+// the user can see money bouncing between accounts or a transfer that was only
+// half entered.
+//
+// That is the design contract between the two files, and it is why the graph
+// never has to apologise for what it dropped: netting and cycle-breaking are not
+// lossy here, they are deferred to a dedicated read. GetLinkCycles re-derives
+// the same account pairs from the same link rows and reports them un-netted.
+//
+// Two kinds of finding come out, and they mean different things:
+//
+//	reciprocal  a pair that flows both ways. Legitimate (a credit card paying
+//	            into a bank and spending back out) but the graph can only show
+//	            the net.
+//	cycle       a longer loop that had to be broken. More often a symptom of a
+//	            half-entered transfer or a duplicate link than of real circular
+//	            money moving.
+//
+// flowPairTotal is per-currency for the same reason everything else in this
+// package is: a pair is two accounts, and a pair can hold a link in each of two
+// currencies. The reverse pair is a distinct key, which is what lets the two
+// collapse into one reciprocal finding without adding across currencies.
+
 // flowLinkDetailRow is one raw cross-account link plus its own link type — the
 // extra field the circular-money report needs to break an account flow down by
 // link type (transfer/cashback/refund/bill_payment).

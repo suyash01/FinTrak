@@ -9,6 +9,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// The admin console's read side: the shared global catalog, plus the usage
+// counts an admin needs *before* deciding to edit or retire anything. It is the
+// one place that sees the global catalog as a catalogue rather than as
+// background to a per-user read.
+//
+// Both queries are scoped `WHERE user_id IS NULL` — the two-tenant rule from
+// category.go. A user's own categories and groups are deliberately absent: this
+// is the shared vocabulary, and an admin editing it must never be shown (or be
+// able to reach) one user's personal rows. The write side lives in
+// CreateGlobalCategory / UpdateGlobalCategory / DeleteGlobalCategory in
+// category.go, which are scoped the same way for the same reason.
+//
+// Nothing here is admin-gated by a check in this function — that is the route
+// group's job in main.go. Like every handler in the package it trusts
+// auth.GetUserID(c) and the middleware above it.
+
 // GetAdminCatalog returns the shared global catalog for the admin console: the
 // global category groups and global categories, each with the usage counts that
 // matter before an admin edits or retires it (how many categories sit in a
@@ -19,6 +35,13 @@ func (srv *Server) GetAdminCatalog(c *gin.Context) {
 		Categories: []models.AdminCatalogCategory{},
 	}
 
+	// The usage counts are correlated subqueries rather than a second query,
+	// so each count belongs to the row it is displayed beside. They are
+	// intentionally NOT scoped to a user: `c.group_id = g.id` counts the
+	// categories in a global group across all users, which is the number that
+	// tells an admin whether retiring a global category has blast radius.
+	// The `::int` casts are needed because COUNT returns bigint, which pgx
+	// refuses to scan into the int32 the model declares.
 	groupRows, err := srv.db.Query(c, `
 		SELECT g.id, g.name, g.icon, g.color, g.is_base, g.user_id, g.sort_order,
 		       (SELECT COUNT(*) FROM categories c WHERE c.group_id = g.id)::int

@@ -18,6 +18,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The auto-categorization rule engine: ordered rules that match a transaction's
+// description and optionally AND a set of conditions, then set its category,
+// payee, tags and notes.
+//
+// The shape worth knowing first is that a rule is a *list* of matches and a list
+// of actions, applied in priority order, and that the list is scanned per
+// transaction rather than compiled into SQL. That is a deliberate trade: it
+// keeps a rule's semantics (contains / starts_with / exact, ANDed conditions,
+// tag and note actions) in one readable place, at the cost of not being able to
+// ask the database to do the matching. The two entry points are ApplyRules
+// (run them now, against a window) and the write edges that run them implicitly.
+//
+// The one rule this file never applies is itself — see ApplyRules' doc comment
+// for why an uncategorized-only scope is the default rather than a filter the
+// user chose.
+//
+// Nothing here creates or moves money. A rule can set a category, a payee, add
+// tags and append a note, and that is the whole of its authority.
+
 // GetRules lists the user's categorization rules, highest priority first, with
 // the joined category/payee/account/filter names.
 func (srv *Server) GetRules(c *gin.Context) {
@@ -384,6 +403,25 @@ func (srv *Server) PreviewRule(c *gin.Context) {
 // failure rolls the whole apply back so a mid-batch error can never commit a
 // silently partial result. Transactions on closed accounts are skipped
 // (immutable; linking only). Returns the number of transactions updated.
+//
+// Two properties are worth stating explicitly because they look like bugs and
+// are not:
+//
+//   - It re-categorizes nothing. The `category_id IS NULL` guard in the WHERE is
+//     what makes "apply rules" mean "fill in what is uncategorized" rather than
+//     "re-run the engine over my ledger". A transaction the user categorized by
+//     hand is never touched, which is also why the response count is a count of
+//     newly-filled rows and not of matched rows.
+//   - The first matching rule wins, because the guard is re-evaluated by the
+//     next rule's UPDATE. Once a rule has set category_id, the transaction no
+//     longer matches `IS NULL`, so a lower-priority rule cannot overwrite it.
+//     Priority order therefore does the work of conflict resolution, and the
+//     rules are loaded in descending priority for that reason.
+//
+// One rule per UPDATE rather than a single statement for all of them is what
+// makes the priority ordering meaningful at all: there is no way to express
+// "the highest-priority matching rule" in one SQL statement without a window
+// function over the rule set.
 func (srv *Server) ApplyRules(c *gin.Context) {
 	userID := auth.GetUserID(c)
 
@@ -555,6 +593,22 @@ func ruleEntryFromRequest(req models.CreateRuleRequest, matchType string, dateFr
 // same predicate works both for a plain `transactions` scan and for an
 // `UPDATE transactions ...` (neither introduces an alias). It returns false for
 // an unrecognized match type (which never fires) without appending anything.
+//
+// Every condition below is an independent AND — there is no OR between them and
+// no nesting, which is the whole of a rule's condition language. Two of them are
+// worth reading carefully because their SQL is not the obvious spelling:
+//
+//   - The linked/recurring tri-state is `*r.IsLinked != nil` meaning "the rule
+//     constrains it", and the value then chooses EXISTS or NOT EXISTS. It is not
+//     a boolean column because "don't care" and "must be false" are different
+//     rules, and a nullable boolean is the only way to say both. Note the
+//     predicate matches links in EITHER direction (`from_txn_id = ... OR
+//     to_txn_id = ...`) — a transaction is "linked" if it appears on either end,
+//     not just as the source.
+//   - The link and recurring checks are f.raw rather than f.param because they
+//     are EXISTS/NOT EXISTS fragments with nothing to bind — routing them
+//     through param would consume a placeholder number for a value that does
+//     not exist.
 func appendRulePredicate(f *txnFilter, r ruleEntry) bool {
 	matchExpr, matchArg, ok := ruleMatchSQL(r.MatchType, r.Pattern, len(f.args)+1)
 	if !ok {

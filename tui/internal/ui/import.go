@@ -1,3 +1,38 @@
+// The import screen: getting transactions from outside into the ledger, from
+// three different sources.
+//
+// The three panes look like three features but they are one pipeline at two
+// different stages, and the difference is where the money is decided:
+//
+//	Statement / Paperless   the SERVER parses. This client uploads bytes and
+//	                        receives rows back, which it then previews.
+//	CSV                     the CLIENT parses. PapaParse-equivalent work
+//	                        (encoding/csv plus the column-mapping step below)
+//	                        happens here, and rows are built without the server
+//	                        ever seeing the file.
+//
+// Everything after that is shared: the preview table, the row checkboxes, the
+// duplicate flags, and the single POST /transactions that commits. So a user
+// cannot tell which pane produced a row once they are in the preview, and should
+// not have to — the commit path and its validation are identical.
+//
+// Three properties of the commit are worth knowing because they are enforced at
+// the far end, not here:
+//
+//   - Every row carries a client-generated `clientKey`, so a replay — a lost
+//     response, or the user re-running the import — is recognized by the API and
+//     does not create a second money row. Never create twice.
+//   - The whole batch is one transaction server-side. A rejected import writes
+//     nothing at all.
+//   - The rows are validated server-side regardless of what the preview showed.
+//     The preview is a convenience, not a gate: validation.CheckTransactionDate
+//     and the account's state are re-checked on commit, so a preview that looked
+//     clean can still be refused.
+//
+// The column-mapping step exists only for CSV because only CSV has no schema the
+// client can guess. Statement and Paperless rows arrive already normalized by
+// the parser, so there is nothing to map.
+
 package ui
 
 import (
