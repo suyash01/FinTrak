@@ -33,6 +33,11 @@ import (
 //   - Login and Register write a `sessions` row first and name it in both tokens
 //     (`sid`), so a session can be listed and revoked by id. The row's id IS the
 //     rotation family's id.
+//   - Refreshing stamps that row's `last_seen`, and rotation names it in the
+//     tokens it hands out, so a session that predates the `sessions` table
+//     acquires its id on its first rotation. Ending the session — logout, or a
+//     detected replay — revokes the row, which is what stops the outstanding
+//     access token and not merely the next refresh.
 //
 // So no code path here may mint an access token without a live row for the
 // presented refresh token. That single rule is what makes the reuse detection
@@ -368,15 +373,56 @@ func (srv *Server) rotateRefreshToken(c *gin.Context, tokenID, familyID, userID 
 	})
 }
 
-// revokeRefreshFamily revokes every live token of a session's rotation family.
-// The caller decides what a failure means: Logout proceeds anyway (the cookies
-// are cleared regardless) while reuse detection reports it and still refuses the
-// request.
+// revokeRefreshFamily revokes every live token of a session's rotation family,
+// so no refresh token in it can be spent again. It is one half of endSession; see
+// that function for why the two halves are never separated.
 func (srv *Server) revokeRefreshFamily(c *gin.Context, familyID uuid.UUID) error {
 	_, err := srv.db.Exec(c,
 		`UPDATE refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL`,
 		familyID,
 	)
+	return err
+}
+
+// revokeSession ends the session row itself. Revoking the refresh family alone
+// stops only the *next* refresh: the access token already in the holder's hand
+// stays good until it expires, up to a quarter of an hour after the chain was
+// cut. This is the write RequireAuth reads, so it is what takes that token down
+// with the family. Already-revoked rows are left alone, keeping the original
+// revocation time rather than overwriting it with a later one.
+func (srv *Server) revokeSession(c *gin.Context, sessionID uuid.UUID) error {
+	_, err := srv.db.Exec(c,
+		`UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+		sessionID,
+	)
+	return err
+}
+
+// endSession revokes both halves of a session and is the only way either is
+// called, so they cannot drift apart: a family revoked without its row leaves an
+// access token that outlives the session the user believes they just ended.
+//
+// Both statements run whatever the first does. The caller has already decided
+// the session is over — Logout clears the cookies either way and reuse
+// detection refuses the request either way — so a failure of one is logged
+// rather than propagated, because returning early would leave the other half
+// unrevoked.
+func (srv *Server) endSession(c *gin.Context, familyID uuid.UUID, where string) {
+	if err := srv.revokeRefreshFamily(c, familyID); err != nil {
+		slog.Error(where+": revoking refresh family", slog.String("error", err.Error()))
+	}
+	if err := srv.revokeSession(c, familyID); err != nil {
+		slog.Error(where+": revoking session", slog.String("error", err.Error()))
+	}
+}
+
+// touchSession moves the session's last_seen stamp forward. It is the only
+// write to sessions outside login and revocation, and it rides a request that
+// already writes rather than being placed on the read path: RequireAuth runs on
+// every authenticated request, so stamping there would turn every authenticated
+// GET into an UPDATE.
+func (srv *Server) touchSession(c *gin.Context, sessionID uuid.UUID) error {
+	_, err := srv.db.Exec(c, `UPDATE sessions SET last_seen = now() WHERE id = $1`, sessionID)
 	return err
 }
 
@@ -390,6 +436,13 @@ func (srv *Server) revokeRefreshFamily(c *gin.Context, familyID uuid.UUID) error
 // so rotating never extends a session; it only re-arms the access token.
 // A missing, unknown or invalid refresh token clears both cookies so the browser
 // stops sending a dead session.
+//
+// Refreshing also records that the session is alive: it stamps last_seen and
+// names the session in the tokens it mints. Both are keyed on the family
+// resolved from the presented token's hash rather than on the token's own `sid`,
+// because that family is what sessions.id holds — and a token minted before the
+// sessions table existed carries no sid at all, making the family the only
+// identity available for it.
 func (srv *Server) Refresh(c *gin.Context) {
 	tokenString, err := c.Cookie(auth.RefreshCookieName)
 	if err != nil || tokenString == "" {
@@ -440,9 +493,7 @@ func (srv *Server) Refresh(c *gin.Context) {
 			slog.String("user_id", userID.String()),
 			slog.String("family_id", familyID.String()),
 		)
-		if err := srv.revokeRefreshFamily(c, familyID); err != nil {
-			slog.Error("Refresh (revoking reused family)", slog.String("error", err.Error()))
-		}
+		srv.endSession(c, familyID, "Refresh (reuse detected)")
 		auth.ClearAuthCookies(c, cookieSecure)
 		validation.RespondAuthError(c, "session expired; please log in again")
 		return
@@ -463,6 +514,21 @@ func (srv *Server) Refresh(c *gin.Context) {
 		slog.Error("Refresh (role lookup)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	// The session is the rotation family this token's hash resolved to —
+	// sessions.id IS refresh_tokens.family_id — and that, not whatever the token
+	// carries, is what the tokens minted below must name. A token predating the
+	// sessions table has no sid of its own, so this is where it acquires one:
+	// from this rotation the session can be revoked and its last_seen kept.
+	claims.SessionID = familyID
+
+	// last_seen is display data: the session list reads it and nothing enforces
+	// on it, so a failure to move the stamp is logged and the refresh continues.
+	// Ending a live session because a timestamp did not move would trade a stale
+	// label in the UI for a user who is suddenly logged out.
+	if err := srv.touchSession(c, familyID); err != nil {
+		slog.Error("Refresh (recording session activity)", slog.String("error", err.Error()))
 	}
 
 	accessToken, err := auth.RenewAccess(claims, role, jwtSecret)
@@ -487,11 +553,10 @@ func (srv *Server) Refresh(c *gin.Context) {
 	err = srv.rotateRefreshToken(c, tokenID, familyID, userID, newRefreshToken, claims.ExpiresAt.Time)
 	if errors.Is(err, errRefreshReused) {
 		// Two requests raced the same token: the loser is a replay as far as
-		// the session is concerned. Revoking the family (which includes the
-		// winner's brand-new token) is the safe side of that call.
-		if err := srv.revokeRefreshFamily(c, familyID); err != nil {
-			slog.Error("Refresh (revoking raced family)", slog.String("error", err.Error()))
-		}
+		// the session is concerned. Ending the session takes the winner's
+		// brand-new refresh token with it, and its access token too, which is
+		// the safe side of that call.
+		srv.endSession(c, familyID, "Refresh (raced rotation)")
 		auth.ClearAuthCookies(c, cookieSecure)
 		validation.RespondAuthError(c, "session expired; please log in again")
 		return
@@ -528,11 +593,11 @@ func (srv *Server) Me(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// Logout revokes the presented refresh token's whole rotation family and clears
-// both session cookies, so the session cannot be resumed with a copy of the
-// cookie. It is unauthenticated on purpose so an expired or invalid cookie can
-// still be removed. Revocation is best-effort: a database failure must not stop
-// the browser's cookies from being cleared, so it is logged rather than
+// Logout revokes the session — its rotation family and its session row — and
+// clears both session cookies, so the session cannot be resumed with a copy of
+// either cookie. It is unauthenticated on purpose so an expired or invalid
+// cookie can still be removed. Revocation is best-effort: a database failure must
+// not stop the browser's cookies from being cleared, so it is logged rather than
 // reported, and the caller's next refresh fails against the same fault anyway.
 func (srv *Server) Logout(c *gin.Context) {
 	if tokenString, err := c.Cookie(auth.RefreshCookieName); err == nil && tokenString != "" {
@@ -543,9 +608,7 @@ func (srv *Server) Logout(c *gin.Context) {
 		).Scan(&familyID)
 		switch {
 		case err == nil:
-			if err := srv.revokeRefreshFamily(c, familyID); err != nil {
-				slog.Error("Logout (revoking session family)", slog.String("error", err.Error()))
-			}
+			srv.endSession(c, familyID, "Logout")
 		case errors.Is(err, pgx.ErrNoRows):
 			// Never issued, or already pruned: there is nothing to revoke.
 		default:
