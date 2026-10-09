@@ -689,6 +689,12 @@ func TestIntegrationGlobalCategoryCreationRunsAgainstPostgres(t *testing.T) {
 // logout revocation against real Postgres, where the refresh_tokens rows and
 // the rotation transaction are actually exercised (pgxmock cannot validate the
 // conditional update that detects reuse).
+//
+// It also reads the sessions row back after each of those three paths, because
+// pgxmock only proves the UPDATE was issued — the column names and the predicate
+// it matches on are invisible to it, and both writes swallow their own errors by
+// design, so an effect assertion against the real table is the only thing that
+// would notice a wrong column or a missing `revoked_at IS NULL`.
 func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
 	ctx := context.Background()
 
@@ -701,13 +707,6 @@ func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
 	old := a.refreshCookie()
 	require.NotEmpty(t, old, "registration must issue a refresh cookie")
 
-	// Refresh rotates: the browser is handed a new cookie and the presented one
-	// is spent.
-	a.call(http.MethodPost, "/api/v1/auth/refresh", nil, http.StatusOK, nil)
-	rotated := a.refreshCookie()
-	require.NotEmpty(t, rotated)
-	require.NotEqual(t, old, rotated, "refresh must rotate the refresh cookie")
-
 	liveTokens := func(userID uuid.UUID) int {
 		t.Helper()
 		var n int
@@ -715,6 +714,49 @@ func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
 			`SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL`, userID).Scan(&n))
 		return n
 	}
+
+	// The sessions row is read back by hand rather than inferred from a response
+	// status. Every write the refresh and logout paths make to it logs and
+	// swallows its own failure, so a response-only assertion cannot tell a working
+	// write from a misspelled column: both answer exactly the same 200.
+	sessionLastSeen := func(userID uuid.UUID) time.Time {
+		t.Helper()
+		var lastSeen time.Time
+		require.NoError(t, db.Pool.QueryRow(ctx,
+			`SELECT last_seen FROM sessions WHERE user_id = $1`, userID).Scan(&lastSeen))
+		return lastSeen
+	}
+	sessionRevokedAt := func(userID uuid.UUID) *time.Time {
+		t.Helper()
+		var revokedAt *time.Time
+		require.NoError(t, db.Pool.QueryRow(ctx,
+			`SELECT revoked_at FROM sessions WHERE user_id = $1`, userID).Scan(&revokedAt))
+		return revokedAt
+	}
+
+	// Plant a last_seen the refresh cannot possibly leave in place. Comparing a
+	// post-refresh stamp against one the same clock wrote moments earlier would
+	// pass on a write that never happened; an hour ago cannot be mistaken for
+	// "just refreshed".
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE sessions SET last_seen = now() - interval '1 hour' WHERE user_id = $1`, me.ID)
+	require.NoError(t, err)
+	planted := sessionLastSeen(me.ID)
+
+	// Refresh rotates: the browser is handed a new cookie and the presented one
+	// is spent.
+	a.call(http.MethodPost, "/api/v1/auth/refresh", nil, http.StatusOK, nil)
+	rotated := a.refreshCookie()
+	require.NotEmpty(t, rotated)
+	require.NotEqual(t, old, rotated, "refresh must rotate the refresh cookie")
+
+	// The refresh path records that the session is alive. This is the whole
+	// justification for keeping the stamp off RequireAuth (which would turn every
+	// authenticated GET into a write) — if it did not move here, the session list
+	// would show a stale "last seen" for every device.
+	refreshed := sessionLastSeen(me.ID)
+	require.True(t, refreshed.After(planted),
+		"a successful refresh must move sessions.last_seen forward (planted %s, now %s)", planted, refreshed)
 	require.Equal(t, 1, liveTokens(me.ID))
 
 	var replaced int
@@ -730,14 +772,26 @@ func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, status, "the successor must die with the replayed token; body: %s", string(body))
 	require.Equal(t, 0, liveTokens(me.ID))
 
+	// Reuse must end the session row, not just the family. The family covers the
+	// refresh chain; this column is the only thing RequireAuth reads, so it is what
+	// stops the access token the thief is already holding — which keeps working for
+	// up to its own 15-minute expiry if the family alone is revoked.
+	require.NotNil(t, sessionRevokedAt(me.ID),
+		"reuse detection must revoke the session row itself, not only its refresh family")
+
 	// Logout revokes the session's family, so a copied cookie cannot be resumed.
 	other := newAPIClient(t)
 	other.register("logout@example.com")
+	var otherUser models.User
+	other.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &otherUser)
 	copied := other.refreshCookie()
 	require.NotEmpty(t, copied)
+	require.Nil(t, sessionRevokedAt(otherUser.ID), "a fresh session must start unrevoked")
 
 	other.call(http.MethodPost, "/api/v1/auth/logout", nil, http.StatusOK, nil)
 	require.Empty(t, other.refreshCookie(), "logout must clear the browser's cookie")
+	require.NotNil(t, sessionRevokedAt(otherUser.ID),
+		"logout must revoke the session row itself, not only its refresh family")
 
 	status, body = other.rawRequest(http.MethodPost, "/api/v1/auth/refresh", copied)
 	require.Equal(t, http.StatusUnauthorized, status, "a copied refresh token must not survive logout; body: %s", string(body))

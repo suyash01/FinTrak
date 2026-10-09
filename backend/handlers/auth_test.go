@@ -623,29 +623,70 @@ func TestLogoutRevokesSessionFamily(t *testing.T) {
 // even after the user pressed "log out".
 func TestLogoutRevokesTheSessionAsWellAsTheFamily(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	srv, mock := newMockServer(t)
-	r := gin.New()
-	r.POST("/auth/logout", srv.Logout)
 
-	token, err := auth.GenerateRefreshToken(uuid.New(), "user", testJWTSecret)
-	require.NoError(t, err)
-	familyID := uuid.New()
+	// logout resolves the family, then revokes both halves of the session.
+	expectLookup := func(mock pgxmock.PgxPoolIface, token string, familyID uuid.UUID) {
+		mock.ExpectQuery("SELECT family_id FROM refresh_tokens WHERE token_hash = ").
+			WithArgs(auth.HashRefreshToken(token)).
+			WillReturnRows(pgxmock.NewRows([]string{"family_id"}).AddRow(familyID))
+	}
 
-	mock.ExpectQuery("SELECT family_id FROM refresh_tokens WHERE token_hash = ").
-		WithArgs(auth.HashRefreshToken(token)).
-		WillReturnRows(pgxmock.NewRows([]string{"family_id"}).AddRow(familyID))
-	// The family first, the session second: the two are independent statements
-	// and the ordering is pinned only to make the sequence deterministic.
-	mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
-		WithArgs(familyID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
-	expectSessionRevoke(mock, familyID)
+	t.Run("revokes the refresh family and the session row", func(t *testing.T) {
+		srv, mock := newMockServer(t)
+		r := gin.New()
+		r.POST("/auth/logout", srv.Logout)
 
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
+		token, err := auth.GenerateRefreshToken(uuid.New(), "user", testJWTSecret)
+		require.NoError(t, err)
+		familyID := uuid.New()
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.NoError(t, mock.ExpectationsWereMet())
+		expectLookup(mock, token, familyID)
+		// The family first, the session second: the two are independent
+		// statements and the ordering is pinned only to make the sequence
+		// deterministic.
+		mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
+			WithArgs(familyID).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+		expectSessionRevoke(mock, familyID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("revokes the session row even when the family revoke fails", func(t *testing.T) {
+		// endSession exists so the two halves cannot be separated, and this is
+		// what holds it to that: a failure of the first statement must not
+		// return early and leave the session row live, because the row is the
+		// half that stops an already-issued access token. An early return here
+		// leaves this expectation unmet, so it is a failure rather than a
+		// silent pass.
+		srv, mock := newMockServer(t)
+		r := gin.New()
+		r.POST("/auth/logout", srv.Logout)
+
+		token, err := auth.GenerateRefreshToken(uuid.New(), "user", testJWTSecret)
+		require.NoError(t, err)
+		familyID := uuid.New()
+
+		expectLookup(mock, token, familyID)
+		mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
+			WithArgs(familyID).
+			WillReturnError(assert.AnError)
+		expectSessionRevoke(mock, familyID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
+
+		// Best-effort throughout: the cookies are cleared and the logout
+		// succeeds, because a database fault must not leave the browser holding
+		// a cookie it believes it has ended.
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Len(t, w.Result().Cookies(), 2)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 // A logout whose token is unknown (never issued, or already pruned) is still a
@@ -720,8 +761,13 @@ func expectLiveRefreshSession(mock pgxmock.PgxPoolIface, tokenHash string, token
 // forward. pgxmock answers expectations in order, so calling it straight after
 // expectLiveRefreshSession is what pins that the stamp follows the role re-read
 // rather than the token lookup.
+//
+// The pattern is anchored at both ends, because pgxmock's default matcher
+// compiles it as an UNANCHORED regexp: unanchored, "UPDATE sessions SET last_seen"
+// would still match a statement that wrote some other column, or none. Anchored, the
+// expectation is the whole statement and a change to it fails here.
 func expectSessionLastSeen(mock pgxmock.PgxPoolIface, sessionID uuid.UUID) {
-	mock.ExpectExec("UPDATE sessions SET last_seen = now\\(\\) WHERE id = ").
+	mock.ExpectExec(`^UPDATE sessions SET last_seen = now\(\) WHERE id = \$1$`).
 		WithArgs(sessionID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 }
@@ -729,8 +775,13 @@ func expectSessionLastSeen(mock pgxmock.PgxPoolIface, sessionID uuid.UUID) {
 // expectSessionRevoke registers the revocation of the session row, which is the
 // write RequireAuth reads: ending the refresh family alone stops only the next
 // refresh, leaving the outstanding access token good until it expires.
+//
+// Anchored like expectSessionLastSeen, so the trailing `AND revoked_at IS NULL` —
+// which keeps the FIRST revocation time rather than overwriting it with a later one
+// — is part of what is asserted. Unanchored, the predicate is invisible: the
+// matcher would accept the same UPDATE without it.
 func expectSessionRevoke(mock pgxmock.PgxPoolIface, sessionID uuid.UUID) {
-	mock.ExpectExec("UPDATE sessions SET revoked_at = now\\(\\) WHERE id = ").
+	mock.ExpectExec(`^UPDATE sessions SET revoked_at = now\(\) WHERE id = \$1 AND revoked_at IS NULL$`).
 		WithArgs(sessionID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 }
@@ -978,7 +1029,7 @@ func TestRefreshUpdatesTheSessionLastSeen(t *testing.T) {
 
 		tokenID, newTokenID := uuid.New(), uuid.New()
 		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
-		mock.ExpectExec("UPDATE sessions SET last_seen = now\\(\\) WHERE id = ").
+		mock.ExpectExec(`^UPDATE sessions SET last_seen = now\(\) WHERE id = \$1$`).
 			WithArgs(familyID).
 			WillReturnError(assert.AnError)
 		expectRotation(mock, tokenID, userID, familyID, newTokenID)
