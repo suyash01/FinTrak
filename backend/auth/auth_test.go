@@ -336,9 +336,12 @@ func TestParseTokenRejectsWrongType(t *testing.T) {
 func TestRequireAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// nil pool: every token here is minted by GenerateAccessToken, so it names
+	// no session and RequireAuth skips the lookup entirely. The session check
+	// itself is covered against a real pool in the router tests.
 	newRouter := func() *gin.Engine {
 		r := gin.New()
-		r.GET("/protected", RequireAuth(testSecret), func(c *gin.Context) {
+		r.GET("/protected", RequireAuth(nil, testSecret), func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"userID": GetUserID(c)})
 		})
 		return r
@@ -541,9 +544,10 @@ func TestGetUserID(t *testing.T) {
 func TestRequireAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// nil pool, as in TestRequireAuth: the role check is what is under test.
 	newRouter := func() *gin.Engine {
 		r := gin.New()
-		r.GET("/admin", RequireAuth(testSecret), RequireAdmin(), func(c *gin.Context) {
+		r.GET("/admin", RequireAuth(nil, testSecret), RequireAdmin(), func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"role": GetUserRole(c)})
 		})
 		return r

@@ -209,7 +209,7 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 
 	// Protected routes. RequireAuth validates the access token; an expired
 	// access token is exchanged for a fresh one at POST /auth/refresh.
-	api.Use(auth.RequireAuth(cfg.JWTSecret))
+	api.Use(auth.RequireAuth(db.Pool, cfg.JWTSecret))
 	{
 		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
 		api.GET("/auth/me", srv.Me)

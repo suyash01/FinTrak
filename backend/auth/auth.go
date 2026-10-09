@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fintrak/backend/db"
 	"github.com/fintrak/backend/internal/validation"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -299,7 +300,11 @@ func bearerToken(c *gin.Context) string {
 // context. The token is read from the httpOnly access cookie; a Bearer header
 // is still accepted for programmatic/API clients and tests. Refresh tokens are
 // rejected here: they are only valid at POST /auth/refresh.
-func RequireAuth(secret string) gin.HandlerFunc {
+//
+// A token naming a session is admitted only while that session is live, so
+// revoking it (logout, reuse detection, or the user revoking a device) takes
+// effect at once instead of at the token's own expiry.
+func RequireAuth(pool db.DBPool, secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := bearerToken(c)
 		if tokenString == "" {
@@ -316,6 +321,23 @@ func RequireAuth(secret string) gin.HandlerFunc {
 		if err != nil {
 			validation.RespondAuthError(c, "invalid or expired token")
 			return
+		}
+
+		// A zero sid names no row — a token from GenerateAccessToken, which
+		// exists for callers with no database behind them — so there is no
+		// session to check and the lookup is skipped entirely.
+		if claims.SessionID != uuid.Nil {
+			var live int
+			if err := pool.QueryRow(c,
+				"SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL",
+				claims.SessionID,
+			).Scan(&live); err != nil {
+				// No rows means the session is revoked or has been pruned; any
+				// other error is a server fault. Both fail closed, so a database
+				// problem can never read to the client as a valid session.
+				validation.RespondAuthError(c, "invalid or expired token")
+				return
+			}
 		}
 
 		c.Set(ctxUserIDKey, claims.UserID)
