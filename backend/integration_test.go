@@ -226,6 +226,24 @@ func (a *apiClient) refreshCookie() string {
 	return ""
 }
 
+// accessClaims returns the claims of the access cookie the client's jar
+// currently holds, or fails the test when it holds none. It is how a test reads
+// the sid a minted token names.
+func (a *apiClient) accessClaims() *auth.Claims {
+	a.t.Helper()
+	u, err := url.Parse(a.base + "/api/v1/accounts")
+	require.NoError(a.t, err)
+	for _, ck := range a.client.Jar.Cookies(u) {
+		if ck.Name == auth.AccessCookieName {
+			claims, err := auth.ParseToken(ck.Value, "integration-secret", auth.TokenTypeAccess)
+			require.NoError(a.t, err)
+			return claims
+		}
+	}
+	a.t.Fatal("no access cookie in the jar")
+	return nil
+}
+
 func (a *apiClient) createAccount(name, accountType string, billingDay *int) models.Account {
 	a.t.Helper()
 	body := map[string]any{"name": name, "accountTypeId": accountType, "currency": "INR"}
@@ -723,6 +741,68 @@ func TestIntegrationRefreshSessionLifecycle(t *testing.T) {
 
 	status, body = other.rawRequest(http.MethodPost, "/api/v1/auth/refresh", copied)
 	require.Equal(t, http.StatusUnauthorized, status, "a copied refresh token must not survive logout; body: %s", string(body))
+}
+
+// TestIntegrationEveryRefreshFamilyHasASessionRow pins the join the two tables
+// rely on: sessions.id IS refresh_tokens.family_id, so a family with no session
+// row is a login the user could never list or revoke.
+//
+// What this does *not* cover is the backfill against a pre-populated table —
+// the suite migrates an empty database, so every family here is one the running
+// server wrote. What it does pin is the invariant going forward: no code path
+// may write a refresh_tokens row without a sessions row naming it, and the
+// token's sid agrees with both.
+func TestIntegrationEveryRefreshFamilyHasASessionRow(t *testing.T) {
+	ctx := context.Background()
+
+	a := newAPIClient(t)
+	a.register("familysession@example.com")
+
+	var me models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &me)
+
+	// A second login makes a second family, so the assertion covers more than
+	// one session and rotation is in the mix afterwards.
+	a.call(http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    "familysession@example.com",
+		"password": "integration-pass-123",
+	}, http.StatusOK, nil)
+	a.call(http.MethodPost, "/api/v1/auth/refresh", nil, http.StatusOK, nil)
+
+	var orphans int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM refresh_tokens r LEFT JOIN sessions s ON s.id = r.family_id WHERE s.id IS NULL`).Scan(&orphans))
+	require.Equal(t, 0, orphans, "every refresh family must have a session row")
+
+	// Each session carries the family's deadline and the user's identity, so a
+	// session list can answer "which one is not mine" from the row alone.
+	type sessionRow struct {
+		id, userID uuid.UUID
+		deadline   time.Time
+	}
+	rows, err := db.Pool.Query(ctx,
+		`SELECT s.id, s.user_id, s.expires_at FROM sessions s
+		 WHERE s.id IN (SELECT family_id FROM refresh_tokens WHERE user_id = $1)
+		 ORDER BY s.created_at`, me.ID)
+	require.NoError(t, err)
+	defer rows.Close()
+	found := 0
+	for rows.Next() {
+		var row sessionRow
+		require.NoError(t, rows.Scan(&row.id, &row.userID, &row.deadline))
+		require.Equal(t, me.ID, row.userID, "a session row must name its own user")
+		require.True(t, row.deadline.After(time.Now()), "a live session is not past its deadline")
+		found++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, 2, found, "register and the second login each start one session")
+
+	// The sid the browser holds is a session the server actually stored, so
+	// the credential and the revocable row are the same thing end to end.
+	var stored int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM sessions WHERE id = $1 AND user_id = $2`, a.accessClaims().SessionID, me.ID).Scan(&stored))
+	require.Equal(t, 1, stored, "the access token must name one stored session of this user")
 }
 
 func TestIntegrationImportDeduplicatesAgainstPostgres(t *testing.T) {

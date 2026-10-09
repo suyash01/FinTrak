@@ -49,12 +49,18 @@ const (
 )
 
 // Claims is the JWT payload for FinTrak tokens: the user ID, role, the token
-// type, and standard registered claims. Access and refresh tokens share this
-// shape; TokenType distinguishes them.
+// type, the session the pair belongs to, and standard registered claims. Access
+// and refresh tokens share this shape; TokenType distinguishes them.
 type Claims struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Role      string    `json:"role"`
 	TokenType string    `json:"token_type"`
+	// SessionID names the server-side session row this token was minted for
+	// (the `sid` claim). It is uuid.Nil on a token minted by
+	// GenerateAccessToken/GenerateRefreshToken, which exist for callers with no
+	// database row behind them — a `sid`-less token is deliberately still
+	// accepted rather than forcing every user to log in again on deploy.
+	SessionID uuid.UUID `json:"sid"`
 	jwt.RegisteredClaims
 }
 
@@ -83,31 +89,38 @@ func EqualizePasswordTiming(password string) {
 	_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
 }
 
-// Session is a freshly minted token pair plus the refresh token's expiry, which
-// is also the session's absolute deadline. Callers persist ExpiresAt alongside
-// the refresh token's hash so a rotated session can never outlive the deadline
-// the session started with.
+// Session is a freshly minted token pair, the session it belongs to, and the
+// refresh token's expiry, which is also the session's absolute deadline. Callers
+// persist ExpiresAt alongside the refresh token's hash so a rotated session can
+// never outlive the deadline the session started with.
 type Session struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    time.Time
+	// ID names the session row this pair belongs to. It is the rotation
+	// family's id: Login/Register write the row before handing out either
+	// token, and startRefreshFamily keys the family on it.
+	ID uuid.UUID
 }
 
-// NewSession mints a fresh access/refresh token pair for a new login. The
-// refresh token's expiry is the session's absolute deadline.
-func NewSession(userID uuid.UUID, role, secret string) (Session, error) {
+// NewSession mints a fresh access/refresh token pair for a new login, naming
+// the given session in both. The refresh token's expiry is the session's
+// absolute deadline. The caller is responsible for having written the session
+// row first: a token naming a session that does not exist could never be listed
+// or revoked.
+func NewSession(userID uuid.UUID, role, secret string, sessionID uuid.UUID) (Session, error) {
 	now := time.Now()
 	expiresAt := now.Add(refreshTokenTTL)
 
-	accessToken, err := generateTokenAt(userID, role, secret, TokenTypeAccess, now.Add(accessTokenTTL))
+	accessToken, err := generateTokenAt(userID, role, secret, TokenTypeAccess, now.Add(accessTokenTTL), sessionID)
 	if err != nil {
 		return Session{}, err
 	}
-	refreshToken, err := generateTokenAt(userID, role, secret, TokenTypeRefresh, expiresAt)
+	refreshToken, err := generateTokenAt(userID, role, secret, TokenTypeRefresh, expiresAt, sessionID)
 	if err != nil {
 		return Session{}, err
 	}
-	return Session{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresAt: expiresAt}, nil
+	return Session{AccessToken: accessToken, RefreshToken: refreshToken, ExpiresAt: expiresAt, ID: sessionID}, nil
 }
 
 // HashRefreshToken returns the hex SHA-256 of a refresh token — the value the
@@ -122,14 +135,17 @@ func HashRefreshToken(token string) string {
 // GenerateAccessToken signs a short-lived HS256 access token. It is sent with
 // every API request and is the only token RequireAuth accepts.
 func GenerateAccessToken(userID uuid.UUID, role, secret string) (string, error) {
-	return generateToken(userID, role, secret, TokenTypeAccess, accessTokenTTL, time.Time{})
+	return generateToken(userID, role, secret, TokenTypeAccess, accessTokenTTL, time.Time{}, uuid.Nil)
 }
 
 // GenerateRefreshToken signs a long-lived HS256 refresh token, starting a new
 // session that ends refreshTokenTTL from now. It is only ever sent to
 // POST /auth/refresh, which trades it for a fresh access token.
+//
+// Like GenerateAccessToken it mints a session-less token, for the same reason:
+// it exists to sign tokens in tests that have no database row behind them.
 func GenerateRefreshToken(userID uuid.UUID, role, secret string) (string, error) {
-	return generateToken(userID, role, secret, TokenTypeRefresh, refreshTokenTTL, time.Time{})
+	return generateToken(userID, role, secret, TokenTypeRefresh, refreshTokenTTL, time.Time{}, uuid.Nil)
 }
 
 // RenewAccess mints a new access token bounded by the refresh token's expiry,
@@ -138,11 +154,16 @@ func GenerateRefreshToken(userID uuid.UUID, role, secret string) (string, error)
 // (which reads it from the database) rather than from the refresh token: the
 // token carries the role it was minted with, so re-using it would keep a
 // demoted admin's access alive for the token's whole 30-day life.
+//
+// The session id is carried forward from the presented token: rotation renames
+// nothing, and a pre-migration refresh token (which has none) simply gets one
+// on the next login — or keeps the zero until the handler supplies the family it
+// resolved.
 func RenewAccess(claims *Claims, role, secret string) (string, error) {
 	if claims == nil || claims.ExpiresAt == nil {
 		return "", errors.New("refresh token has no expiry")
 	}
-	return generateToken(claims.UserID, role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time)
+	return generateToken(claims.UserID, role, secret, TokenTypeAccess, accessTokenTTL, claims.ExpiresAt.Time, claims.SessionID)
 }
 
 // RenewRefresh mints the replacement refresh token handed out when a session is
@@ -153,24 +174,24 @@ func RenewRefresh(claims *Claims, role, secret string) (string, error) {
 	if claims == nil || claims.ExpiresAt == nil {
 		return "", errors.New("refresh token has no expiry")
 	}
-	return generateTokenAt(claims.UserID, role, secret, TokenTypeRefresh, claims.ExpiresAt.Time)
+	return generateTokenAt(claims.UserID, role, secret, TokenTypeRefresh, claims.ExpiresAt.Time, claims.SessionID)
 }
 
 // generateToken signs a token of the given type. Its expiry is now+ttl, capped
 // at notAfter when that is non-zero.
-func generateToken(userID uuid.UUID, role, secret, tokenType string, ttl time.Duration, notAfter time.Time) (string, error) {
+func generateToken(userID uuid.UUID, role, secret, tokenType string, ttl time.Duration, notAfter time.Time, sessionID uuid.UUID) (string, error) {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
 	if !notAfter.IsZero() && notAfter.Before(expiresAt) {
 		expiresAt = notAfter
 	}
-	return generateTokenAt(userID, role, secret, tokenType, expiresAt)
+	return generateTokenAt(userID, role, secret, tokenType, expiresAt, sessionID)
 }
 
 // generateTokenAt signs a token of the given type with an explicit expiry, so
 // the caller that also persists the session's deadline (see NewSession) stores
 // exactly the expiry the token carries.
-func generateTokenAt(userID uuid.UUID, role, secret, tokenType string, expiresAt time.Time) (string, error) {
+func generateTokenAt(userID uuid.UUID, role, secret, tokenType string, expiresAt time.Time, sessionID uuid.UUID) (string, error) {
 	now := time.Now()
 	if !expiresAt.After(now) {
 		return "", errors.New("token expiry is in the past")
@@ -180,6 +201,7 @@ func generateTokenAt(userID uuid.UUID, role, secret, tokenType string, expiresAt
 		UserID:    userID,
 		Role:      role,
 		TokenType: tokenType,
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    tokenIssuer,
 			Subject:   userID.String(),

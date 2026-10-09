@@ -40,7 +40,19 @@ func newAuthTestRouter(srv *Server) *gin.Engine {
 // expectRefreshTokenInsert registers the pgxmock expectation for the row that
 // records a freshly issued refresh token (Login/Register start a new family).
 func expectRefreshTokenInsert(mock pgxmock.PgxPoolIface) {
+	expectSessionInsert(mock)
 	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+}
+
+// expectSessionInsert registers the pgxmock expectation for the revocable
+// session row. pgxmock matches expectations in order, so placing it before the
+// refresh-token insert is what proves the handler wrote the session row first —
+// a token handed out naming a session that does not exist could never be
+// listed or revoked.
+func expectSessionInsert(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("INSERT INTO sessions").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
@@ -1029,6 +1041,121 @@ func TestAuthBodyLimit(t *testing.T) {
 	})
 }
 
+// capturedUUID matches any argument and remembers the value it saw, so a test
+// can assert a relationship between two bound arguments (here: that the
+// refresh row's family_id is the same session the tokens name) which neither
+// side is known until the request has run.
+type capturedUUID struct{ value uuid.UUID }
+
+func (c *capturedUUID) Match(got any) bool {
+	id, ok := got.(uuid.UUID)
+	if ok {
+		c.value = id
+	}
+	return true
+}
+
+// The session row is written before either cookie is handed out, and its id is
+// the rotation family's id — so the credential the browser receives names a row
+// the server can revoke. pgxmock answers expectations in order, so declaring
+// the sessions insert before the refresh insert is what pins the order, rather
+// than only pinning that both happen.
+func TestLoginWritesTheSessionRowBeforeTheCookies(t *testing.T) {
+	srv, mock := newMockServer(t)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
+
+	userID := uuid.New()
+	hash, err := auth.HashPassword("password1234")
+	require.NoError(t, err)
+
+	mock.ExpectQuery("SELECT id, email, password_hash, role FROM users").
+		WithArgs("session@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
+			AddRow(userID, "session@example.com", hash, "user"))
+
+	sessionArg, familyArg := &capturedUUID{}, &capturedUUID{}
+	mock.ExpectExec("INSERT INTO sessions").
+		WithArgs(sessionArg, userID, "TestAgent/1.0", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(userID, pgxmock.AnyArg(), familyArg, pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	jsonBody, _ := json.Marshal(models.LoginRequest{Email: "session@example.com", Password: "password1234"})
+	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "TestAgent/1.0")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	access := findAuthCookie(w.Result().Cookies(), auth.AccessCookieName)
+	require.NotNil(t, access)
+	refresh := findAuthCookie(w.Result().Cookies(), auth.RefreshCookieName)
+	require.NotNil(t, refresh)
+
+	// Both tokens name one session, the row written above carries it, and the
+	// refresh family is keyed on it rather than on a fresh id.
+	accessClaims, err := auth.ParseToken(access.Value, testJWTSecret, auth.TokenTypeAccess)
+	require.NoError(t, err)
+	refreshClaims, err := auth.ParseToken(refresh.Value, testJWTSecret, auth.TokenTypeRefresh)
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, sessionArg.value)
+	assert.Equal(t, sessionArg.value, accessClaims.SessionID)
+	assert.Equal(t, sessionArg.value, refreshClaims.SessionID)
+	assert.Equal(t, sessionArg.value, familyArg.value)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The same ordering holds for a registration: the account, then the session row
+// naming it, then the refresh row in the same family.
+func TestRegisterWritesTheSessionRowBeforeTheCookies(t *testing.T) {
+	srv, mock := newMockServer(t)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
+
+	userID := uuid.New()
+	reqBody := models.RegisterRequest{Email: "sessionreg@example.com", Password: "password1234"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+			AddRow(userID, reqBody.Email, "user"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	seedArgs := make([]interface{}, 24*6)
+	for i := range seedArgs {
+		seedArgs[i] = pgxmock.AnyArg()
+	}
+	mock.ExpectExec("INSERT INTO categories").
+		WithArgs(seedArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 24))
+	mock.ExpectCommit()
+
+	sessionArg, familyArg := &capturedUUID{}, &capturedUUID{}
+	mock.ExpectExec("INSERT INTO sessions").
+		WithArgs(sessionArg, userID, "", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(userID, pgxmock.AnyArg(), familyArg, pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+	require.NotEqual(t, uuid.Nil, sessionArg.value)
+	assert.Equal(t, sessionArg.value, familyArg.value)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // A session the server cannot record must not be handed to the browser: the
 // cookie would carry a refresh token that no refresh or logout could ever
 // resolve, so the request fails instead (500, no cookies).
@@ -1045,6 +1172,7 @@ func TestLoginWithoutStoredSessionIssuesNoCookies(t *testing.T) {
 		WithArgs("store@example.com").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
 			AddRow(userID, "store@example.com", hash, "user"))
+	expectSessionInsert(mock)
 	mock.ExpectExec("INSERT INTO refresh_tokens").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(assert.AnError)

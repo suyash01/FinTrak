@@ -79,7 +79,7 @@ func TestGenerateRefreshToken(t *testing.T) {
 func TestNewSession(t *testing.T) {
 	userID := uuid.New()
 
-	session, err := NewSession(userID, "admin", testSecret)
+	session, err := NewSession(userID, "admin", testSecret, uuid.New())
 	require.NoError(t, err)
 
 	accessClaims, err := ParseToken(session.AccessToken, testSecret, TokenTypeAccess)
@@ -99,6 +99,51 @@ func TestNewSession(t *testing.T) {
 	require.NotNil(t, refreshClaims.ExpiresAt)
 	assert.Equal(t, refreshClaims.ExpiresAt.Time.Unix(), session.ExpiresAt.Unix())
 	assert.WithinDuration(t, time.Now().Add(refreshTokenTTL), session.ExpiresAt, time.Minute)
+}
+
+// Both token types must name the session they belong to, or the session row the
+// server writes can never be reached from the credential that mints it — and an
+// access token is checked against that row on every request.
+func TestNewSessionNamesItsSessionInBothTokens(t *testing.T) {
+	userID, sessionID := uuid.New(), uuid.New()
+
+	session, err := NewSession(userID, "user", testSecret, sessionID)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, session.ID)
+
+	accessClaims, err := ParseToken(session.AccessToken, testSecret, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, accessClaims.SessionID)
+
+	refreshClaims, err := ParseToken(session.RefreshToken, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, refreshClaims.SessionID)
+}
+
+// Rotation must carry the session id forward, not drop it: a pre-migration
+// refresh token has none and therefore acquires the real one on its first
+// rotation, and every token minted after that keeps naming the same session
+// until it expires.
+func TestRenewalPreservesTheSessionID(t *testing.T) {
+	userID, sessionID := uuid.New(), uuid.New()
+
+	session, err := NewSession(userID, "user", testSecret, sessionID)
+	require.NoError(t, err)
+
+	claims, err := ParseToken(session.RefreshToken, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+
+	rotated, err := RenewRefresh(claims, "user", testSecret)
+	require.NoError(t, err)
+	rotatedClaims, err := ParseToken(rotated, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, rotatedClaims.SessionID)
+
+	access, err := RenewAccess(rotatedClaims, "user", testSecret)
+	require.NoError(t, err)
+	accessClaims, err := ParseToken(access, testSecret, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, accessClaims.SessionID)
 }
 
 func TestRenewRefresh(t *testing.T) {

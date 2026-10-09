@@ -30,6 +30,9 @@ import (
 //     family. Logout revokes the family too.
 //   - Refresh does not extend the original session deadline — a family dies when
 //     it was created plus its window, however many times it is rotated.
+//   - Login and Register write a `sessions` row first and name it in both tokens
+//     (`sid`), so a session can be listed and revoked by id. The row's id IS the
+//     rotation family's id.
 //
 // So no code path here may mint an access token without a live row for the
 // presented refresh token. That single rule is what makes the reuse detection
@@ -186,9 +189,21 @@ func (srv *Server) Register(c *gin.Context) {
 		return
 	}
 
-	session, err := auth.NewSession(user.ID, user.Role, jwtSecret)
+	// One session per login, named by both tokens. The row is written before
+	// either token is handed out: a credential naming a session the server has
+	// no row for could never be listed or revoked, which is the same
+	// "no token without a live row" rule the refresh side already holds. A
+	// failure at any step below answers 500 with no cookie set.
+	sessionID := uuid.New()
+	session, err := auth.NewSession(user.ID, user.Role, jwtSecret, sessionID)
 	if err != nil {
 		slog.Error("generating tokens in Register", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := srv.recordSession(c, user.ID, session); err != nil {
+		slog.Error("Register (recording session)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -264,9 +279,19 @@ func (srv *Server) Login(c *gin.Context) {
 	// identity were somebody else's guesses: refund them.
 	refundAuthFailures("login", email)
 
-	session, err := auth.NewSession(user.ID, user.Role, jwtSecret)
+	// One session per login, named by both tokens and written before either is
+	// handed out, for the same reason as in Register: a credential naming a
+	// session the server has no row for could never be listed or revoked.
+	sessionID := uuid.New()
+	session, err := auth.NewSession(user.ID, user.Role, jwtSecret, sessionID)
 	if err != nil {
 		slog.Error("generating tokens in Login", slog.String("error", err.Error()))
+		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := srv.recordSession(c, user.ID, session); err != nil {
+		slog.Error("Login (recording session)", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -286,13 +311,28 @@ func (srv *Server) Login(c *gin.Context) {
 // request between the read that found it live and the update that spends it.
 var errRefreshReused = errors.New("refresh token already rotated")
 
+// recordSession writes the revocable session row the freshly minted tokens
+// name. Its id is the rotation family's id (sessions.id IS refresh_tokens'
+// family_id), so it is written before startRefreshFamily keys the family on the
+// same value. The request's user agent is what the session list shows the user
+// to identify a device; expires_at is the session's absolute deadline, the same
+// value stored on the refresh row.
+func (srv *Server) recordSession(c *gin.Context, userID uuid.UUID, session auth.Session) error {
+	_, err := srv.db.Exec(c,
+		`INSERT INTO sessions (id, user_id, user_agent, expires_at) VALUES ($1, $2, $3, $4)`,
+		session.ID, userID, c.Request.UserAgent(), session.ExpiresAt,
+	)
+	return err
+}
+
 // startRefreshFamily records a freshly issued refresh token as the first row of
 // a new rotation family. Only the token's hash is stored, so the table can never
-// be replayed against the API.
+// be replayed against the API. The family is keyed on the session id rather than
+// a fresh one, because sessions.id IS refresh_tokens.family_id.
 func (srv *Server) startRefreshFamily(c *gin.Context, userID uuid.UUID, session auth.Session) error {
 	_, err := srv.db.Exec(c,
 		`INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES ($1, $2, $3, $4)`,
-		userID, auth.HashRefreshToken(session.RefreshToken), uuid.New(), session.ExpiresAt,
+		userID, auth.HashRefreshToken(session.RefreshToken), session.ID, session.ExpiresAt,
 	)
 	return err
 }
