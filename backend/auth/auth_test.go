@@ -59,6 +59,11 @@ func TestGenerateAccessToken(t *testing.T) {
 	assert.Equal(t, userID.String(), claims.Subject)
 	assert.NotEmpty(t, claims.ID)
 	assert.WithinDuration(t, time.Now().Add(accessTokenTTL), claims.ExpiresAt.Time, time.Minute)
+
+	// A zero sid is load-bearing: RequireAuth skips its session lookup on
+	// exactly this value, so a real id here would silently change what the
+	// whole mock-backed handler suite exercises.
+	assert.Equal(t, uuid.Nil, claims.SessionID)
 }
 
 func TestGenerateRefreshToken(t *testing.T) {
@@ -74,6 +79,11 @@ func TestGenerateRefreshToken(t *testing.T) {
 	assert.Equal(t, TokenTypeRefresh, claims.TokenType)
 	require.NotNil(t, claims.ExpiresAt)
 	assert.WithinDuration(t, time.Now().Add(refreshTokenTTL), claims.ExpiresAt.Time, time.Minute)
+
+	// Load-bearing for the same reason as in TestGenerateAccessToken: a
+	// session-less refresh token is what the handler tests present, and
+	// RequireAuth's session lookup is skipped on exactly this value.
+	assert.Equal(t, uuid.Nil, claims.SessionID)
 }
 
 func TestNewSession(t *testing.T) {
