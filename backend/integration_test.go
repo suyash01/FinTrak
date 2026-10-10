@@ -3744,3 +3744,141 @@ func TestAsOfBalanceEndToEnd(t *testing.T) {
 	require.Contains(t, string(body), "2026-04-01", "the 400 must name dateFrom")
 	require.Contains(t, string(body), "2026-03-01", "the 400 must name asOf")
 }
+
+// TestIntegrationRevokingASessionStopsItsAccessTokenImmediately is the claim
+// the whole feature rests on: an access token that was valid a moment ago is
+// refused the moment its session row is revoked — and the revocation is
+// performed by a DIFFERENT signed-in session of the same user, which is the
+// shape that matters ("that laptop is gone").
+//
+// pgxmock cannot establish any of this. Its sessions query is whatever the test
+// told it to expect, so a misspelled column is indistinguishable from a working
+// lookup and every request answers 200. Only a real database has an opinion
+// about whether revoked_at is a column at all.
+func TestIntegrationRevokingASessionStopsItsAccessTokenImmediately(t *testing.T) {
+	ctx := context.Background()
+
+	// Two independent cookie jars and two routers over the same db.Pool: one
+	// account, signed in on two devices.
+	a := newAPIClient(t)
+	a.register("revoke-immediate@example.com")
+
+	b := newAPIClient(t)
+	b.call(http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    "revoke-immediate@example.com",
+		"password": "integration-pass-123",
+	}, http.StatusOK, nil)
+
+	// b's credential is DEMONSTRATED valid before anything is revoked, not
+	// assumed. Every fact the 401 below depends on is read from the request that
+	// answered 200, so what changes afterwards is the session and nothing else.
+	var bUser models.User
+	b.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &bUser)
+
+	var aUser models.User
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, &aUser)
+	require.Equal(t, bUser.ID, aUser.ID, "one account, two devices — not two accounts")
+
+	held := b.accessClaims()
+	require.NotEqual(t, uuid.Nil, held.SessionID, "a login's access token must name the session it started")
+	require.NotNil(t, held.ExpiresAt)
+	require.True(t, held.ExpiresAt.After(time.Now()),
+		"the token must still be inside its own lifetime, or its expiry would explain the 401 below")
+
+	// The list is a's only handle on b's session, and `current` is what tells
+	// the two apart — it is computed against the sid in a's own token, so a
+	// mis-set flag would aim this revoke at the wrong row.
+	var listed []models.Session
+	a.call(http.MethodGet, "/api/v1/auth/sessions", nil, http.StatusOK, &listed)
+	require.Len(t, listed, 2, "registration and the second login each started one session")
+
+	var others []models.Session
+	for _, s := range listed {
+		if !s.Current {
+			others = append(others, s)
+		}
+	}
+	require.Len(t, others, 1, "exactly one listed session is not the caller's own")
+	require.Equal(t, held.SessionID, others[0].ID,
+		"the id to revoke must be the very session b's token names, or the 401 below would be somebody else's")
+
+	a.call(http.MethodDelete, "/api/v1/auth/sessions/"+others[0].ID.String(), nil, http.StatusOK, nil)
+
+	// Both halves of the revoke landed on the rows they were aimed at. Read back
+	// by hand for the reason above: a typo in either statement's column list
+	// leaves these reads empty and answers exactly the same 200.
+	var revokedAt *time.Time
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT revoked_at FROM sessions WHERE id = $1`, others[0].ID).Scan(&revokedAt))
+	require.NotNil(t, revokedAt, "the revoke must set sessions.revoked_at for the id it was given")
+
+	var live int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM refresh_tokens WHERE family_id = $1 AND revoked_at IS NULL`, others[0].ID).Scan(&live))
+	require.Zero(t, live, "the revoked session's own refresh family must be dead too")
+
+	// THE LOAD-BEARING ASSERTION. Same credential, still unexpired, no rotation
+	// anywhere in between — so the 401 is the session check and nothing else.
+	require.Equal(t, held, b.accessClaims(),
+		"b's access token must be untouched by a revocation performed on another session")
+
+	status, body := b.request(http.MethodGet, "/api/v1/auth/me", nil)
+	require.Equal(t, http.StatusUnauthorized, status,
+		"a valid, unexpired access token must stop working the moment its session is revoked; body: %s", body)
+
+	// The revoker's own session is untouched: this is "end that device", not
+	// "end everything", and the id-scoped UPDATE is what makes the difference.
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, nil)
+
+	var callerRevokedAt *time.Time
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT revoked_at FROM sessions WHERE id = $1`, a.accessClaims().SessionID).Scan(&callerRevokedAt))
+	require.Nil(t, callerRevokedAt, "revoking another device must not touch the caller's own session row")
+}
+
+// TestIntegrationRevokingAnotherUsersSessionChangesNothing pins the ownership
+// scoping of the same route. The id is a UUID carried on the wire, so the only
+// thing standing between two accounts is the user_id in the revoke's WHERE —
+// and a query that dropped it would answer 200 while ending a stranger's
+// session, with a response identical to a working one.
+func TestIntegrationRevokingAnotherUsersSessionChangesNothing(t *testing.T) {
+	ctx := context.Background()
+
+	a := newAPIClient(t)
+	a.register("session-owner@example.com")
+
+	// The victim's own list is the only honest way a can learn the id: it is the
+	// one place a session id is ever handed to anybody, and reading it is what
+	// makes this a wire-level attempt rather than a back-door one.
+	victim := newAPIClient(t)
+	victim.register("session-victim@example.com")
+	var theirs []models.Session
+	victim.call(http.MethodGet, "/api/v1/auth/sessions", nil, http.StatusOK, &theirs)
+	require.Len(t, theirs, 1, "a fresh registration owns exactly one session")
+	require.True(t, theirs[0].Current, "the caller's own session is the one flagged current")
+	target := theirs[0].ID
+
+	status, body := a.request(http.MethodDelete, "/api/v1/auth/sessions/"+target.String(), nil)
+	require.Equal(t, http.StatusNotFound, status,
+		"another user's session is not the caller's to end, and must be indistinguishable from a nonexistent id; body: %s", body)
+
+	// Both users keep working.
+	a.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, nil)
+	victim.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, nil)
+
+	// ...and the victim's row is still live. The 200 above already implies it —
+	// RequireAuth reads that same column — but the 200 is only as trustworthy as
+	// the check it leans on, whereas this is the row itself.
+	var revokedAt *time.Time
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT revoked_at FROM sessions WHERE id = $1`, target).Scan(&revokedAt))
+	require.Nil(t, revokedAt, "a refused revoke must leave the row exactly as it was")
+
+	// The victim's refresh family is untouched for the same reason, and a family
+	// revoked without the session row would leave their next refresh minting a
+	// token naming a session RequireAuth no longer accepts.
+	var live int
+	require.NoError(t, db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM refresh_tokens WHERE family_id = $1 AND revoked_at IS NULL`, target).Scan(&live))
+	require.Equal(t, 1, live, "a refused revoke must not touch the victim's refresh family")
+}
