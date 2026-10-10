@@ -667,12 +667,15 @@ const api = {
     request("/auth/logout", { method: "POST" }),
   me: (): Promise<User> => request("/auth/me"),
 
-  // Sessions. These deliberately take no options, so none of them can reach
-  // the offline cache — this is the user's own credential surface, and a device
-  // list served from localStorage is security state that may no longer be true:
-  // a session revoked from another device, or the one this browser is signed in
-  // with, since removed. Every other GET here takes ReadOptions; these do not,
-  // and adding one to them is a decision, not a default.
+  // Sessions. What keeps these four out of the offline cache is
+  // CACHEABLE_PATHS' allowlist — /auth/sessions is not on it — and not the
+  // absence of options, which is irrelevant to the write path (request writes
+  // on any GET) and would not stop a read being cached anyway. They are the
+  // user's own credential surface, and a device list served from localStorage
+  // is security state that may no longer be true: a session revoked from
+  // another device, or the one this browser is signed in with, since removed.
+  // Every other GET here takes ReadOptions; these do not, and adding one to
+  // them is a decision, not a default.
   getSessions: (): Promise<Session[]> => request("/auth/sessions"),
   revokeSession: (id: string): Promise<void> =>
     request(`/auth/sessions/${id}`, { method: "DELETE" }),

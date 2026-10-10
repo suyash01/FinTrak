@@ -521,8 +521,8 @@ describe("sessions", () => {
     // The list is the user's own credential surface: a device list served from
     // localStorage is security state that may no longer be true — a session
     // revoked from another device, or the one calling this, since removed.
-    // Nothing here takes options, so nothing here can be cached; this pins the
-    // cache allowlist against someone adding the path to it.
+    // What excludes it is the CACHEABLE_PATHS allowlist, not the absence of
+    // options; this pins that allowlist against someone adding the path to it.
     expect(readCached("u1", "/auth/sessions")).toBeNull();
   });
 });
