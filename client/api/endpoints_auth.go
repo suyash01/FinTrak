@@ -63,6 +63,36 @@ func (c *Client) Logout(ctx context.Context) error {
 	return err
 }
 
+// ListSessions returns the account's own signed-in devices, most recently seen
+// first, with Current set on the one this client's token names.
+func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
+	return do[[]Session](ctx, c, get("/auth/sessions"))
+}
+
+// RevokeSession ends one session by id. It is idempotent server-side: a session
+// that is already revoked, or that does not exist, is reported the same way a
+// fresh one is.
+func (c *Client) RevokeSession(ctx context.Context, id string) error {
+	_, err := do[MessageResult](ctx, c, del("/auth/sessions/"+pathEscape(id)))
+	return err
+}
+
+// RevokeOtherSessions ends every session except the one making the request —
+// "sign out everywhere else", which leaves the calling client signed in.
+func (c *Client) RevokeOtherSessions(ctx context.Context) error {
+	_, err := do[MessageResult](ctx, c, del("/auth/sessions"))
+	return err
+}
+
+// RevokeAllSessions ends every session including the caller's own. The request
+// succeeds, but the access token it was made with stops being accepted on the
+// next call, which the client reports through its normal no-session path rather
+// than through this error.
+func (c *Client) RevokeAllSessions(ctx context.Context) error {
+	_, err := do[MessageResult](ctx, c, del("/auth/sessions/current"))
+	return err
+}
+
 // Health checks that the API is reachable, so the TUI can say "backend down"
 // instead of showing an empty transaction list.
 func (c *Client) Health(ctx context.Context) (HealthResult, error) {

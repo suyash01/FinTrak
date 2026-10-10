@@ -347,6 +347,24 @@ type AuthResponse struct {
 	User User `json:"user"`
 }
 
+// Session is one of the caller's signed-in devices, as GET /auth/sessions lists
+// them. It is a view of a sessions row, not the row: the columns that make a
+// session revocable are deliberately absent, and a session's own id is the only
+// handle a caller needs to revoke it.
+//
+// Current is not stored — it is computed against the session the caller's own
+// access token names (`sid`), which is the only place the caller's own session
+// is known. last_seen is display data written on the refresh path, so it is
+// stale by up to one access-token lifetime.
+type Session struct {
+	ID        uuid.UUID `json:"id"`
+	UserAgent string    `json:"userAgent"`
+	CreatedAt time.Time `json:"createdAt"`
+	LastSeen  time.Time `json:"lastSeen"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Current   bool      `json:"current"`
+}
+
 // CreateAccountRequest is the body for POST /api/v1/accounts.
 //
 // Every text field carries the width of the column it lands in (name 255, bank

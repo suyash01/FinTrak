@@ -214,6 +214,15 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 		// Current session user (used to rehydrate the SPA from the httpOnly cookie).
 		api.GET("/auth/me", srv.Me)
 
+		// Signed-in devices. /auth/sessions/current sits alongside
+		// /auth/sessions/:id: gin resolves a static segment ahead of a
+		// parameter at the same level, so "current" reaches the bulk handler
+		// rather than the uuid parse.
+		api.GET("/auth/sessions", srv.ListSessions)
+		api.DELETE("/auth/sessions", srv.RevokeOtherSessions)
+		api.DELETE("/auth/sessions/current", srv.RevokeAllSessions)
+		api.DELETE("/auth/sessions/:id", srv.RevokeSession)
+
 		// Accounts
 		accounts := api.Group("/accounts")
 		accounts.GET("", srv.GetAccounts)

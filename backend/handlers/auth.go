@@ -398,15 +398,19 @@ func (srv *Server) revokeSession(c *gin.Context, sessionID uuid.UUID) error {
 	return err
 }
 
-// endSession revokes both halves of a session and is the only way either is
-// called, so they cannot drift apart: a family revoked without its row leaves an
-// access token that outlives the session the user believes they just ended.
+// endSession revokes both halves of one identified session — the family and the
+// row — for callers that have already decided the session is over by resolving
+// it: Logout (which also clears the cookies either way) and Refresh's reuse and
+// raced-rotation detection (which refuse the request either way). Both
+// statements run whatever the first does, because a failure of one is logged
+// rather than propagated: returning early would leave the other half unrevoked.
 //
-// Both statements run whatever the first does. The caller has already decided
-// the session is over — Logout clears the cookies either way and reuse
-// detection refuses the request either way — so a failure of one is logged
-// rather than propagated, because returning early would leave the other half
-// unrevoked.
+// The session routes in session.go revoke the same two halves for the same
+// reason but cannot route through here — RevokeSession's row write is scoped to
+// the caller's own user id (endSession's is not, and by design cannot be: it is
+// reached only with a family resolved from the caller's own cookie), and the
+// bulk routes fan the family revoke out over every family they just revoked
+// rather than taking one. What the pairing buys is asserted per route there.
 func (srv *Server) endSession(c *gin.Context, familyID uuid.UUID, where string) {
 	if err := srv.revokeRefreshFamily(c, familyID); err != nil {
 		slog.Error(where+": revoking refresh family", slog.String("error", err.Error()))

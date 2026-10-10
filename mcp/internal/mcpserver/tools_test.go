@@ -118,6 +118,7 @@ var unexposedRoutes = map[string]string{
 	"GET /health":                        "liveness probe, no ledger data",
 	"GET /openapi.yaml":                  "the API document itself",
 	"GET /auth/me":                       "session identity rather than ledger data",
+	"GET /auth/sessions":                 "the user's own device list; credential-adjacent, not ledger data",
 	"GET /accounts/{id}/export":          "CSV stream; list_transactions covers the rows",
 	"GET /transactions/export":           "CSV stream; list_transactions covers the rows",
 	"GET /export":                        "whole-ledger JSON bundle, far too large for a model context",

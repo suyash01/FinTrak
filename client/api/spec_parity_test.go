@@ -42,6 +42,7 @@ const (
 	idTxn  = "txn-1"
 	idTerm = "term-1"
 	idFile = "42"
+	idSess = "sess-1"
 )
 
 // routeCase is one client call and the wire request it must produce.
@@ -135,6 +136,16 @@ func routeCases() []routeCase {
 			call: func(ctx context.Context, c *Client) error { return c.Logout(ctx) }},
 		{name: "me", method: "GET", path: "/auth/me", body: userJSON(),
 			call: func(ctx context.Context, c *Client) error { _, err := c.Me(ctx); return err }},
+		{name: "list sessions", method: "GET", path: "/auth/sessions",
+			body: `[{"id":"sess-1","userAgent":"UA","createdAt":"2026-01-01T00:00:00Z","lastSeen":"2026-01-02T00:00:00Z","expiresAt":"2026-01-31T00:00:00Z","current":true}]`,
+			call: func(ctx context.Context, c *Client) error { _, err := c.ListSessions(ctx); return err }},
+		{name: "revoke session", method: "DELETE", path: "/auth/sessions/:id", params: map[string]string{"id": idSess},
+			body: okMessage,
+			call: func(ctx context.Context, c *Client) error { return c.RevokeSession(ctx, idSess) }},
+		{name: "revoke other sessions", method: "DELETE", path: "/auth/sessions", body: okMessage,
+			call: func(ctx context.Context, c *Client) error { return c.RevokeOtherSessions(ctx) }},
+		{name: "revoke all sessions", method: "DELETE", path: "/auth/sessions/current", body: okMessage,
+			call: func(ctx context.Context, c *Client) error { return c.RevokeAllSessions(ctx) }},
 
 		// Accounts, account types, billing cycles, loan schedules.
 		{name: "list accounts", method: "GET", path: "/accounts", body: `[]`,
