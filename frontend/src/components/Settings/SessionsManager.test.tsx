@@ -48,6 +48,12 @@ function row(device: string): HTMLElement {
   return el as HTMLElement;
 }
 
+// Every row's button carries the device in its accessible name, so a
+// screen-reader user can tell N identical "Sign out" buttons apart.
+function signOut(device: string): HTMLElement {
+  return within(row(device)).getByRole("button", { name: `Sign out ${device}` });
+}
+
 async function renderManager() {
   render(<SessionsManager />);
   await waitFor(() => expect(apiMock.getSessions).toHaveBeenCalled());
@@ -97,17 +103,22 @@ describe("SessionsManager", () => {
 
     expect(await screen.findByText("Unknown device")).toBeInTheDocument();
     expect(
-      within(row("Unknown device")).getByRole("button", { name: "Sign out" }),
+      within(row("Unknown device")).getByRole("button", {
+        name: "Sign out Unknown device",
+      }),
     ).toBeInTheDocument();
   });
 
   it("renders a session past its expiry as expired, never as active", async () => {
+    // NOTE: the fake clock is NOT frozen here — `shouldAdvanceTime` advances it
+    // with wall time — so the "still active" fixture is an hour out, not a
+    // second. A one-second margin would flip this assertion on a slow machine.
     apiMock.getSessions.mockResolvedValue([
       session({ id: "a", expiresAt: "2026-10-10T11:59:00Z" }),
       session({
         id: "b",
         userAgent: SAFARI_IPHONE,
-        expiresAt: "2026-10-10T12:00:01Z",
+        expiresAt: "2026-10-10T13:00:00Z",
       }),
     ]);
     await renderManager();
@@ -126,7 +137,7 @@ describe("SessionsManager", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await renderManager();
 
-    await user.click(within(row("Chrome on Windows")).getByRole("button", { name: "Sign out" }));
+    await user.click(signOut("Chrome on Windows"));
 
     const dialog = await screen.findByRole("alertdialog");
     expect(apiMock.revokeSession).not.toHaveBeenCalled();
@@ -134,7 +145,7 @@ describe("SessionsManager", () => {
     await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
     expect(apiMock.revokeSession).not.toHaveBeenCalled();
 
-    await user.click(within(row("Chrome on Windows")).getByRole("button", { name: "Sign out" }));
+    await user.click(signOut("Chrome on Windows"));
     await user.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", {
         name: "Sign out",
@@ -212,7 +223,7 @@ describe("SessionsManager", () => {
 
     // Ending someone else's device leaves this one signed in, so the list is
     // stale until it is re-read.
-    await user.click(within(row("Safari on iPhone")).getByRole("button", { name: "Sign out" }));
+    await user.click(signOut("Safari on iPhone"));
     await user.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", {
         name: "Sign out",
@@ -222,7 +233,7 @@ describe("SessionsManager", () => {
 
     // Ending your OWN is "log me out here": RequireAuth refuses the next
     // request, so re-reading here would race the sign-out the app performs.
-    await user.click(within(row("Chrome on Windows")).getByRole("button", { name: "Sign out" }));
+    await user.click(signOut("Chrome on Windows"));
     await user.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", {
         name: "Sign out",
@@ -254,7 +265,7 @@ describe("SessionsManager", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await renderManager();
 
-    await user.click(within(row("Chrome on Windows")).getByRole("button", { name: "Sign out" }));
+    await user.click(signOut("Chrome on Windows"));
     await user.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", {
         name: "Sign out",
@@ -275,5 +286,102 @@ describe("SessionsManager", () => {
     apiMock.getSessions.mockResolvedValue([session({ id: "sess-1" })]);
     await user.click(screen.getByRole("button", { name: /retry/i }));
     expect(await screen.findByText("Chrome on Windows")).toBeInTheDocument();
+  });
+
+  it("does not leave a revoked device on screen when the reload fails", async () => {
+    // The exact sequence: revokeSession returns 200, then the follow-up load
+    // rejects. The device IS gone, and the panel's whole job is to say which
+    // devices are signed in — so a stale row left under an "Active" badge with
+    // no error anywhere is the one thing this screen must never do.
+    apiMock.getSessions.mockResolvedValue([
+      session({ id: "theirs", userAgent: SAFARI_IPHONE }),
+    ]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await renderManager();
+
+    apiMock.getSessions.mockRejectedValueOnce(new Error("network down"));
+    await user.click(signOut("Safari on iPhone"));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Sign out",
+      }),
+    );
+
+    expect(await screen.findByText(/network down/)).toBeInTheDocument();
+    expect(screen.queryByText("Safari on iPhone")).not.toBeInTheDocument();
+    expect(screen.queryByText("Active")).not.toBeInTheDocument();
+    // And it is recoverable: the retry brings the true list back.
+    apiMock.getSessions.mockResolvedValue([]);
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(apiMock.getSessions).toHaveBeenCalledTimes(3));
+  });
+
+  it("says so when nothing is signed in, and offers no bulk revoke", async () => {
+    apiMock.getSessions.mockResolvedValue([]);
+    await renderManager();
+
+    expect(
+      await screen.findByText(/no signed-in devices/i),
+    ).toBeInTheDocument();
+    // "Sign out everywhere" with nothing signed in is an action that cannot do
+    // what it says; an empty list offers nothing to revoke.
+    expect(
+      screen.queryByRole("button", { name: /sign out everywhere/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /sign out other devices/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("confirms a revoke that signs this device out, which cannot re-read", async () => {
+    // Both self-sign-out paths end this tab's credentials, so neither can
+    // re-read the list — which means neither can report anything by changing.
+    // Settings polls nothing, so without a toast the user sits on a dead
+    // session with no indication at all until some later request 401s.
+    apiMock.getSessions.mockResolvedValue([session({ id: "mine", current: true })]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await renderManager();
+
+    await user.click(signOut("Chrome on Windows"));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Sign out",
+      }),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Signed out of this device"),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Sign out everywhere" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Sign out",
+      }),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Signed out of every device"),
+    );
+  });
+
+  it("does not claim a sign-out when only another device was ended", async () => {
+    // That path re-reads the list and the rows visibly change, so a toast would
+    // be noise — the point of the previous test is that these two are the only
+    // paths that cannot report themselves by changing.
+    apiMock.getSessions.mockResolvedValue([
+      session({ id: "mine", current: true }),
+      session({ id: "theirs", userAgent: SAFARI_IPHONE }),
+    ]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await renderManager();
+
+    await user.click(signOut("Safari on iPhone"));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Sign out",
+      }),
+    );
+
+    await waitFor(() => expect(apiMock.getSessions).toHaveBeenCalledTimes(2));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
