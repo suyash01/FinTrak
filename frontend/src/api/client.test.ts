@@ -30,6 +30,7 @@ import type {
   RecurringSeries,
   RecurringSeriesTerm,
   Rule,
+  Session,
   Transaction,
   UpdateAccountRequest,
   UpdateAccountTypeRequest,
@@ -442,6 +443,87 @@ describe("api request", () => {
     expect(refreshCalls).toBe(1);
     expect(getStoredUser()).not.toBeNull();
     expect(window.location.href).not.toBe("/login");
+  });
+});
+
+describe("sessions", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storeUser({ id: "u1", email: "a@b.c" } as any);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Typed as Session so a rename on either side of the wire fails to compile
+  // here rather than reading as an undefined field at runtime.
+  const session: Session = {
+    id: "sess-1",
+    userAgent: "Mozilla/5.0 (Macintosh)",
+    createdAt: "2026-10-01T09:00:00Z",
+    lastSeen: "2026-10-10T09:00:00Z",
+    expiresAt: "2026-10-11T09:00:00Z",
+    current: true,
+  };
+
+  it("lists the caller's own sessions", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([session]));
+
+    const res = await api.getSessions();
+
+    // The route answers a bare array, not an envelope.
+    expect(res).toEqual([session]);
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/sessions`);
+    // No method is set, so fetch's own default is what makes this a GET.
+    expect(opts.method).toBeUndefined();
+  });
+
+  it("revokes one session by id", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: "session revoked" }));
+
+    await api.revokeSession("sess-1");
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/sessions/sess-1`);
+    expect(opts.method).toBe("DELETE");
+  });
+
+  it("revokes every session but the caller's", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: "sessions revoked" }));
+
+    await api.revokeOtherSessions();
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/sessions`);
+    expect(opts.method).toBe("DELETE");
+  });
+
+  it("revokes every session including the caller's", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: "sessions revoked" }));
+
+    await api.revokeAllSessions();
+
+    // `current` is a static segment, which the backend's router resolves ahead
+    // of `:id` — the client must not quote it as an id of its own.
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${API_BASE}/auth/sessions/current`);
+    expect(opts.method).toBe("DELETE");
+  });
+
+  it("never serves the session list from the offline cache", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([session]));
+    await api.getSessions();
+
+    // The list is the user's own credential surface: a device list served from
+    // localStorage is security state that may no longer be true — a session
+    // revoked from another device, or the one calling this, since removed.
+    // Nothing here takes options, so nothing here can be cached; this pins the
+    // cache allowlist against someone adding the path to it.
+    expect(readCached("u1", "/auth/sessions")).toBeNull();
   });
 });
 
