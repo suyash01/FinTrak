@@ -234,10 +234,14 @@ paths:
         - Authentication
       summary: Log out
       description: >
-        Revokes the session server-side — the whole rotation family of the
-        presented refresh cookie — and then clears both cookies, so a copy of
-        the refresh cookie no longer works after logout. Unauthenticated on
-        purpose, so an expired or invalid cookie can still be removed.
+        Revokes the session server-side and then clears both cookies, so a copy
+        of either cookie no longer works after logout. Both halves are
+        revoked, because neither is sufficient alone: the refresh cookie's
+        whole rotation family stops any further refresh, and the session row is
+        what is checked on every authenticated request, so an access token
+        already issued against that session stops working at once rather than
+        lasting out its 15-minute lifetime. Unauthenticated on purpose, so an
+        expired or invalid cookie can still be removed.
         Revocation is best-effort: a database failure still answers 200 with
         the cookies cleared.
       operationId: logout

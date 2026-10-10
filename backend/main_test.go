@@ -365,7 +365,11 @@ func TestRequireAuthRejectsATokenWhoseSessionIsRevoked(t *testing.T) {
 	session, err := auth.NewSession(userID, "user", "test-secret", sessionID)
 	require.NoError(t, err)
 
-	mock.ExpectQuery("SELECT 1 FROM sessions").
+	// Anchored. The `revoked_at IS NULL` predicate is the entire point of the
+	// lookup — it is what makes a revoked session stop an already-issued token —
+	// and pgxmock's matcher is an unanchored regexp, so an unanchored
+	// expectation here still passes against a query that dropped it.
+	mock.ExpectQuery(`^SELECT 1 FROM sessions WHERE id = \$1 AND revoked_at IS NULL$`).
 		WithArgs(sessionID).
 		WillReturnError(pgx.ErrNoRows)
 
@@ -388,7 +392,7 @@ func TestRequireAuthAcceptsALiveSession(t *testing.T) {
 	session, err := auth.NewSession(userID, "user", "test-secret", sessionID)
 	require.NoError(t, err)
 
-	mock.ExpectQuery("SELECT 1 FROM sessions").
+	mock.ExpectQuery(`^SELECT 1 FROM sessions WHERE id = \$1 AND revoked_at IS NULL$`).
 		WithArgs(sessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"live"}).AddRow(1))
 	expectUserRow(mock, userID)
@@ -405,8 +409,17 @@ func TestRequireAuthAcceptsALiveSession(t *testing.T) {
 
 // A token minted without a session names no row, so the lookup is skipped
 // entirely — no sessions expectation is registered below, so pgxmock fails the
-// request if one is made anyway. This is what keeps every mock-backed handler
-// test (all of which present a GenerateAccessToken token) working.
+// request if one is made anyway.
+//
+// Who actually depends on a zero sid being accepted: the auth package's
+// RequireAuth and RequireAdmin subtests, which pass a NIL pool and would panic
+// the moment a lookup were attempted (auth/auth_test.go), and two tests here —
+// this one and TestAccountTypeMutationsRequireAdmin, whose admin token reaches
+// RequireAuth through the real router with whatever db.Pool is installed. The
+// handlers package is NOT among them: its tests route through their own
+// testAuthMiddleware stub, never enter RequireAuth, and register no sessions
+// expectation at all, so a zero sid that RequireAuth refused would not touch a
+// single one of them.
 func TestRequireAuthAcceptsATokenWithNoSessionClaim(t *testing.T) {
 	mock := withMockPool(t)
 

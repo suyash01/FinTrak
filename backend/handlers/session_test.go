@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"github.com/fintrak/backend/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -349,6 +352,82 @@ func TestRevokeOthersRevokesEverythingWhenTheTokenNamesNoSession(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// pgxmock has no way to see the defect this pins. Its one connection is not a
+// pool, so a statement issued while a result set is open costs it nothing — and
+// pgxmock's own RowsWillBeClosed only asks whether the rows were closed BY THE
+// END, which the deferred close satisfies whether it happened before the writes
+// or after them. poolHoldingRows is what stands in for the real constraint:
+// pgxpool pins a connection to an open result set, so an Exec issued while one
+// is open needs a SECOND connection, and N callers each holding one while each
+// wants another wedges the pool at MaxConns=N.
+type poolHoldingRows struct {
+	pgxmock.PgxPoolIface
+	open bool
+	// nested names the Exec that ran against an open result set, so a failure
+	// says which statement was the one.
+	nested string
+}
+
+func (p *poolHoldingRows) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := p.PgxPoolIface.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	p.open = true
+	return &closeReportingRows{Rows: rows, onClose: func() { p.open = false }}, nil
+}
+
+// The Exec is still delegated, so the mock's own expectations stay satisfied
+// under both shapes: the violation flag is the ONLY thing that distinguishes
+// draining the ids from revoking them inside the drain loop.
+func (p *poolHoldingRows) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if p.open {
+		p.nested = sql
+	}
+	return p.PgxPoolIface.Exec(ctx, sql, args...)
+}
+
+type closeReportingRows struct {
+	pgx.Rows
+	onClose func()
+}
+
+func (r *closeReportingRows) Close() {
+	r.onClose()
+	r.Rows.Close()
+}
+
+// The bulk revoke holds one pooled connection for its RETURNING result set, so
+// revoking the families from inside the drain loop needs a second one while the
+// first is still held. Four concurrent callers against pgxpool's default
+// MaxConns is the whole instance's pool, and any signed-in user can open four.
+func TestRevokeSessionsClosesTheResultSetBeforeRevokingFamilies(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	t.Cleanup(mock.Close)
+
+	pool := &poolHoldingRows{PgxPoolIface: mock}
+	srv := newTestServer(pool)
+	current, stolen := uuid.New(), uuid.New()
+	r := newSessionTestRouter(srv, current)
+	r.DELETE("/auth/sessions", srv.RevokeOtherSessions)
+
+	mock.ExpectQuery(`^UPDATE sessions SET revoked_at = now\(\) WHERE user_id = \$1 AND revoked_at IS NULL ` +
+		`AND expires_at > now\(\) AND id <> \$2 RETURNING id$`).
+		WithArgs(testUserID(), current).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(stolen))
+	expectFamilyRevoke(mock, stolen)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/auth/sessions", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+	assert.Empty(t, pool.nested,
+		"this statement ran while the RETURNING result set was still open, which needs a second pooled connection: %s",
+		pool.nested)
 }
 
 // DELETE /auth/sessions/current is the "I have been compromised" action, and it

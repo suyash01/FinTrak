@@ -187,6 +187,15 @@ func (srv *Server) RevokeAllSessions(c *gin.Context) {
 // revoke that fails here is logged rather than reported: the sessions ARE ended
 // from the access token's side, the request cannot be undone by retrying, and
 // the family dies with the refresh token it would otherwise be spent on.
+//
+// The ids are drained and the result set closed BEFORE any family is revoked,
+// which is a correctness requirement and not a style choice. pgxpool pins a
+// connection for the lifetime of an open result set, so an Exec issued while
+// these rows are open needs a SECOND connection: N concurrent callers each
+// holding one and each wanting another wedge the pool outright at MaxConns=N.
+// db.Connect passes no pool configuration, so that floor is pgxpool's own, and
+// an authenticated caller chooses N by opening N requests — four tabs of
+// DELETE /auth/sessions were enough to take the whole instance's pool down.
 func (srv *Server) RevokeSessions(c *gin.Context, exceptCurrent bool) {
 	query := `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()`
 	args := []any{auth.GetUserID(c)}
@@ -218,7 +227,10 @@ func (srv *Server) RevokeSessions(c *gin.Context, exceptCurrent bool) {
 	}
 	defer rows.Close()
 
-	revoked := 0
+	// Drain first, then close, then write. Closing here rather than relying on
+	// the defer is what releases the connection; it is idempotent, so the defer
+	// stays for the two early returns above.
+	var families []uuid.UUID
 	for rows.Next() {
 		var familyID uuid.UUID
 		if err := rows.Scan(&familyID); err != nil {
@@ -226,17 +238,21 @@ func (srv *Server) RevokeSessions(c *gin.Context, exceptCurrent bool) {
 			validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		revoked++
-		if err := srv.revokeRefreshFamily(c, familyID); err != nil {
-			slog.Error("RevokeSessions: revoking refresh family", slog.String("error", err.Error()))
-		}
+		families = append(families, familyID)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("RevokeSessions rows", slog.String("error", err.Error()))
 		validation.RespondError(c, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	rows.Close()
 
-	slog.Info("sessions revoked", slog.Int("sessions", revoked))
+	for _, familyID := range families {
+		if err := srv.revokeRefreshFamily(c, familyID); err != nil {
+			slog.Error("RevokeSessions: revoking refresh family", slog.String("error", err.Error()))
+		}
+	}
+
+	slog.Info("sessions revoked", slog.Int("sessions", len(families)))
 	c.JSON(http.StatusOK, gin.H{"message": "sessions revoked"})
 }
