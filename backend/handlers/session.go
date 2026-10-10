@@ -191,10 +191,20 @@ func (srv *Server) RevokeSessions(c *gin.Context, exceptCurrent bool) {
 	query := `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()`
 	args := []any{auth.GetUserID(c)}
 	if exceptCurrent {
-		// A session the caller cannot name (a token predating the sessions
-		// table) is uuid.Nil, which no row carries, so the exclusion matches
-		// nothing and the caller is not silently signed out by a route meant to
-		// spare them.
+		// The caller's own session is excluded by id, which is the only thing
+		// that can spare it — so a caller whose token names NO session gets no
+		// exclusion that matches. That is reachable: GenerateAccessToken mints
+		// sid = uuid.Nil, only Refresh fills it in, and migration 000002
+		// backfilled a live row for every family that predates the sessions
+		// table. Such a user who has not refreshed since the deploy presents a
+		// nil sid while owning a real, live session, and "sign out everywhere
+		// else" then revokes it along with the rest.
+		//
+		// That is the right direction to fail. With no sid there is no way to
+		// know which session is the caller's, and the two mistakes are not
+		// equivalent: revoking a session the user asked to be rid of costs one
+		// sign-in, while sparing one leaves a session alive on a route whose
+		// whole purpose is to end them.
 		query += ` AND id <> $2`
 		args = append(args, callerSessionID(c))
 	}

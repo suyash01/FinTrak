@@ -322,6 +322,35 @@ func TestRevokeAllIncludesTheCallersSession(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// A caller whose token names no session gets no exclusion that matches, and so
+// loses its own session to "sign out everywhere else". That case is reachable —
+// a token minted before the sessions table exists carries sid = uuid.Nil, and
+// migration 000002 backfilled a live row for its family — and it is the correct
+// direction to fail in, so it is pinned here rather than left as a comment's
+// claim. Revoking a session the user asked to be rid of costs one sign-in;
+// sparing one on a route whose purpose is to end them is the worse failure.
+func TestRevokeOthersRevokesEverythingWhenTheTokenNamesNoSession(t *testing.T) {
+	srv, mock := newMockServer(t)
+	// The caller's own backfilled session, which nothing excludes.
+	own := uuid.New()
+	r := newSessionTestRouter(srv, uuid.Nil)
+	r.DELETE("/auth/sessions", srv.RevokeOtherSessions)
+
+	// uuid.Nil is bound as $2 all the same: the route does not special-case a
+	// caller it cannot identify, it just cannot spare them.
+	mock.ExpectQuery(`^UPDATE sessions SET revoked_at = now\(\) WHERE user_id = \$1 AND revoked_at IS NULL `+
+		`AND expires_at > now\(\) AND id <> \$2 RETURNING id$`).
+		WithArgs(testUserID(), uuid.Nil).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(own))
+	expectFamilyRevoke(mock, own)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/auth/sessions", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // DELETE /auth/sessions/current is the "I have been compromised" action, and it
 // has to reach the bulk handler: bound to the :id route instead it would fail
 // the uuid parse and revoke nothing at all, while answering 400 — a user who
