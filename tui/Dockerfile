@@ -2,7 +2,7 @@
 # The build context is the repository root, because the TUI module replaces the
 # shared client module with a path (../client): both have to be visible to the
 # build. See the root .dockerignore for what is kept out of that context.
-FROM golang:1.27.1-alpine3.24 AS builder
+FROM golang:1.27.2-alpine3.24 AS builder
 
 WORKDIR /src
 COPY client/go.mod client/go.sum ./client/
