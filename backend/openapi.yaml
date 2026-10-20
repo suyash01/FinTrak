@@ -234,10 +234,14 @@ paths:
         - Authentication
       summary: Log out
       description: >
-        Revokes the session server-side — the whole rotation family of the
-        presented refresh cookie — and then clears both cookies, so a copy of
-        the refresh cookie no longer works after logout. Unauthenticated on
-        purpose, so an expired or invalid cookie can still be removed.
+        Revokes the session server-side and then clears both cookies, so a copy
+        of either cookie no longer works after logout. Both halves are
+        revoked, because neither is sufficient alone: the refresh cookie's
+        whole rotation family stops any further refresh, and the session row is
+        what is checked on every authenticated request, so an access token
+        already issued against that session stops working at once rather than
+        lasting out its 15-minute lifetime. Unauthenticated on purpose, so an
+        expired or invalid cookie can still be removed.
         Revocation is best-effort: a database failure still answers 200 with
         the cookies cleared.
       operationId: logout
@@ -268,6 +272,141 @@ paths:
                 $ref: "#/components/schemas/User"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /auth/sessions:
+    get:
+      tags:
+        - Authentication
+      summary: List the caller's sessions
+      description: >
+        Returns the authenticated user's own sessions, most recently seen
+        first, each flagged `current` when it is the one the calling access
+        token names. Sessions past `expiresAt` are listed rather than hidden —
+        a device that vanishes on its own is exactly what makes a security
+        panel untrustworthy — and `lastSeen` is display data stamped on the
+        refresh path, so it can be up to one access-token lifetime stale. A pure
+        read: nothing on this route writes.
+      operationId: listSessions
+      security:
+        - AccessCookie: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: The caller's sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Authentication
+      summary: Revoke every session except the caller's
+      description: >
+        Ends every one of the caller's live sessions except the one making the
+        request ("sign out everywhere else"), each with its refresh rotation
+        family. Expired sessions are skipped: they are already dead, so revoking
+        them would be bookkeeping about nothing. Idempotent — a caller with
+        nothing left to revoke still gets a 200.
+      operationId: revokeOtherSessions
+      security:
+        - AccessCookie: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/sessions/current:
+    delete:
+      tags:
+        - Authentication
+      summary: Revoke every session including the caller's
+      description: >
+        Ends every one of the caller's live sessions, their own included ("I
+        have been compromised"), each with its refresh rotation family. The
+        request itself succeeds; the access token it was made with stops being
+        accepted from the next request onwards, which is the failure path an
+        expired session already takes. Expired sessions are skipped, and
+        revoking twice is a success rather than an error.
+      operationId: revokeAllSessions
+      security:
+        - AccessCookie: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /auth/sessions/{id}:
+    delete:
+      tags:
+        - Authentication
+      summary: Revoke one session
+      description: >
+        Ends one session: its refresh rotation family and the session row, both
+        revoked, because neither half alone ends it — the family alone leaves an
+        already-issued access token good for up to a quarter of an hour, and the
+        row alone leaves a refresh token that mints fresh tokens naming a
+        session that no longer exists. The caller's own session id is accepted,
+        since "revoke this device" and "log me out here" are the same action. A
+        session belonging to another user, or one that does not exist, is a 404
+        that writes nothing; one that is already revoked is a 200.
+      operationId: revokeSession
+      security:
+        - AccessCookie: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's id, as `id` on a GET /auth/sessions entry.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: The id is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such session belongs to the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   # ============= Accounts =============
   /accounts:
@@ -5661,6 +5800,35 @@ components:
           type: string
           enum: [user, admin]
           description: The user's persisted role (`user` or `admin`); the admin email allowlist controls registration eligibility and does not dynamically change an existing user's role.
+
+    Session:
+      type: object
+      description: |
+        One signed-in device. A view of a session row rather than the row
+        itself: the columns that make a session revocable are not published, and
+        a session's own id is the only handle a caller needs to revoke it.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The session's id, which is also its rotation family's id — `DELETE /auth/sessions/{id}` takes it.
+        userAgent:
+          type: string
+          description: The user agent recorded when the session was created; empty for a session backfilled from before the table existed.
+        createdAt:
+          type: string
+          format: date-time
+        lastSeen:
+          type: string
+          format: date-time
+          description: Stamped on the refresh path only, so it can be up to one access-token lifetime stale.
+        expiresAt:
+          type: string
+          format: date-time
+          description: The session's absolute deadline; rotation never extends it.
+        current:
+          type: boolean
+          description: True on the session the calling access token names, and on no other.
 
     Account:
       type: object

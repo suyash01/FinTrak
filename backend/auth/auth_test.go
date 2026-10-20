@@ -59,6 +59,11 @@ func TestGenerateAccessToken(t *testing.T) {
 	assert.Equal(t, userID.String(), claims.Subject)
 	assert.NotEmpty(t, claims.ID)
 	assert.WithinDuration(t, time.Now().Add(accessTokenTTL), claims.ExpiresAt.Time, time.Minute)
+
+	// A zero sid is load-bearing: RequireAuth skips its session lookup on
+	// exactly this value, so a real id here would silently change what the
+	// whole mock-backed handler suite exercises.
+	assert.Equal(t, uuid.Nil, claims.SessionID)
 }
 
 func TestGenerateRefreshToken(t *testing.T) {
@@ -74,12 +79,17 @@ func TestGenerateRefreshToken(t *testing.T) {
 	assert.Equal(t, TokenTypeRefresh, claims.TokenType)
 	require.NotNil(t, claims.ExpiresAt)
 	assert.WithinDuration(t, time.Now().Add(refreshTokenTTL), claims.ExpiresAt.Time, time.Minute)
+
+	// Load-bearing for the same reason as in TestGenerateAccessToken: a
+	// session-less refresh token is what the handler tests present, and
+	// RequireAuth's session lookup is skipped on exactly this value.
+	assert.Equal(t, uuid.Nil, claims.SessionID)
 }
 
 func TestNewSession(t *testing.T) {
 	userID := uuid.New()
 
-	session, err := NewSession(userID, "admin", testSecret)
+	session, err := NewSession(userID, "admin", testSecret, uuid.New())
 	require.NoError(t, err)
 
 	accessClaims, err := ParseToken(session.AccessToken, testSecret, TokenTypeAccess)
@@ -99,6 +109,51 @@ func TestNewSession(t *testing.T) {
 	require.NotNil(t, refreshClaims.ExpiresAt)
 	assert.Equal(t, refreshClaims.ExpiresAt.Time.Unix(), session.ExpiresAt.Unix())
 	assert.WithinDuration(t, time.Now().Add(refreshTokenTTL), session.ExpiresAt, time.Minute)
+}
+
+// Both token types must name the session they belong to, or the session row the
+// server writes can never be reached from the credential that mints it — and an
+// access token is checked against that row on every request.
+func TestNewSessionNamesItsSessionInBothTokens(t *testing.T) {
+	userID, sessionID := uuid.New(), uuid.New()
+
+	session, err := NewSession(userID, "user", testSecret, sessionID)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, session.ID)
+
+	accessClaims, err := ParseToken(session.AccessToken, testSecret, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, accessClaims.SessionID)
+
+	refreshClaims, err := ParseToken(session.RefreshToken, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, refreshClaims.SessionID)
+}
+
+// Rotation must carry the session id forward, not drop it: a pre-migration
+// refresh token has none and therefore acquires the real one on its first
+// rotation, and every token minted after that keeps naming the same session
+// until it expires.
+func TestRenewalPreservesTheSessionID(t *testing.T) {
+	userID, sessionID := uuid.New(), uuid.New()
+
+	session, err := NewSession(userID, "user", testSecret, sessionID)
+	require.NoError(t, err)
+
+	claims, err := ParseToken(session.RefreshToken, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+
+	rotated, err := RenewRefresh(claims, "user", testSecret)
+	require.NoError(t, err)
+	rotatedClaims, err := ParseToken(rotated, testSecret, TokenTypeRefresh)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, rotatedClaims.SessionID)
+
+	access, err := RenewAccess(rotatedClaims, "user", testSecret)
+	require.NoError(t, err)
+	accessClaims, err := ParseToken(access, testSecret, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Equal(t, sessionID, accessClaims.SessionID)
 }
 
 func TestRenewRefresh(t *testing.T) {
@@ -281,9 +336,12 @@ func TestParseTokenRejectsWrongType(t *testing.T) {
 func TestRequireAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// nil pool: every token here is minted by GenerateAccessToken, so it names
+	// no session and RequireAuth skips the lookup entirely. The session check
+	// itself is covered against a real pool in the router tests.
 	newRouter := func() *gin.Engine {
 		r := gin.New()
-		r.GET("/protected", RequireAuth(testSecret), func(c *gin.Context) {
+		r.GET("/protected", RequireAuth(nil, testSecret), func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"userID": GetUserID(c)})
 		})
 		return r
@@ -486,9 +544,10 @@ func TestGetUserID(t *testing.T) {
 func TestRequireAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// nil pool, as in TestRequireAuth: the role check is what is under test.
 	newRouter := func() *gin.Engine {
 		r := gin.New()
-		r.GET("/admin", RequireAuth(testSecret), RequireAdmin(), func(c *gin.Context) {
+		r.GET("/admin", RequireAuth(nil, testSecret), RequireAdmin(), func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"role": GetUserRole(c)})
 		})
 		return r

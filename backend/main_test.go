@@ -8,8 +8,11 @@ import (
 
 	"github.com/fintrak/backend/auth"
 	"github.com/fintrak/backend/config"
+	"github.com/fintrak/backend/db"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -326,4 +329,112 @@ func TestRouterRegistersExpectedRoutes(t *testing.T) {
 		_, ok := registered[key]
 		require.True(t, ok, "missing route %s", key)
 	}
+}
+
+// withMockPool installs a pgxmock pool as the shared db.Pool for the duration of
+// the test and restores the previous value afterwards. RequireAuth captures the
+// pool when the router is built, so this must run before testRouter().
+func withMockPool(t *testing.T) pgxmock.PgxPoolIface {
+	t.Helper()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+
+	previous := db.Pool
+	db.Pool = mock
+	t.Cleanup(func() { db.Pool = previous })
+	t.Cleanup(mock.Close)
+
+	return mock
+}
+
+// expectUserRow is the /auth/me read, which every test below reaches only once
+// RequireAuth has admitted the request.
+func expectUserRow(mock pgxmock.PgxPoolIface, userID uuid.UUID) {
+	mock.ExpectQuery("SELECT id, email, role FROM users").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+			AddRow(userID, "user@example.com", "user"))
+}
+
+// A session that has been revoked (or pruned) has no live row, so the token
+// carrying its id must stop working at once rather than until it expires.
+func TestRequireAuthRejectsATokenWhoseSessionIsRevoked(t *testing.T) {
+	mock := withMockPool(t)
+
+	userID, sessionID := uuid.New(), uuid.New()
+	session, err := auth.NewSession(userID, "user", "test-secret", sessionID)
+	require.NoError(t, err)
+
+	// Anchored. The `revoked_at IS NULL` predicate is the entire point of the
+	// lookup — it is what makes a revoked session stop an already-issued token —
+	// and pgxmock's matcher is an unanchored regexp, so an unanchored
+	// expectation here still passes against a query that dropped it.
+	mock.ExpectQuery(`^SELECT 1 FROM sessions WHERE id = \$1 AND revoked_at IS NULL$`).
+		WithArgs(sessionID).
+		WillReturnError(pgx.ErrNoRows)
+
+	r := testRouter()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+session.AccessToken)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	// The handler is never reached, so the user row is never read: no
+	// expectation for it is registered.
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRequireAuthAcceptsALiveSession(t *testing.T) {
+	mock := withMockPool(t)
+
+	userID, sessionID := uuid.New(), uuid.New()
+	session, err := auth.NewSession(userID, "user", "test-secret", sessionID)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`^SELECT 1 FROM sessions WHERE id = \$1 AND revoked_at IS NULL$`).
+		WithArgs(sessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"live"}).AddRow(1))
+	expectUserRow(mock, userID)
+
+	r := testRouter()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+session.AccessToken)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A token minted without a session names no row, so the lookup is skipped
+// entirely — no sessions expectation is registered below, so pgxmock fails the
+// request if one is made anyway.
+//
+// Who actually depends on a zero sid being accepted: the auth package's
+// RequireAuth and RequireAdmin subtests, which pass a NIL pool and would panic
+// the moment a lookup were attempted (auth/auth_test.go), and two tests here —
+// this one and TestAccountTypeMutationsRequireAdmin, whose admin token reaches
+// RequireAuth through the real router with whatever db.Pool is installed. The
+// handlers package is NOT among them: its tests route through their own
+// testAuthMiddleware stub, never enter RequireAuth, and register no sessions
+// expectation at all, so a zero sid that RequireAuth refused would not touch a
+// single one of them.
+func TestRequireAuthAcceptsATokenWithNoSessionClaim(t *testing.T) {
+	mock := withMockPool(t)
+
+	userID := uuid.New()
+	token, err := auth.GenerateAccessToken(userID, "user", "test-secret")
+	require.NoError(t, err)
+
+	expectUserRow(mock, userID)
+
+	r := testRouter()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

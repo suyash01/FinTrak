@@ -13,6 +13,7 @@ import AccountTypesManager from "./AccountTypesManager";
 import AdminCatalogManager from "./AdminCatalogManager";
 import PaperlessSettingsManager from "./PaperlessSettingsManager";
 import DataSettingsManager from "./DataSettingsManager";
+import SessionsManager from "./SessionsManager";
 
 export default function Settings() {
   const { compactLayout, toggleCompactLayout } = useSettings();
@@ -126,6 +127,15 @@ export default function Settings() {
             per-account CSV export, this is a complete user-level snapshot.
           </p>
           <DataSettingsManager />
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-6 max-w-125">
+          <h3 className="text-base font-semibold mb-1">Signed-in devices</h3>
+          <p className="text-[13px] text-muted-foreground mb-4">
+            Every device with a live session on this account. Sign out anything
+            you don&apos;t recognise.
+          </p>
+          <SessionsManager />
         </div>
 
         <div className="bg-card border border-border rounded-xl p-6 max-w-125">

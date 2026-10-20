@@ -52,6 +52,9 @@ vi.mock("./PaperlessSettingsManager", () => ({
 vi.mock("./DataSettingsManager", () => ({
   default: () => <div>Data manager</div>,
 }));
+vi.mock("./SessionsManager", () => ({
+  default: () => <div>Sessions manager</div>,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -109,5 +112,13 @@ describe("Settings", () => {
     expect(screen.getByText("Paperless manager")).toBeInTheDocument();
     expect(screen.getByText("Data manager")).toBeInTheDocument();
     expect(screen.getByText(/Version .* Built with Go \+ React/)).toBeInTheDocument();
+  });
+
+  it("renders the Signed-in devices card for every user, not just admins", () => {
+    // The panel is the whole point of the feature: the user who lost a laptop
+    // needs it, and they are not an admin.
+    render(<Settings />);
+    expect(screen.getByText("Signed-in devices")).toBeInTheDocument();
+    expect(screen.getByText("Sessions manager")).toBeInTheDocument();
   });
 });

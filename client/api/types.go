@@ -200,6 +200,18 @@ type User struct {
 	Role  string `json:"role"`
 }
 
+// Session is one signed-in device, as GET /auth/sessions lists them. Current
+// marks the session the caller's own token names; LastSeen is written on the
+// server's refresh path, so it is stale by up to one access-token lifetime.
+type Session struct {
+	ID        string    `json:"id"`
+	UserAgent string    `json:"userAgent"`
+	CreatedAt time.Time `json:"createdAt"`
+	LastSeen  time.Time `json:"lastSeen"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Current   bool      `json:"current"`
+}
+
 // AdminCatalog is the admin console's view of the shared global catalog.
 type AdminCatalog struct {
 	Groups     []AdminCatalogGroup    `json:"groups"`

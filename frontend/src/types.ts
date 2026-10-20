@@ -192,6 +192,26 @@ export interface User {
   createdAt?: string;
 }
 
+// Session is one of the signed-in devices GET /auth/sessions lists. The field
+// names are models.Session's JSON tags verbatim, because the backend's
+// models.go and openapi.yaml are checked against each other by a parity test.
+// Nothing compares THIS file to either of them: a rename here alone breaks
+// nothing and reads at runtime as a missing field, so it is on a rename to
+// change these names in the same commit.
+//
+// current is computed against the session the caller's own access token names,
+// and lastSeen is stamped on the refresh path, so it can be stale by up to one
+// access-token lifetime. All three timestamps are full RFC 3339 instants, not
+// calendar days: format them with new Date(iso), never parseDateOnly.
+export interface Session {
+  id: string;
+  userAgent: string;
+  createdAt: string;
+  lastSeen: string;
+  expiresAt: string;
+  current: boolean;
+}
+
 export interface UserSettings {
   paperlessUrl?: string;
   hasToken?: boolean;

@@ -40,7 +40,19 @@ func newAuthTestRouter(srv *Server) *gin.Engine {
 // expectRefreshTokenInsert registers the pgxmock expectation for the row that
 // records a freshly issued refresh token (Login/Register start a new family).
 func expectRefreshTokenInsert(mock pgxmock.PgxPoolIface) {
+	expectSessionInsert(mock)
 	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+}
+
+// expectSessionInsert registers the pgxmock expectation for the revocable
+// session row. pgxmock matches expectations in order, so placing it before the
+// refresh-token insert is what proves the handler wrote the session row first —
+// a token handed out naming a session that does not exist could never be
+// listed or revoked.
+func expectSessionInsert(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("INSERT INTO sessions").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
@@ -595,12 +607,86 @@ func TestLogoutRevokesSessionFamily(t *testing.T) {
 	mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
 		WithArgs(familyID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	expectSessionRevoke(mock, familyID)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A logout must end the session itself, not only its refresh family. Clearing
+// the cookies is what the browser honours, but the access token was already
+// delivered to whoever holds this cookie: without the sessions row being
+// revoked, RequireAuth admits that token for the rest of its 15-minute life
+// even after the user pressed "log out".
+func TestLogoutRevokesTheSessionAsWellAsTheFamily(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// logout resolves the family, then revokes both halves of the session.
+	expectLookup := func(mock pgxmock.PgxPoolIface, token string, familyID uuid.UUID) {
+		mock.ExpectQuery("SELECT family_id FROM refresh_tokens WHERE token_hash = ").
+			WithArgs(auth.HashRefreshToken(token)).
+			WillReturnRows(pgxmock.NewRows([]string{"family_id"}).AddRow(familyID))
+	}
+
+	t.Run("revokes the refresh family and the session row", func(t *testing.T) {
+		srv, mock := newMockServer(t)
+		r := gin.New()
+		r.POST("/auth/logout", srv.Logout)
+
+		token, err := auth.GenerateRefreshToken(uuid.New(), "user", testJWTSecret)
+		require.NoError(t, err)
+		familyID := uuid.New()
+
+		expectLookup(mock, token, familyID)
+		// The family first, the session second: the two are independent
+		// statements and the ordering is pinned only to make the sequence
+		// deterministic.
+		mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
+			WithArgs(familyID).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+		expectSessionRevoke(mock, familyID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("revokes the session row even when the family revoke fails", func(t *testing.T) {
+		// endSession exists so the two halves cannot be separated, and this is
+		// what holds it to that: a failure of the first statement must not
+		// return early and leave the session row live, because the row is the
+		// half that stops an already-issued access token. An early return here
+		// leaves this expectation unmet, so it is a failure rather than a
+		// silent pass.
+		srv, mock := newMockServer(t)
+		r := gin.New()
+		r.POST("/auth/logout", srv.Logout)
+
+		token, err := auth.GenerateRefreshToken(uuid.New(), "user", testJWTSecret)
+		require.NoError(t, err)
+		familyID := uuid.New()
+
+		expectLookup(mock, token, familyID)
+		mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
+			WithArgs(familyID).
+			WillReturnError(assert.AnError)
+		expectSessionRevoke(mock, familyID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, cookieRequest(http.MethodPost, "/auth/logout", token))
+
+		// Best-effort throughout: the cookies are cleared and the logout
+		// succeeds, because a database fault must not leave the browser holding
+		// a cookie it believes it has ended.
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Len(t, w.Result().Cookies(), 2)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 // A logout whose token is unknown (never issued, or already pruned) is still a
@@ -671,6 +757,35 @@ func expectLiveRefreshSession(mock pgxmock.PgxPoolIface, tokenHash string, token
 		WillReturnRows(pgxmock.NewRows([]string{"role"}).AddRow(role))
 }
 
+// expectSessionLastSeen registers the display-only stamp a live refresh moves
+// forward. pgxmock answers expectations in order, so calling it straight after
+// expectLiveRefreshSession is what pins that the stamp follows the role re-read
+// rather than the token lookup.
+//
+// The pattern is anchored at both ends, because pgxmock's default matcher
+// compiles it as an UNANCHORED regexp: unanchored, "UPDATE sessions SET last_seen"
+// would still match a statement that wrote some other column, or none. Anchored, the
+// expectation is the whole statement and a change to it fails here.
+func expectSessionLastSeen(mock pgxmock.PgxPoolIface, sessionID uuid.UUID) {
+	mock.ExpectExec(`^UPDATE sessions SET last_seen = now\(\) WHERE id = \$1$`).
+		WithArgs(sessionID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+}
+
+// expectSessionRevoke registers the revocation of the session row, which is the
+// write RequireAuth reads: ending the refresh family alone stops only the next
+// refresh, leaving the outstanding access token good until it expires.
+//
+// Anchored like expectSessionLastSeen, so the trailing `AND revoked_at IS NULL` —
+// which keeps the FIRST revocation time rather than overwriting it with a later one
+// — is part of what is asserted. Unanchored, the predicate is invisible: the
+// matcher would accept the same UPDATE without it.
+func expectSessionRevoke(mock pgxmock.PgxPoolIface, sessionID uuid.UUID) {
+	mock.ExpectExec(`^UPDATE sessions SET revoked_at = now\(\) WHERE id = \$1 AND revoked_at IS NULL$`).
+		WithArgs(sessionID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+}
+
 // expectRotation registers the expectations for spending the presented token
 // and storing its successor in the same family.
 func expectRotation(mock pgxmock.PgxPoolIface, tokenID, userID, familyID, newTokenID uuid.UUID) {
@@ -703,6 +818,7 @@ func TestRefresh(t *testing.T) {
 		tokenID, familyID, newTokenID := uuid.New(), uuid.New(), uuid.New()
 
 		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+		expectSessionLastSeen(mock, familyID)
 		expectRotation(mock, tokenID, userID, familyID, newTokenID)
 
 		w := httptest.NewRecorder()
@@ -746,6 +862,7 @@ func TestRefresh(t *testing.T) {
 		tokenID, familyID, newTokenID := uuid.New(), uuid.New(), uuid.New()
 
 		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+		expectSessionLastSeen(mock, familyID)
 		expectRotation(mock, tokenID, userID, familyID, newTokenID)
 
 		w := httptest.NewRecorder()
@@ -868,6 +985,144 @@ func TestRefresh(t *testing.T) {
 	})
 }
 
+// TestRefreshUpdatesTheSessionLastSeen pins that a live refresh moves the
+// session's last_seen forward. last_seen is display data — the session list in
+// the Settings UI reads it and nothing enforces on it — which is exactly why it
+// is written here and never on the read path (RequireAuth is on every
+// authenticated request and would turn every GET into an UPDATE).
+func TestRefreshUpdatesTheSessionLastSeen(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, mock := newMockServer(t)
+	r := gin.New()
+	r.POST("/auth/refresh", srv.Refresh)
+
+	t.Run("binds the family resolved from the token, not the token's own sid", func(t *testing.T) {
+		userID, familyID := uuid.New(), uuid.New()
+		// A refresh token minted before sessions existed carries no sid at all,
+		// so the family this token's hash resolved to is the only identity
+		// available. Binding claims.SessionID would stamp the nil row and last_seen
+		// would never move for every session predating the migration.
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+		presented, err := auth.ParseToken(refresh, testJWTSecret, auth.TokenTypeRefresh)
+		require.NoError(t, err)
+		require.Equal(t, uuid.Nil, presented.SessionID)
+
+		tokenID, newTokenID := uuid.New(), uuid.New()
+		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+		expectSessionLastSeen(mock, familyID)
+		expectRotation(mock, tokenID, userID, familyID, newTokenID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, refreshRequest(refresh))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a failure to stamp it never fails the refresh", func(t *testing.T) {
+		// last_seen is what the UI shows; ending a live session because a
+		// timestamp did not move would trade a stale label for a logged-out user.
+		userID, familyID := uuid.New(), uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+
+		tokenID, newTokenID := uuid.New(), uuid.New()
+		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+		mock.ExpectExec(`^UPDATE sessions SET last_seen = now\(\) WHERE id = \$1$`).
+			WithArgs(familyID).
+			WillReturnError(assert.AnError)
+		expectRotation(mock, tokenID, userID, familyID, newTokenID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, refreshRequest(refresh))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Len(t, w.Result().Cookies(), 2, "both cookies are still issued")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// TestRefreshRotatesTokensCarryingTheSameSessionID pins that rotation renames
+// nothing: the pair it hands out must keep naming the session the presented
+// token named, or a refresh would silently strand the browser on a credential
+// the session list no longer shows and can no longer revoke.
+func TestRefreshRotatesTokensCarryingTheSameSessionID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, mock := newMockServer(t)
+	r := gin.New()
+	r.POST("/auth/refresh", srv.Refresh)
+
+	t.Run("a session-bearing token rotates into the same session", func(t *testing.T) {
+		userID, sessionID := uuid.New(), uuid.New()
+		session, err := auth.NewSession(userID, "user", testJWTSecret, sessionID)
+		require.NoError(t, err)
+		// sessions.id IS refresh_tokens.family_id, so the family this token
+		// resolves to is the session it named at login.
+		familyID := sessionID
+
+		tokenID, newTokenID := uuid.New(), uuid.New()
+		expectLiveRefreshSession(mock, auth.HashRefreshToken(session.RefreshToken), tokenID, userID, familyID, "user")
+		expectSessionLastSeen(mock, familyID)
+		expectRotation(mock, tokenID, userID, familyID, newTokenID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, refreshRequest(session.RefreshToken))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		accessClaims := accessCookieClaims(t, w)
+		rotatedClaims := refreshCookieClaims(t, w)
+		assert.Equal(t, sessionID, accessClaims.SessionID)
+		assert.Equal(t, sessionID, rotatedClaims.SessionID)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a pre-migration token acquires the session on its first rotation", func(t *testing.T) {
+		// This is the half of the guarantee the previous subtest cannot see: a
+		// token with no sid is accepted (it must be, or every user is logged out
+		// on deploy), so the refresh path is the only place it can be given one.
+		// The sessions row exists for every family — migration 000002 backfills
+		// the ones that predate the table — so from here the session is
+		// revocable and its last_seen is kept.
+		userID, familyID := uuid.New(), uuid.New()
+		refresh, err := auth.GenerateRefreshToken(userID, "user", testJWTSecret)
+		require.NoError(t, err)
+
+		tokenID, newTokenID := uuid.New(), uuid.New()
+		expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+		expectSessionLastSeen(mock, familyID)
+		expectRotation(mock, tokenID, userID, familyID, newTokenID)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, refreshRequest(refresh))
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, familyID, accessCookieClaims(t, w).SessionID)
+		assert.Equal(t, familyID, refreshCookieClaims(t, w).SessionID)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// accessCookieClaims decodes the access token the response set.
+func accessCookieClaims(t *testing.T, w *httptest.ResponseRecorder) *auth.Claims {
+	t.Helper()
+	ck := findAuthCookie(w.Result().Cookies(), auth.AccessCookieName)
+	require.NotNil(t, ck)
+	claims, err := auth.ParseToken(ck.Value, testJWTSecret, auth.TokenTypeAccess)
+	require.NoError(t, err)
+	return claims
+}
+
+// refreshCookieClaims decodes the refresh token the response set.
+func refreshCookieClaims(t *testing.T, w *httptest.ResponseRecorder) *auth.Claims {
+	t.Helper()
+	ck := findAuthCookie(w.Result().Cookies(), auth.RefreshCookieName)
+	require.NotNil(t, ck)
+	claims, err := auth.ParseToken(ck.Value, testJWTSecret, auth.TokenTypeRefresh)
+	require.NoError(t, err)
+	return claims
+}
+
 // TestRefreshDetectsReuse is the security half of finding 3: presenting a refresh
 // token that has already been rotated means the value leaked (the legitimate
 // holder was handed the successor), so the whole family is revoked — including
@@ -895,6 +1150,10 @@ func TestRefreshDetectsReuse(t *testing.T) {
 	mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
 		WithArgs(familyID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// The session row goes too, which is what stops the *access* token already in
+	// the thief's hand: revoking the family alone would leave it good until it
+	// expires, up to a quarter of an hour after the chain was cut.
+	expectSessionRevoke(mock, familyID)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, refreshRequest(refresh))
@@ -925,6 +1184,7 @@ func TestRefreshDetectsConcurrentRotation(t *testing.T) {
 	tokenID, familyID := uuid.New(), uuid.New()
 
 	expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+	expectSessionLastSeen(mock, familyID)
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE id = ").
 		WithArgs(tokenID).
@@ -933,6 +1193,10 @@ func TestRefreshDetectsConcurrentRotation(t *testing.T) {
 	mock.ExpectExec("UPDATE refresh_tokens SET revoked_at = now\\(\\) WHERE family_id = ").
 		WithArgs(familyID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	// A raced rotation is a replay as far as the session is concerned, so the
+	// session row goes with the family: the winner's brand-new access token dies
+	// now instead of outliving the session it was minted for.
+	expectSessionRevoke(mock, familyID)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, refreshRequest(refresh))
@@ -964,6 +1228,7 @@ func TestRefreshDoesNotTouchTheFailureBudget(t *testing.T) {
 	tokenID, familyID, newTokenID := uuid.New(), uuid.New(), uuid.New()
 
 	expectLiveRefreshSession(mock, auth.HashRefreshToken(refresh), tokenID, userID, familyID, "user")
+	expectSessionLastSeen(mock, familyID)
 	expectRotation(mock, tokenID, userID, familyID, newTokenID)
 
 	w := httptest.NewRecorder()
@@ -1029,6 +1294,121 @@ func TestAuthBodyLimit(t *testing.T) {
 	})
 }
 
+// capturedUUID matches any argument and remembers the value it saw, so a test
+// can assert a relationship between two bound arguments (here: that the
+// refresh row's family_id is the same session the tokens name) which neither
+// side is known until the request has run.
+type capturedUUID struct{ value uuid.UUID }
+
+func (c *capturedUUID) Match(got any) bool {
+	id, ok := got.(uuid.UUID)
+	if ok {
+		c.value = id
+	}
+	return true
+}
+
+// The session row is written before either cookie is handed out, and its id is
+// the rotation family's id — so the credential the browser receives names a row
+// the server can revoke. pgxmock answers expectations in order, so declaring
+// the sessions insert before the refresh insert is what pins the order, rather
+// than only pinning that both happen.
+func TestLoginWritesTheSessionRowBeforeTheCookies(t *testing.T) {
+	srv, mock := newMockServer(t)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/login", srv.Login)
+
+	userID := uuid.New()
+	hash, err := auth.HashPassword("password1234")
+	require.NoError(t, err)
+
+	mock.ExpectQuery("SELECT id, email, password_hash, role FROM users").
+		WithArgs("session@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
+			AddRow(userID, "session@example.com", hash, "user"))
+
+	sessionArg, familyArg := &capturedUUID{}, &capturedUUID{}
+	mock.ExpectExec("INSERT INTO sessions").
+		WithArgs(sessionArg, userID, "TestAgent/1.0", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(userID, pgxmock.AnyArg(), familyArg, pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	jsonBody, _ := json.Marshal(models.LoginRequest{Email: "session@example.com", Password: "password1234"})
+	req, _ := http.NewRequest("POST", "/auth/login", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "TestAgent/1.0")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	access := findAuthCookie(w.Result().Cookies(), auth.AccessCookieName)
+	require.NotNil(t, access)
+	refresh := findAuthCookie(w.Result().Cookies(), auth.RefreshCookieName)
+	require.NotNil(t, refresh)
+
+	// Both tokens name one session, the row written above carries it, and the
+	// refresh family is keyed on it rather than on a fresh id.
+	accessClaims, err := auth.ParseToken(access.Value, testJWTSecret, auth.TokenTypeAccess)
+	require.NoError(t, err)
+	refreshClaims, err := auth.ParseToken(refresh.Value, testJWTSecret, auth.TokenTypeRefresh)
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, sessionArg.value)
+	assert.Equal(t, sessionArg.value, accessClaims.SessionID)
+	assert.Equal(t, sessionArg.value, refreshClaims.SessionID)
+	assert.Equal(t, sessionArg.value, familyArg.value)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The same ordering holds for a registration: the account, then the session row
+// naming it, then the refresh row in the same family.
+func TestRegisterWritesTheSessionRowBeforeTheCookies(t *testing.T) {
+	srv, mock := newMockServer(t)
+	r := newAuthTestRouter(srv)
+	r.POST("/auth/register", srv.Register)
+
+	userID := uuid.New()
+	reqBody := models.RegisterRequest{Email: "sessionreg@example.com", Password: "password1234"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs(reqBody.Email, pgxmock.AnyArg(), "user").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "role"}).
+			AddRow(userID, reqBody.Email, "user"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM categories").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+	seedArgs := make([]interface{}, 24*6)
+	for i := range seedArgs {
+		seedArgs[i] = pgxmock.AnyArg()
+	}
+	mock.ExpectExec("INSERT INTO categories").
+		WithArgs(seedArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 24))
+	mock.ExpectCommit()
+
+	sessionArg, familyArg := &capturedUUID{}, &capturedUUID{}
+	mock.ExpectExec("INSERT INTO sessions").
+		WithArgs(sessionArg, userID, "", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(userID, pgxmock.AnyArg(), familyArg, pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	jsonBody, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "/auth/register", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code)
+	require.NotEqual(t, uuid.Nil, sessionArg.value)
+	assert.Equal(t, sessionArg.value, familyArg.value)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // A session the server cannot record must not be handed to the browser: the
 // cookie would carry a refresh token that no refresh or logout could ever
 // resolve, so the request fails instead (500, no cookies).
@@ -1045,6 +1425,7 @@ func TestLoginWithoutStoredSessionIssuesNoCookies(t *testing.T) {
 		WithArgs("store@example.com").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "role"}).
 			AddRow(userID, "store@example.com", hash, "user"))
+	expectSessionInsert(mock)
 	mock.ExpectExec("INSERT INTO refresh_tokens").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(assert.AnError)

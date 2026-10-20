@@ -79,7 +79,8 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
-    USER ||--o{ REFRESH_TOKEN : "holds sessions in"
+    USER ||--o{ SESSION : owns
+    USER ||--o{ REFRESH_TOKEN : "issues one row per token"
     USER ||--o{ ACCOUNT : owns
     USER ||--o{ CATEGORY : owns
     USER ||--o{ PAYEE : owns
@@ -120,9 +121,12 @@ erDiagram
 ```
 
 Every table except `account_types` is tenant-scoped by `user_id`; the `USER`
-edges above name the owning roots rather than repeat all eighteen. Two things
+edges above name the owning roots rather than repeat all nineteen. Three things
 this diagram cannot draw: `transactions.tags` is a `TEXT[]` column, not a
 table, and `transactions.amount` is integer minor units of the owning
 account's `currency` — a transaction has no currency column of its own.
+`sessions.id` **is** `refresh_tokens.family_id`: a session *is* one rotation
+family, so the two tables are joined by a shared primary key rather than by a
+foreign key, which is why no edge above relates them.
 `recurring_series_terms.user_id` and `rules.filter_category_id` /
 `filter_payee_id` are set but not constrained by a foreign key.
