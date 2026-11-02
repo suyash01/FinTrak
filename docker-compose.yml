@@ -110,7 +110,7 @@ services:
   # Dev-only login-less database UI on published default credentials; loopback
   # only (see the header). Pin the image so it cannot change contents unread.
   pgadmin:
-    image: dpage/pgadmin4:9.18.0
+    image: dpage/pgadmin4:9.19.0
     container_name: pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
