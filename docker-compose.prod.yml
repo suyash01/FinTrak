@@ -50,7 +50,7 @@ services:
     # PostgreSQL build — possibly a new minor, which rewrites the data directory
     # on first start — with no application change and no rollback story. Bumps
     # are proposed by the docker-compose entry in .github/dependabot.yml.
-    image: postgres:18.6-alpine3.24
+    image: postgres:19.0-alpine3.24
     environment:
       # Required, like the backend's secrets: `${VAR}` alone would silently
       # create the database with an empty name/user/password.
